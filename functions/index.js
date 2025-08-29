@@ -7,13 +7,14 @@
  * See a full list of supported triggers at https://firebase.google.com/docs/functions
  */
 
-const {setGlobalOptions} = require("firebase-functions");
+const functions = require("firebase-functions");
 const {onRequest, onCall} = require("firebase-functions/v2/https");
-const {onUserCreated} = require("firebase-functions/v2/identity");
 const logger = require("firebase-functions/logger");
-const fetch = require("node-fetch");
 const {defineSecret} = require("firebase-functions/params");
 const admin = require("firebase-admin");
+
+// Use built-in fetch in Node.js 22
+const fetch = globalThis.fetch;
 
 // Initialize Firebase Admin SDK
 if (!admin.apps.length) {
@@ -33,7 +34,7 @@ const openaiApiKeySecret = defineSecret('OPENAI_API_KEY');
 // functions should each use functions.runWith({ maxInstances: 10 }) instead.
 // In the v1 API, each function can only serve one request per container, so
 // this will be the maximum concurrent request count.
-setGlobalOptions({ maxInstances: 10 });
+functions.setGlobalOptions({ maxInstances: 10 });
 
 // Secure AI BOM Analysis Function
 // This function acts as a proxy to OpenAI, keeping your API key secure on the server
@@ -219,31 +220,48 @@ exports.health = onRequest((request, response) => {
 
 // ==================== USER MANAGEMENT FUNCTIONS ====================
 
-// Automatically set new users as 'pending' approval
-exports.onUserCreated = onUserCreated(async (event) => {
-  const { uid, email, displayName } = event.data;
+// Setup new user after authentication (called from frontend)
+exports.setupNewUser = onCall(async (request) => {
+  const { auth } = request;
+  
+  if (!auth) {
+    throw new Error('Authentication required');
+  }
   
   try {
+    const user = await admin.auth().getUser(auth.uid);
+    
+    // Check if user already has custom claims set
+    if (user.customClaims && user.customClaims.role) {
+      return { success: true, message: 'User already set up' };
+    }
+    
     // Set initial custom claims - new users are pending approval
-    await admin.auth().setCustomUserClaims(uid, {
+    await admin.auth().setCustomUserClaims(auth.uid, {
       role: 'user',
       status: 'pending',
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
     
-    logger.info('New user created with pending status', { uid, email });
+    logger.info('New user created with pending status', { uid: auth.uid, email: user.email });
     
-    // Optional: Create a notification for admins about new user
-    await admin.firestore().collection('userRequests').doc(uid).set({
-      uid,
-      email,
-      displayName: displayName || '',
+    // Create a notification for admins about new user
+    await admin.firestore().collection('userRequests').doc(auth.uid).set({
+      uid: auth.uid,
+      email: user.email,
+      displayName: user.displayName || '',
       status: 'pending',
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
     
+    return { 
+      success: true, 
+      message: 'User setup completed. Waiting for admin approval.' 
+    };
+    
   } catch (error) {
     logger.error('Error setting up new user:', error);
+    throw new Error('Failed to setup user');
   }
 });
 
@@ -426,32 +444,3 @@ exports.getAllUsers = onCall(async (request) => {
   }
 });
 
-// TEMPORARY: Bootstrap first admin (remove after initial setup)
-exports.makeFirstAdmin = onCall(async (request) => {
-  const { auth } = request;
-  
-  if (!auth) {
-    throw new Error('Authentication required');
-  }
-  
-  try {
-    // Set the calling user as admin
-    await admin.auth().setCustomUserClaims(auth.uid, {
-      role: 'admin',
-      status: 'approved',
-      bootstrapped: true,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-    
-    logger.info('First admin bootstrapped', { uid: auth.uid });
-    
-    return { 
-      success: true, 
-      message: 'You have been set as the first admin. Please refresh the page.' 
-    };
-    
-  } catch (error) {
-    logger.error('Error bootstrapping admin:', error);
-    throw new Error('Failed to bootstrap admin');
-  }
-});

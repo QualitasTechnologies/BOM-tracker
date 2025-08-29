@@ -1,7 +1,6 @@
 import React from 'react';
 import { useAuth } from '../hooks/useAuth';
 import Login from './Login';
-import AdminBootstrap from './AdminBootstrap';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Clock, XCircle, AlertTriangle, RefreshCw } from 'lucide-react';
@@ -151,12 +150,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
     return <>{children}</>;
   }
 
-  // Fallback for any other status - show admin bootstrap if user has no claims yet
-  if (!user.claims.role || !user.claims.status) {
-    return <AdminBootstrap onSuccess={refreshUser} />;
-  }
-
-  // Final fallback
+  // Fallback for any other status
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <Card className="w-full max-w-md mx-4">
