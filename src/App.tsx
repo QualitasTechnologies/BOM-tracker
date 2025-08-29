@@ -13,6 +13,7 @@ import TimeTracking from "./pages/TimeTracking";
 import CostAnalysis from "./pages/CostAnalysis";
 import NotFound from "./pages/NotFound";
 import Vendors from "./pages/Vendors";
+import Settings from "./pages/Settings";
 import React, { createContext, useContext, useState } from 'react';
 
 const queryClient = new QueryClient();
@@ -63,6 +64,7 @@ const AppLayout: React.FC = () => {
           <Route path="/vendors" element={<Vendors />} />
           <Route path="/time-tracking" element={<TimeTracking />} />
           <Route path="/cost-analysis" element={<CostAnalysis />} />
+          <Route path="/settings" element={<Settings />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

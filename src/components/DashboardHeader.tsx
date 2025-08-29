@@ -1,9 +1,12 @@
 
-import { Bell, Search, User } from 'lucide-react';
+import { Bell, Search, User, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { useNavigate } from 'react-router-dom';
 
 const DashboardHeader = () => {
+  const navigate = useNavigate();
+
   return (
     <header className="bg-white border-b border-gray-200 px-6 py-4">
       <div className="flex items-center justify-between">
@@ -25,6 +28,14 @@ const DashboardHeader = () => {
             <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
               3
             </span>
+          </Button>
+          <Button 
+            variant="ghost" 
+            size="sm"
+            onClick={() => navigate('/settings')}
+            title="Settings"
+          >
+            <Settings size={20} />
           </Button>
           <Button variant="ghost" size="sm">
             <User size={20} />

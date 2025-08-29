@@ -2,22 +2,24 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
+import { getAnalytics } from "firebase/analytics";
 
-// ✅ Your Firebase Config (use the one you posted)
+// Your web app's Firebase configuration
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+  apiKey: "AIzaSyBZY5FzPjgq9XYDwkP8Xc4PoR3AxJJWGJY",
+  authDomain: "visionbomtracker.firebaseapp.com",
+  projectId: "visionbomtracker",
+  storageBucket: "visionbomtracker.firebasestorage.app",
+  messagingSenderId: "353285721197",
+  appId: "1:353285721197:web:d5ccba29d35cf0715a8364",
+  measurementId: "G-8L089W4R3X"
 };
 
-// ✅ Initialize Firebase services
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
+const analytics = getAnalytics(app);
 
-// ✅ Firestore and Auth setup
+// Initialize Firebase services
 export const db = getFirestore(app);
 export const auth = getAuth(app);
 
