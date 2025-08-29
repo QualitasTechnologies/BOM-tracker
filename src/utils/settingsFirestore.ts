@@ -32,19 +32,21 @@ export interface Client {
 // Vendor types and interfaces  
 export interface Vendor {
   id: string;
-  name: string;
   company: string;
   email: string;
   phone: string;
   address: string;
   contactPerson: string;
   website?: string;
+  logo?: string;
+  logoPath?: string;
   paymentTerms: string;
   leadTime: string;
   rating: number;
   status: 'active' | 'inactive';
-  specialties: string[];
   notes?: string;
+  type: 'OEM' | 'Dealer';
+  makes: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -186,6 +188,16 @@ export const getVendor = async (vendorId: string): Promise<Vendor | null> => {
     } as Vendor;
   }
   return null;
+};
+
+export const getOEMVendors = async (): Promise<Vendor[]> => {
+  const snapshot = await getDocs(vendorsCol);
+  return snapshot.docs
+    .map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    } as Vendor))
+    .filter(vendor => vendor.type === 'OEM');
 };
 
 // BOM Settings Management Functions
@@ -343,7 +355,6 @@ export const validateClient = (client: Partial<Client>): string[] => {
 
 export const validateVendor = (vendor: Partial<Vendor>): string[] => {
   const errors: string[] = [];
-  if (!vendor.name?.trim()) errors.push('Vendor name is required');
   if (!vendor.company?.trim()) errors.push('Company name is required');
   if (vendor.email && !isValidEmail(vendor.email)) errors.push('Invalid email format');
   if (vendor.rating !== undefined && (vendor.rating < 0 || vendor.rating > 5)) {

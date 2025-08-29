@@ -6,6 +6,7 @@ export interface BOMItem {
   make?: string;
   description: string;
   sku?: string;
+  thumbnailUrl?: string; // Thumbnail image URL for the part
   categoryId: string; // Now references category ID instead of name
   quantity: number;
   order: number; // For drag-and-drop ordering within categories
@@ -40,4 +41,23 @@ export interface ProjectBOM {
   items: BOMItem[];
   categoryStates: BOMCategoryState[];
   updatedAt: Date;
-} 
+}
+
+// Vendor types
+export type VendorType = 'OEM' | 'Dealer';
+
+export interface Vendor {
+  id: string;
+  name: string;
+  type: VendorType; // OEM or Dealer
+  makes: string[]; // Array of makes this vendor deals with
+  contactInfo?: {
+    email?: string;
+    phone?: string;
+    website?: string;
+  };
+  address?: string;
+  notes?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}

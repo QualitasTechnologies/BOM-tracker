@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -24,7 +24,9 @@ import {
   Mail,
   Phone,
   MapPin,
-  Loader2
+  Loader2,
+  Upload,
+  Download
 } from 'lucide-react';
 import { 
   Dialog, 
@@ -60,14 +62,18 @@ import {
   subscribeToBOMSettings,
   initializeDefaultBOMSettings,
   validateClient,
-  validateVendor
+  validateVendor,
+  getOEMVendors
 } from '@/utils/settingsFirestore';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { downloadVendorCSVTemplate, parseVendorCSV, validateVendorData, CSVImportResult } from '@/utils/csvImport';
+import { uploadVendorLogo, ImageUploadResult } from '@/utils/imageUpload';
 
 const Settings = () => {
   // State management
   const [clients, setClients] = useState<Client[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [oemVendors, setOemVendors] = useState<Vendor[]>([]);
   const [bomSettings, setBomSettings] = useState<BOMSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,6 +90,76 @@ const Settings = () => {
   const [formErrors, setFormErrors] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
+  // CSV Import states
+  const [importing, setImporting] = useState(false);
+  const [importResults, setImportResults] = useState<CSVImportResult | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Image upload states
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+
+  // Handle CSV file import
+  const handleCSVImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setImporting(true);
+    setImportResults(null);
+
+    try {
+      const text = await file.text();
+      const parsedData = parseVendorCSV(text);
+      
+      const errors: string[] = [];
+      let successCount = 0;
+
+      for (const { vendor, lineNumber } of parsedData) {
+        try {
+          // Validate vendor data
+          const validationErrors = validateVendorData(vendor, lineNumber);
+          if (validationErrors.length > 0) {
+            errors.push(...validationErrors);
+            continue;
+          }
+
+          // Add vendor to database
+          await addVendor({
+            company: vendor.company!,
+            email: vendor.email || '',
+            phone: vendor.phone || '',
+            address: vendor.address || '',
+            contactPerson: vendor.contactPerson || '',
+            website: vendor.website || '',
+            logo: vendor.logo || '',
+            logoPath: '',
+            paymentTerms: vendor.paymentTerms || 'Net 30',
+            leadTime: vendor.leadTime || '2 weeks',
+            rating: 0,
+            status: 'active',
+            notes: vendor.notes || '',
+            type: vendor.type || 'Dealer',
+            makes: vendor.makes || []
+          });
+
+          successCount++;
+        } catch (err: any) {
+          errors.push(`Line ${lineNumber}: ${err.message || 'Failed to import vendor'}`);
+        }
+      }
+
+      setImportResults({ success: successCount, errors });
+    } catch (err: any) {
+      setError(err.message || 'Failed to parse CSV file');
+    }
+
+    setImporting(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
   // Load data on component mount
   useEffect(() => {
     const loadData = async () => {
@@ -92,9 +168,17 @@ const Settings = () => {
         // Initialize BOM settings if they don't exist
         await initializeDefaultBOMSettings();
         
+        // Load OEM vendors for dealer form
+        const oems = await getOEMVendors();
+        setOemVendors(oems);
+        
         // Subscribe to real-time updates
         const unsubscribeClients = subscribeToClients(setClients);
-        const unsubscribeVendors = subscribeToVendors(setVendors);
+        const unsubscribeVendors = subscribeToVendors((vendors) => {
+          setVendors(vendors);
+          // Update OEM vendors list when vendors change
+          setOemVendors(vendors.filter(v => v.type === 'OEM'));
+        });
         const unsubscribeBOMSettings = subscribeToBOMSettings(setBomSettings);
         
         setLoading(false);
@@ -197,35 +281,84 @@ const Settings = () => {
 
     setSaving(true);
     try {
+      let logoUrl = '';
+      let logoPath = '';
+
+      // Upload logo if provided
+      if (logoFile) {
+        setUploadingLogo(true);
+        const uploadResult = await uploadVendorLogo(logoFile);
+        logoUrl = uploadResult.url;
+        logoPath = uploadResult.path;
+        setUploadingLogo(false);
+      }
+
       await addVendor({
-        name: vendorForm.name || '',
         company: vendorForm.company || '',
         email: vendorForm.email || '',
         phone: vendorForm.phone || '',
         address: vendorForm.address || '',
         contactPerson: vendorForm.contactPerson || '',
-        website: vendorForm.website,
+        website: vendorForm.website || '',
+        logo: logoUrl,
+        logoPath: logoPath,
         paymentTerms: vendorForm.paymentTerms || 'Net 30',
         leadTime: vendorForm.leadTime || '2 weeks',
         rating: vendorForm.rating || 0,
         status: 'active',
-        specialties: vendorForm.specialties || [],
-        notes: vendorForm.notes
+        notes: vendorForm.notes || '',
+        type: vendorForm.type || 'Dealer',
+        makes: vendorForm.makes || []
       });
       
       setVendorForm({});
+      setLogoFile(null);
+      setLogoPreview(null);
       setVendorDialog(false);
       setFormErrors([]);
     } catch (err: any) {
       setError(err.message || 'Failed to add vendor');
+      setUploadingLogo(false);
     }
     setSaving(false);
+  };
+
+  // Handle image file selection
+  const handleImageSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      setLogoFile(file);
+      
+      // Create preview
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setLogoPreview(e.target?.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // Clear logo
+  const clearLogo = () => {
+    setLogoFile(null);
+    setLogoPreview(null);
+    setVendorForm({...vendorForm, logo: '', logoPath: ''});
   };
 
   const handleEditVendor = (vendor: Vendor) => {
     setEditingVendor(vendor);
     setVendorForm(vendor);
     setFormErrors([]);
+    
+    // Set logo preview if vendor has logo
+    if (vendor.logo) {
+      setLogoPreview(vendor.logo);
+      setLogoFile(null); // Clear file since it's existing image
+    } else {
+      setLogoPreview(null);
+      setLogoFile(null);
+    }
+    
     setVendorDialog(true);
   };
 
@@ -240,14 +373,28 @@ const Settings = () => {
 
     setSaving(true);
     try {
-      await updateVendor(editingVendor.id, vendorForm);
+      let updatedVendorForm = { ...vendorForm };
+
+      // Upload new logo if provided
+      if (logoFile) {
+        setUploadingLogo(true);
+        const uploadResult = await uploadVendorLogo(logoFile, editingVendor.id);
+        updatedVendorForm.logo = uploadResult.url;
+        updatedVendorForm.logoPath = uploadResult.path;
+        setUploadingLogo(false);
+      }
+
+      await updateVendor(editingVendor.id, updatedVendorForm);
       
       setEditingVendor(null);
       setVendorForm({});
+      setLogoFile(null);
+      setLogoPreview(null);
       setVendorDialog(false);
       setFormErrors([]);
     } catch (err: any) {
       setError(err.message || 'Failed to update vendor');
+      setUploadingLogo(false);
     }
     setSaving(false);
   };
@@ -261,6 +408,7 @@ const Settings = () => {
       setError(err.message || 'Failed to delete vendor');
     }
   };
+
 
   // BOM Settings functions
   const handleSaveBOMSettings = async () => {
@@ -591,12 +739,43 @@ const Settings = () => {
                     <CardTitle>Vendor Management</CardTitle>
                     <CardDescription>Manage your vendor database and supplier information</CardDescription>
                   </div>
-                  <Dialog open={vendorDialog} onOpenChange={setVendorDialog}>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={downloadVendorCSVTemplate}
+                      className="flex items-center gap-2"
+                    >
+                      <Download size={16} />
+                      Download Template
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={importing}
+                      className="flex items-center gap-2"
+                    >
+                      {importing ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : (
+                        <Upload size={16} />
+                      )}
+                      {importing ? 'Importing...' : 'Import CSV'}
+                    </Button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".csv"
+                      onChange={handleCSVImport}
+                      style={{ display: 'none' }}
+                    />
+                    <Dialog open={vendorDialog} onOpenChange={setVendorDialog}>
                     <DialogTrigger asChild>
                       <Button onClick={() => {
                         setEditingVendor(null);
                         setVendorForm({});
                         setFormErrors([]);
+                        setLogoFile(null);
+                        setLogoPreview(null);
                       }}>
                         <Plus size={16} className="mr-2" />
                         Add Vendor
@@ -626,16 +805,7 @@ const Settings = () => {
 
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <Label htmlFor="vendorName">Vendor Name *</Label>
-                          <Input
-                            id="vendorName"
-                            value={vendorForm.name || ''}
-                            onChange={(e) => setVendorForm({...vendorForm, name: e.target.value})}
-                            placeholder="Enter vendor name"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="vendorCompany">Company *</Label>
+                          <Label htmlFor="vendorCompany">Company Name *</Label>
                           <Input
                             id="vendorCompany"
                             value={vendorForm.company || ''}
@@ -681,6 +851,40 @@ const Settings = () => {
                           />
                         </div>
                         <div className="space-y-2">
+                          <Label>Company Logo</Label>
+                          <div className="flex items-center gap-4">
+                            {logoPreview && (
+                              <div className="relative">
+                                <img 
+                                  src={logoPreview} 
+                                  alt="Logo preview"
+                                  className="w-16 h-16 object-contain border rounded"
+                                />
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="destructive"
+                                  className="absolute -top-2 -right-2 h-6 w-6 rounded-full p-0"
+                                  onClick={clearLogo}
+                                >
+                                  <X size={14} />
+                                </Button>
+                              </div>
+                            )}
+                            <div className="flex-1">
+                              <Input
+                                type="file"
+                                accept="image/*"
+                                onChange={handleImageSelect}
+                                className="cursor-pointer"
+                              />
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Upload a company logo (max 2MB, will be resized to 200x200px)
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
                           <Label htmlFor="paymentTerms">Payment Terms</Label>
                           <Select 
                             value={vendorForm.paymentTerms || 'Net 30'} 
@@ -708,6 +912,78 @@ const Settings = () => {
                             placeholder="e.g., 2 weeks"
                           />
                         </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="vendorType">Vendor Type</Label>
+                          <Select 
+                            value={vendorForm.type || 'Dealer'} 
+                            onValueChange={(value) => {
+                              // Clear makes field when switching to OEM since OEMs don't represent other makes
+                              const updatedForm = {
+                                ...vendorForm, 
+                                type: value as 'OEM' | 'Dealer'
+                              };
+                              if (value === 'OEM') {
+                                updatedForm.makes = [];
+                              }
+                              setVendorForm(updatedForm);
+                            }}
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="OEM">OEM</SelectItem>
+                              <SelectItem value="Dealer">Dealer</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {/* Only show Makes/Brands field for Dealers */}
+                        {vendorForm.type === 'Dealer' && (
+                          <div className="space-y-2">
+                            <Label>Makes/Brands (OEMs represented)</Label>
+                            <div className="border rounded-md p-3 max-h-32 overflow-y-auto bg-background">
+                              {oemVendors.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">No OEM vendors available. Add some OEM vendors first.</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {oemVendors.map((oem) => (
+                                    <div key={oem.id} className="flex items-center space-x-2">
+                                      <input
+                                        type="checkbox"
+                                        id={`oem-${oem.id}`}
+                                        checked={(vendorForm.makes || []).includes(oem.company)}
+                                        onChange={(e) => {
+                                          const currentMakes = vendorForm.makes || [];
+                                          if (e.target.checked) {
+                                            setVendorForm({
+                                              ...vendorForm,
+                                              makes: [...currentMakes, oem.company]
+                                            });
+                                          } else {
+                                            setVendorForm({
+                                              ...vendorForm,
+                                              makes: currentMakes.filter(make => make !== oem.company)
+                                            });
+                                          }
+                                        }}
+                                        className="rounded border-gray-300"
+                                      />
+                                      <Label 
+                                        htmlFor={`oem-${oem.id}`} 
+                                        className="text-sm font-normal cursor-pointer"
+                                      >
+                                        {oem.company}
+                                      </Label>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Select the OEM brands this dealer represents
+                            </p>
+                          </div>
+                        )}
                         <div className="col-span-2 space-y-2">
                           <Label htmlFor="vendorAddress">Address</Label>
                           <Input
@@ -730,11 +1006,11 @@ const Settings = () => {
                       <div className="flex justify-end gap-2 mt-6">
                         <Button
                           onClick={editingVendor ? handleUpdateVendor : handleAddVendor}
-                          disabled={saving}
+                          disabled={saving || uploadingLogo}
                         >
-                          {saving && <Loader2 size={16} className="mr-2 animate-spin" />}
+                          {(saving || uploadingLogo) && <Loader2 size={16} className="mr-2 animate-spin" />}
                           <Save size={16} className="mr-2" />
-                          {editingVendor ? 'Update' : 'Add'} Vendor
+                          {uploadingLogo ? 'Uploading Logo...' : `${editingVendor ? 'Update' : 'Add'} Vendor`}
                         </Button>
                         <Button variant="outline" onClick={() => setVendorDialog(false)}>
                           Cancel
@@ -742,7 +1018,42 @@ const Settings = () => {
                       </div>
                     </DialogContent>
                   </Dialog>
+                  </div>
                 </div>
+                
+                {/* Import Results */}
+                {importResults && (
+                  <div className="mt-4">
+                    <Alert variant={importResults.errors.length > 0 ? "destructive" : "default"}>
+                      <AlertDescription>
+                        <div className="space-y-2">
+                          <div className="font-medium">
+                            Import completed: {importResults.success} vendors added successfully
+                          </div>
+                          {importResults.errors.length > 0 && (
+                            <div>
+                              <div className="font-medium text-red-600 mb-2">
+                                {importResults.errors.length} errors occurred:
+                              </div>
+                              <ul className="list-disc list-inside text-sm space-y-1 max-h-32 overflow-y-auto">
+                                {importResults.errors.map((error, index) => (
+                                  <li key={index}>{error}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setImportResults(null)}
+                          >
+                            Dismiss
+                          </Button>
+                        </div>
+                      </AlertDescription>
+                    </Alert>
+                  </div>
+                )}
               </CardHeader>
               <CardContent>
                 {vendors.length === 0 ? (
@@ -756,9 +1067,9 @@ const Settings = () => {
                     <TableHeader>
                       <TableRow>
                         <TableHead>Vendor</TableHead>
+                        <TableHead>Type & Makes</TableHead>
                         <TableHead>Contact Info</TableHead>
                         <TableHead>Terms</TableHead>
-                        <TableHead>Status</TableHead>
                         <TableHead>Actions</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -766,19 +1077,35 @@ const Settings = () => {
                       {vendors.map((vendor) => (
                         <TableRow key={vendor.id}>
                           <TableCell>
+                            <div className="flex items-center space-x-3">
+                              {vendor.logo && (
+                                <img 
+                                  src={vendor.logo} 
+                                  alt={`${vendor.company} logo`}
+                                  className="w-8 h-8 object-contain rounded"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none';
+                                  }}
+                                />
+                              )}
+                              <div className="font-medium">{vendor.company}</div>
+                            </div>
+                          </TableCell>
+                          <TableCell>
                             <div>
-                              <div className="font-medium">{vendor.name}</div>
-                              <div className="text-sm text-muted-foreground">{vendor.company}</div>
-                              {vendor.specialties.length > 0 && (
-                                <div className="flex gap-1 mt-1">
-                                  {vendor.specialties.slice(0, 2).map((specialty, index) => (
+                              <Badge variant={vendor.type === 'OEM' ? 'default' : 'secondary'} className="text-xs mb-1">
+                                {vendor.type || 'Dealer'}
+                              </Badge>
+                              {vendor.makes && vendor.makes.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {vendor.makes.slice(0, 3).map((make, index) => (
                                     <Badge key={index} variant="outline" className="text-xs">
-                                      {specialty}
+                                      {make}
                                     </Badge>
                                   ))}
-                                  {vendor.specialties.length > 2 && (
+                                  {vendor.makes.length > 3 && (
                                     <Badge variant="outline" className="text-xs">
-                                      +{vendor.specialties.length - 2}
+                                      +{vendor.makes.length - 3}
                                     </Badge>
                                   )}
                                 </div>
@@ -806,11 +1133,6 @@ const Settings = () => {
                               <div>{vendor.paymentTerms}</div>
                               <div className="text-muted-foreground">{vendor.leadTime}</div>
                             </div>
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={vendor.status === 'active' ? 'default' : 'secondary'}>
-                              {vendor.status}
-                            </Badge>
                           </TableCell>
                           <TableCell>
                             <div className="flex gap-2">
@@ -982,6 +1304,7 @@ const Settings = () => {
             </div>
           </TabsContent>
 
+
           {/* General Settings Tab */}
           <TabsContent value="general">
             <div className="space-y-6">
@@ -1035,6 +1358,46 @@ const Settings = () => {
                   <Button className="flex items-center gap-2">
                     <Save size={16} />
                     Save General Settings
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>n8n Webhook Configuration</CardTitle>
+                  <CardDescription>Configure webhooks for automation workflows</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="raise-pr-webhook">Raise PR Webhook URL</Label>
+                    <Input
+                      id="raise-pr-webhook"
+                      placeholder="https://your-n8n-instance.com/webhook/raise-pr"
+                    />
+                    <p className="text-xs text-muted-foreground">Triggered when user wants to raise a Purchase Order</p>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="add-bom-webhook">Add BOM Item Webhook URL</Label>
+                    <Input
+                      id="add-bom-webhook"
+                      placeholder="https://your-n8n-instance.com/webhook/bom-item-added"
+                    />
+                    <p className="text-xs text-muted-foreground">Triggered when a new BOM item is added</p>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="add-vendor-webhook">Add Vendor Webhook URL</Label>
+                    <Input
+                      id="add-vendor-webhook"
+                      placeholder="https://your-n8n-instance.com/webhook/vendor-added"
+                    />
+                    <p className="text-xs text-muted-foreground">Triggered when a new vendor is added</p>
+                  </div>
+                  
+                  <Button className="flex items-center gap-2">
+                    <Save size={16} />
+                    Save Webhook Settings
                   </Button>
                 </CardContent>
               </Card>

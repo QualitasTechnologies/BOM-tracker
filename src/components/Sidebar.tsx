@@ -5,7 +5,6 @@ import {
   LayoutDashboard,
   FolderOpen,
   Package,
-  ShoppingCart,
   Clock,
   Calculator,
   FileText,
@@ -18,8 +17,6 @@ import { cn } from '@/lib/utils';
 
 const menuItems = [
   { icon: FolderOpen, label: 'Projects', path: '/projects' },
-  { icon: Package, label: 'BOM', path: '/bom' },
-  { icon: ShoppingCart, label: 'Vendors', path: '/vendors' },
   { icon: Clock, label: 'Time Tracking', path: '/time-tracking' },
   { icon: Calculator, label: 'Cost Analysis', path: '/cost-analysis' },
   { icon: Settings, label: 'Settings', path: '/settings' },

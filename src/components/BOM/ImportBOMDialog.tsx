@@ -352,7 +352,12 @@ Safety Systems:
                   <Label htmlFor="bom-text">BOM Content</Label>
                   <Textarea
                     id="bom-text"
-                    placeholder="Paste your BOM content here...&#10;&#10;Example:&#10;Motor - 2&#10;Sensor - 1&#10;Bracket - 4"
+                    placeholder="Paste your BOM content here...
+
+Example:
+Motor - 2
+Sensor - 1
+Bracket - 4"
                     value={textContent}
                     onChange={(e) => setTextContent(e.target.value)}
                     className="min-h-[200px]"
@@ -361,7 +366,14 @@ Safety Systems:
               </Card>
             </TabsContent>
 
-                        {processingStep && (
+            {error && (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+
+            {processingStep && (
               <div className="text-sm text-blue-600 text-center py-2">
                 {processingStep}
               </div>

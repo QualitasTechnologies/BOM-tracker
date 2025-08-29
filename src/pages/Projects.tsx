@@ -156,7 +156,7 @@ const Projects = () => {
       <CardFooter className="pt-0">
         <div className="flex gap-2 w-full">
           <Button asChild variant="outline" size="sm" className="flex-1">
-            <Link to={`/bom?project=${project.projectId}`}>
+            <Link to={`/project/${project.projectId}/bom`}>
               🔧 BOM
             </Link>
           </Button>
@@ -299,7 +299,7 @@ const Projects = () => {
                       <TableCell>
                         <div className="flex gap-1 justify-center">
                           <Button asChild variant="outline" size="sm">
-                            <Link to={`/bom?project=${project.projectId}`}>🔧</Link>
+                            <Link to={`/project/${project.projectId}/bom`}>🔧</Link>
                           </Button>
                           <Button asChild variant="outline" size="sm">
                             <Link to={`/time-tracking?project=${project.projectId}`}>⏱️</Link>

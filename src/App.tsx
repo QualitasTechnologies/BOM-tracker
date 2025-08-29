@@ -13,7 +13,6 @@ import BOM from "./pages/BOM";
 import TimeTracking from "./pages/TimeTracking";
 import CostAnalysis from "./pages/CostAnalysis";
 import NotFound from "./pages/NotFound";
-import Vendors from "./pages/Vendors";
 import Settings from "./pages/Settings";
 import React, { createContext, useContext, useState } from 'react';
 
@@ -64,8 +63,7 @@ const AppLayout: React.FC = () => {
         <Routes>
           <Route path="/" element={<Projects />} />
           <Route path="/projects" element={<Projects />} />
-          <Route path="/bom" element={<BOM />} />
-          <Route path="/vendors" element={<Vendors />} />
+          <Route path="/project/:projectId/bom" element={<BOM />} />
           <Route path="/time-tracking" element={<TimeTracking />} />
           <Route path="/cost-analysis" element={<CostAnalysis />} />
           <Route path="/settings" element={<Settings />} />

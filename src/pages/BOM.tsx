@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Label } from '@/components/ui/label';
 import BOMHeader from '@/components/BOM/BOMHeader';
-import BOMTable from '@/components/BOM/BOMTable';
+import BOMCategoryCard from '@/components/BOM/BOMCategoryCard';
 import BOMPartDetails from '@/components/BOM/BOMPartDetails';
 import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
 import Sidebar from '@/components/Sidebar';
@@ -208,17 +208,9 @@ const BOM = () => {
   const handlePartCategoryChange = async (itemId: string, newCategory: string) => {
     if (!projectId) return;
     
-    // Ensure "Uncategorized" category exists
-    const ensureUncategorizedExists = (cats: any[]) => {
-      if (!cats.find(cat => cat.name === 'Uncategorized')) {
-        cats.push({ name: 'Uncategorized', isExpanded: true, items: [] });
-      }
-      return cats;
-    };
-    
     // Find the part and remove it from its current category
     let partToMove: BOMItem | null = null;
-    let updatedCategories = categories.map(cat => ({
+    const updatedCategories = categories.map(cat => ({
       ...cat,
       items: cat.items.filter(item => {
         if (item.id === itemId) {
@@ -228,9 +220,6 @@ const BOM = () => {
         return true;
       })
     }));
-    
-    // Ensure Uncategorized exists
-    updatedCategories = ensureUncategorizedExists(updatedCategories);
     
     // Add the part to the new category
     if (partToMove) {
@@ -352,7 +341,7 @@ const BOM = () => {
       />
       
       <div className={`flex-1 ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
-        <main className="p-4">
+        <main className="p-6">
           <div className="max-w-7xl mx-auto">
             {/* BOM Header */}
             <BOMHeader
@@ -363,43 +352,43 @@ const BOM = () => {
             />
 
             {/* Search and Actions Bar */}
-            <div className="flex flex-col sm:flex-row gap-3 mb-4">
+            <div className="flex flex-col sm:flex-row gap-4 mb-6">
               <div className="relative flex-1 flex items-center gap-2">
                 <div className="flex-1 relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" size={18} />
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" size={20} />
                   <Input
                     type="text"
                     placeholder="Search parts by name, ID, or description..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-9 h-9"
+                    className="pl-10"
                   />
                 </div>
-                <Button variant="outline" size="sm" onClick={() => setAddPartOpen(true)} className="h-9">
-                  <Plus className="mr-1.5 h-4 w-4" />
+                <Button variant="outline" onClick={() => setAddPartOpen(true)}>
+                  <Plus className="mr-2 h-4 w-4" />
                   Add Part
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => setImportBOMOpen(true)} className="h-9">
-                  <Upload className="mr-1.5 h-4 w-4" />
+                <Button variant="outline" onClick={() => setImportBOMOpen(true)}>
+                  <Upload className="mr-2 h-4 w-4" />
                   Import BOM
                 </Button>
               </div>
               
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => setFilterOpen(true)} className="h-9">
-                  <Filter className="mr-1.5 h-4 w-4" />
+                <Button variant="outline" onClick={() => setFilterOpen(true)}>
+                  <Filter className="mr-2 h-4 w-4" />
                   Filter
                 </Button>
-                <Button variant="outline" size="sm" onClick={handleExportCSV} className="h-9">
-                  <Download className="mr-1.5 h-4 w-4" />
+                <Button variant="outline" onClick={handleExportCSV}>
+                  <Download className="mr-2 h-4 w-4" />
                   Export
                 </Button>
-                <Button variant="outline" size="sm" onClick={handleCreatePurchaseOrder} className="h-9">
+                <Button variant="outline" onClick={handleCreatePurchaseOrder}>
                   Create Purchase Order
                 </Button>
               </div>
             </div>
-            {emailStatus && <div className="mt-1 text-sm">{emailStatus}</div>}
+            {emailStatus && <div className="mt-2 text-sm">{emailStatus}</div>}
             {importSuccess && (
               <Alert className="mt-2 border-green-200 bg-green-50">
                 <AlertDescription className="text-green-800">
@@ -409,32 +398,43 @@ const BOM = () => {
             )}
 
             {/* BOM Content */}
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-              {/* BOM Table */}
-              <div className="lg:col-span-3">
-                <BOMTable
-                  categories={filteredCategories}
-                  onToggle={toggleCategory}
-                  onPartClick={handlePartClick}
-                  onQuantityChange={handleQuantityChange}
-                  onDeletePart={handleDeletePart}
-                  onDeleteCategory={(categoryName) => {
-                    if (projectId) {
-                      const updatedCategories = categories.filter(cat => cat.name !== categoryName);
-                      updateBOMData(projectId, updatedCategories);
-                    }
-                  }}
-                  onEditCategory={handleEditCategory}
-                  onStatusChange={(itemId, newStatus) => {
-                    if (projectId) {
-                      updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
-                    }
-                  }}
-                  onEditPart={handleEditPart}
-                  onPartCategoryChange={handlePartCategoryChange}
-                  availableCategories={categories.map(cat => cat.name)}
-                  selectedPart={selectedPart}
-                />
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Categories List */}
+              <div className="lg:col-span-2 space-y-4">
+                {filteredCategories.map((category) => (
+                  <BOMCategoryCard
+                    key={category.name}
+                    category={category}
+                    onToggle={() => toggleCategory(category.name)}
+                    onPartClick={handlePartClick}
+                    onQuantityChange={handleQuantityChange}
+                    onDeletePart={handleDeletePart}
+                    onDeleteCategory={(categoryName) => {
+                      // Handle category deletion - remove the entire category
+                      if (projectId) {
+                        const updatedCategories = categories.filter(cat => cat.name !== categoryName);
+                        updateBOMData(projectId, updatedCategories);
+                      }
+                    }}
+                    onEditCategory={handleEditCategory}
+                    onStatusChange={(itemId, newStatus) => {
+                      if (projectId) {
+                        updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                      }
+                    }}
+                    onEditPart={handleEditPart}
+                    onPartCategoryChange={handlePartCategoryChange}
+                    availableCategories={categories.map(cat => cat.name)}
+                  />
+                ))}
+                
+                {filteredCategories.length === 0 && (
+                  <Card>
+                    <CardContent className="p-8 text-center">
+                      <p className="text-muted-foreground">No parts found matching your search criteria.</p>
+                    </CardContent>
+                  </Card>
+                )}
               </div>
 
               {/* Part Details */}
@@ -636,14 +636,6 @@ const BOM = () => {
         onImportComplete={(importedItems) => {
           // Handle imported items - add them to the current BOM
           if (projectId && importedItems.length > 0) {
-            // Ensure "Uncategorized" category exists
-            const ensureUncategorizedExists = (cats: any[]) => {
-              if (!cats.find(cat => cat.name === 'Uncategorized')) {
-                cats.push({ name: 'Uncategorized', isExpanded: true, items: [] });
-              }
-              return cats;
-            };
-            
             // Group items by category
             const itemsByCategory = importedItems.reduce((acc, item) => {
               const category = item.category || 'Uncategorized';
@@ -655,9 +647,7 @@ const BOM = () => {
             }, {} as Record<string, any[]>);
 
             // Update categories with new items
-            let updatedCategories = [...categories];
-            updatedCategories = ensureUncategorizedExists(updatedCategories);
-            
+            const updatedCategories = [...categories];
             Object.entries(itemsByCategory).forEach(([categoryName, items]) => {
               let category = updatedCategories.find(cat => cat.name === categoryName);
               if (!category) {
