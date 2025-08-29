@@ -1,5 +1,5 @@
 
-import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2 } from 'lucide-react';
+import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -45,9 +45,12 @@ interface BOMPartRowProps {
   allVendors?: Array<{ name: string; price: number; leadTime: string; availability: string }>;
   onDelete?: (itemId: string) => void;
   onStatusChange?: (itemId: string, newStatus: string) => void;
+  onEdit?: (itemId: string, updates: Partial<BOMItem>) => void;
+  onCategoryChange?: (itemId: string, newCategory: string) => void;
+  availableCategories?: string[];
 }
 
-const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange }: BOMPartRowProps) => {
+const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [] }: BOMPartRowProps) => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [vendors, setVendors] = useState(part.vendors);
   const [form, setForm] = useState({ name: '', price: 0, leadTime: '', availability: '' });
@@ -55,6 +58,16 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
   const [showDetails, setShowDetails] = useState(false);
   const [showDeleteConfirmIdx, setShowDeleteConfirmIdx] = useState<number | null>(null);
   const [addPrevVendorIdx, setAddPrevVendorIdx] = useState<number | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState({ 
+    name: part.name, 
+    make: part.make || '', 
+    description: part.description, 
+    sku: part.sku || '', 
+    quantity: part.quantity, 
+    category: part.category 
+  });
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   // Handle selecting a current vendor for editing
   const handleSelectVendor = (idx: number) => {
@@ -112,60 +125,211 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
 
   return (
     <div 
-      className="border border-gray-200 rounded-lg p-9 hover:bg-gray-50 transition-colors cursor-pointer relative"
-      onClick={onClick}
+      className="border border-gray-200 rounded p-3 hover:bg-gray-50 transition-colors cursor-pointer relative text-sm"
+      onClick={editing ? undefined : onClick}
     >
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-        <div className="flex-1">
-          <div className="flex items-start gap-3">
-            <div className="flex-1">
-              <div className="flex items-center gap-2 mb-1">
-                <h4 className="font-medium text-gray-900">{part.name}</h4>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          {editing ? (
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <input
+                  placeholder="Part Name"
+                  className="flex-1 text-sm font-medium bg-white border rounded px-2 py-1 min-w-0"
+                  value={editForm.name}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, name: e.target.value }))}
+                  onClick={(e) => e.stopPropagation()}
+                />
+                <input
+                  placeholder="Make"
+                  className="w-20 text-sm bg-white border rounded px-2 py-1"
+                  value={editForm.make}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, make: e.target.value }))}
+                  onClick={(e) => e.stopPropagation()}
+                />
+                <input
+                  placeholder="SKU"
+                  className="w-20 text-sm bg-white border rounded px-2 py-1"
+                  value={editForm.sku}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, sku: e.target.value }))}
+                  onClick={(e) => e.stopPropagation()}
+                />
+                <input
+                  type="number"
+                  className="w-16 text-sm bg-white border rounded px-2 py-1"
+                  value={editForm.quantity}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, quantity: Number(e.target.value) }))}
+                  onClick={(e) => e.stopPropagation()}
+                />
               </div>
-              
-              <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500">
+              <div className="flex items-center gap-2">
+                <input
+                  placeholder="Description"
+                  className="flex-1 text-sm bg-white border rounded px-2 py-1 min-w-0"
+                  value={editForm.description}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, description: e.target.value }))}
+                  onClick={(e) => e.stopPropagation()}
+                />
+                <select
+                  className="text-sm bg-white border rounded px-2 py-1"
+                  value={editForm.category}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, category: e.target.value }))}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {availableCategories.map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="font-medium text-gray-900 truncate">{part.name}</h4>
+                {part.make && (
+                  <span className="text-xs text-blue-600 bg-blue-50 px-1 rounded">{part.make}</span>
+                )}
+                {part.sku && (
+                  <span className="text-xs text-purple-600 bg-purple-50 px-1 rounded">SKU: {part.sku}</span>
+                )}
+                <span className="text-xs text-gray-500 bg-gray-100 px-1 rounded">Qty: {part.quantity}</span>
+              </div>
+              <div className="text-xs text-gray-600 mt-1 truncate">{part.description}</div>
+              <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
                 {part.expectedDelivery && (
                   <div className="flex items-center gap-1">
-                    <Calendar size={12} />
-                    <span>Expected: {part.expectedDelivery}</span>
+                    <Calendar size={10} />
+                    <span>{part.expectedDelivery}</span>
                   </div>
                 )}
-                {part.poNumber && (
-                  <div className="flex items-center gap-1">
-                    <LinkIcon size={12} />
-                    <span>PO: {part.poNumber}</span>
-                  </div>
+                {part.finalizedVendor && (
+                  <span className="truncate">Vendor: {part.finalizedVendor.name}</span>
                 )}
               </div>
             </div>
-          </div>
+          )}
         </div>
         
-        <div className="flex items-center gap-3">
-          <div className="text-right">
-            <div className="text-sm font-medium text-gray-900">
-              {part.finalizedVendor
-                ? `Vendor: ${part.finalizedVendor.name}`
-                : 'No vendor selected'}
-            </div>
-              <div className="text-xs text-gray-500">
-              Qty: {part.quantity}
-              </div>
-          </div>
-          {/* Status dropdown */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <span>{getStatusBadge(part.status)}</span>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent>
-              <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'approved')}>Approved</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'ordered')}>Ordered</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'not-ordered')}>Not Ordered</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'received')}>Received</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+        <div className="flex items-center gap-1">
+          {editing ? (
+            <>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 w-6 p-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit?.(part.id, editForm);
+                  if (editForm.category !== part.category) {
+                    onCategoryChange?.(part.id, editForm.category);
+                  }
+                  setEditing(false);
+                }}
+              >
+                <Check className="h-3 w-3 text-green-600" />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 w-6 p-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setEditForm({ 
+                    name: part.name, 
+                    make: part.make || '', 
+                    description: part.description, 
+                    sku: part.sku || '', 
+                    quantity: part.quantity, 
+                    category: part.category 
+                  });
+                  setEditForm({ 
+                    name: part.name, 
+                    make: part.make || '', 
+                    description: part.description, 
+                    sku: part.sku || '', 
+                    quantity: part.quantity, 
+                    category: part.category 
+                  });
+                  setEditing(false);
+                }}
+              >
+                <X className="h-3 w-3 text-red-600" />
+              </Button>
+            </>
+          ) : (
+            <>
+              {/* Status dropdown */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <span onClick={(e) => e.stopPropagation()}>{getStatusBadge(part.status)}</span>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'approved')}>Approved</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'ordered')}>Ordered</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'not-ordered')}>Not Ordered</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'received')}>Received</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              
+              {/* Actions dropdown */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 w-6 p-0"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <MoreHorizontal className="h-3 w-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem onClick={() => setEditing(true)}>
+                    <Edit className="mr-2 h-3 w-3" />
+                    Edit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowDeleteConfirm(true)} className="text-red-600">
+                    <Trash2 className="mr-2 h-3 w-3" />
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </>
+          )}
         </div>
       </div>
+      
+      {/* Delete confirmation */}
+      {showDeleteConfirm && (
+        <div className="absolute right-0 top-8 z-50 bg-white border border-gray-300 rounded shadow-lg p-3 text-xs">
+          <div className="mb-2 font-medium">Delete {part.name}?</div>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="destructive"
+              className="h-6 text-xs px-2"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete?.(part.id);
+                setShowDeleteConfirm(false);
+              }}
+            >
+              Delete
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-xs px-2"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowDeleteConfirm(false);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

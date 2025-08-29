@@ -8,6 +8,7 @@ interface QuantityControlProps {
   onQuantityChange?: (quantity: number) => void;
   onDelete?: () => void;
   className?: string;
+  compact?: boolean;
 }
 
 const QuantityControl = ({ 
@@ -16,7 +17,8 @@ const QuantityControl = ({
   maxQuantity = 999,
   onQuantityChange,
   onDelete,
-  className = ""
+  className = "",
+  compact = false
 }: QuantityControlProps) => {
   const [quantity, setQuantity] = useState(initialQuantity);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -49,6 +51,30 @@ const QuantityControl = ({
   const handleCancelDelete = () => {
     setShowConfirm(false);
   };
+
+  if (compact) {
+    return (
+      <div className="flex items-center gap-1">
+        <button
+          onClick={handleDecrement}
+          disabled={quantity <= minQuantity}
+          className="flex items-center justify-center w-5 h-5 rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          aria-label="Decrease quantity"
+        >
+          <Minus size={12} strokeWidth={2} />
+        </button>
+        <span className="text-sm font-medium min-w-[20px] text-center">{quantity}</span>
+        <button
+          onClick={handleIncrement}
+          disabled={quantity >= maxQuantity}
+          className="flex items-center justify-center w-5 h-5 rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          aria-label="Increase quantity"
+        >
+          <Plus size={12} strokeWidth={2} />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div

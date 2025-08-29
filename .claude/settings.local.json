@@ -4,7 +4,13 @@
       "mcp__browser-use__browser_navigate",
       "mcp__browser-use__browser_get_state",
       "mcp__browser-use__browser_click",
-      "mcp__browser-use__browser_type"
+      "mcp__browser-use__browser_type",
+      "mcp__Ref__ref_search_documentation",
+      "Bash(firebase projects:list:*)",
+      "Bash(firebase use:*)",
+      "Bash(firebase firestore:rules:get:*)",
+      "mcp__Ref__ref_read_url",
+      "Bash(firebase functions:secrets:set:*)"
     ],
     "deny": [],
     "ask": []

@@ -46,6 +46,7 @@ import {
   Client, 
   Vendor, 
   BOMSettings,
+  BOMCategory,
   addClient,
   updateClient,
   deleteClient,
@@ -274,22 +275,57 @@ const Settings = () => {
     setSaving(false);
   };
 
-  const addCategory = (newCategory: string) => {
+  const addCategory = async (newCategory: string) => {
     if (!bomSettings || !newCategory.trim()) return;
     
-    setBomSettings({
+    const currentCategories = bomSettings.categories || [];
+    const newEnhancedCategory = {
+      id: Date.now().toString(),
+      name: newCategory.trim(),
+      order: currentCategories.length + 1,
+      isActive: true,
+      color: '#9CA3AF'
+    };
+    
+    const updatedCategories = [...currentCategories, newEnhancedCategory];
+    const updatedSettings = {
       ...bomSettings,
-      defaultCategories: [...bomSettings.defaultCategories, newCategory.trim()]
-    });
+      categories: updatedCategories,
+      defaultCategories: updatedCategories.filter(cat => !cat.parentId).map(cat => cat.name)
+    };
+    
+    setBomSettings(updatedSettings);
+    
+    try {
+      await updateBOMSettings(updatedSettings);
+    } catch (err: any) {
+      setError(err.message || 'Failed to save category');
+    }
   };
 
-  const removeCategory = (index: number) => {
+  const removeCategory = async (index: number) => {
     if (!bomSettings) return;
     
-    setBomSettings({
+    const currentCategories = bomSettings.categories || [];
+    const parentCategories = currentCategories.filter(cat => !cat.parentId);
+    const categoryToRemove = parentCategories[index]?.name;
+    
+    if (!categoryToRemove) return;
+    
+    const updatedCategories = currentCategories.filter(cat => cat.name !== categoryToRemove);
+    const updatedSettings = {
       ...bomSettings,
-      defaultCategories: bomSettings.defaultCategories.filter((_, i) => i !== index)
-    });
+      categories: updatedCategories,
+      defaultCategories: updatedCategories.filter(cat => !cat.parentId).map(cat => cat.name)
+    };
+    
+    setBomSettings(updatedSettings);
+    
+    try {
+      await updateBOMSettings(updatedSettings);
+    } catch (err: any) {
+      setError(err.message || 'Failed to remove category');
+    }
   };
 
   if (loading) {
@@ -815,7 +851,10 @@ const Settings = () => {
                   {bomSettings && (
                     <>
                       <div className="flex flex-wrap gap-2 mb-4">
-                        {bomSettings.defaultCategories.map((category, index) => (
+                        {(bomSettings.categories || [])
+                          .filter(cat => !cat.parentId)
+                          .map(cat => cat.name)
+                          .map((category, index) => (
                           <Badge key={index} variant="secondary" className="px-3 py-1">
                             {category}
                             <button

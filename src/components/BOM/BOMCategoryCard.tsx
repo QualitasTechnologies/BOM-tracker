@@ -44,10 +44,13 @@ interface BOMCategoryCardProps {
   onDeleteCategory?: (categoryName: string) => void;
   onEditCategory?: (oldName: string, newName: string) => void;
   onStatusChange?: (itemId: string, newStatus: string) => void;
+  onEditPart?: (itemId: string, updates: Partial<BOMItem>) => void;
+  onPartCategoryChange?: (itemId: string, newCategory: string) => void;
+  availableCategories?: string[];
 }
 
-const BOMCategoryCard = ({ category, onToggle, onPartClick, onQuantityChange, onDeleteCategory, onEditCategory, onStatusChange }: BOMCategoryCardProps) => {
-  const [showConfirm, setShowConfirm] = useState(false);
+const BOMCategoryCard = ({ category, onToggle, onPartClick, onQuantityChange, onDeletePart, onDeleteCategory, onEditCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [] }: BOMCategoryCardProps) => {
+  const [showConfirm, setShowConfirm] = useState<false | 'warning' | 'confirm'>(false);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(category.name);
 
@@ -57,12 +60,34 @@ const BOMCategoryCard = ({ category, onToggle, onPartClick, onQuantityChange, on
 
   const handleDeleteClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setShowConfirm(true);
+    if (category.items.length > 0) {
+      // Show warning for non-empty category
+      setShowConfirm('warning');
+    } else {
+      // Direct confirmation for empty category
+      setShowConfirm('confirm');
+    }
   };
 
   const handleConfirmDelete = () => {
     setShowConfirm(false);
     onDeleteCategory?.(category.name);
+  };
+
+  const handleMoveItemsAndDelete = () => {
+    // Move all items to "Uncategorized" category first
+    if (category.items.length > 0 && onPartCategoryChange) {
+      category.items.forEach(item => {
+        onPartCategoryChange(item.id, 'Uncategorized');
+      });
+      // Small delay to allow category change to complete, then delete
+      setTimeout(() => {
+        onDeleteCategory?.(category.name);
+      }, 500);
+    } else {
+      onDeleteCategory?.(category.name);
+    }
+    setShowConfirm(false);
   };
 
   const handleCancelDelete = () => {
@@ -150,12 +175,29 @@ const BOMCategoryCard = ({ category, onToggle, onPartClick, onQuantityChange, on
               </div>
             </div>
             {/* Confirmation popup */}
-            {showConfirm && (
-              <div className="absolute right-2 top-10 z-50 mt-2 bg-white border border-gray-300 rounded shadow p-2 text-xs flex flex-col items-center min-w-[150px]">
-                <div className="mb-2">Do you want to delete this category?</div>
-                <div className="flex gap-2">
-                  <button onClick={handleConfirmDelete} className="px-2 py-0.5 bg-red-500 text-white rounded text-xs">Yes</button>
-                  <button onClick={handleCancelDelete} className="px-2 py-0.5 bg-gray-200 text-gray-700 rounded text-xs">No</button>
+            {showConfirm === 'confirm' && (
+              <div className="absolute right-2 top-10 z-50 mt-2 bg-white border border-gray-300 rounded shadow p-3 text-xs flex flex-col min-w-[200px]">
+                <div className="mb-3 font-medium">Delete empty category?</div>
+                <div className="flex gap-2 justify-end">
+                  <button onClick={handleConfirmDelete} className="px-3 py-1 bg-red-500 text-white rounded text-xs hover:bg-red-600">Delete</button>
+                  <button onClick={handleCancelDelete} className="px-3 py-1 bg-gray-200 text-gray-700 rounded text-xs hover:bg-gray-300">Cancel</button>
+                </div>
+              </div>
+            )}
+            
+            {/* Warning popup for non-empty categories */}
+            {showConfirm === 'warning' && (
+              <div className="absolute right-2 top-10 z-50 mt-2 bg-white border border-red-300 rounded shadow p-3 text-xs min-w-[250px]">
+                <div className="mb-2 font-medium text-red-800">⚠️ Category contains {category.items.length} items</div>
+                <div className="mb-3 text-gray-600">Choose an action:</div>
+                <div className="flex flex-col gap-2">
+                  <button 
+                    onClick={handleMoveItemsAndDelete} 
+                    className="px-3 py-1 bg-orange-500 text-white rounded text-xs hover:bg-orange-600"
+                  >
+                    Move items to "Uncategorized" & Delete
+                  </button>
+                  <button onClick={handleCancelDelete} className="px-3 py-1 bg-gray-200 text-gray-700 rounded text-xs hover:bg-gray-300">Cancel</button>
                 </div>
               </div>
             )}
@@ -170,8 +212,11 @@ const BOMCategoryCard = ({ category, onToggle, onPartClick, onQuantityChange, on
                   part={item}
                   onClick={() => onPartClick(item)}
                   onQuantityChange={onQuantityChange}
-                  onDelete={onDeleteCategory}
+                  onDelete={onDeletePart}
                   onStatusChange={onStatusChange}
+                  onEdit={onEditPart}
+                  onCategoryChange={onPartCategoryChange}
+                  availableCategories={availableCategories}
                 />
               ))}
             </div>

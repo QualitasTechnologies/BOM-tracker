@@ -8,9 +8,20 @@
     ],
     "rewrites": [
       {
+        "source": "/analyzeBOM",
+        "function": "analyzeBOM"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }
     ]
+  },
+  "functions": {
+    "source": "functions"
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
   }
 }

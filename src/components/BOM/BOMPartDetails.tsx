@@ -247,22 +247,22 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
   const [selectedVendorIdx, setSelectedVendorIdx] = useState<number | null>(null);
 
   return (
-    <Card className="h-fit">
-      <CardHeader>
+    <Card className="h-fit border-gray-200">
+      <CardHeader className="pb-3">
         <div className="flex items-start justify-between">
           <div className="flex-1">
-            <CardTitle className="text-lg">{partState?.name}</CardTitle>
+            <CardTitle className="text-base">{partState?.name}</CardTitle>
             <div className="flex items-center gap-2 mt-1">
-              <Badge className={getStatusColor(partState?.status || '')}>
+              <Badge className={`text-xs px-2 py-1 ${getStatusColor(partState?.status || '')}`}>
                 {partState?.status.replace('-', ' ').toUpperCase()}
               </Badge>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             <Dialog open={editOpen} onOpenChange={setEditOpen}>
               <DialogTrigger asChild>
                 <button className="p-1 text-gray-500 hover:text-blue-600 align-middle" style={{verticalAlign: 'middle'}} aria-label="Edit part specs">
-                  <Pencil size={18} />
+                  <Pencil size={16} />
                 </button>
               </DialogTrigger>
               <DialogContent>
@@ -286,43 +286,43 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
               </DialogContent>
             </Dialog>
             <button className="p-1 text-gray-500 hover:text-red-600 align-middle" aria-label="Delete part" onClick={() => onDeletePart && partState && onDeletePart(partState.id)}>
-              <Trash2 size={18} />
+              <Trash2 size={16} />
             </button>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            <X size={16} />
+          <Button variant="ghost" size="sm" onClick={onClose} className="h-8 w-8 p-0">
+            <X size={14} />
           </Button>
           </div>
         </div>
       </CardHeader>
       
-      <CardContent className="space-y-6">
+      <CardContent className="space-y-4 pt-0">
         {/* Quantity Info */}
-        <div className="flex items-center justify-between mb-2 mt-1">
+        <div className="flex items-center justify-between mb-2">
           <span className="text-gray-600 font-medium text-sm">Quantity:</span>
-          <span className="font-medium text-base">{partState?.quantity}</span>
+          <span className="font-medium text-sm">{partState?.quantity}</span>
         </div>
         {/* Description */}
         <div>
           <div className="flex items-center mb-2">
-            <h4 className="font-medium text-gray-900 mr-2">Description</h4>
+            <h4 className="font-medium text-gray-900 mr-2 text-sm">Description</h4>
             <button className="p-1 text-gray-500 hover:text-blue-600 align-middle" aria-label="Edit description" onClick={() => {
               setDescKVEdit(Array.isArray(partState?.descriptionKV) && partState.descriptionKV.length > 0 ? [...partState.descriptionKV] : [{ value: '', key: '' }]);
               setEditDescOpen(true);
             }}>
-              <Pencil size={15} />
+              <Pencil size={14} />
             </button>
           </div>
           {Array.isArray(partState?.descriptionKV) && partState.descriptionKV.length > 0 ? (
-            <dl className="text-sm text-gray-700 space-y-1">
+            <dl className="text-xs text-gray-700 space-y-1">
               {partState.descriptionKV.map((kv, idx) => (
                 <div className="flex gap-2 items-center" key={idx}>
-                  <dt className="w-24 font-bold text-left">{kv.key}</dt>
+                  <dt className="w-20 font-bold text-left">{kv.key}</dt>
                   <dd className="flex-1 text-left font-normal">{kv.value}</dd>
                 </div>
               ))}
             </dl>
           ) : (
-            <div className="text-gray-400 italic text-sm">No description available.</div>
+            <div className="text-gray-400 italic text-xs">No description available.</div>
           )}
           {/* Edit Description Dialog */}
           <Dialog open={editDescOpen} onOpenChange={setEditDescOpen}>
@@ -391,21 +391,21 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
         </div>
         
         {/* Documents Dropdown with Delete Option */}
-        <div className="relative mb-3">
+        <div className="relative mb-2">
           <Collapsible>
             <CollapsibleTrigger asChild>
-              <div className="flex w-full items-center justify-between font-medium text-gray-900 px-0 py-2 bg-transparent border-none cursor-pointer">
-                <span>Documents</span>
-                <div className="flex items-center gap-2">
+              <div className="flex w-full items-center justify-between font-medium text-gray-900 px-0 py-1 bg-transparent border-none cursor-pointer">
+                <span className="text-sm">Documents</span>
+                <div className="flex items-center gap-1">
                   <label className="cursor-pointer">
                     <input type="file" multiple className="hidden" onChange={handleUploadDocs} />
-                    <span className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium" title="Add file">
+                    <span className="px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-xs font-medium" title="Add file">
                       Add file
                     </span>
                   </label>
                   <button
                     className={`p-1 rounded-full ${docDeleteMode ? 'bg-red-100 text-red-600' : ''}`}
-                    style={{ minWidth: 32, minHeight: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    style={{ minWidth: 24, minHeight: 24, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                     title={docDeleteMode ? 'Cancel' : 'Delete'}
                     onClick={e => {
                       e.stopPropagation();
@@ -413,21 +413,21 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
                       setSelectedDocs([]);
                     }}
                   >
-                    <Trash2 size={18} />
+                    <Trash2 size={14} />
                   </button>
                   <span className="transition-transform duration-200" style={{ transform: 'rotate(var(--collapsible-arrow, 0deg))' }}>
-                    <svg width="20" height="20" fill="none" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    <svg width="16" height="16" fill="none" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   </span>
                 </div>
               </div>
             </CollapsibleTrigger>
             <CollapsibleContent>
-              <div className="space-y-2">
+              <div className="space-y-1">
                 {documents.length === 0 && (
-                  <div className="text-gray-400 text-sm italic flex items-center gap-2 p-2"><FileText size={16} />No documents uploaded yet.</div>
+                  <div className="text-gray-400 text-xs italic flex items-center gap-1 p-1"><FileText size={14} />No documents uploaded yet.</div>
                 )}
                 {documents.map(doc => (
-                  <div key={doc.url} className="flex items-center gap-2 bg-gray-50 rounded px-2 py-1 border border-gray-200">
+                  <div key={doc.url} className="flex items-center gap-1 bg-gray-50 rounded px-2 py-1 border border-gray-200">
                     {docDeleteMode && (
                       <input
                         type="checkbox"
@@ -439,12 +439,12 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
                         )}
                       />
                     )}
-                    <FileText size={16} className="text-blue-600 mr-1" />
+                    <FileText size={14} className="text-blue-600 mr-1" />
                     <a
                       href={doc.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex-1 text-left text-blue-700 text-sm truncate hover:underline"
+                      className="flex-1 text-left text-blue-700 text-xs truncate hover:underline"
                       title={doc.name}
                     >
                       {doc.name}
@@ -455,7 +455,7 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
                   <Button
                     variant="destructive"
                     size="sm"
-                    className="mt-2"
+                    className="mt-1 text-xs"
                     disabled={selectedDocs.length === 0}
                     onClick={() => {
                       setDocuments(documents.filter(doc => !selectedDocs.includes(doc.name)));
@@ -474,16 +474,16 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
         
         {/* Vendor Section with Add Vendor Popup */}
         <div>
-          <div className="flex items-center mb-3 justify-between">
+          <div className="flex items-center mb-2 justify-between">
             <div className="flex items-center">
-              <h4 className="font-medium text-gray-900 mr-2">Vendor Comparison</h4>
+              <h4 className="font-medium text-gray-900 mr-2 text-sm">Vendor Comparison</h4>
             <button className="p-1 text-gray-500 hover:text-blue-600 align-middle" style={{verticalAlign: 'middle'}} aria-label="Add vendor" onClick={() => setAddVendorOpen(true)}>
-              <Plus size={16} />
+              <Plus size={14} />
             </button>
             </div>
             <div className="relative">
               <button className="p-1 text-gray-500 hover:text-blue-600 align-middle" aria-label="Sort vendors" onClick={() => setShowSortDropdown(s => !s)}>
-                <svg width="20" height="20" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" strokeWidth="2" d="M3 6h18M7 12h10M11 18h6"/></svg>
+                <svg width="16" height="16" fill="none" viewBox="0 0 24 24"><path stroke="currentColor" strokeWidth="2" d="M3 6h18M7 12h10M11 18h6"/></svg>
               </button>
               {showSortDropdown && (
                 <div className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded shadow z-10">
@@ -493,7 +493,7 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
             )}
           </div>
         </div>
-          <div className="space-y-3">
+          <div className="space-y-2">
             {/* Before rendering vendors, sort them based on sortType */}
             {vendors.sort((a, b) => {
               const priceA = typeof a.price === 'number' ? a.price : Number(a.price) || 0;
@@ -509,38 +509,38 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
               return (
                 <div
                   key={index}
-                  className={`border border-gray-200 rounded-lg p-3 flex flex-col gap-2 relative cursor-pointer ${selectedVendorIdx === index ? 'bg-blue-50 border-blue-300' : ''}`}
+                  className={`border border-gray-200 rounded p-2 flex flex-col gap-1 relative cursor-pointer ${selectedVendorIdx === index ? 'bg-blue-50 border-blue-300' : ''}`}
                   onClick={() => setSelectedVendorIdx(index)}
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="font-semibold text-base">{vendor.name}</span>
+                    <span className="font-semibold text-sm">{vendor.name}</span>
                     <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">{availability}</span>
                   </div>
-                  <div className="flex items-center gap-6 text-gray-700 mb-2">
-                    <span className="flex items-center gap-1 text-sm"><span className="text-base">₹</span>{price}</span>
+                  <div className="flex items-center gap-6 text-gray-700 mb-1">
+                    <span className="flex items-center gap-1 text-xs"><span className="text-sm">₹</span>{price}</span>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <div className="ml-auto flex items-center gap-2">
-                      <button className="text-gray-500 hover:bg-gray-100 rounded-full p-2" onClick={() => handleEditVendorOpen(index)}>
-                        <Pencil size={18} />
+                  <div className="flex items-center gap-2">
+                    <div className="ml-auto flex items-center gap-1">
+                      <button className="text-gray-500 hover:bg-gray-100 rounded-full p-1" onClick={() => handleEditVendorOpen(index)}>
+                        <Pencil size={14} />
                       </button>
-                      <button className="text-red-500 hover:bg-red-100 rounded-full p-2" onClick={() => updateVendors(vendors.filter((_, i) => i !== index))}>
-                        <Trash2 size={18} />
+                      <button className="text-red-500 hover:bg-red-100 rounded-full p-1" onClick={() => updateVendors(vendors.filter((_, i) => i !== index))}>
+                        <Trash2 size={14} />
                       </button>
-                      <button className="text-blue-600 hover:underline text-xs ml-2" onClick={() => setOpenVendorDocsIdx(openVendorDocsIdx === index ? null : index)}>
-                        {openVendorDocsIdx === index ? 'Hide Documents' : 'View Documents'}
+                      <button className="text-blue-600 hover:underline text-xs ml-1" onClick={() => setOpenVendorDocsIdx(openVendorDocsIdx === index ? null : index)}>
+                        {openVendorDocsIdx === index ? 'Hide Docs' : 'View Docs'}
                       </button>
                     </div>
                   </div>
                   {/* Vendor Documents Dropdown */}
                   {openVendorDocsIdx === index && (
-                    <div className="mt-2 border rounded bg-gray-50 p-2">
+                    <div className="mt-1 border rounded bg-gray-50 p-1">
                       <div className="text-xs font-semibold mb-1 text-gray-700">Vendor Documents:</div>
                       {Array.isArray(vendor.documents) && vendor.documents.length > 0 ? (
-                        <ul className="max-h-24 overflow-y-auto text-xs">
+                        <ul className="max-h-20 overflow-y-auto text-xs">
                           {vendor.documents.map((doc, idx) => (
-                            <li key={idx} className="flex items-center gap-2 text-gray-800">
-                              <FileText size={14} className="text-blue-600" />
+                            <li key={idx} className="flex items-center gap-1 text-gray-800">
+                              <FileText size={12} className="text-blue-600" />
                               <a
                                 href={doc.url}
                                 target="_blank"
@@ -561,9 +561,9 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
               );
             })}
             {selectedVendorIdx !== null && vendors[selectedVendorIdx] && (
-              <div className="flex justify-end mt-4">
+              <div className="flex justify-end mt-2">
                 <Button
-                  className="bg-blue-600 text-white px-6 py-2 rounded"
+                  className="bg-blue-600 text-white px-4 py-1 rounded text-sm"
                   onClick={() => {
                     if (typeof onUpdatePart === 'function' && partState) {
                       onUpdatePart({ ...partState, finalizedVendor: vendors[selectedVendorIdx] });

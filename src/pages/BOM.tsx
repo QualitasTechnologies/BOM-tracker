@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, Plus, Download, Filter, X } from 'lucide-react';
+import { Search, Plus, Download, Filter, X, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -8,8 +8,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Label } from '@/components/ui/label';
 import BOMHeader from '@/components/BOM/BOMHeader';
-import BOMCategoryCard from '@/components/BOM/BOMCategoryCard';
+import BOMTable from '@/components/BOM/BOMTable';
 import BOMPartDetails from '@/components/BOM/BOMPartDetails';
+import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
 import Sidebar from '@/components/Sidebar';
 import { saveAs } from 'file-saver';
 import { 
@@ -43,16 +44,20 @@ const BOM = () => {
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [addPartOpen, setAddPartOpen] = useState(false);
+  const [importBOMOpen, setImportBOMOpen] = useState(false);
   const [newPart, setNewPart] = useState({ 
     name: '', 
-    quantity: 1, 
-    descriptionKV: [{ key: '', value: '' }] 
+    make: '',
+    description: '',
+    sku: '',
+    quantity: 1
   });
   const [categoryForPart, setCategoryForPart] = useState<string | null>(null);
   const [addingNewCategory, setAddingNewCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [addPartError, setAddPartError] = useState<string | null>(null);
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
+  const [importSuccess, setImportSuccess] = useState<string | null>(null);
 
   // Load BOM data when project ID changes
   useEffect(() => {
@@ -143,7 +148,9 @@ const BOM = () => {
             items: [...cat.items, {
               id: Date.now().toString(),
               name: newPart.name,
-              description: newPart.descriptionKV.map(kv => `${kv.key}: ${kv.value}`).join('\n'),
+              make: newPart.make,
+              description: newPart.description,
+              sku: newPart.sku,
               category: finalCategory || '',
               quantity: newPart.quantity,
               vendors: [],
@@ -156,7 +163,7 @@ const BOM = () => {
     await updateBOMData(projectId, newCategories);
     
     // Reset form
-    setNewPart({ name: '', quantity: 1, descriptionKV: [{ key: '', value: '' }] });
+    setNewPart({ name: '', make: '', description: '', sku: '', quantity: 1 });
     setAddPartOpen(false);
     setCategoryForPart(null);
     setAddingNewCategory(false);
@@ -191,6 +198,52 @@ const BOM = () => {
   const handleUpdatePart = async (updatedPart: BOMItem) => {
     if (!projectId) return;
     await updateBOMItem(projectId, categories, updatedPart.id, updatedPart);
+  };
+
+  const handleEditPart = async (itemId: string, updates: Partial<BOMItem>) => {
+    if (!projectId) return;
+    await updateBOMItem(projectId, categories, itemId, updates);
+  };
+
+  const handlePartCategoryChange = async (itemId: string, newCategory: string) => {
+    if (!projectId) return;
+    
+    // Ensure "Uncategorized" category exists
+    const ensureUncategorizedExists = (cats: any[]) => {
+      if (!cats.find(cat => cat.name === 'Uncategorized')) {
+        cats.push({ name: 'Uncategorized', isExpanded: true, items: [] });
+      }
+      return cats;
+    };
+    
+    // Find the part and remove it from its current category
+    let partToMove: BOMItem | null = null;
+    let updatedCategories = categories.map(cat => ({
+      ...cat,
+      items: cat.items.filter(item => {
+        if (item.id === itemId) {
+          partToMove = { ...item, category: newCategory };
+          return false;
+        }
+        return true;
+      })
+    }));
+    
+    // Ensure Uncategorized exists
+    updatedCategories = ensureUncategorizedExists(updatedCategories);
+    
+    // Add the part to the new category
+    if (partToMove) {
+      let targetCategory = updatedCategories.find(cat => cat.name === newCategory);
+      if (!targetCategory) {
+        // Create new category if it doesn't exist
+        targetCategory = { name: newCategory, isExpanded: true, items: [] };
+        updatedCategories.push(targetCategory);
+      }
+      targetCategory.items.push(partToMove);
+      
+      await updateBOMData(projectId, updatedCategories);
+    }
   };
 
   const handleCreatePurchaseOrder = async () => {
@@ -236,6 +289,9 @@ const BOM = () => {
       'Project Name',
       'Client Name',
       'Part Name',
+      'Make',
+      'SKU',
+      'Description',
       'Category',
       'Quantity',
       'Status',
@@ -250,6 +306,9 @@ const BOM = () => {
         projectDetails?.projectName || '',
         projectDetails?.clientName || '',
         item.name,
+        item.make || '',
+        item.sku || '',
+        item.description,
         category.name,
         item.quantity,
         item.status === 'not-ordered' ? 'Pending' : item.status.charAt(0).toUpperCase() + item.status.slice(1),
@@ -293,7 +352,7 @@ const BOM = () => {
       />
       
       <div className={`flex-1 ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
-        <main className="p-6">
+        <main className="p-4">
           <div className="max-w-7xl mx-auto">
             {/* BOM Header */}
             <BOMHeader
@@ -304,68 +363,78 @@ const BOM = () => {
             />
 
             {/* Search and Actions Bar */}
-            <div className="flex flex-col sm:flex-row gap-4 mb-6">
+            <div className="flex flex-col sm:flex-row gap-3 mb-4">
               <div className="relative flex-1 flex items-center gap-2">
                 <div className="flex-1 relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" size={20} />
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" size={18} />
                   <Input
                     type="text"
                     placeholder="Search parts by name, ID, or description..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-10"
+                    className="pl-9 h-9"
                   />
                 </div>
-                <Button variant="outline" onClick={() => setAddPartOpen(true)}>
-                  <Plus className="mr-2 h-4 w-4" />
+                <Button variant="outline" size="sm" onClick={() => setAddPartOpen(true)} className="h-9">
+                  <Plus className="mr-1.5 h-4 w-4" />
                   Add Part
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setImportBOMOpen(true)} className="h-9">
+                  <Upload className="mr-1.5 h-4 w-4" />
+                  Import BOM
                 </Button>
               </div>
               
               <div className="flex gap-2">
-                <Button variant="outline" onClick={() => setFilterOpen(true)}>
-                  <Filter className="mr-2 h-4 w-4" />
+                <Button variant="outline" size="sm" onClick={() => setFilterOpen(true)} className="h-9">
+                  <Filter className="mr-1.5 h-4 w-4" />
                   Filter
                 </Button>
-                <Button variant="outline" onClick={handleExportCSV}>
-                  <Download className="mr-2 h-4 w-4" />
+                <Button variant="outline" size="sm" onClick={handleExportCSV} className="h-9">
+                  <Download className="mr-1.5 h-4 w-4" />
                   Export
                 </Button>
-                <Button variant="outline" onClick={handleCreatePurchaseOrder}>
+                <Button variant="outline" size="sm" onClick={handleCreatePurchaseOrder} className="h-9">
                   Create Purchase Order
                 </Button>
               </div>
             </div>
-            {emailStatus && <div className="mt-2 text-sm">{emailStatus}</div>}
+            {emailStatus && <div className="mt-1 text-sm">{emailStatus}</div>}
+            {importSuccess && (
+              <Alert className="mt-2 border-green-200 bg-green-50">
+                <AlertDescription className="text-green-800">
+                  {importSuccess}
+                </AlertDescription>
+              </Alert>
+            )}
 
             {/* BOM Content */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Categories List */}
-              <div className="lg:col-span-2 space-y-4">
-                {filteredCategories.map((category) => (
-                  <BOMCategoryCard
-                    key={category.name}
-                    category={category}
-                    onToggle={() => toggleCategory(category.name)}
-                    onPartClick={handlePartClick}
-                    onQuantityChange={handleQuantityChange}
-                    onDeletePart={handleDeletePart}
-                    onEditCategory={handleEditCategory}
-                    onStatusChange={(itemId, newStatus) => {
-                      if (projectId) {
-                        updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
-                      }
-                    }}
-                  />
-                ))}
-                
-                {filteredCategories.length === 0 && (
-                  <Card>
-                    <CardContent className="p-8 text-center">
-                      <p className="text-muted-foreground">No parts found matching your search criteria.</p>
-                    </CardContent>
-                  </Card>
-                )}
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+              {/* BOM Table */}
+              <div className="lg:col-span-3">
+                <BOMTable
+                  categories={filteredCategories}
+                  onToggle={toggleCategory}
+                  onPartClick={handlePartClick}
+                  onQuantityChange={handleQuantityChange}
+                  onDeletePart={handleDeletePart}
+                  onDeleteCategory={(categoryName) => {
+                    if (projectId) {
+                      const updatedCategories = categories.filter(cat => cat.name !== categoryName);
+                      updateBOMData(projectId, updatedCategories);
+                    }
+                  }}
+                  onEditCategory={handleEditCategory}
+                  onStatusChange={(itemId, newStatus) => {
+                    if (projectId) {
+                      updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                    }
+                  }}
+                  onEditPart={handleEditPart}
+                  onPartCategoryChange={handlePartCategoryChange}
+                  availableCategories={categories.map(cat => cat.name)}
+                  selectedPart={selectedPart}
+                />
               </div>
 
               {/* Part Details */}
@@ -483,75 +552,57 @@ const BOM = () => {
               </div>
             )}
 
-            <div>
-              <Label htmlFor="partName">Part Name</Label>
-              <Input
-                id="partName"
-                value={newPart.name}
-                onChange={e => setNewPart({ ...newPart, name: e.target.value })}
-                placeholder="Enter part name"
-              />
-            </div>
-
-
-
-            <div>
-              <Label htmlFor="quantity">Quantity</Label>
-              <Input
-                id="quantity"
-                type="number"
-                min={1}
-                value={newPart.quantity}
-                onChange={e => setNewPart({ ...newPart, quantity: Number(e.target.value) })}
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="description">Description (Key: Value)</Label>
-              <div className="space-y-2">
-                {newPart.descriptionKV.map((kv, index) => (
-                  <div key={index} className="flex gap-2">
-                    <Input
-                      type="text"
-                      placeholder="Key"
-                      value={kv.key}
-                      onChange={e => {
-                        const newDescriptionKV = [...newPart.descriptionKV];
-                        newDescriptionKV[index] = { ...kv, key: e.target.value };
-                        setNewPart({ ...newPart, descriptionKV: newDescriptionKV });
-                      }}
-                    />
-                    <Input
-                      type="text"
-                      placeholder="Value"
-                      value={kv.value}
-                      onChange={e => {
-                        const newDescriptionKV = [...newPart.descriptionKV];
-                        newDescriptionKV[index] = { ...kv, value: e.target.value };
-                        setNewPart({ ...newPart, descriptionKV: newDescriptionKV });
-                      }}
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        const newDescriptionKV = [...newPart.descriptionKV];
-                        newDescriptionKV.splice(index, 1);
-                        setNewPart({ ...newPart, descriptionKV: newDescriptionKV });
-                      }}
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </div>
-                ))}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setNewPart(prev => ({ ...prev, descriptionKV: [...prev.descriptionKV, { key: '', value: '' }] }))}
-                >
-                  Add Row
-                </Button>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="partName">Part Name *</Label>
+                <Input
+                  id="partName"
+                  value={newPart.name}
+                  onChange={e => setNewPart({ ...newPart, name: e.target.value })}
+                  placeholder="Enter part name"
+                />
               </div>
+              <div>
+                <Label htmlFor="make">Make</Label>
+                <Input
+                  id="make"
+                  value={newPart.make}
+                  onChange={e => setNewPart({ ...newPart, make: e.target.value })}
+                  placeholder="Brand/Manufacturer"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="sku">SKU/Part Number</Label>
+                <Input
+                  id="sku"
+                  value={newPart.sku}
+                  onChange={e => setNewPart({ ...newPart, sku: e.target.value })}
+                  placeholder="Product SKU or part #"
+                />
+              </div>
+              <div>
+                <Label htmlFor="quantity">Quantity *</Label>
+                <Input
+                  id="quantity"
+                  type="number"
+                  min={1}
+                  value={newPart.quantity}
+                  onChange={e => setNewPart({ ...newPart, quantity: Number(e.target.value) })}
+                />
+              </div>
+            </div>
+
+            <div>
+              <Label htmlFor="description">Description</Label>
+              <Input
+                id="description"
+                value={newPart.description}
+                onChange={e => setNewPart({ ...newPart, description: e.target.value })}
+                placeholder="Brief description of the part"
+              />
             </div>
 
             <div className="flex justify-end gap-2">
@@ -576,6 +627,55 @@ const BOM = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Import BOM Dialog */}
+      <ImportBOMDialog
+        open={importBOMOpen}
+        onOpenChange={setImportBOMOpen}
+        projectId={projectId}
+        onImportComplete={(importedItems) => {
+          // Handle imported items - add them to the current BOM
+          if (projectId && importedItems.length > 0) {
+            // Ensure "Uncategorized" category exists
+            const ensureUncategorizedExists = (cats: any[]) => {
+              if (!cats.find(cat => cat.name === 'Uncategorized')) {
+                cats.push({ name: 'Uncategorized', isExpanded: true, items: [] });
+              }
+              return cats;
+            };
+            
+            // Group items by category
+            const itemsByCategory = importedItems.reduce((acc, item) => {
+              const category = item.category || 'Uncategorized';
+              if (!acc[category]) {
+                acc[category] = [];
+              }
+              acc[category].push(item);
+              return acc;
+            }, {} as Record<string, any[]>);
+
+            // Update categories with new items
+            let updatedCategories = [...categories];
+            updatedCategories = ensureUncategorizedExists(updatedCategories);
+            
+            Object.entries(itemsByCategory).forEach(([categoryName, items]) => {
+              let category = updatedCategories.find(cat => cat.name === categoryName);
+              if (!category) {
+                category = { name: categoryName, isExpanded: true, items: [] };
+                updatedCategories.push(category);
+              }
+              category.items.push(...items);
+            });
+
+            updateBOMData(projectId, updatedCategories);
+            setImportBOMOpen(false);
+            
+            // Show success message
+            setImportSuccess(`Successfully imported ${importedItems.length} BOM items!`);
+            setTimeout(() => setImportSuccess(null), 5000);
+          }
+        }}
+      />
     </div>
   );
 };

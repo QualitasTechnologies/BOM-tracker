@@ -2,8 +2,23 @@ import { useState, useEffect } from 'react';
 import { User, signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { auth, googleProvider } from '../firebase';
 
+export interface UserClaims {
+  role?: 'admin' | 'user' | 'viewer';
+  status?: 'approved' | 'pending' | 'rejected' | 'suspended';
+  createdAt?: string;
+  approvedAt?: string;
+  approvedBy?: string;
+}
+
+export interface AuthUser extends User {
+  claims: UserClaims;
+  isApproved: boolean;
+  isPending: boolean;
+  isAdmin: boolean;
+}
+
 export const useAuth = () => {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Sign in with Google
@@ -117,15 +132,52 @@ export const useAuth = () => {
     }
   };
 
+  // Helper function to create AuthUser with claims
+  const createAuthUser = async (firebaseUser: User): Promise<AuthUser> => {
+    const tokenResult = await firebaseUser.getIdTokenResult();
+    const claims = tokenResult.claims as UserClaims;
+    
+    return {
+      ...firebaseUser,
+      claims,
+      isApproved: claims.status === 'approved',
+      isPending: claims.status === 'pending',
+      isAdmin: claims.role === 'admin' && claims.status === 'approved'
+    } as AuthUser;
+  };
+
   // Listen for auth state changes
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          const authUser = await createAuthUser(firebaseUser);
+          setUser(authUser);
+        } catch (error) {
+          console.error('Error getting user claims:', error);
+          setUser(null);
+        }
+      } else {
+        setUser(null);
+      }
       setLoading(false);
     });
 
     return () => unsubscribe();
   }, []);
+
+  // Function to refresh user claims (useful after admin approval)
+  const refreshUser = async () => {
+    if (auth.currentUser) {
+      try {
+        await auth.currentUser.getIdToken(true); // Force token refresh
+        const authUser = await createAuthUser(auth.currentUser);
+        setUser(authUser);
+      } catch (error) {
+        console.error('Error refreshing user:', error);
+      }
+    }
+  };
 
   return {
     user,
@@ -134,5 +186,6 @@ export const useAuth = () => {
     signInWithEmail,
     signUpWithEmail,
     signOutUser,
+    refreshUser,
   };
 }; 

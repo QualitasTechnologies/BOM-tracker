@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow authenticated users to read and write their projects
+    match /projects/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Allow authenticated users to read and write clients
+    match /clients/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Allow authenticated users to read and write vendors
+    match /vendors/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Allow authenticated users to read and write settings
+    match /settings/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Allow all other authenticated operations
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

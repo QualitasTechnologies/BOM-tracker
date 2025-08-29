@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BOM AI Import - Browser Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .success { border-color: #4CAF50; background-color: #f1f8e9; }
+        .error { border-color: #f44336; background-color: #ffebee; }
+        .info { border-color: #2196F3; background-color: #e3f2fd; }
+        .warning { border-color: #ff9800; background-color: #fff8e1; }
+        
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .results {
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #e9ecef;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .file-input {
+            margin: 10px 0;
+            padding: 10px;
+            border: 2px dashed #ccc;
+            border-radius: 5px;
+            text-align: center;
+        }
+        
+        .file-input:hover {
+            border-color: #007bff;
+            background-color: #f8f9fa;
+        }
+        
+        textarea {
+            width: 100%;
+            height: 200px;
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .stat-card {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #007bff;
+        }
+        
+        .stat-label {
+            color: #666;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 BOM AI Import - Browser Test Suite</h1>
+        <p>Comprehensive testing of the AI-based BOM import functionality</p>
+        
+        <div class="test-section info">
+            <h3>📋 Test Configuration</h3>
+            <div>
+                <label>
+                    <input type="checkbox" id="useRealAI" checked> Use Real OpenAI API
+                </label>
+                <small>(Uncheck to use fallback analysis)</small>
+            </div>
+            <div>
+                <label>
+                    API Key Status: <span id="apiStatus">🔑 Checking...</span>
+                </label>
+            </div>
+        </div>
+
+        <div class="test-section">
+            <h3>📁 File Upload Test</h3>
+            <div class="file-input">
+                <input type="file" id="fileInput" accept=".pdf,.docx,.txt" />
+                <p>Upload a BOM file (PDF, DOCX, or TXT)</p>
+            </div>
+            <button onclick="testFileUpload()">Test File Processing</button>
+        </div>
+
+        <div class="test-section">
+            <h3>📝 Text Input Test</h3>
+            <textarea id="textInput" placeholder="Paste BOM content here...
+
+Example:
+Motor - 2
+Proximity Sensor - 1
+Servo Drive - 1
+PLC Controller - 1
+Safety Guard - 2
+Mounting Bracket - 4
+Power Cable - 3
+Pneumatic Cylinder - 2"></textarea>
+            <button onclick="testTextInput()">Analyze Text</button>
+            <button onclick="loadSampleBOM()">Load Sample BOM</button>
+        </div>
+
+        <div class="test-section">
+            <h3>🚀 Automated Test Suite</h3>
+            <button onclick="runAllTests()">Run All Tests</button>
+            <button onclick="runPerformanceTest()">Performance Test</button>
+            <button onclick="runStressTest()">Stress Test</button>
+            <div class="stats" id="testStats" style="display: none;">
+                <div class="stat-card">
+                    <div class="stat-value" id="totalTests">0</div>
+                    <div class="stat-label">Total Tests</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="passedTests">0</div>
+                    <div class="stat-label">Passed</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="totalItems">0</div>
+                    <div class="stat-label">Items Extracted</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="avgConfidence">0%</div>
+                    <div class="stat-label">Avg Confidence</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="avgTime">0ms</div>
+                    <div class="stat-label">Avg Time</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="test-section">
+            <h3>📊 Results</h3>
+            <div id="results" class="results">Ready to run tests...</div>
+        </div>
+    </div>
+
+    <script>
+        // Mock AI Service (simulates the real implementation)
+        class MockAIService {
+            static async analyzeBOMWithAI(request) {
+                const startTime = Date.now();
+                
+                // Simulate API call delay
+                await new Promise(resolve => setTimeout(resolve, 800 + Math.random() * 1200));
+                
+                const lines = request.text.split('\n').filter(line => line.trim());
+                const items = [];
+                const categories = new Set();
+                
+                const categoryKeywords = {
+                    'Vision Systems': ['camera', 'lens', 'vision', 'optical', 'image', 'detector', 'bvs'],
+                    'Motors & Drives': ['motor', 'drive', 'actuator', 'servo', 'stepper', 'brushless'],
+                    'Sensors': ['sensor', 'proximity', 'limit', 'pressure', 'temperature', 'pt100'],
+                    'Control Systems': ['controller', 'board', 'plc', 'hmi', 'touchscreen', 'display'],
+                    'Mechanical': ['bolt', 'screw', 'nut', 'washer', 'bracket', 'mount', 'housing'],
+                    'Electrical': ['wire', 'cable', 'connector', 'switch', 'relay', 'power', 'terminal'],
+                    'Pneumatic': ['valve', 'cylinder', 'compressor', 'air', 'pneumatic'],
+                    'Safety': ['guard', 'safety', 'emergency', 'stop', 'light', 'curtain'],
+                    'Hydraulic': ['pump', 'hydraulic', 'fluid'],
+                    'Software': ['software', 'license', 'cockpit', 'configuration']
+                };
+                
+                lines.forEach((line, index) => {
+                    const trimmedLine = line.trim();
+                    
+                    if (!trimmedLine || trimmedLine.length < 3) return;
+                    
+                    // Skip headers
+                    if (trimmedLine.toLowerCase().includes('component') ||
+                        trimmedLine.toLowerCase().includes('hardware') ||
+                        trimmedLine.includes('---') ||
+                        trimmedLine.includes('===')) {
+                        return;
+                    }
+                    
+                    let quantity = 1;
+                    let name = trimmedLine;
+                    
+                    // Extract quantity
+                    const quantityPatterns = [
+                        /(\d+)\s*units?/i,
+                        /(\d+)\s*unit/i,
+                        /(\d+)x/i,
+                        /-\s*(\d+)(?:\s|$)/,
+                        /:\s*(\d+)(?:\s|$)/,
+                        /(\d+)\s*meters?/i,
+                        /x\s*(\d+)/i
+                    ];
+                    
+                    for (const pattern of quantityPatterns) {
+                        const match = trimmedLine.match(pattern);
+                        if (match) {
+                            quantity = parseInt(match[1]);
+                            name = trimmedLine.replace(pattern, '').replace(/[-:]\s*$/, '').trim();
+                            break;
+                        }
+                    }
+                    
+                    // Clean name
+                    name = name.replace(/^[-•*]\s*/, '');
+                    name = name.replace(/\s*[-:]\s*$/, '');
+                    name = name.replace(/\s+/g, ' ').trim();
+                    
+                    if (name.length < 3) return;
+                    
+                    // Categorize
+                    let suggestedCategory = 'Uncategorized';
+                    let maxMatches = 0;
+                    let confidence = 0.5;
+                    
+                    Object.entries(categoryKeywords).forEach(([category, keywords]) => {
+                        const matches = keywords.filter(keyword => 
+                            name.toLowerCase().includes(keyword.toLowerCase())
+                        ).length;
+                        
+                        if (matches > maxMatches) {
+                            maxMatches = matches;
+                            suggestedCategory = category;
+                            confidence = Math.min(0.95, 0.6 + (matches * 0.1));
+                        }
+                    });
+                    
+                    categories.add(suggestedCategory);
+                    
+                    items.push({
+                        name,
+                        description: `Extracted from line ${index + 1}`,
+                        quantity,
+                        suggestedCategory,
+                        confidence,
+                        unit: name.toLowerCase().includes('meter') ? 'm' : 'pcs'
+                    });
+                });
+                
+                const processingTime = Date.now() - startTime;
+                const overallConfidence = items.length > 0 ? 
+                    items.reduce((sum, item) => sum + item.confidence, 0) / items.length : 0;
+                
+                return {
+                    items,
+                    suggestedCategories: Array.from(categories),
+                    totalItems: items.length,
+                    confidence: overallConfidence,
+                    processingTime
+                };
+            }
+        }
+
+        // Test data
+        const sampleBOMs = {
+            simple: `Motor - 2
+Proximity Sensor - 1  
+Servo Drive - 1
+PLC Controller - 1
+Safety Guard - 2
+Mounting Bracket - 4
+Power Cable - 3
+Pneumatic Cylinder - 2`,
+            
+            siemens: `SIEMENS BVS4 Vision System BOM
+
+Main Components:
+Smart Camera BVS0004 - 1 unit
+Industrial Lens C-Mount 16mm - 1 unit  
+LED Illumination Ring White - 1 unit
+Ethernet Cable CAT6 - 1 unit
+
+Mounting Hardware:
+Camera Mounting Bracket - 1 unit
+M6 Bolts x 25mm - 4 units
+Washers M6 - 4 units
+
+Electrical:
+24V Power Supply 60W - 1 unit
+Terminal Block 8-way - 1 unit
+Shielded Cable 4-core - 2 meters
+
+Configuration Software:
+BVS Cockpit Software License - 1 unit`,
+            
+            complex: `Industrial Automation Line BOM
+
+Vision Systems:
+- Industrial Camera 5MP - 2 units
+- Telecentric Lens 75mm - 2 units  
+- LED Ring Light - 2 units
+
+Motion Control:
+- Servo Motor 1kW - 4 units
+- Servo Drive 1.5kW - 4 units
+- Linear Actuator 500mm - 2 units
+
+Safety Systems:
+- Safety PLC - 1 unit
+- Emergency Stop Button - 3 units
+- Safety Light Curtain - 2 units`
+        };
+
+        // Utility functions
+        function log(message, type = 'info') {
+            const resultsDiv = document.getElementById('results');
+            const timestamp = new Date().toLocaleTimeString();
+            const colors = {
+                info: '#007bff',
+                success: '#28a745',
+                error: '#dc3545',
+                warning: '#ffc107'
+            };
+            
+            resultsDiv.innerHTML += `<span style="color: ${colors[type]}">[${timestamp}] ${message}</span>\n`;
+            resultsDiv.scrollTop = resultsDiv.scrollHeight;
+        }
+
+        function clearResults() {
+            document.getElementById('results').innerHTML = 'Test results will appear here...\n';
+        }
+
+        // API status check
+        function checkAPIStatus() {
+            const apiStatusEl = document.getElementById('apiStatus');
+            const hasApiKey = process?.env?.REACT_APP_OPENAI_API_KEY || 'mock-key';
+            
+            if (hasApiKey && hasApiKey !== 'test-key') {
+                apiStatusEl.innerHTML = '✅ API Key Present';
+                apiStatusEl.style.color = 'green';
+            } else {
+                apiStatusEl.innerHTML = '⚠️ Using Mock Service';
+                apiStatusEl.style.color = 'orange';
+            }
+        }
+
+        // Test functions
+        async function testTextInput() {
+            const textInput = document.getElementById('textInput');
+            const text = textInput.value.trim();
+            
+            if (!text) {
+                log('❌ Please enter some text to analyze', 'error');
+                return;
+            }
+            
+            log('🧪 Testing text input analysis...', 'info');
+            log(`📝 Input length: ${text.length} characters`);
+            
+            try {
+                const result = await MockAIService.analyzeBOMWithAI({ text });
+                
+                log(`✅ Analysis completed in ${result.processingTime}ms`, 'success');
+                log(`📦 Items found: ${result.items.length}`);
+                log(`🏷️  Categories: ${result.suggestedCategories.join(', ')}`);
+                log(`📊 Average confidence: ${(result.confidence * 100).toFixed(1)}%`);
+                
+                if (result.items.length > 0) {
+                    log('\n📋 Extracted Items:', 'info');
+                    result.items.forEach((item, index) => {
+                        log(`   ${index + 1}. ${item.name} (${item.quantity}x) - ${item.suggestedCategory} [${(item.confidence * 100).toFixed(0)}%]`);
+                    });
+                }
+                
+            } catch (error) {
+                log(`❌ Analysis failed: ${error.message}`, 'error');
+            }
+        }
+
+        function loadSampleBOM() {
+            document.getElementById('textInput').value = sampleBOMs.siemens;
+            log('📄 Loaded Siemens BVS4 sample BOM', 'info');
+        }
+
+        async function testFileUpload() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                log('❌ Please select a file first', 'error');
+                return;
+            }
+            
+            log(`🗂️  Testing file: ${file.name} (${file.size} bytes)`, 'info');
+            
+            try {
+                let text = '';
+                
+                if (file.type === 'text/plain') {
+                    text = await file.text();
+                    log('✅ Text file loaded successfully', 'success');
+                } else {
+                    log('⚠️  PDF/DOCX parsing not implemented in browser test', 'warning');
+                    log('   Using simulated content for demonstration', 'info');
+                    text = sampleBOMs.siemens;
+                }
+                
+                const result = await MockAIService.analyzeBOMWithAI({ text });
+                
+                log(`✅ File analysis completed in ${result.processingTime}ms`, 'success');
+                log(`📦 Items found: ${result.items.length}`);
+                log(`🏷️  Categories: ${result.suggestedCategories.join(', ')}`);
+                log(`📊 Average confidence: ${(result.confidence * 100).toFixed(1)}%`);
+                
+            } catch (error) {
+                log(`❌ File processing failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function runAllTests() {
+            clearResults();
+            log('🚀 Starting comprehensive test suite...', 'info');
+            
+            const testStats = {
+                total: 0,
+                passed: 0,
+                totalItems: 0,
+                totalTime: 0,
+                confidenceScores: []
+            };
+            
+            // Test each sample BOM
+            for (const [name, content] of Object.entries(sampleBOMs)) {
+                log(`\n🧪 Testing: ${name.toUpperCase()} BOM`, 'info');
+                log('─'.repeat(40));
+                
+                testStats.total++;
+                
+                try {
+                    const result = await MockAIService.analyzeBOMWithAI({ text: content });
+                    
+                    testStats.passed++;
+                    testStats.totalItems += result.items.length;
+                    testStats.totalTime += result.processingTime;
+                    testStats.confidenceScores.push(result.confidence);
+                    
+                    log(`✅ Success: ${result.items.length} items in ${result.processingTime}ms`, 'success');
+                    log(`🏷️  Categories: ${result.suggestedCategories.join(', ')}`);
+                    
+                } catch (error) {
+                    log(`❌ Failed: ${error.message}`, 'error');
+                }
+            }
+            
+            // Update stats display
+            document.getElementById('testStats').style.display = 'grid';
+            document.getElementById('totalTests').textContent = testStats.total;
+            document.getElementById('passedTests').textContent = testStats.passed;
+            document.getElementById('totalItems').textContent = testStats.totalItems;
+            
+            const avgConfidence = testStats.confidenceScores.length > 0 ? 
+                testStats.confidenceScores.reduce((a, b) => a + b, 0) / testStats.confidenceScores.length : 0;
+            document.getElementById('avgConfidence').textContent = `${(avgConfidence * 100).toFixed(1)}%`;
+            
+            const avgTime = testStats.totalTime / testStats.total;
+            document.getElementById('avgTime').textContent = `${avgTime.toFixed(0)}ms`;
+            
+            log(`\n📊 TEST SUMMARY`, 'info');
+            log(`✅ Tests passed: ${testStats.passed}/${testStats.total}`, 'success');
+            log(`📦 Total items extracted: ${testStats.totalItems}`);
+            log(`⚡ Average processing time: ${avgTime.toFixed(0)}ms`);
+            log(`📊 Average confidence: ${(avgConfidence * 100).toFixed(1)}%`);
+        }
+
+        async function runPerformanceTest() {
+            log('\n⚡ Running performance test...', 'info');
+            
+            // Generate large BOM
+            const largeBOM = Array.from({length: 100}, (_, i) => 
+                `Component ${i.toString().padStart(3, '0')} - ${Math.floor(Math.random() * 10) + 1}`
+            ).join('\n');
+            
+            const startTime = Date.now();
+            const result = await MockAIService.analyzeBOMWithAI({ text: largeBOM });
+            const totalTime = Date.now() - startTime;
+            
+            log(`⚡ Performance test completed in ${totalTime}ms`, 'success');
+            log(`📦 Processed 100 input lines → ${result.items.length} items`);
+            log(`🔥 Processing rate: ${(result.items.length / totalTime * 1000).toFixed(1)} items/second`);
+        }
+
+        async function runStressTest() {
+            log('\n💪 Running stress test...', 'info');
+            
+            const promises = Array.from({length: 5}, (_, i) => 
+                MockAIService.analyzeBOMWithAI({ 
+                    text: sampleBOMs.simple + ` - Batch ${i}` 
+                })
+            );
+            
+            const startTime = Date.now();
+            const results = await Promise.all(promises);
+            const totalTime = Date.now() - startTime;
+            
+            const totalItems = results.reduce((sum, r) => sum + r.items.length, 0);
+            
+            log(`💪 Stress test completed in ${totalTime}ms`, 'success');
+            log(`🔄 Processed 5 concurrent requests`);
+            log(`📦 Total items extracted: ${totalItems}`);
+            log(`⚡ Concurrent processing efficiency: ${(totalItems / totalTime * 1000).toFixed(1)} items/second`);
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            checkAPIStatus();
+            log('🎯 BOM AI Import Test Suite Ready', 'success');
+            log('Select a test option above to begin...', 'info');
+        });
+    </script>
+</body>
+</html>

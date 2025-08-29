@@ -49,10 +49,24 @@ export interface Vendor {
   updatedAt: Date;
 }
 
-// BOM Settings types
+// Category types with subcategory support
+export interface BOMCategory {
+  id: string;
+  name: string;
+  description?: string;
+  color?: string;
+  icon?: string;
+  parentId?: string; // For subcategories
+  order: number;
+  isActive: boolean;
+  subcategories?: BOMCategory[];
+}
+
+// Enhanced BOM Settings types (maintaining backward compatibility)
 export interface BOMSettings {
   id: string;
-  defaultCategories: string[];
+  defaultCategories: string[]; // Keep for backward compatibility
+  categories?: BOMCategory[]; // Optional enhanced categories
   defaultStatuses: string[];
   defaultUnits: string[];
   autoApprovalEnabled: boolean;
@@ -208,12 +222,106 @@ export const subscribeToBOMSettings = (callback: (settings: BOMSettings | null) 
   });
 };
 
+// Category management functions
+export const addCategory = async (category: Omit<BOMCategory, 'id'>) => {
+  const settings = await getBOMSettings();
+  if (!settings) return null;
+  
+  const newCategory: BOMCategory = {
+    ...category,
+    id: Date.now().toString()
+  };
+  
+  const currentCategories = settings.categories || [];
+  const updatedCategories = [...currentCategories, newCategory];
+  
+  await updateBOMSettings({
+    ...settings,
+    categories: updatedCategories
+  });
+  
+  return newCategory.id;
+};
+
+export const updateCategory = async (categoryId: string, updates: Partial<BOMCategory>) => {
+  const settings = await getBOMSettings();
+  if (!settings) return;
+  
+  const currentCategories = settings.categories || [];
+  const updatedCategories = currentCategories.map(cat => 
+    cat.id === categoryId ? { ...cat, ...updates } : cat
+  );
+  
+  await updateBOMSettings({
+    ...settings,
+    categories: updatedCategories
+  });
+};
+
+export const deleteCategory = async (categoryId: string) => {
+  const settings = await getBOMSettings();
+  if (!settings) return;
+  
+  const currentCategories = settings.categories || [];
+  const updatedCategories = currentCategories.filter(cat => cat.id !== categoryId);
+  
+  await updateBOMSettings({
+    ...settings,
+    categories: updatedCategories
+  });
+};
+
+export const reorderCategories = async (reorderedCategories: BOMCategory[]) => {
+  const settings = await getBOMSettings();
+  if (!settings) return;
+  
+  await updateBOMSettings({
+    ...settings,
+    categories: reorderedCategories
+  });
+};
+
 // Initialize default BOM settings if they don't exist
 export const initializeDefaultBOMSettings = async () => {
   const settings = await getBOMSettings();
   if (!settings) {
+    // Create both old format (defaultCategories) and new format (categories)
+    const categoryNames = ['Vision Systems', 'Motors & Drives', 'Sensors', 'Control Systems', 'Mechanical', 'Electrical', 'Uncategorized'];
+    
+    const enhancedCategories: BOMCategory[] = [
+      { id: 'vision-systems', name: 'Vision Systems', order: 1, isActive: true, color: '#3B82F6' },
+      { id: 'vision-cameras', name: 'Cameras', parentId: 'vision-systems', order: 1, isActive: true },
+      { id: 'vision-lenses', name: 'Lenses', parentId: 'vision-systems', order: 2, isActive: true },
+      { id: 'vision-lighting', name: 'Lighting', parentId: 'vision-systems', order: 3, isActive: true },
+      
+      { id: 'motors-drives', name: 'Motors & Drives', order: 2, isActive: true, color: '#10B981' },
+      { id: 'motors-servo', name: 'Servo Motors', parentId: 'motors-drives', order: 1, isActive: true },
+      { id: 'motors-stepper', name: 'Stepper Motors', parentId: 'motors-drives', order: 2, isActive: true },
+      { id: 'motors-drives-units', name: 'Drive Units', parentId: 'motors-drives', order: 3, isActive: true },
+      
+      { id: 'sensors', name: 'Sensors', order: 3, isActive: true, color: '#F59E0B' },
+      { id: 'sensors-proximity', name: 'Proximity', parentId: 'sensors', order: 1, isActive: true },
+      { id: 'sensors-pressure', name: 'Pressure', parentId: 'sensors', order: 2, isActive: true },
+      { id: 'sensors-temperature', name: 'Temperature', parentId: 'sensors', order: 3, isActive: true },
+      
+      { id: 'control-systems', name: 'Control Systems', order: 4, isActive: true, color: '#8B5CF6' },
+      { id: 'control-plc', name: 'PLCs', parentId: 'control-systems', order: 1, isActive: true },
+      { id: 'control-hmi', name: 'HMI/Displays', parentId: 'control-systems', order: 2, isActive: true },
+      
+      { id: 'mechanical', name: 'Mechanical', order: 5, isActive: true, color: '#6B7280' },
+      { id: 'mechanical-fasteners', name: 'Fasteners', parentId: 'mechanical', order: 1, isActive: true },
+      { id: 'mechanical-brackets', name: 'Brackets', parentId: 'mechanical', order: 2, isActive: true },
+      
+      { id: 'electrical', name: 'Electrical', order: 6, isActive: true, color: '#EF4444' },
+      { id: 'electrical-cables', name: 'Cables', parentId: 'electrical', order: 1, isActive: true },
+      { id: 'electrical-connectors', name: 'Connectors', parentId: 'electrical', order: 2, isActive: true },
+      
+      { id: 'uncategorized', name: 'Uncategorized', order: 999, isActive: true, color: '#9CA3AF' }
+    ];
+    
     await updateBOMSettings({
-      defaultCategories: ['Vision Systems', 'Motors & Drives', 'Sensors', 'Control Systems', 'Mechanical'],
+      defaultCategories: categoryNames, // Backward compatibility
+      categories: enhancedCategories, // Future enhancement
       defaultStatuses: ['not-ordered', 'ordered', 'received', 'approved'],
       defaultUnits: ['pcs', 'kg', 'm', 'l', 'set', 'pack'],
       autoApprovalEnabled: false,
@@ -247,6 +355,24 @@ export const validateVendor = (vendor: Partial<Vendor>): string[] => {
 const isValidEmail = (email: string): boolean => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
+};
+
+// Utility functions for category management
+export const getCategoriesFlat = (categories: BOMCategory[]): BOMCategory[] => {
+  return categories.filter(cat => !cat.parentId);
+};
+
+export const getCategoryWithSubcategories = (categories: BOMCategory[], parentId: string): BOMCategory[] => {
+  return categories.filter(cat => cat.parentId === parentId);
+};
+
+export const buildCategoryTree = (categories: BOMCategory[]): BOMCategory[] => {
+  const parentCategories = categories.filter(cat => !cat.parentId);
+  
+  return parentCategories.map(parent => ({
+    ...parent,
+    subcategories: categories.filter(cat => cat.parentId === parent.id)
+  }));
 };
 
 // Export collections for use in other components if needed

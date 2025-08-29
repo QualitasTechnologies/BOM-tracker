@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
 import UserProfile from "./components/UserProfile";
+import Sidebar from "./components/Sidebar";
 import Index from "./pages/Index";
 import Projects from "./pages/Projects";
 import BOM from "./pages/BOM";
@@ -34,9 +35,12 @@ const SidebarProvider: React.FC<{ children: React.ReactNode }> = ({ children }) 
 
 // App Layout Component
 const AppLayout: React.FC = () => {
-  const { collapsed } = useSidebar();
+  const { collapsed, toggle } = useSidebar();
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Sidebar */}
+      <Sidebar collapsed={collapsed} onToggle={toggle} />
+      
       {/* Header */}
       <header className={`bg-white shadow-sm border-b border-gray-200 px-6 py-4 transition-all duration-300 ${collapsed ? 'ml-16' : 'ml-64'}`}>
         <div className="max-w-7xl mx-auto flex items-center justify-between">
@@ -56,7 +60,7 @@ const AppLayout: React.FC = () => {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 py-6">
+      <main className={`transition-all duration-300 ${collapsed ? 'ml-16' : 'ml-64'} px-4 py-6`}>
         <Routes>
           <Route path="/" element={<Projects />} />
           <Route path="/projects" element={<Projects />} />
