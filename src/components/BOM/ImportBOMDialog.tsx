@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { BOMItem, BOMStatus } from '@/types/bom';
-import { getBOMSettings } from '@/utils/settingsFirestore';
+import { getBOMSettings, getVendors } from '@/utils/settingsFirestore';
 import { analyzeBOMWithAI, ExtractedBOMItem as AIExtractedItem } from '@/utils/aiService';
 
 interface ImportBOMDialogProps {
@@ -24,7 +24,6 @@ interface ImportBOMDialogProps {
 
 interface ImportPreview {
   items: AIExtractedItem[];
-  suggestedCategories: string[];
   totalItems: number;
 }
 
@@ -41,28 +40,40 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bomSettings, setBomSettings] = useState<any>(null);
-  const [categoryMapping, setCategoryMapping] = useState<Record<string, string>>({});
   const [isImporting, setIsImporting] = useState(false);
   const [existingCategories, setExistingCategories] = useState<string[]>([]);
+  const [existingMakes, setExistingMakes] = useState<string[]>([]);
   const [isUsingAI, setIsUsingAI] = useState(false);
   const [processingStep, setProcessingStep] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load BOM settings for category mapping
+  // Load BOM settings and existing vendor makes
   React.useEffect(() => {
-    const loadSettings = async () => {
+    const loadData = async () => {
       try {
-        const settings = await getBOMSettings();
+        const [settings, vendors] = await Promise.all([
+          getBOMSettings(),
+          getVendors()
+        ]);
+        
         setBomSettings(settings);
         if (settings?.defaultCategories) {
           setExistingCategories(settings.defaultCategories);
         }
+        
+        // Extract unique makes from all vendors
+        const makes = new Set<string>();
+        vendors.forEach(vendor => {
+          vendor.makes?.forEach(make => makes.add(make));
+        });
+        setExistingMakes(Array.from(makes));
+        
       } catch (err) {
-        console.error('Failed to load BOM settings:', err);
+        console.error('Failed to load data:', err);
       }
     };
     if (open) {
-      loadSettings();
+      loadData();
     }
   }, [open]);
 
@@ -162,12 +173,12 @@ Safety Systems:
     try {
       const analysis = await analyzeBOMWithAI({
         text,
-        existingCategories
+        existingCategories,
+        existingMakes
       });
       
       return {
         items: analysis.items,
-        suggestedCategories: analysis.suggestedCategories,
         totalItems: analysis.totalItems
       };
     } catch (error) {
@@ -204,13 +215,6 @@ Safety Systems:
       const analysis = await analyzeWithAI(text);
       setPreview(analysis);
       
-      // Initialize category mapping
-      const mapping: Record<string, string> = {};
-      analysis.suggestedCategories.forEach(cat => {
-        mapping[cat] = cat; // Default to same name
-      });
-      setCategoryMapping(mapping);
-      
     } catch (err: any) {
       setError(err.message || 'Failed to process content');
     } finally {
@@ -225,19 +229,20 @@ Safety Systems:
     
     setIsImporting(true);
     try {
-      // Convert extracted items to BOM items
-      const bomItems: BOMItem[] = preview.items.map((item, index) => ({
+      // Convert extracted items to BOM items  
+      const bomItems = preview.items.map((item, index) => ({
         id: `imported-${Date.now()}-${index}`,
         name: item.name,
         make: item.make,
-        description: item.description,
+        description: item.description || item.name,
         sku: item.sku,
-        category: categoryMapping[item.suggestedCategory] || item.suggestedCategory,
+        category: item.category || 'Uncategorized', // Use category name as expected by BOM.tsx
         quantity: item.quantity,
         vendors: [],
-        status: 'not-ordered' as BOMStatus,
+        status: 'not-ordered' as any, // Use 'as any' to avoid type conflicts
       }));
 
+      console.log('Importing BOM items:', bomItems);
       onImportComplete(bomItems);
       
       // Show success message briefly before closing
@@ -257,7 +262,6 @@ Safety Systems:
     setTextContent('');
     setPreview(null);
     setError(null);
-    setCategoryMapping({});
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -408,39 +412,11 @@ Bracket - 4"
               <CardHeader>
                 <CardTitle>Import Preview</CardTitle>
                 <CardDescription>
-                  Review the extracted items before importing. You can modify categories and quantities.
+                  AI has analyzed your BOM and extracted {preview.totalItems} items. Items matched to existing vendors are highlighted in green.
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  {/* Category Mapping */}
-                  <div>
-                    <Label className="text-sm font-medium">Category Mapping</Label>
-                    <div className="grid grid-cols-2 gap-4 mt-2">
-                      {preview.suggestedCategories.map((category) => (
-                        <div key={category} className="space-y-2">
-                          <Label className="text-xs text-gray-600">AI Suggestion: {category}</Label>
-                          <Select
-                            value={categoryMapping[category] || category}
-                            onValueChange={(value) => 
-                              setCategoryMapping(prev => ({ ...prev, [category]: value }))
-                            }
-                          >
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {bomSettings?.defaultCategories.map((cat: string) => (
-                                <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                              ))}
-                              <SelectItem value={category}>{category} (New)</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
                   {/* Items Table */}
                   <div>
                     <Label className="text-sm font-medium">Extracted Items ({preview.totalItems})</Label>
@@ -453,8 +429,8 @@ Bracket - 4"
                             <TableHead>SKU</TableHead>
                             <TableHead>Description</TableHead>
                             <TableHead>Qty</TableHead>
+                            <TableHead>Unit</TableHead>
                             <TableHead>Category</TableHead>
-                            <TableHead>Confidence</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -462,25 +438,27 @@ Bracket - 4"
                             <TableRow key={index}>
                               <TableCell className="font-medium">{item.name}</TableCell>
                               <TableCell>
-                                {item.make && (
-                                  <Badge variant="outline" className="text-xs">{item.make}</Badge>
+                                {item.make ? (
+                                  <Badge variant="default" className="text-xs bg-green-100 text-green-800 border-green-200">
+                                    {item.make}
+                                  </Badge>
+                                ) : (
+                                  <span className="text-gray-400 text-xs">—</span>
                                 )}
                               </TableCell>
                               <TableCell>
-                                {item.sku && (
+                                {item.sku ? (
                                   <Badge variant="outline" className="text-xs">{item.sku}</Badge>
+                                ) : (
+                                  <span className="text-gray-400 text-xs">—</span>
                                 )}
                               </TableCell>
-                              <TableCell className="text-sm">{item.description}</TableCell>
-                              <TableCell>{item.quantity}</TableCell>
+                              <TableCell className="text-sm text-gray-700">{item.description}</TableCell>
+                              <TableCell className="font-medium">{item.quantity}</TableCell>
+                              <TableCell className="text-sm">{item.unit || 'pcs'}</TableCell>
                               <TableCell>
-                                <Badge variant="secondary">
-                                  {categoryMapping[item.suggestedCategory] || item.suggestedCategory}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>
-                                <Badge variant={item.confidence > 0.7 ? "default" : "secondary"}>
-                                  {Math.round(item.confidence * 100)}%
+                                <Badge variant="secondary" className="text-xs">
+                                  {item.category}
                                 </Badge>
                               </TableCell>
                             </TableRow>

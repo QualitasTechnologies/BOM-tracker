@@ -17,7 +17,9 @@ import {
   DialogFooter,
   DialogClose
 } from '@/components/ui/dialog';
-import { useState } from 'react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useState, useEffect } from 'react';
+import { getVendors, Vendor } from '@/utils/settingsFirestore';
 import QuantityControl from './QuantityControl';
 
 interface BOMItem {
@@ -59,6 +61,7 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
   const [showDeleteConfirmIdx, setShowDeleteConfirmIdx] = useState<number | null>(null);
   const [addPrevVendorIdx, setAddPrevVendorIdx] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
+  const [availableMakes, setAvailableMakes] = useState<string[]>([]);
   const [editForm, setEditForm] = useState({ 
     name: part.name, 
     make: part.make || '', 
@@ -68,6 +71,26 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
     category: part.category 
   });
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  // Load vendors and extract makes
+  useEffect(() => {
+    const loadVendors = async () => {
+      try {
+        const vendorsData = await getVendors();
+        
+        // Extract vendor company names as makes/brands
+        const companyNames = vendorsData.map(vendor => vendor.company).filter(company => company.trim() !== '');
+        
+        // Remove duplicates and sort
+        const uniqueMakes = [...new Set(companyNames)].sort();
+        setAvailableMakes(uniqueMakes);
+      } catch (error) {
+        console.error('Error loading vendors:', error);
+      }
+    };
+
+    loadVendors();
+  }, []);
 
   // Handle selecting a current vendor for editing
   const handleSelectVendor = (idx: number) => {
@@ -140,13 +163,24 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                   onChange={(e) => setEditForm(prev => ({ ...prev, name: e.target.value }))}
                   onClick={(e) => e.stopPropagation()}
                 />
-                <input
-                  placeholder="Make"
-                  className="w-20 text-sm bg-white border rounded px-2 py-1"
-                  value={editForm.make}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, make: e.target.value }))}
-                  onClick={(e) => e.stopPropagation()}
-                />
+                <div className="w-20" onClick={(e) => e.stopPropagation()}>
+                  <Select
+                    value={editForm.make}
+                    onValueChange={(value) => setEditForm(prev => ({ ...prev, make: value === "__NONE__" ? '' : (value || '') }))}
+                  >
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue placeholder="Make" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__NONE__">None</SelectItem>
+                      {availableMakes.map((make) => (
+                        <SelectItem key={make} value={make}>
+                          {make}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <input
                   placeholder="SKU"
                   className="w-20 text-sm bg-white border rounded px-2 py-1"

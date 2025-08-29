@@ -1,17 +1,53 @@
 // AI Service for BOM Analysis using Firebase Functions
 // This provides secure AI analysis through a backend proxy
 
+// Generate optimized prompts for effective BOM analysis
+const generateOptimizedPrompt = (existingMakes: string[], existingCategories: string[]): string => {
+  const makesList = existingMakes.length > 0 
+    ? `Existing vendor makes in our database: ${existingMakes.join(', ')}\n`
+    : '';
+
+  const categoriesList = existingCategories.length > 0
+    ? `Preferred categories: ${existingCategories.join(', ')}\n`
+    : 'Standard categories: Vision Systems, Motors & Drives, Sensors, Control Systems, Mechanical, Electrical, Pneumatic, Hydraulic, Tools, Safety, Uncategorized\n';
+
+  return `You are a BOM (Bill of Materials) extraction expert. Extract items from the provided text.
+
+INSTRUCTIONS:
+1. Extract item names, quantities, and descriptions
+2. Look for manufacturer/brand names (makes) - match to existing: ${existingMakes.join(', ') || 'any recognizable brands'}
+3. Assign logical categories: ${existingCategories.join(', ') || 'Vision Systems, Motors & Drives, Sensors, Control Systems, Mechanical, Electrical, Uncategorized'}
+4. Extract part numbers/SKUs when visible
+5. Default unit is "pcs" unless specified
+
+Return JSON with this exact structure:
+{
+  "items": [
+    {
+      "name": "Item Name",
+      "make": "Brand Name or null",
+      "description": "Item description", 
+      "sku": "Part number or null",
+      "quantity": 1,
+      "category": "Category Name",
+      "unit": "pcs"
+    }
+  ],
+  "totalItems": 1
+}`;
+};
+
+
 export interface AIAnalysisRequest {
   text: string;
   projectContext?: string;
   existingCategories?: string[];
+  existingMakes?: string[];
 }
 
 export interface AIAnalysisResponse {
   items: ExtractedBOMItem[];
-  suggestedCategories: string[];
   totalItems: number;
-  confidence: number;
   processingTime: number;
 }
 
@@ -21,8 +57,7 @@ export interface ExtractedBOMItem {
   description: string;
   sku?: string;
   quantity: number;
-  suggestedCategory: string;
-  confidence: number;
+  category: string;
   unit?: string;
   specifications?: Record<string, string>;
 }
@@ -43,7 +78,9 @@ export const analyzeBOMWithAI = async (request: AIAnalysisRequest): Promise<AIAn
       },
       body: JSON.stringify({
         text: request.text,
-        existingCategories: request.existingCategories
+        existingCategories: request.existingCategories,
+        existingMakes: request.existingMakes,
+        prompt: generateOptimizedPrompt(request.existingMakes || [], request.existingCategories || [])
       })
     });
 
@@ -67,12 +104,12 @@ export const analyzeBOMWithAI = async (request: AIAnalysisRequest): Promise<AIAn
     
     // Fallback to keyword analysis if AI fails
     console.warn('Falling back to keyword-based analysis');
-    return await analyzeBOMWithKeywords(request.text);
+    return await analyzeBOMWithKeywords(request.text, request.existingMakes);
   }
 };
 
 // Fallback keyword-based analysis (when AI is unavailable)
-export const analyzeBOMWithKeywords = async (text: string): Promise<AIAnalysisResponse> => {
+export const analyzeBOMWithKeywords = async (text: string, existingMakes: string[] = []): Promise<AIAnalysisResponse> => {
   const startTime = Date.now();
   
   const lines = text.split('\n').filter(line => line.trim());
@@ -130,21 +167,38 @@ export const analyzeBOMWithKeywords = async (text: string): Promise<AIAnalysisRe
 
       categories.add(suggestedCategory);
 
-      // Calculate confidence based on keyword matches
-      const confidence = Math.min(0.9, 0.5 + (maxMatches * 0.1));
+      // Smart make matching with existing makes
+      let matchedMake: string | undefined = undefined;
+      
+      // Try exact matching first
+      for (const existingMake of existingMakes) {
+        if (name.toLowerCase().includes(existingMake.toLowerCase())) {
+          matchedMake = existingMake;
+          break;
+        }
+      }
+      
+      // If no exact match, try partial matching
+      if (!matchedMake) {
+        for (const existingMake of existingMakes) {
+          const makeWords = existingMake.toLowerCase().split(' ');
+          if (makeWords.some(word => name.toLowerCase().includes(word) && word.length > 3)) {
+            matchedMake = existingMake;
+            break;
+          }
+        }
+      }
 
-      // Try to extract make and SKU from the name
-      const makeMatch = name.match(/^([A-Z][A-Za-z]+)\s+(.+)/);
+      // Try to extract SKU from the name
       const skuMatch = name.match(/([A-Z0-9-]{3,})/);
       
       items.push({
-        name: makeMatch ? makeMatch[2] : name,
-        make: makeMatch ? makeMatch[1] : undefined,
-        description: name !== (makeMatch ? makeMatch[2] : name) ? name : '',
+        name: name,
+        make: matchedMake,
+        description: name,
         sku: skuMatch ? skuMatch[1] : undefined,
         quantity,
-        suggestedCategory,
-        confidence,
+        category: suggestedCategory,
         unit: 'pcs'
       });
     }
@@ -154,44 +208,11 @@ export const analyzeBOMWithKeywords = async (text: string): Promise<AIAnalysisRe
 
   return {
     items,
-    suggestedCategories: Array.from(categories),
     totalItems: items.length,
-    confidence: items.length > 0 ? items.reduce((sum, item) => sum + item.confidence, 0) / items.length : 0,
     processingTime
   };
 };
 
-// Utility function to improve AI suggestions based on existing BOM data
-export const enhanceAISuggestions = (
-  suggestions: ExtractedBOMItem[],
-  existingCategories: string[],
-  existingItems: string[]
-): ExtractedBOMItem[] => {
-  return suggestions.map(item => {
-    // Check if item name already exists
-    const isDuplicate = existingItems.some(existing => 
-      existing.toLowerCase().includes(item.name.toLowerCase()) ||
-      item.name.toLowerCase().includes(existing.toLowerCase())
-    );
-
-    // Adjust confidence based on duplicates
-    let adjustedConfidence = item.confidence;
-    if (isDuplicate) {
-      adjustedConfidence *= 0.8; // Reduce confidence for potential duplicates
-    }
-
-    // Check if suggested category exists in current BOM
-    const categoryExists = existingCategories.includes(item.suggestedCategory);
-    if (categoryExists) {
-      adjustedConfidence *= 1.1; // Increase confidence for existing categories
-    }
-
-    return {
-      ...item,
-      confidence: Math.min(1.0, adjustedConfidence)
-    };
-  });
-};
 
 // Export the main function
 export default analyzeBOMWithAI;

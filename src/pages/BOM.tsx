@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { Search, Plus, Download, Filter, X, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Label } from '@/components/ui/label';
 import BOMHeader from '@/components/BOM/BOMHeader';
@@ -20,6 +21,7 @@ import {
   updateBOMItem, 
   deleteBOMItem,
 } from '@/utils/projectFirestore';
+import { getVendors, Vendor, getBOMSettings } from '@/utils/settingsFirestore';
 import { BOMItem, BOMCategory, BOMStatus } from '@/types/bom';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/firebase';
@@ -37,8 +39,8 @@ const BOM = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedPart, setSelectedPart] = useState<BOMItem | null>(null);
   const [categories, setCategories] = useState<BOMCategory[]>([]);
-  const [searchParams] = useSearchParams();
-  const projectId = searchParams.get('project');
+  const { projectId } = useParams<{ projectId: string }>();
+  console.log('projectId from URL params:', projectId);
   const [projectDetails, setProjectDetails] = useState<{ projectName: string; projectId: string; clientName: string } | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([]);
@@ -53,11 +55,12 @@ const BOM = () => {
     quantity: 1
   });
   const [categoryForPart, setCategoryForPart] = useState<string | null>(null);
-  const [addingNewCategory, setAddingNewCategory] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState('');
   const [addPartError, setAddPartError] = useState<string | null>(null);
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState<string | null>(null);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [availableMakes, setAvailableMakes] = useState<string[]>([]);
+  const [settingsCategories, setSettingsCategories] = useState<string[]>([]);
 
   // Load BOM data when project ID changes
   useEffect(() => {
@@ -105,6 +108,35 @@ const BOM = () => {
     loadProjectDetails();
   }, [projectId]);
 
+  // Load settings data (vendors, makes, categories)
+  useEffect(() => {
+    const loadSettingsData = async () => {
+      try {
+        // Load vendors
+        const vendorsData = await getVendors();
+        setVendors(vendorsData);
+        
+        // Extract vendor company names as makes/brands
+        const companyNames = vendorsData.map(vendor => vendor.company).filter(company => company.trim() !== '');
+        
+        // Remove duplicates and sort
+        const uniqueMakes = [...new Set(companyNames)].sort();
+        setAvailableMakes(uniqueMakes);
+
+        // Load settings categories
+        const bomSettings = await getBOMSettings();
+        if (bomSettings && bomSettings.categories) {
+          const categoryNames = bomSettings.categories.map(cat => cat.name);
+          setSettingsCategories(categoryNames);
+        }
+      } catch (error) {
+        console.error('Error loading settings data:', error);
+      }
+    };
+
+    loadSettingsData();
+  }, []);
+
   const toggleCategory = async (categoryName: string) => {
     if (!projectId) return;
     
@@ -129,16 +161,14 @@ const BOM = () => {
     if (!projectId) return;
 
     setAddPartError(null);
-    if (!categoryForPart && !addingNewCategory) return;
+    if (!categoryForPart) return;
 
     let finalCategory = categoryForPart;
     let updatedCategories = categories;
-
-    if (addingNewCategory && newCategoryName.trim()) {
-      finalCategory = newCategoryName.trim();
-      if (!categories.some(cat => cat.name === finalCategory)) {
-        updatedCategories = [...categories, { name: finalCategory, isExpanded: true, items: [] }];
-      }
+    
+    // If the category doesn't exist in BOM yet, create it
+    if (!categories.some(cat => cat.name === finalCategory)) {
+      updatedCategories = [...categories, { name: finalCategory, isExpanded: true, items: [] }];
     }
 
     const newCategories = updatedCategories.map(cat =>
@@ -166,8 +196,6 @@ const BOM = () => {
     setNewPart({ name: '', make: '', description: '', sku: '', quantity: 1 });
     setAddPartOpen(false);
     setCategoryForPart(null);
-    setAddingNewCategory(false);
-    setNewCategoryName('');
   };
 
   const handleEditCategory = async (oldName: string, newName: string) => {
@@ -511,6 +539,9 @@ const BOM = () => {
         <DialogContent className="max-w-[425px]">
           <DialogHeader>
             <DialogTitle>Add Part</DialogTitle>
+            <DialogDescription>
+              Add a new part to your BOM. Select or create a category for organization.
+            </DialogDescription>
           </DialogHeader>
           {addPartError && (
             <Alert variant="destructive">
@@ -520,37 +551,26 @@ const BOM = () => {
           <div className="space-y-4">
             <div>
               <Label>Category</Label>
-              <select 
-                className="w-full border rounded p-2"
-                value={addingNewCategory ? '+new' : (categoryForPart ?? '')}
-                onChange={e => {
-                  if (e.target.value === '+new') {
-                    setAddingNewCategory(true);
-                    setCategoryForPart(null);
-                  } else {
-                    setAddingNewCategory(false);
-                    setCategoryForPart(e.target.value);
-                  }
+              <Select 
+                value={categoryForPart ?? undefined}
+                onValueChange={(value) => {
+                  setCategoryForPart(value || null);
                 }}
               >
-                <option value="">Select Category</option>
-                {categories.map(cat => (
-                  <option key={cat.name} value={cat.name}>{cat.name}</option>
-                ))}
-                <option value="+new">+ Add New Category</option>
-              </select>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select Category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {settingsCategories.length === 0 && (
+                    <SelectItem value="__LOADING__" disabled>Loading categories...</SelectItem>
+                  )}
+                  {settingsCategories.map(catName => (
+                    <SelectItem key={catName} value={catName}>{catName}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
-            {addingNewCategory && (
-              <div>
-                <Label>New Category Name</Label>
-                <Input
-                  value={newCategoryName}
-                  onChange={e => setNewCategoryName(e.target.value)}
-                  placeholder="Enter new category name"
-                />
-              </div>
-            )}
 
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -564,12 +584,28 @@ const BOM = () => {
               </div>
               <div>
                 <Label htmlFor="make">Make</Label>
-                <Input
-                  id="make"
-                  value={newPart.make}
-                  onChange={e => setNewPart({ ...newPart, make: e.target.value })}
-                  placeholder="Brand/Manufacturer"
-                />
+                <Select
+                  value={newPart.make || undefined}
+                  onValueChange={(value) => setNewPart({ ...newPart, make: value === "__NONE__" ? '' : (value || '') })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select Make/Brand" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__NONE__">None</SelectItem>
+                    {availableMakes.length === 0 && vendors.length === 0 && (
+                      <SelectItem value="__LOADING__" disabled>Loading makes...</SelectItem>
+                    )}
+                    {availableMakes.length === 0 && vendors.length > 0 && (
+                      <SelectItem value="__NO_MAKES__" disabled>No makes found in vendors</SelectItem>
+                    )}
+                    {availableMakes.map((make) => (
+                      <SelectItem key={make} value={make}>
+                        {make}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -635,6 +671,7 @@ const BOM = () => {
         projectId={projectId}
         onImportComplete={(importedItems) => {
           // Handle imported items - add them to the current BOM
+          console.log('Received imported items:', importedItems);
           if (projectId && importedItems.length > 0) {
             // Group items by category
             const itemsByCategory = importedItems.reduce((acc, item) => {
@@ -648,15 +685,19 @@ const BOM = () => {
 
             // Update categories with new items
             const updatedCategories = [...categories];
+            console.log('Items by category:', itemsByCategory);
             Object.entries(itemsByCategory).forEach(([categoryName, items]) => {
               let category = updatedCategories.find(cat => cat.name === categoryName);
               if (!category) {
+                console.log('Creating new category:', categoryName);
                 category = { name: categoryName, isExpanded: true, items: [] };
                 updatedCategories.push(category);
               }
+              console.log('Adding items to category:', categoryName, items);
               category.items.push(...items);
             });
 
+            console.log('Final updated categories:', updatedCategories);
             updateBOMData(projectId, updatedCategories);
             setImportBOMOpen(false);
             

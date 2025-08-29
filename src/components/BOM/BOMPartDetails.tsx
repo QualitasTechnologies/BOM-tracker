@@ -8,6 +8,9 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
 import { useToast } from '@/components/ui/use-toast';
+import { getVendors, Vendor as DBVendor } from '@/utils/settingsFirestore';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
 
 interface DocumentInfo {
   name: string;
@@ -84,22 +87,39 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
   const [po, setPo] = useState('');
   const [vendorName, setVendorName] = useState('');
   const [vendorCost, setVendorCost] = useState('');
-  // Update Vendor type to include documents
+  // Update Vendor type to include documents and vendor reference
   type Vendor = {
     name: string;
+    vendorId?: string;
     price?: number;
     leadTime?: string;
     availability?: string;
     qty?: number;
+    type?: string;
     documents?: string[];
   };
   const [vendors, setVendors] = useState<Vendor[]>(part.vendors || []);
   const [partState, setPartState] = useState(part);
+  const [dbVendors, setDbVendors] = useState<DBVendor[]>([]);
+  const [selectedVendorIds, setSelectedVendorIds] = useState<string[]>([]);
 
   useEffect(() => {
     setPartState(part);
     // Optionally reset other related state here if needed
   }, [part]);
+
+  // Load database vendors
+  useEffect(() => {
+    const loadVendors = async () => {
+      try {
+        const vendorsData = await getVendors();
+        setDbVendors(vendorsData);
+      } catch (error) {
+        console.error('Error loading vendors:', error);
+      }
+    };
+    loadVendors();
+  }, []);
 
   // Sync vendors state with selected part
   useEffect(() => {
@@ -179,18 +199,29 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
   const [addVendorDocs, setAddVendorDocs] = useState<DocumentInfo[]>([]);
 
   const handleAddVendor = () => {
-    if (!vendorName.trim()) return;
-    const newVendors = [
-      ...vendors,
-      {
-        name: vendorName,
+    if (selectedVendorIds.length === 0) return;
+    
+    // Filter out vendors that are already added
+    const existingVendorIds = vendors.map(v => v.vendorId).filter(Boolean);
+    const vendorIdsToAdd = selectedVendorIds.filter(id => !existingVendorIds.includes(id));
+    
+    const newVendorsToAdd = vendorIdsToAdd.map(vendorId => {
+      const dbVendor = dbVendors.find(v => v.id === vendorId);
+      return {
+        name: dbVendor?.company || '',
+        vendorId: vendorId,
         price: vendorCost ? Number(vendorCost) : undefined,
         qty: 1,
         documents: addVendorDocs,
-      },
-    ];
+        type: dbVendor?.type || 'OEM',
+        leadTime: dbVendor?.leadTime || '',
+        availability: 'Available'
+      };
+    });
+    
+    const newVendors = [...vendors, ...newVendorsToAdd];
     updateVendors(newVendors);
-    setVendorName('');
+    setSelectedVendorIds([]);
     setVendorCost('');
     setAddVendorDocs([]);
     setAddVendorOpen(false);
@@ -513,7 +544,14 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
                   onClick={() => setSelectedVendorIdx(index)}
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="font-semibold text-base">{vendor.name}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-base">{vendor.name}</span>
+                      {vendor.type && (
+                        <Badge variant="outline" className="text-xs">
+                          {vendor.type}
+                        </Badge>
+                      )}
+                    </div>
                     <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">{availability}</span>
                   </div>
                   <div className="flex items-center gap-6 text-gray-700 mb-2">
@@ -669,12 +707,36 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
           }}>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Add Vendor</DialogTitle>
+                <DialogTitle>Add Vendors</DialogTitle>
               </DialogHeader>
               <form className="space-y-3">
                 <div>
-                  <label className="block text-sm font-medium mb-1">Company Name</label>
-                  <input className="w-full border rounded p-2" value={vendorName} onChange={e => setVendorName(e.target.value)} placeholder="Enter company name" required />
+                  <label className="block text-sm font-medium mb-1">Select Vendors</label>
+                  <div className="max-h-48 overflow-y-auto border rounded p-2 space-y-2">
+                    {dbVendors.map((vendor) => (
+                      <div key={vendor.id} className="flex items-center space-x-2">
+                        <Checkbox
+                          id={vendor.id}
+                          checked={selectedVendorIds.includes(vendor.id)}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              setSelectedVendorIds([...selectedVendorIds, vendor.id]);
+                            } else {
+                              setSelectedVendorIds(selectedVendorIds.filter(id => id !== vendor.id));
+                            }
+                          }}
+                        />
+                        <label htmlFor={vendor.id} className="flex-1 cursor-pointer">
+                          <div className="flex justify-between items-center">
+                            <span className="font-medium">{vendor.company}</span>
+                            <Badge variant="outline" className="text-xs">
+                              {vendor.type}
+                            </Badge>
+                          </div>
+                        </label>
+                      </div>
+                    ))}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-1">Price per unit</label>
@@ -682,7 +744,7 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
                 </div>
               </form>
               <DialogFooter className="mt-4 flex gap-2 items-center">
-                <button type="button" className="px-4 py-2 bg-blue-600 text-white rounded" onClick={handleAddVendor} disabled={!vendorName.trim()}>Save</button>
+                <button type="button" className="px-4 py-2 bg-blue-600 text-white rounded" onClick={handleAddVendor} disabled={selectedVendorIds.length === 0}>Save</button>
                 {/* Add Documents Button */}
                 <label className="cursor-pointer">
                   <input type="file" multiple className="hidden" onChange={e => {

@@ -61,7 +61,7 @@ exports.analyzeBOM = onRequest(
   }
 
   try {
-    const { text, existingCategories } = request.body;
+    const { text, existingCategories, existingMakes, prompt } = request.body;
 
     // Validate input
     if (!text || typeof text !== 'string') {
@@ -77,45 +77,31 @@ exports.analyzeBOM = onRequest(
       return;
     }
 
-    // Prepare the AI prompt
-    const systemPrompt = `You are an expert BOM (Bill of Materials) analyst. Your task is to analyze BOM text and extract structured data.
+    // Use optimized prompt if provided, otherwise use default
+    const systemPrompt = prompt || `Extract BOM items from text. Return valid JSON only.
 
-EXISTING CATEGORIES: ${existingCategories?.join(', ') || 'None specified'}
+Available makes: ${existingMakes?.join(', ') || 'any brands'}
+Categories: ${existingCategories?.join(', ') || 'Vision Systems, Motors & Drives, Sensors, Control Systems, Mechanical, Electrical, Uncategorized'}
 
-ANALYSIS REQUIREMENTS:
-1. Extract part names, quantities, and descriptions
-2. Suggest appropriate categories based on part characteristics
-3. Provide confidence scores (0.0 to 1.0) for each extraction
-4. Handle various BOM formats (lists, tables, structured text)
-5. Use existing categories when possible, suggest new ones when needed
-
-OUTPUT FORMAT (JSON only, no other text):
+Format:
 {
   "items": [
     {
-      "name": "Part name",
-      "description": "Part description or specifications",
+      "name": "Item name",
+      "make": "Brand or null", 
+      "description": "Description",
+      "sku": "Part number or null",
       "quantity": 1,
-      "suggestedCategory": "Category name",
-      "confidence": 0.95,
+      "category": "Category",
       "unit": "pcs"
     }
   ],
-  "suggestedCategories": ["Category1", "Category2"],
-  "totalItems": 5,
-  "overallConfidence": 0.88
-}
+  "totalItems": 1
+}`;
 
-EXAMPLES:
-- "Motor - 2" → name: "Motor", quantity: 2, category: "Motors & Drives"
-- "Sensor 1" → name: "Sensor", quantity: 1, category: "Sensors"
-- "Bracket (4)" → name: "Bracket", quantity: 4, category: "Mechanical"
+    const userPrompt = `Extract BOM items from this text:
 
-Analyze the following BOM text:`;
-
-    const userPrompt = `${text}
-
-Please provide the analysis in the exact JSON format specified above.`;
+${text}`;
 
     // Call OpenAI API
     const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -172,30 +158,26 @@ Please provide the analysis in the exact JSON format specified above.`;
     // Transform and validate items
     const items = parsedResponse.items.map((item, index) => ({
       name: item.name || `Item ${index + 1}`,
-      description: item.description || 'No description provided',
+      make: item.make || undefined,
+      description: item.description || item.name || 'No description provided',
+      sku: item.sku || undefined,
       quantity: parseInt(item.quantity) || 1,
-      suggestedCategory: item.suggestedCategory || 'Uncategorized',
-      confidence: Math.min(1.0, Math.max(0.0, parseFloat(item.confidence) || 0.5)),
-      unit: item.unit || 'pcs'
+      category: item.category || 'Uncategorized',
+      unit: item.unit || 'pcs',
+      specifications: item.specifications || undefined
     }));
-
-    const suggestedCategories = parsedResponse.suggestedCategories || 
-      [...new Set(items.map(item => item.suggestedCategory))];
 
     const result = {
       items,
-      suggestedCategories,
       totalItems: items.length,
-      confidence: parsedResponse.overallConfidence || 
-        (items.length > 0 ? items.reduce((sum, item) => sum + item.confidence, 0) / items.length : 0),
-      processingTime: Date.now() - Date.now() // Will be calculated by frontend
+      processingTime: 0 // Will be calculated by frontend
     };
 
     // Log successful analysis
     logger.info('BOM analysis completed successfully', {
       textLength: text.length,
       itemsCount: items.length,
-      categories: suggestedCategories
+      makesFound: items.filter(item => item.make).length
     });
 
     response.status(200).json(result);
