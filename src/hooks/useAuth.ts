@@ -187,5 +187,6 @@ export const useAuth = () => {
     signUpWithEmail,
     signOutUser,
     refreshUser,
+    isAdmin: user?.isAdmin || false,
   };
 }; 

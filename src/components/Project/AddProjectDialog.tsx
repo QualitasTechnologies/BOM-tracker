@@ -156,8 +156,8 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
               </SelectTrigger>
               <SelectContent>
                 {clients.map((clientItem) => (
-                  <SelectItem key={clientItem.id} value={clientItem.name}>
-                    {clientItem.name} {clientItem.company && `(${clientItem.company})`}
+                  <SelectItem key={clientItem.id} value={clientItem.company}>
+                    {clientItem.company}
                   </SelectItem>
                 ))}
               </SelectContent>

@@ -72,7 +72,7 @@ import { useAuth } from '@/hooks/useAuth';
 
 const Settings = () => {
   // Auth check
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, isAdmin } = useAuth();
   
   // State management
   const [clients, setClients] = useState<Client[]>([]);
@@ -222,7 +222,7 @@ const Settings = () => {
         address: clientForm.address || '',
         contactPerson: clientForm.contactPerson || '',
         status: 'active',
-        notes: clientForm.notes
+        notes: clientForm.notes || ''
       });
       
       setClientForm({});
@@ -494,7 +494,7 @@ const Settings = () => {
   }
 
   // Check admin access
-  if (!user || !user.isAdmin) {
+  if (!user || !isAdmin) {
     return (
       <div className="container mx-auto py-6 px-4">
         <div className="flex items-center justify-center h-64">
@@ -608,16 +608,16 @@ const Settings = () => {
                         </Alert>
                       )}
 
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="col-span-2 space-y-2">
-                          <Label htmlFor="company">Company Name *</Label>
-                          <Input
-                            id="company"
-                            value={clientForm.company || ''}
-                            onChange={(e) => setClientForm({...clientForm, company: e.target.value})}
-                            placeholder="Enter company name"
-                          />
-                        </div>
+                                              <div className="grid grid-cols-2 gap-4">
+                          <div className="col-span-2 space-y-2">
+                            <Label htmlFor="company">Company Name *</Label>
+                            <Input
+                              id="company"
+                              value={clientForm.company || ''}
+                              onChange={(e) => setClientForm({...clientForm, company: e.target.value})}
+                              placeholder="Enter company name"
+                            />
+                          </div>
                         <div className="space-y-2">
                           <Label htmlFor="email">Email</Label>
                           <Input
@@ -646,15 +646,15 @@ const Settings = () => {
                             placeholder="Enter contact person name"
                           />
                         </div>
-                        <div className="col-span-2 space-y-2">
-                          <Label htmlFor="address">Address</Label>
-                          <Input
-                            id="address"
-                            value={clientForm.address || ''}
-                            onChange={(e) => setClientForm({...clientForm, address: e.target.value})}
-                            placeholder="Enter address"
-                          />
-                        </div>
+                                                  <div className="col-span-2 space-y-2">
+                            <Label htmlFor="address">Address</Label>
+                            <Input
+                              id="address"
+                              value={clientForm.address || ''}
+                              onChange={(e) => setClientForm({...clientForm, address: e.target.value})}
+                              placeholder="Enter address"
+                            />
+                          </div>
                         <div className="col-span-2 space-y-2">
                           <Label htmlFor="notes">Notes</Label>
                           <Textarea

@@ -122,8 +122,8 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
               </SelectTrigger>
               <SelectContent>
                 {clients.map((clientItem) => (
-                  <SelectItem key={clientItem.id} value={clientItem.name}>
-                    {clientItem.name} {clientItem.company && `(${clientItem.company})`}
+                  <SelectItem key={clientItem.id} value={clientItem.company}>
+                    {clientItem.company}
                   </SelectItem>
                 ))}
               </SelectContent>
