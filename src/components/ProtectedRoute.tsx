@@ -76,7 +76,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
     );
   }
 
-  // Check if user was rejected
+  // Check if user was rejected - completely block access
   if (user.claims.status === 'rejected') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -112,7 +112,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
     );
   }
 
-  // Check if user is suspended
+  // Check if user is suspended - completely block access
   if (user.claims.status === 'suspended') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -145,51 +145,9 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
     );
   }
 
-  // Show protected content if user is approved
-  if (user.isApproved) {
-    return <>{children}</>;
-  }
-
-  // Fallback for any other status
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <Card className="w-full max-w-md mx-4">
-        <CardHeader className="text-center">
-          <div className="flex justify-center mb-4">
-            <AlertTriangle className="h-12 w-12 text-gray-500" />
-          </div>
-          <CardTitle>Access Restricted</CardTitle>
-          <CardDescription>
-            Unable to verify account status.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="text-center">
-            <p className="text-sm text-gray-600 mb-4">
-              There seems to be an issue with your account status. Please try refreshing or contact support.
-            </p>
-          </div>
-          <div className="flex flex-col gap-2">
-            <Button 
-              variant="outline" 
-              onClick={refreshUser}
-              className="flex items-center gap-2"
-            >
-              <RefreshCw className="h-4 w-4" />
-              Refresh Status
-            </Button>
-            <Button 
-              variant="ghost" 
-              onClick={signOutUser}
-              className="text-gray-600"
-            >
-              Sign Out
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
+  // Allow access for authenticated users (approved, pending, or no status)
+  // Individual pages can check for specific permissions (like Settings requiring admin)
+  return <>{children}</>;
 };
 
 export default ProtectedRoute; 
