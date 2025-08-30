@@ -122,12 +122,21 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
               </SelectTrigger>
               <SelectContent>
                 {clients
-                  .filter(clientItem => clientItem.company && clientItem.company.trim() !== '') // Filter out empty company names
-                  .map((clientItem) => (
-                    <SelectItem key={clientItem.id} value={clientItem.company}>
-                      {clientItem.company}
-                    </SelectItem>
-                  ))}
+                  .filter(clientItem => {
+                    const isValid = clientItem.company && clientItem.company.trim() !== '';
+                    if (!isValid) {
+                      console.log('EditProjectDialog: Filtering out invalid client:', clientItem);
+                    }
+                    return isValid;
+                  })
+                  .map((clientItem) => {
+                    console.log('EditProjectDialog: Creating SelectItem for client:', clientItem.company);
+                    return (
+                      <SelectItem key={clientItem.id} value={clientItem.company}>
+                        {clientItem.company}
+                      </SelectItem>
+                    );
+                  })}
               </SelectContent>
             </Select>
             {clients.length === 0 && (

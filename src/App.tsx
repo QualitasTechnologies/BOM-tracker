@@ -7,6 +7,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
 import UserProfile from "./components/UserProfile";
 import Sidebar from "./components/Sidebar";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Index from "./pages/Index";
 import Projects from "./pages/Projects";
 import BOM from "./pages/BOM";
@@ -60,16 +61,18 @@ const AppLayout: React.FC = () => {
 
       {/* Main Content */}
       <main className={`transition-all duration-300 ${collapsed ? 'ml-16' : 'ml-64'} px-4 py-6`}>
-        <Routes>
-          <Route path="/" element={<Projects />} />
-          <Route path="/projects" element={<Projects />} />
-          <Route path="/project/:projectId/bom" element={<BOM />} />
-          <Route path="/time-tracking" element={<TimeTracking />} />
-          <Route path="/cost-analysis" element={<CostAnalysis />} />
-          <Route path="/settings" element={<Settings />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        <ErrorBoundary>
+          <Routes>
+            <Route path="/" element={<Projects />} />
+            <Route path="/projects" element={<Projects />} />
+            <Route path="/project/:projectId/bom" element={<BOM />} />
+            <Route path="/time-tracking" element={<TimeTracking />} />
+            <Route path="/cost-analysis" element={<CostAnalysis />} />
+            <Route path="/settings" element={<Settings />} />
+            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   );

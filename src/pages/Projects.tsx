@@ -216,10 +216,17 @@ const Projects = () => {
                   <SelectContent>
                     <SelectItem value="all">All Clients</SelectItem>
                     {uniqueClients
-                      .filter(client => client && client.trim() !== '') // Filter out empty clients
-                      .map(client => (
-                        <SelectItem key={client} value={client}>{client}</SelectItem>
-                      ))}
+                      .filter(client => {
+                        const isValid = client && client.trim() !== '';
+                        if (!isValid) {
+                          console.log('Projects.tsx: Filtering out invalid client:', client);
+                        }
+                        return isValid;
+                      })
+                      .map(client => {
+                        console.log('Projects.tsx: Creating SelectItem for client:', client);
+                        return <SelectItem key={client} value={client}>{client}</SelectItem>;
+                      })}
                   </SelectContent>
                 </Select>
 

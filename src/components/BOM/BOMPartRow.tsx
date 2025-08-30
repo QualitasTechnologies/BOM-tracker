@@ -151,33 +151,33 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
 
   return (
     <div 
-      className="border border-gray-200 rounded p-3 hover:bg-gray-50 transition-colors cursor-pointer relative text-sm"
+      className="@container border border-gray-200 rounded p-3 hover:bg-gray-50 transition-colors cursor-pointer relative text-sm"
       onClick={editing ? undefined : onClick}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex-1 min-w-0">
+      <div className="grid grid-cols-[1fr_auto] gap-2 w-full">
+        <div className="min-w-0">
           {editing ? (
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
+            <div className="space-y-2">
+              <div className="grid grid-cols-[1fr_auto_auto_auto] @lg:grid-cols-[2fr_1fr_1fr_auto] gap-2 @md:gap-3">
                 <input
                   placeholder="Part Name"
-                  className="flex-1 text-sm font-medium bg-white border rounded px-2 py-1 min-w-0"
+                  className="text-sm font-medium bg-white border rounded px-2 py-1 truncate"
                   value={editForm.name}
                   onChange={(e) => setEditForm(prev => ({ ...prev, name: e.target.value }))}
                   onClick={(e) => e.stopPropagation()}
                 />
-                <div className="w-20" onClick={(e) => e.stopPropagation()}>
+                <div className="min-w-0" onClick={(e) => e.stopPropagation()}>
                   <Select
                     value={editForm.make}
                     onValueChange={(value) => setEditForm(prev => ({ ...prev, make: value === "__NONE__" ? '' : (value || '') }))}
                   >
-                    <SelectTrigger className="h-8 text-xs">
+                    <SelectTrigger className="h-8 text-xs w-full">
                       <SelectValue placeholder="Make" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__NONE__">None</SelectItem>
                       {availableMakes
-                        .filter(make => make && make.trim() !== '') // Filter out empty/null makes
+                        .filter(make => make && make.trim() !== '')
                         .map((make) => (
                           <SelectItem key={make} value={make}>
                             {make}
@@ -188,7 +188,7 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                 </div>
                 <input
                   placeholder="SKU"
-                  className="w-20 text-sm bg-white border rounded px-2 py-1"
+                  className="text-sm bg-white border rounded px-2 py-1 truncate"
                   value={editForm.sku}
                   onChange={(e) => setEditForm(prev => ({ ...prev, sku: e.target.value }))}
                   onClick={(e) => e.stopPropagation()}
@@ -201,16 +201,16 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                   onClick={(e) => e.stopPropagation()}
                 />
               </div>
-              <div className="flex items-center gap-2">
+              <div className="grid grid-cols-[1fr_auto] gap-2 @md:gap-3">
                 <input
                   placeholder="Description"
-                  className="flex-1 text-sm bg-white border rounded px-2 py-1 min-w-0"
+                  className="text-sm bg-white border rounded px-2 py-1 truncate"
                   value={editForm.description}
                   onChange={(e) => setEditForm(prev => ({ ...prev, description: e.target.value }))}
                   onClick={(e) => e.stopPropagation()}
                 />
                 <select
-                  className="text-sm bg-white border rounded px-2 py-1"
+                  className="text-sm bg-white border rounded px-2 py-1 min-w-[100px]"
                   value={editForm.category}
                   onChange={(e) => setEditForm(prev => ({ ...prev, category: e.target.value }))}
                   onClick={(e) => e.stopPropagation()}
@@ -222,27 +222,27 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
               </div>
             </div>
           ) : (
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h4 className="font-medium text-gray-900 truncate">{part.name}</h4>
+            <div className="space-y-1">
+              <div className="grid grid-cols-[1fr_auto_auto_auto] @md:grid-cols-[2fr_auto_auto_auto] gap-2 @md:gap-3 items-center">
+                <h4 className="font-medium text-gray-900 truncate min-w-0">{part.name}</h4>
                 {part.make && (
-                  <span className="text-xs text-blue-600 bg-blue-50 px-1 rounded">{part.make}</span>
+                  <span className="text-xs text-blue-600 bg-blue-50 px-1 rounded whitespace-nowrap">{part.make}</span>
                 )}
                 {part.sku && (
-                  <span className="text-xs text-purple-600 bg-purple-50 px-1 rounded">SKU: {part.sku}</span>
+                  <span className="text-xs text-purple-600 bg-purple-50 px-1 rounded whitespace-nowrap">SKU: {part.sku}</span>
                 )}
-                <span className="text-xs text-gray-500 bg-gray-100 px-1 rounded">Qty: {part.quantity}</span>
+                <span className="text-xs text-gray-500 bg-gray-100 px-1 rounded whitespace-nowrap">Qty: {part.quantity}</span>
               </div>
-              <div className="text-xs text-gray-600 mt-1 truncate">{part.description}</div>
-              <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
+              <div className="text-xs text-gray-600 truncate">{part.description}</div>
+              <div className="grid grid-cols-[auto_1fr] @md:grid-cols-[auto_auto] gap-2 @md:gap-4 text-xs text-gray-500 items-center">
                 {part.expectedDelivery && (
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 whitespace-nowrap">
                     <Calendar size={10} />
                     <span>{part.expectedDelivery}</span>
                   </div>
                 )}
                 {part.finalizedVendor && (
-                  <span className="truncate">Vendor: {part.finalizedVendor.name}</span>
+                  <span className="truncate min-w-0">Vendor: {part.finalizedVendor.name}</span>
                 )}
               </div>
             </div>
