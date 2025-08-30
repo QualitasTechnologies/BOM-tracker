@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { subscribeToProjects } from "@/utils/projectFirestore";
+import { subscribeToClients, Client } from "@/utils/settingsFirestore";
 
 interface EditProjectDialogProps {
   open: boolean;
@@ -24,6 +25,15 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
   const [status, setStatus] = useState("");
   const [deadline, setDeadline] = useState("");
   const [error, setError] = useState("");
+  const [clients, setClients] = useState<Client[]>([]);
+
+  // Load clients when dialog opens
+  useEffect(() => {
+    if (open) {
+      const unsubscribeClients = subscribeToClients(setClients);
+      return () => unsubscribeClients();
+    }
+  }, [open]);
 
   useEffect(() => {
     if (project) {
@@ -106,14 +116,21 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
           </div>
           <div className="space-y-1">
             <Label htmlFor="clientName">Client Name</Label>
-            <Input
-              id="clientName"
-              value={clientName}
-              onChange={(e) => setClientName(e.target.value)}
-              placeholder="Enter client name"
-              required
-              className="h-8"
-            />
+            <Select value={clientName} onValueChange={setClientName} required>
+              <SelectTrigger className="h-8">
+                <SelectValue placeholder="Select a client" />
+              </SelectTrigger>
+              <SelectContent>
+                {clients.map((clientItem) => (
+                  <SelectItem key={clientItem.id} value={clientItem.name}>
+                    {clientItem.name} {clientItem.company && `(${clientItem.company})`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {clients.length === 0 && (
+              <p className="text-xs text-muted-foreground">No clients available. Add clients in Settings first.</p>
+            )}
           </div>
           <div className="space-y-1">
             <Label htmlFor="description">Description</Label>

@@ -46,7 +46,7 @@ import {
 } from '@/components/ui/table';
 import { 
   Client, 
-  Vendor, 
+  Vendor,
   BOMSettings,
   BOMCategory,
   addClient,
@@ -68,8 +68,12 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { downloadVendorCSVTemplate, parseVendorCSV, validateVendorData, CSVImportResult } from '@/utils/csvImport';
 import { uploadVendorLogo, ImageUploadResult } from '@/utils/imageUpload';
+import { useAuth } from '@/hooks/useAuth';
 
 const Settings = () => {
+  // Auth check
+  const { user, loading: authLoading } = useAuth();
+  
   // State management
   const [clients, setClients] = useState<Client[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -212,7 +216,6 @@ const Settings = () => {
     setSaving(true);
     try {
       await addClient({
-        name: clientForm.name || '',
         company: clientForm.company || '',
         email: clientForm.email || '',
         phone: clientForm.phone || '',
@@ -476,6 +479,38 @@ const Settings = () => {
     }
   };
 
+  // Check auth loading first
+  if (authLoading) {
+    return (
+      <div className="container mx-auto py-6 px-4">
+        <div className="flex items-center justify-center h-64">
+          <div className="text-center">
+            <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
+            <p>Loading...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Check admin access
+  if (!user || !user.isAdmin) {
+    return (
+      <div className="container mx-auto py-6 px-4">
+        <div className="flex items-center justify-center h-64">
+          <div className="text-center">
+            <X className="h-12 w-12 text-red-500 mx-auto mb-4" />
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
+            <p className="text-gray-600">You need admin privileges to access settings.</p>
+            {user && user.isPending && (
+              <p className="text-yellow-600 mt-2">Your account is pending approval.</p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="container mx-auto py-6 px-4">
@@ -574,17 +609,8 @@ const Settings = () => {
                       )}
 
                       <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="clientName">Client Name *</Label>
-                          <Input
-                            id="clientName"
-                            value={clientForm.name || ''}
-                            onChange={(e) => setClientForm({...clientForm, name: e.target.value})}
-                            placeholder="Enter client name"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="company">Company *</Label>
+                        <div className="col-span-2 space-y-2">
+                          <Label htmlFor="company">Company Name *</Label>
                           <Input
                             id="company"
                             value={clientForm.company || ''}
@@ -620,7 +646,7 @@ const Settings = () => {
                             placeholder="Enter contact person name"
                           />
                         </div>
-                        <div className="space-y-2">
+                        <div className="col-span-2 space-y-2">
                           <Label htmlFor="address">Address</Label>
                           <Input
                             id="address"
@@ -678,8 +704,7 @@ const Settings = () => {
                         <TableRow key={client.id}>
                           <TableCell>
                             <div>
-                              <div className="font-medium">{client.name}</div>
-                              <div className="text-sm text-muted-foreground">{client.company}</div>
+                              <div className="font-medium">{client.company}</div>
                             </div>
                           </TableCell>
                           <TableCell>
@@ -1030,15 +1055,15 @@ const Settings = () => {
                           <div className="font-medium">
                             Import completed: {importResults.success} vendors added successfully
                           </div>
-                          {importResults.errors.length > 0 && (
+                          {importResults.errors?.length > 0 && (
                             <div>
                               <div className="font-medium text-red-600 mb-2">
-                                {importResults.errors.length} errors occurred:
+                                {importResults.errors?.length || 0} errors occurred:
                               </div>
                               <ul className="list-disc list-inside text-sm space-y-1 max-h-32 overflow-y-auto">
-                                {importResults.errors.map((error, index) => (
+                                {importResults.errors?.map((error, index) => (
                                   <li key={index}>{error}</li>
-                                ))}
+                                )) || []}
                               </ul>
                             </div>
                           )}

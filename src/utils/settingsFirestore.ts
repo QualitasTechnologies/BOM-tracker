@@ -17,7 +17,6 @@ import {
 // Client types and interfaces
 export interface Client {
   id: string;
-  name: string;
   company: string;
   email: string;
   phone: string;
@@ -347,7 +346,6 @@ export const initializeDefaultBOMSettings = async () => {
 // Utility functions for data validation
 export const validateClient = (client: Partial<Client>): string[] => {
   const errors: string[] = [];
-  if (!client.name?.trim()) errors.push('Client name is required');
   if (!client.company?.trim()) errors.push('Company name is required');
   if (client.email && !isValidEmail(client.email)) errors.push('Invalid email format');
   return errors;

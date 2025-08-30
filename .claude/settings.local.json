@@ -10,7 +10,9 @@
       "Bash(firebase use:*)",
       "Bash(firebase firestore:rules:get:*)",
       "mcp__Ref__ref_read_url",
-      "Bash(firebase functions:secrets:set:*)"
+      "Bash(firebase functions:secrets:set:*)",
+      "Bash(firebase functions:list:*)",
+      "Bash(firebase functions:config:get:*)"
     ],
     "deny": [],
     "ask": []

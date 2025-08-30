@@ -1,5 +1,5 @@
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { subscribeToProjects } from "@/utils/projectFirestore";
+import { subscribeToClients, Client } from "@/utils/settingsFirestore";
 
 interface AddProjectDialogProps {
   open: boolean;
@@ -23,40 +24,94 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
   const [status, setStatus] = useState("ongoing");
   const [deadline, setDeadline] = useState("");
   const [error, setError] = useState("");
+  const [clients, setClients] = useState<Client[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  // Generate a unique project ID
+  const generateProjectId = (existingProjects: any[]): string => {
+    const prefix = "PRJ";
+    let counter = 1;
+    
+    // Find the highest existing project number
+    const existingIds = existingProjects
+      .map(p => p.projectId)
+      .filter(id => id && typeof id === 'string' && id.startsWith(prefix))
+      .map(id => {
+        const match = id.match(new RegExp(`${prefix}-(\\d+)`));
+        return match ? parseInt(match[1]) : 0;
+      })
+      .filter(num => !isNaN(num) && num > 0);
+    
+    if (existingIds.length > 0) {
+      counter = Math.max(...existingIds) + 1;
+    }
+    
+    // Ensure counter is at least 1 and handle very large numbers
+    counter = Math.max(1, Math.min(counter, 999999));
+    
+    return `${prefix}-${counter.toString().padStart(3, '0')}`;
+  };
+
+  // Load clients when dialog opens
+  useEffect(() => {
+    if (open) {
+      const unsubscribeClients = subscribeToClients(setClients);
+      return () => unsubscribeClients();
+    }
+  }, [open]);
+
+  // Generate project ID when dialog opens or when projects change
+  useEffect(() => {
+    if (open) {
+      const unsubscribe = subscribeToProjects((projects) => {
+        const newId = generateProjectId(projects);
+        setId(newId);
+        unsubscribe();
+      });
+    }
+  }, [open]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setLoading(true);
 
-    // Check if project ID already exists
-    const unsubscribe = subscribeToProjects((projects) => {
-      const projectExists = projects.some(project => project.projectId === id);
-      unsubscribe(); // Unsubscribe immediately after checking
+    try {
+      // Check if project ID already exists
+      const unsubscribe = subscribeToProjects((projects) => {
+        const projectExists = projects.some(project => project.projectId === id);
+        unsubscribe(); // Unsubscribe immediately after checking
 
-      if (projectExists) {
-        setError("Project ID already exists. Please choose a different ID.");
-        return;
-      }
+        if (projectExists) {
+          setError("Project ID already exists. Please try again.");
+          setLoading(false);
+          return;
+        }
 
-      // If ID is unique, proceed with project creation
-      onAddProject({
-        id,
-        name,
-        client,
-        description,
-        status,
-        deadline,
+        // If ID is unique, proceed with project creation
+        onAddProject({
+          id,
+          name,
+          client,
+          description,
+          status,
+          deadline,
+        });
+
+        // Reset form
+        setId("");
+        setName("");
+        setClient("");
+        setDescription("");
+        setStatus("ongoing");
+        setDeadline("");
+        setLoading(false);
+        onOpenChange(false);
       });
-
-      // Reset form
-      setId("");
-      setName("");
-      setClient("");
-      setDescription("");
-      setStatus("ongoing");
-      setDeadline("");
-      onOpenChange(false);
-    });
+    } catch (err) {
+      setError("Failed to create project. Please try again.");
+      setLoading(false);
+    }
   };
 
   return (
@@ -76,11 +131,11 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
             <Input
               id="id"
               value={id}
-              onChange={(e) => setId(e.target.value)}
-              placeholder="Enter project ID"
-              required
-              className="h-8"
+              placeholder="Auto-generated"
+              disabled
+              className="h-8 bg-gray-50"
             />
+            <p className="text-xs text-muted-foreground">Project ID is automatically generated</p>
           </div>
           <div className="space-y-1">
             <Label htmlFor="name">Project Name</Label>
@@ -95,14 +150,21 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
           </div>
           <div className="space-y-1">
             <Label htmlFor="client">Client Name</Label>
-            <Input
-              id="client"
-              value={client}
-              onChange={(e) => setClient(e.target.value)}
-              placeholder="Enter client name"
-              required
-              className="h-8"
-            />
+            <Select value={client} onValueChange={setClient} required>
+              <SelectTrigger className="h-8">
+                <SelectValue placeholder="Select a client" />
+              </SelectTrigger>
+              <SelectContent>
+                {clients.map((clientItem) => (
+                  <SelectItem key={clientItem.id} value={clientItem.name}>
+                    {clientItem.name} {clientItem.company && `(${clientItem.company})`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {clients.length === 0 && (
+              <p className="text-xs text-muted-foreground">No clients available. Add clients in Settings first.</p>
+            )}
           </div>
           <div className="space-y-1">
             <Label htmlFor="description">Description</Label>
@@ -143,7 +205,9 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} className="h-8">
               Cancel
             </Button>
-            <Button type="submit" className="h-8">Add Project</Button>
+            <Button type="submit" className="h-8" disabled={loading || clients.length === 0}>
+              {loading ? "Creating..." : "Add Project"}
+            </Button>
           </div>
         </form>
       </DialogContent>

@@ -129,8 +129,12 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
   // Update vendors and notify parent
   const updateVendors = (newVendors) => {
     setVendors(newVendors);
-    if (typeof onUpdatePart === 'function' && partState) {
-      onUpdatePart({ ...partState, vendors: newVendors });
+    // Update part state to keep it in sync
+    const updatedPartState = { ...partState, vendors: newVendors };
+    setPartState(updatedPartState);
+    
+    if (typeof onUpdatePart === 'function') {
+      onUpdatePart(updatedPartState);
     }
   };
 
@@ -599,16 +603,21 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
               );
             })}
             {selectedVendorIdx !== null && vendors[selectedVendorIdx] && (
-              <div className="flex justify-end mt-4">
+              <div className="flex flex-col items-end mt-4 space-y-2">
+                <p className="text-sm text-gray-600">
+                  Finalize vendor selection for procurement
+                </p>
                 <Button
                   className="bg-blue-600 text-white px-6 py-2 rounded"
                   onClick={() => {
-                    if (typeof onUpdatePart === 'function' && partState) {
-                      onUpdatePart({ ...partState, finalizedVendor: vendors[selectedVendorIdx] });
+                    if (typeof onUpdatePart === 'function') {
+                      const updatedPart = { ...partState, finalizedVendor: vendors[selectedVendorIdx] };
+                      setPartState(updatedPart);
+                      onUpdatePart(updatedPart);
                     }
                   }}
                 >
-                  Proceed
+                  Finalize Vendor Selection
                 </Button>
               </div>
             )}

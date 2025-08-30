@@ -8,7 +8,8 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "npm run build && git add . && git commit -m \"🚀 Deploy: $(date '+%Y-%m-%d %H:%M:%S')\" && firebase deploy --only functions && firebase deploy --only hosting"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
