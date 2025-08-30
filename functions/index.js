@@ -202,6 +202,42 @@ exports.health = onRequest((request, response) => {
 
 // ==================== USER MANAGEMENT FUNCTIONS ====================
 
+// One-time function to bootstrap the first admin user
+exports.bootstrapAdmin = onCall(async (request) => {
+  const { data } = request;
+  const { email, adminKey } = data;
+  
+  // Simple security check - replace with your own secret
+  if (adminKey !== 'QualitasTech2025Bootstrap') {
+    throw new Error('Invalid admin key');
+  }
+  
+  try {
+    // Find user by email
+    const userRecord = await admin.auth().getUserByEmail(email);
+    
+    // Set admin claims
+    await admin.auth().setCustomUserClaims(userRecord.uid, {
+      role: 'admin',
+      status: 'approved',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      bootstrapped: true
+    });
+    
+    logger.info('Admin user bootstrapped', { uid: userRecord.uid, email });
+    
+    return { 
+      success: true, 
+      message: `Admin user ${email} has been approved`,
+      uid: userRecord.uid
+    };
+    
+  } catch (error) {
+    logger.error('Error bootstrapping admin:', error);
+    throw new Error(`Failed to bootstrap admin: ${error.message}`);
+  }
+});
+
 // Setup new user after authentication (called from frontend)
 exports.setupNewUser = onCall(async (request) => {
   const { auth } = request;
@@ -218,27 +254,61 @@ exports.setupNewUser = onCall(async (request) => {
       return { success: true, message: 'User already set up' };
     }
     
-    // Set initial custom claims - new users are pending approval
+    // Check if user is from qualitastech.com domain for auto-approval
+    const isQualitasUser = user.email && user.email.endsWith('@qualitastech.com');
+    
+    let userStatus = 'pending';
+    let userRole = 'user';
+    let message = 'User setup completed. Waiting for admin approval.';
+    
+    if (isQualitasUser) {
+      userStatus = 'approved';
+      message = 'User setup completed. Access granted automatically for Qualitas domain.';
+      
+      // Check if this is the first qualitastech user - make them admin
+      const existingAdmins = await admin.auth().listUsers(1000);
+      const hasAdmin = existingAdmins.users.some(u => 
+        u.customClaims && u.customClaims.role === 'admin' && u.customClaims.status === 'approved'
+      );
+      
+      if (!hasAdmin) {
+        userRole = 'admin';
+        message = 'User setup completed. First Qualitas user - granted admin access.';
+      }
+    }
+    
+    // Set custom claims based on domain
     await admin.auth().setCustomUserClaims(auth.uid, {
-      role: 'user',
-      status: 'pending',
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
+      role: userRole,
+      status: userStatus,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      autoApproved: isQualitasUser
     });
     
-    logger.info('New user created with pending status', { uid: auth.uid, email: user.email });
-    
-    // Create a notification for admins about new user
-    await admin.firestore().collection('userRequests').doc(auth.uid).set({
-      uid: auth.uid,
+    logger.info('New user created', { 
+      uid: auth.uid, 
       email: user.email,
-      displayName: user.displayName || '',
-      status: 'pending',
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
+      role: userRole,
+      status: userStatus,
+      autoApproved: isQualitasUser
     });
+    
+    // Only create user request if manual approval needed
+    if (!isQualitasUser) {
+      await admin.firestore().collection('userRequests').doc(auth.uid).set({
+        uid: auth.uid,
+        email: user.email,
+        displayName: user.displayName || '',
+        status: 'pending',
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
     
     return { 
       success: true, 
-      message: 'User setup completed. Waiting for admin approval.' 
+      message: message,
+      autoApproved: isQualitasUser,
+      role: userRole
     };
     
   } catch (error) {

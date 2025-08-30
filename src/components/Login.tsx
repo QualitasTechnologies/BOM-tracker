@@ -3,12 +3,9 @@ import { useAuth } from '../hooks/useAuth';
 import { testFirebaseConfig } from '../utils/firebaseTest';
 
 const Login: React.FC = () => {
-  const { signInWithGoogle, signInWithEmail, signUpWithEmail } = useAuth();
+  const { signInWithGoogle } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [isSignUp, setIsSignUp] = useState(false);
 
   // Test Firebase configuration on component mount
   useEffect(() => {
@@ -32,33 +29,6 @@ const Login: React.FC = () => {
     setIsLoading(false);
   };
 
-  const handleEmailAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    
-    if (!email || !password) {
-      setError('Please enter both email and password.');
-      return;
-    }
-
-    setIsLoading(true);
-    
-    try {
-      const result = isSignUp 
-        ? await signUpWithEmail(email, password)
-        : await signInWithEmail(email, password);
-      
-      if (!result.success) {
-        setError(result.error || 'Authentication failed');
-      } else {
-        console.log('Email authentication successful, redirecting...');
-      }
-    } catch (error) {
-      setError('An unexpected error occurred.');
-    }
-    
-    setIsLoading(false);
-  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 px-4">
@@ -71,57 +41,11 @@ const Login: React.FC = () => {
             className="mx-auto h-16 w-auto mb-6"
           />
           <h2 className="text-2xl font-bold text-gray-900 mb-2">
-            Welcome Back
+            Welcome to Qualitas
           </h2>
           <p className="text-sm text-gray-600">
-            Sign in to access your dashboard
+            Sign in with your Google account to access the dashboard
           </p>
-        </div>
-
-        {/* Email/Password Form */}
-        <form className="space-y-4 mb-6" onSubmit={handleEmailAuth} autoComplete="on">
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            autoComplete="email"
-            required
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            autoComplete="current-password"
-            required
-          />
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full py-2 px-4 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors duration-200 disabled:opacity-50"
-          >
-            {isLoading ? 'Processing...' : (isSignUp ? 'Sign Up' : 'Sign in with Email')}
-          </button>
-          
-          <div className="text-center">
-            <button
-              type="button"
-              onClick={() => setIsSignUp(!isSignUp)}
-              className="text-sm text-blue-600 hover:text-blue-700 underline"
-            >
-              {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
-            </button>
-          </div>
-        </form>
-
-        {/* Divider */}
-        <div className="flex items-center my-4">
-          <div className="flex-1 h-px bg-gray-200" />
-          <span className="px-2 text-gray-400 text-sm">or</span>
-          <div className="flex-1 h-px bg-gray-200" />
         </div>
 
         {/* Sign In with Google Button */}
@@ -154,7 +78,7 @@ const Login: React.FC = () => {
 
           {/* Help Text */}
           <p className="text-xs text-gray-500 text-center">
-            You'll be prompted to choose your Google account
+            Use your @qualitastech.com Google account for automatic access
           </p>
         </div>
 

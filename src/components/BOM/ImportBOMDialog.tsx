@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { X, Loader2, Check, AlertCircle, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -108,11 +108,17 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
   // Convert AI response to editable items
   const convertToEditableItems = (aiItems: AIExtractedItem[]): EditableBOMItem[] => {
     return aiItems.map((item, index) => {
+      // Check if AI-suggested make exists in our list, if not add it temporarily
+      let makeName = item.make || 'unspecified';
+      if (makeName !== 'unspecified' && !existingMakes.includes(makeName)) {
+        setExistingMakes(prev => [...prev, makeName]);
+      }
+      
       const editableItem: Partial<EditableBOMItem> = {
         id: `ai-${Date.now()}-${index}`,
         selected: true,
         name: item.name || '',
-        make: item.make || '',
+        make: makeName,
         sku: item.sku || '',
         description: item.description || item.name || '',
         quantity: item.quantity || 1,
@@ -191,7 +197,7 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
       id: `manual-${Date.now()}`,
       selected: true,
       name: '',
-      make: '',
+      make: 'unspecified',
       sku: '',
       description: '',
       quantity: 1,
@@ -386,13 +392,15 @@ Example:
                               onValueChange={(value) => updateEditableItem(item.id, { make: value })}
                             >
                               <SelectTrigger>
-                                <SelectValue placeholder="Select make" />
+                                <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="">None</SelectItem>
-                                {existingMakes.map((make) => (
-                                  <SelectItem key={make} value={make}>{make}</SelectItem>
-                                ))}
+                                <SelectItem value="unspecified">None</SelectItem>
+                                {existingMakes
+                                  .filter(make => make !== 'unspecified')
+                                  .map((make) => (
+                                    <SelectItem key={make} value={make}>{make}</SelectItem>
+                                  ))}
                               </SelectContent>
                             </Select>
                           </TableCell>
