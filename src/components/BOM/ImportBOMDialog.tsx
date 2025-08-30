@@ -47,7 +47,7 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
   const [processingStep, setProcessingStep] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load BOM settings and existing vendor makes
+  // Load BOM settings and existing vendor makes, and reset state when dialog opens
   React.useEffect(() => {
     const loadData = async () => {
       try {
@@ -72,7 +72,21 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
         console.error('Failed to load data:', err);
       }
     };
+    
     if (open) {
+      // Reset all state when dialog opens to ensure fresh start
+      setFile(null);
+      setTextContent('');
+      setPreview(null);
+      setError(null);
+      setIsProcessing(false);
+      setIsUsingAI(false);
+      setProcessingStep('');
+      setActiveTab('upload');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      
       loadData();
     }
   }, [open]);
