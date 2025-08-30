@@ -79,7 +79,10 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
         const vendorsData = await getVendors();
         
         // Extract vendor company names as makes/brands
-        const companyNames = vendorsData.map(vendor => vendor.company).filter(company => company.trim() !== '');
+        const companyNames = vendorsData
+          .map(vendor => vendor.company)
+          .filter(company => company && company.trim() !== '') // Ensure company exists and is not empty
+          .map(company => company.trim()); // Trim whitespace
         
         // Remove duplicates and sort
         const uniqueMakes = [...new Set(companyNames)].sort();
@@ -173,11 +176,13 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__NONE__">None</SelectItem>
-                      {availableMakes.map((make) => (
-                        <SelectItem key={make} value={make}>
-                          {make}
-                        </SelectItem>
-                      ))}
+                      {availableMakes
+                        .filter(make => make && make.trim() !== '') // Filter out empty/null makes
+                        .map((make) => (
+                          <SelectItem key={make} value={make}>
+                            {make}
+                          </SelectItem>
+                        ))}
                     </SelectContent>
                   </Select>
                 </div>

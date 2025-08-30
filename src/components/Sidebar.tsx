@@ -14,10 +14,14 @@ import {
   Activity
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/hooks/useAuth';
 
-const menuItems = [
+const baseMenuItems = [
   { icon: FolderOpen, label: 'Projects', path: '/projects' },
   { icon: Clock, label: 'Time Tracking', path: '/time-tracking' },
+];
+
+const adminMenuItems = [
   { icon: Calculator, label: 'Cost Analysis', path: '/cost-analysis' },
   { icon: Settings, label: 'Settings', path: '/settings' },
 ];
@@ -29,6 +33,13 @@ interface SidebarProps {
 
 const Sidebar = ({ collapsed, onToggle }: SidebarProps) => {
   const location = useLocation();
+  const { user } = useAuth();
+  
+  // Combine menu items based on user role
+  const menuItems = [
+    ...baseMenuItems,
+    ...(user?.isAdmin ? adminMenuItems : [])
+  ];
 
   return (
     <div className={cn(

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug AI Import Issue</title>
+</head>
+<body>
+    <h1>Debug AI Import Issue</h1>
+    <p>Testing the exact input that caused the repeated KEYENCE issue:</p>
+    
+    <h3>Input:</h3>
+    <pre>
+1,XG-X2800,3D Controller - Inline 3D Image Processing System,KEYENCE,4,,,"85299090"
+2,CA-E200,Camera Extension Unit - Digital Vision System,KEYENCE,4,,,"85299090"
+    </pre>
+    
+    <h3>Expected Output:</h3>
+    <p>Two items:</p>
+    <ul>
+        <li>Name: "XG-X2800" or "3D Controller - Inline 3D Image Processing System", Make: "KEYENCE"</li>
+        <li>Name: "CA-E200" or "Camera Extension Unit - Digital Vision System", Make: "KEYENCE"</li>
+    </ul>
+    
+    <h3>Actual Issue:</h3>
+    <p>Make field shows repeated "KEYENCEKEYENCEKEYENCE..." instead of just "KEYENCE"</p>
+    
+    <button onclick="testAI()">Test AI Analysis</button>
+    <div id="results"></div>
+    
+    <script>
+        async function testAI() {
+            const testInput = `1,XG-X2800,3D Controller - Inline 3D Image Processing System,KEYENCE,4,,,"85299090"
+2,CA-E200,Camera Extension Unit - Digital Vision System,KEYENCE,4,,,"85299090"`;
+            
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<p>Testing...</p>';
+            
+            try {
+                const response = await fetch('https://us-central1-visionbomtracker.cloudfunctions.net/analyzeBOM', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        text: testInput,
+                        existingCategories: ['Vision Systems', 'Control Systems'],
+                        existingMakes: ['KEYENCE', 'Siemens', 'Omron']
+                    })
+                });
+                
+                const data = await response.json();
+                
+                resultsDiv.innerHTML = `
+                    <h3>AI Response:</h3>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+                
+                // Check if the make field is properly set
+                if (data.items) {
+                    data.items.forEach((item, index) => {
+                        console.log(`Item ${index + 1}:`, {
+                            name: item.name,
+                            make: item.make,
+                            makeLength: item.make ? item.make.length : 0
+                        });
+                    });
+                }
+                
+            } catch (error) {
+                resultsDiv.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>

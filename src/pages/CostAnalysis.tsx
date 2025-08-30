@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, TrendingUp, TrendingDown, FileDown, Edit2, DollarSign, Clock, Package } from "lucide-react";
+import { ArrowLeft, TrendingUp, TrendingDown, FileDown, Edit2, DollarSign, Clock, Package, X } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LineChart, Line, ResponsiveContainer, Legend } from "recharts";
 import { Progress } from "@/components/ui/progress";
@@ -13,9 +13,11 @@ import { doc, getDoc } from "firebase/firestore";
 import { db } from "@/firebase";
 import { getBOMData, getTotalBOMCost, updateProject } from "@/utils/projectFirestore";
 import { fetchEngineers, getTotalManHours } from "@/utils/timeTrackingFirestore";
+import { useAuth } from "@/hooks/useAuth";
 
 const CostAnalysis = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [costPerHour, setCostPerHour] = useState(0);
   const [estimatedBudget, setEstimatedBudget] = useState(600000);
   const [isEditingBudget, setIsEditingBudget] = useState(false);
@@ -167,6 +169,29 @@ const CostAnalysis = () => {
     { category: "Engineer", description: costDescriptions[1], cost: engineerCost, notes: "Auto-calculated" },
     { category: "Miscellaneous", description: costDescriptions[2], cost: miscCost, notes: "Manually added" },
   ];
+
+  // Check admin access
+  if (!user || !user.isAdmin) {
+    return (
+      <div className="container mx-auto py-6 px-4">
+        <div className="flex items-center justify-center h-64">
+          <div className="text-center">
+            <X className="h-12 w-12 text-red-500 mx-auto mb-4" />
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
+            <p className="text-gray-600">You need admin privileges to access cost analysis.</p>
+            <Button 
+              onClick={() => navigate('/projects')} 
+              className="mt-4"
+              variant="outline"
+            >
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back to Projects
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen bg-background">

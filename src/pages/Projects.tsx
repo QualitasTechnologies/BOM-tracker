@@ -215,9 +215,11 @@ const Projects = () => {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Clients</SelectItem>
-                    {uniqueClients.map(client => (
-                      <SelectItem key={client} value={client}>{client}</SelectItem>
-                    ))}
+                    {uniqueClients
+                      .filter(client => client && client.trim() !== '') // Filter out empty clients
+                      .map(client => (
+                        <SelectItem key={client} value={client}>{client}</SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
 

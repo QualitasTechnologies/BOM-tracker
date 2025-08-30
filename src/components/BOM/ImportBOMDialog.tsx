@@ -66,12 +66,18 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
           setExistingCategories(settings.defaultCategories);
         }
         
-        // Extract unique makes from all vendors
+        // Extract unique makes from OEM vendors only
         const makes = new Set<string>();
-        vendors.forEach(vendor => {
-          vendor.makes?.forEach(make => makes.add(make));
+        
+        const oemVendors = vendors.filter(vendor => vendor.type === 'OEM');
+        oemVendors.forEach(vendor => {
+          if (vendor.company && vendor.company.trim()) {
+            makes.add(vendor.company);
+          }
         });
+        
         setExistingMakes(Array.from(makes));
+        console.log('Loaded OEM makes (company names):', Array.from(makes));
         
       } catch (err) {
         console.error('Failed to load data:', err);
@@ -108,10 +114,36 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
   // Convert AI response to editable items
   const convertToEditableItems = (aiItems: AIExtractedItem[]): EditableBOMItem[] => {
     return aiItems.map((item, index) => {
-      // Check if AI-suggested make exists in our list, if not add it temporarily
-      let makeName = item.make || 'unspecified';
-      if (makeName !== 'unspecified' && !existingMakes.includes(makeName)) {
-        setExistingMakes(prev => [...prev, makeName]);
+      // Smart make matching: only use predefined makes from vendor DB
+      let makeName = 'unspecified';
+      
+      if (item.make && typeof item.make === 'string') {
+        // Clean the AI response (remove repeated patterns)
+        const cleanedMake = item.make
+          .replace(/(.+?)\1+/g, '$1') // Remove "KEYENCEKEYENCE" -> "KEYENCE"
+          .trim()
+          .substring(0, 50);
+        
+        // Find exact match in existing makes (case-insensitive)
+        const exactMatch = existingMakes.find(existing => 
+          existing.toLowerCase() === cleanedMake.toLowerCase()
+        );
+        
+        if (exactMatch) {
+          makeName = exactMatch;
+        } else {
+          // Try partial matching for common abbreviations
+          const partialMatch = existingMakes.find(existing => {
+            const existingLower = existing.toLowerCase();
+            const cleanedLower = cleanedMake.toLowerCase();
+            return existingLower.includes(cleanedLower) || cleanedLower.includes(existingLower);
+          });
+          
+          if (partialMatch) {
+            makeName = partialMatch;
+          }
+          // If no match found, keep as 'unspecified' - don't add to the list
+        }
       }
       
       const editableItem: Partial<EditableBOMItem> = {

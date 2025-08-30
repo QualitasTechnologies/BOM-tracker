@@ -564,9 +564,11 @@ const BOM = () => {
                   {settingsCategories.length === 0 && (
                     <SelectItem value="__LOADING__" disabled>Loading categories...</SelectItem>
                   )}
-                  {settingsCategories.map(catName => (
-                    <SelectItem key={catName} value={catName}>{catName}</SelectItem>
-                  ))}
+                  {settingsCategories
+                    .filter(catName => catName && catName.trim() !== '') // Filter out empty categories
+                    .map(catName => (
+                      <SelectItem key={catName} value={catName}>{catName}</SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>
@@ -599,11 +601,13 @@ const BOM = () => {
                     {availableMakes.length === 0 && vendors.length > 0 && (
                       <SelectItem value="__NO_MAKES__" disabled>No makes found in vendors</SelectItem>
                     )}
-                    {availableMakes.map((make) => (
-                      <SelectItem key={make} value={make}>
-                        {make}
-                      </SelectItem>
-                    ))}
+                    {availableMakes
+                      .filter(make => make && make.trim() !== '') // Filter out empty makes
+                      .map((make) => (
+                        <SelectItem key={make} value={make}>
+                          {make}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
               </div>

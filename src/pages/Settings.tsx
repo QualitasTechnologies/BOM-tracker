@@ -69,6 +69,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { downloadVendorCSVTemplate, parseVendorCSV, validateVendorData, CSVImportResult } from '@/utils/csvImport';
 import { uploadVendorLogo, ImageUploadResult } from '@/utils/imageUpload';
 import { useAuth } from '@/hooks/useAuth';
+import { toast } from '@/components/ui/use-toast';
 
 const Settings = () => {
   // Auth check
@@ -207,14 +208,10 @@ const Settings = () => {
 
   // Client management functions
   const handleAddClient = async () => {
-    const errors = validateClient(clientForm);
-    if (errors.length > 0) {
-      setFormErrors(errors);
-      return;
-    }
-
-    setSaving(true);
+    if (!user) return;
+    
     try {
+      setLoading(true);
       await addClient({
         company: clientForm.company || '',
         email: clientForm.email || '',
@@ -222,16 +219,34 @@ const Settings = () => {
         address: clientForm.address || '',
         contactPerson: clientForm.contactPerson || '',
         status: 'active',
-        notes: clientForm.notes || ''
+        notes: clientForm.notes || '' // Fixed: ensure notes is not undefined
       });
       
-      setClientForm({});
+      // Reset form
+      setClientForm({
+        company: '',
+        email: '',
+        phone: '',
+        address: '',
+        contactPerson: '',
+        notes: ''
+      });
+      
       setClientDialog(false);
-      setFormErrors([]);
-    } catch (err: any) {
-      setError(err.message || 'Failed to add client');
+      toast({
+        title: "Success",
+        description: "Client added successfully",
+      });
+    } catch (error) {
+      console.error('Error adding client:', error);
+      toast({
+        title: "Error",
+        description: "Failed to add client",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
     }
-    setSaving(false);
   };
 
   const handleEditClient = (client: Client) => {

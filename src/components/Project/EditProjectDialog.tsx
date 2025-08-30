@@ -121,11 +121,13 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
                 <SelectValue placeholder="Select a client" />
               </SelectTrigger>
               <SelectContent>
-                {clients.map((clientItem) => (
-                  <SelectItem key={clientItem.id} value={clientItem.company}>
-                    {clientItem.company}
-                  </SelectItem>
-                ))}
+                {clients
+                  .filter(clientItem => clientItem.company && clientItem.company.trim() !== '') // Filter out empty company names
+                  .map((clientItem) => (
+                    <SelectItem key={clientItem.id} value={clientItem.company}>
+                      {clientItem.company}
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
             {clients.length === 0 && (

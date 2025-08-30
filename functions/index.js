@@ -77,27 +77,45 @@ exports.analyzeBOM = onRequest(
       return;
     }
 
-    // Use optimized prompt if provided, otherwise use default
-    const systemPrompt = prompt || `Extract BOM items from text. Return valid JSON only.
+    // Use optimized prompt if provided, otherwise create an intelligent one
+    const systemPrompt = prompt || `You are a BOM (Bill of Materials) extraction expert. Analyze the input text and extract items intelligently.
 
-Available makes: ${existingMakes?.join(', ') || 'any brands'}
-Categories: ${existingCategories?.join(', ') || 'Vision Systems, Motors & Drives, Sensors, Control Systems, Mechanical, Electrical, Uncategorized'}
+INTELLIGENCE RULES:
+1. DETECT FORMAT: CSV, table, list, or structured text
+2. For CSV: Parse columns correctly - identify which column contains what data
+3. For your input like "1,XG-X2800,3D Controller - Inline 3D Image Processing System,KEYENCE,4,,,"85299090"
+   - Column 1: Item number/sequence 
+   - Column 2: Part number/SKU (XG-X2800)
+   - Column 3: Description/Name (3D Controller - Inline 3D Image Processing System)  
+   - Column 4: Manufacturer/Make (KEYENCE)
+   - Column 5: Quantity (4)
+   - Later columns: Additional info
 
-Format:
+EXTRACTION LOGIC:
+- Use the LONGEST descriptive text as the item name
+- Extract manufacturer/brand from dedicated columns or within text
+- Match manufacturers to existing: ${existingMakes?.join(', ') || 'KEYENCE, Siemens, Omron, Allen Bradley, Schneider'}
+- Categorize using: ${existingCategories?.join(', ') || 'Vision Systems, Control Systems, Motors & Drives, Sensors, Mechanical, Electrical'}
+- For vision/camera equipment → "Vision Systems"
+- For controllers/PLCs → "Control Systems"
+
+STRICT JSON OUTPUT:
 {
   "items": [
     {
-      "name": "Item name",
-      "make": "Brand or null", 
-      "description": "Description",
-      "sku": "Part number or null",
-      "quantity": 1,
-      "category": "Category",
+      "name": "Primary item name (longest descriptive text)",
+      "make": "Exact manufacturer name or null", 
+      "description": "Full description",
+      "sku": "Part number/model or null",
+      "quantity": integer,
+      "category": "Best matching category",
       "unit": "pcs"
     }
   ],
-  "totalItems": 1
-}`;
+  "totalItems": number
+}
+
+CRITICAL: Return ONLY valid JSON. No explanation text.`;
 
     const userPrompt = `Extract BOM items from this text:
 
@@ -156,16 +174,33 @@ ${text}`;
     }
 
     // Transform and validate items
-    const items = parsedResponse.items.map((item, index) => ({
-      name: item.name || `Item ${index + 1}`,
-      make: item.make || undefined,
-      description: item.description || item.name || 'No description provided',
-      sku: item.sku || undefined,
-      quantity: parseInt(item.quantity) || 1,
-      category: item.category || 'Uncategorized',
-      unit: item.unit || 'pcs',
-      specifications: item.specifications || undefined
-    }));
+    const items = parsedResponse.items.map((item, index) => {
+      // Clean and validate make field to prevent concatenation issues
+      let cleanMake = undefined;
+      if (item.make && typeof item.make === 'string') {
+        // Remove any repeated patterns and trim
+        cleanMake = item.make
+          .replace(/(.+?)\1+/g, '$1') // Remove repeated patterns like "KEYENCEKEYENCE" -> "KEYENCE"
+          .trim()
+          .substring(0, 50); // Limit length to prevent UI issues
+        
+        // If empty after cleaning, set to undefined
+        if (!cleanMake || cleanMake.length === 0) {
+          cleanMake = undefined;
+        }
+      }
+
+      return {
+        name: item.name || `Item ${index + 1}`,
+        make: cleanMake,
+        description: item.description || item.name || 'No description provided',
+        sku: item.sku || undefined,
+        quantity: parseInt(item.quantity) || 1,
+        category: item.category || 'Uncategorized',
+        unit: item.unit || 'pcs',
+        specifications: item.specifications || undefined
+      };
+    });
 
     const result = {
       items,
