@@ -38,10 +38,103 @@
 - ✅ Performance Testing - Large file processing validated with comprehensive test suite
 
 ### 🎯 Immediate Next (Week 1-2) - PRIORITY
-1. **Cost Analysis Dashboard** - Real-time cost tracking and visualization
-2. **Vendor Comparison Tools** - Side-by-side quote comparisons  
-3. **Export Capabilities** - PDF reports, Excel exports, purchase orders
-4. **Approval Workflows** - Multi-stage BOM approval process
+
+#### 📊 CEO Dashboard & Project KPI System (HIGHEST PRIORITY)
+See CEO_Dashboard_PRD.md for complete specifications
+
+**Phase 1: Data Model & Infrastructure (Week 1-2)**
+1. **Project Tracking Enhancement**
+   - Add project category (Internal/Customer)
+   - Implement original vs current target end dates
+   - Add project kickoff date tracking
+   - Extend budget tracking with burn rate calculations
+
+2. **Milestone System Implementation**
+   - Create milestone data model with original/current planned dates
+   - Add milestone estimated duration (calendar days)
+   - Implement status tracking (Not Started/In Progress/Completed/Blocked)
+   - Add progress percentage tracking
+
+3. **Delay Tracking System** (Critical)
+   - Build delay log collection system
+   - Mandatory fields: Reason (min 20 chars), Attribution (Internal/External categories)
+   - Timeline impact calculations
+   - Cumulative delay tracking
+   - Automatic prompts when dates change
+
+4. **Check-in System Enhancement**
+   - Hours spent tracking per task/milestone
+   - Blocker reporting with categorization
+   - Link check-ins to projects/milestones/tasks
+
+**Phase 2: Dashboard Core (Week 3-4)**
+5. **Summary View**
+   - Active/Critical/Warning/On Track project counts
+   - Weekly activity summary with week-over-week deltas
+   - Project category grouping and filtering
+
+6. **Project Health Table**
+   - Budget status with burn visualization
+   - Timeline status with alignment checking
+   - Last activity monitoring
+   - Auto-generated red flag system (Critical 🔴 / Warning ⚠️)
+   - Sorting, filtering, search, pagination, CSV export
+
+**Phase 3: Project Detail View (Week 5-6)**
+7. **Budget Burn Analysis**
+   - Project budget summary with burn rate
+   - Projected days until budget exhausted
+   - Budget vs timeline alignment analysis
+
+8. **Timeline & Delay History** (Critical for client communication)
+   - Timeline summary with gap analysis
+   - Milestone timeline breakdown
+   - **Delay History Timeline** - Chronological view of all delays with reasons and attribution
+   - Filter by attribution to show client vs internal delays
+   - Summary stats by delay category
+
+9. **Planning Health Indicators**
+   - Scope creep tracking (new tasks added post-kickoff)
+   - Estimation accuracy (milestone and task level)
+   - Pattern analysis by engineer/task type
+   - Active milestone/task stagnation detection
+   - Repeated blocker identification
+
+10. **CEO Action Panel**
+    - Mark blocker resolved
+    - Add CEO notes
+    - Request updates from project owners
+    - Change project status
+
+**Phase 4: Workflows & Automation (Week 7)**
+11. **Automated Delay Logging**
+    - Detect milestone/project date changes
+    - Prompt for reason + attribution (mandatory)
+    - Validate input (min 20 chars)
+    - Recalculate project end date impact
+
+12. **Stagnation Detection & Alerts**
+    - Monitor active milestones for 48h+ inactivity
+    - Auto-flag stagnant items
+    - Notification system
+
+**Phase 5: Analytics (Week 8)**
+13. **Estimation Pattern Analysis**
+    - Engineer-specific variance tracking
+    - Task type variance analysis
+    - Best/worst estimation identification
+
+14. **Delay Analytics**
+    - Total delays by attribution
+    - Client vs internal delay breakdown
+    - Most common delay reasons
+
+---
+
+#### 🔧 Other Priority Features
+15. **Vendor Comparison Tools** - Side-by-side quote comparisons
+16. **Export Capabilities** - PDF reports, Excel exports, purchase orders
+17. **Approval Workflows** - Multi-stage BOM approval process
 
 ### 👥 User Management System Status
 🔧 **NEEDS TESTING**: User management system implemented but requires proper testing
@@ -67,8 +160,11 @@
   - Feature-level restrictions (import, export, delete)
   - Settings access control (only admins can modify)
 
-### 📊 Analytics & Reporting
-- Project cost trends and budget tracking
+### 📊 Analytics & Reporting (Enhanced by CEO Dashboard)
+- ✅ Project cost trends and budget tracking - **Being implemented in CEO Dashboard Phase 1-3**
+- ✅ Timeline tracking with delay attribution - **Core feature of CEO Dashboard**
+- ✅ Estimation accuracy tracking - **Implemented in CEO Dashboard Phase 3**
+- ✅ Project health indicators - **Core feature of CEO Dashboard**
 - Vendor performance metrics
 - Profit/Loss analysis enhancements
 - User activity and audit logs
@@ -110,11 +206,171 @@
 - End-to-end tests for critical workflows
 - Performance testing for large data operations
 
+### CEO Dashboard Specific Requirements
+- **Data Model First**: Implement complete data models before UI
+- **Mandatory Delay Logging**: Cannot save milestone date changes without reason + attribution
+- **Real-time Calculations**: All KPIs must calculate in real-time from source data
+- **Exception-Based Design**: Surface problems automatically, don't make CEO hunt
+- **Historical Transparency**: Never delete delay history, maintain complete audit trail
+- **Client-Shareable**: Delay history must be presentable to clients
+
 ### Deployment Process
 1. Test locally with Firebase emulators
 2. Deploy Firebase Functions for backend services
 3. Test n8n workflow integrations
 4. Deploy to production via Lovable platform
+
+---
+
+## 📋 CEO DASHBOARD DATA REQUIREMENTS
+
+### New Firebase Collections Needed
+
+**1. Milestones Collection**
+```typescript
+interface Milestone {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string;
+  // Planning dates (never change after initial planning)
+  originalPlannedStartDate: Date;
+  originalPlannedEndDate: Date;
+  originalEstimatedDuration: number; // calendar days
+  // Current dates (updated when delayed)
+  currentPlannedStartDate: Date;
+  currentPlannedEndDate: Date;
+  // Actual dates
+  actualStartDate?: Date;
+  actualEndDate?: Date;
+  // Status
+  status: 'Not Started' | 'In Progress' | 'Completed' | 'Blocked';
+  completionPercentage: number;
+  // Metadata
+  createdAt: Date;
+  createdBy: string;
+}
+```
+
+**2. Delay Logs Collection** (Critical)
+```typescript
+interface DelayLog {
+  id: string;
+  projectId: string;
+  milestoneId?: string;
+  // What changed
+  changeType: 'milestone' | 'project';
+  itemName: string;
+  originalDate: Date;
+  newDate: Date;
+  delayDays: number;
+  // Why it changed (required fields)
+  reason: string; // min 20 chars
+  attribution: 'Internal-Team' | 'Internal-Process' | 'External-Client' | 'External-Vendor' | 'External-Other';
+  supportingNotes?: string;
+  // Impact
+  cumulativeProjectDelay: number; // total days project delayed
+  // Metadata
+  loggedAt: Date;
+  loggedBy: string;
+}
+```
+
+**3. Check-ins Collection**
+```typescript
+interface CheckIn {
+  id: string;
+  userId: string;
+  projectId: string;
+  milestoneId?: string;
+  taskId?: string;
+  // Time tracking
+  timestamp: Date;
+  hoursSpent: number;
+  // Progress
+  whatAccomplished: string;
+  updatedCompletionPercentage?: number;
+  // Blockers
+  blockerDescription?: string;
+  blockerCategory?: 'Internal-Team' | 'Internal-Process' | 'External-Client' | 'External-Vendor';
+}
+```
+
+**4. Project Updates** (extend existing Project model)
+```typescript
+interface Project {
+  // ... existing fields ...
+  // New fields for CEO Dashboard
+  category: 'Internal' | 'Customer';
+  kickoffDate: Date;
+  originalTargetEndDate: Date; // never changes
+  currentTargetEndDate: Date; // updates when delayed
+  budgetedAmount: number;
+  // Calculated fields (computed in real-time)
+  totalSpent?: number; // sum of hours * hourly rates
+  budgetPercentConsumed?: number;
+  timelinePercentConsumed?: number;
+  progressPercentage?: number;
+  cumulativeDelayDays?: number;
+}
+```
+
+**5. CEO Notes Collection**
+```typescript
+interface CeoNote {
+  id: string;
+  projectId: string;
+  noteText: string;
+  createdAt: Date;
+  createdBy: string; // CEO user ID
+  visibleToProjectOwner: boolean;
+}
+```
+
+**6. Blockers Collection** (for repeated blocker tracking)
+```typescript
+interface Blocker {
+  id: string;
+  projectId: string;
+  milestoneId?: string;
+  taskId?: string;
+  description: string;
+  category: 'Internal-Team' | 'Internal-Process' | 'External-Client' | 'External-Vendor';
+  firstReportedDate: Date;
+  reportCount: number;
+  lastReportedDate: Date;
+  resolved: boolean;
+  resolvedDate?: Date;
+  resolutionNote?: string;
+}
+```
+
+### KPI Calculation Logic
+
+**Budget Burn Rate**
+- Daily burn rate = Total spent / Days elapsed
+- Projected days until budget exhausted = Budget remaining / Daily burn rate
+- Status: Compare projected days to days remaining in timeline
+
+**Timeline Alignment**
+- Timeline % = Days elapsed / Total project days
+- Progress % = Weighted average of milestone completion
+- Gap = Timeline % - Progress %
+- Status: Green if gap < 10%, Yellow if 10-25%, Red if > 25%
+
+**Stagnation Detection**
+- Active milestone = (Status = "In Progress") OR (Status = "Not Started" AND current date > planned start date)
+- Stagnant = Active milestone AND last check-in > 48 hours ago
+- Not flagged = Future milestones (planned start date not reached)
+
+**Estimation Variance**
+- Milestone variance = (Actual duration - Estimated duration) / Estimated duration * 100%
+- Task variance = (Actual hours - Estimated hours) / Estimated hours * 100%
+- Color: Green ≤50%, Yellow 50-200%, Red >200%
+
+**Red Flag Logic**
+- Critical 🔴: Over budget, missed deadline, no activity >48h on active milestone, budget >90% with >15% timeline remaining
+- Warning ⚠️: Falling behind, new tasks added, active milestone stagnant 24-48h, poor estimation >200%, repeated blocker 3+ times, delay not logged
 
 ---
 
