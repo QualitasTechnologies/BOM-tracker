@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/hooks/useAuth';
 
 const baseMenuItems = [
+  { icon: LayoutDashboard, label: 'KPI Dashboard', path: '/kpi' },
   { icon: FolderOpen, label: 'Projects', path: '/projects' },
   { icon: Clock, label: 'Time Tracking', path: '/time-tracking' },
 ];

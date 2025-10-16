@@ -15,6 +15,7 @@ import TimeTracking from "./pages/TimeTracking";
 import CostAnalysis from "./pages/CostAnalysis";
 import NotFound from "./pages/NotFound";
 import Settings from "./pages/Settings";
+import KPI from "./pages/Index"; // Using Index as KPI dashboard
 import React, { createContext, useContext, useState } from 'react';
 
 const queryClient = new QueryClient();
@@ -63,7 +64,8 @@ const AppLayout: React.FC = () => {
       <main className={`transition-all duration-300 ${collapsed ? 'ml-16' : 'ml-64'} px-4 py-6`}>
         <ErrorBoundary>
           <Routes>
-            <Route path="/" element={<Projects />} />
+            <Route path="/" element={<KPI />} />
+            <Route path="/kpi" element={<KPI />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/project/:projectId/bom" element={<BOM />} />
             <Route path="/time-tracking" element={<TimeTracking />} />
