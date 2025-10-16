@@ -209,16 +209,25 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                   onChange={(e) => setEditForm(prev => ({ ...prev, description: e.target.value }))}
                   onClick={(e) => e.stopPropagation()}
                 />
-                <select
-                  className="text-sm bg-white border rounded px-2 py-1 min-w-[100px]"
-                  value={editForm.category}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, category: e.target.value }))}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {availableCategories.map(cat => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
-                </select>
+                <div onClick={(e) => e.stopPropagation()}>
+                  <Select
+                    value={editForm.category}
+                    onValueChange={(value) => setEditForm(prev => ({ ...prev, category: value }))}
+                  >
+                    <SelectTrigger className="h-8 text-sm min-w-[100px]">
+                      <SelectValue placeholder="Select category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableCategories.length === 0 ? (
+                        <SelectItem value="" disabled>No categories available</SelectItem>
+                      ) : (
+                        availableCategories.map(cat => (
+                          <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </div>
           ) : (
@@ -258,8 +267,15 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                 className="h-6 w-6 p-0"
                 onClick={(e) => {
                   e.stopPropagation();
+                  console.log('Saving part changes:', { 
+                    partId: part.id, 
+                    originalCategory: part.category, 
+                    newCategory: editForm.category,
+                    availableCategories 
+                  });
                   onEdit?.(part.id, editForm);
                   if (editForm.category !== part.category) {
+                    console.log('Category changed, calling onCategoryChange:', editForm.category);
                     onCategoryChange?.(part.id, editForm.category);
                   }
                   setEditing(false);

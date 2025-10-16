@@ -452,7 +452,7 @@ const BOM = () => {
                     }}
                     onEditPart={handleEditPart}
                     onPartCategoryChange={handlePartCategoryChange}
-                    availableCategories={categories.map(cat => cat.name)}
+                    availableCategories={settingsCategories}
                   />
                 ))}
                 
@@ -481,7 +481,7 @@ const BOM = () => {
 
       {/* Filter Dialog */}
       <Dialog open={filterOpen} onOpenChange={setFilterOpen}>
-        <DialogContent className="max-w-[350px]">
+        <DialogContent className="@container max-w-[350px] max-h-[90vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle>Filter Parts</DialogTitle>
           </DialogHeader>
@@ -536,7 +536,7 @@ const BOM = () => {
 
       {/* Add Part Dialog */}
       <Dialog open={addPartOpen} onOpenChange={setAddPartOpen}>
-        <DialogContent className="max-w-[425px]">
+        <DialogContent className="@container max-w-[425px] max-h-[90vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle>Add Part</DialogTitle>
             <DialogDescription>

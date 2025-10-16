@@ -601,7 +601,7 @@ const Settings = () => {
                         Add Client
                       </Button>
                     </DialogTrigger>
-                    <DialogContent className="max-w-2xl">
+                    <DialogContent className="@container max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
                       <DialogHeader>
                         <DialogTitle>
                           {editingClient ? 'Edit Client' : 'Add New Client'}
@@ -611,19 +611,20 @@ const Settings = () => {
                         </DialogDescription>
                       </DialogHeader>
 
-                      {formErrors.length > 0 && (
-                        <Alert variant="destructive">
-                          <AlertDescription>
-                            <ul className="list-disc list-inside">
-                              {formErrors.map((error, index) => (
-                                <li key={index}>{error}</li>
-                              ))}
-                            </ul>
-                          </AlertDescription>
-                        </Alert>
-                      )}
+                      <div className="flex-1 overflow-y-auto pr-2 -mr-2">
+                        {formErrors.length > 0 && (
+                          <Alert variant="destructive" className="mb-4">
+                            <AlertDescription>
+                              <ul className="list-disc list-inside">
+                                {formErrors.map((error, index) => (
+                                  <li key={index}>{error}</li>
+                                ))}
+                              </ul>
+                            </AlertDescription>
+                          </Alert>
+                        )}
 
-                                              <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-2 gap-4 pb-4">
                           <div className="col-span-2 space-y-2">
                             <Label htmlFor="company">Company Name *</Label>
                             <Input
@@ -679,8 +680,10 @@ const Settings = () => {
                             placeholder="Additional notes about the client"
                           />
                         </div>
+                        </div>
                       </div>
-                      <div className="flex justify-end gap-2 mt-6">
+                      
+                      <div className="flex justify-end gap-2 mt-4 pt-4 border-t bg-background">
                         <Button
                           onClick={editingClient ? handleUpdateClient : handleAddClient}
                           disabled={saving}
@@ -821,7 +824,7 @@ const Settings = () => {
                         Add Vendor
                       </Button>
                     </DialogTrigger>
-                    <DialogContent className="max-w-3xl">
+                    <DialogContent className="@container max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
                       <DialogHeader>
                         <DialogTitle>
                           {editingVendor ? 'Edit Vendor' : 'Add New Vendor'}
@@ -831,19 +834,20 @@ const Settings = () => {
                         </DialogDescription>
                       </DialogHeader>
 
-                      {formErrors.length > 0 && (
-                        <Alert variant="destructive">
-                          <AlertDescription>
-                            <ul className="list-disc list-inside">
-                              {formErrors.map((error, index) => (
-                                <li key={index}>{error}</li>
-                              ))}
-                            </ul>
-                          </AlertDescription>
-                        </Alert>
-                      )}
+                      <div className="flex-1 overflow-y-auto pr-2 -mr-2">
+                        {formErrors.length > 0 && (
+                          <Alert variant="destructive" className="mb-4">
+                            <AlertDescription>
+                              <ul className="list-disc list-inside">
+                                {formErrors.map((error, index) => (
+                                  <li key={index}>{error}</li>
+                                ))}
+                              </ul>
+                            </AlertDescription>
+                          </Alert>
+                        )}
 
-                      <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 @2xl:grid-cols-2 gap-4 pb-4">
                         <div className="space-y-2">
                           <Label htmlFor="vendorCompany">Company Name *</Label>
                           <Input
@@ -1042,8 +1046,10 @@ const Settings = () => {
                             placeholder="Additional notes about the vendor"
                           />
                         </div>
+                        </div>
                       </div>
-                      <div className="flex justify-end gap-2 mt-6">
+                      
+                      <div className="flex justify-end gap-2 mt-4 pt-4 border-t bg-background">
                         <Button
                           onClick={editingVendor ? handleUpdateVendor : handleAddVendor}
                           disabled={saving || uploadingLogo}

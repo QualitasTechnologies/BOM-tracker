@@ -116,11 +116,11 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[425px] p-4">
+      <DialogContent className="@container max-w-[425px] max-h-[90vh] overflow-hidden flex flex-col p-4">
         <DialogHeader className="pb-2">
           <DialogTitle>Add New Project</DialogTitle>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-3">
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto space-y-3 pr-2 -mr-2">
           {error && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription>{error}</AlertDescription>
@@ -212,15 +212,15 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
               className="h-8"
             />
           </div>
-          <div className="flex justify-end gap-2 pt-2">
+          </form>
+          <div className="flex justify-end gap-2 pt-4 mt-4 border-t bg-background">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} className="h-8">
               Cancel
             </Button>
-            <Button type="submit" className="h-8" disabled={loading || clients.length === 0}>
+            <Button type="submit" className="h-8" disabled={loading || clients.length === 0} onClick={handleSubmit}>
               {loading ? "Creating..." : "Add Project"}
             </Button>
           </div>
-        </form>
       </DialogContent>
     </Dialog>
   );
