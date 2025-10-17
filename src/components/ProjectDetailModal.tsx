@@ -56,38 +56,66 @@ export function ProjectDetailModal({
             {/* Budget Analysis */}
             <Card>
               <CardHeader>
-                <CardTitle>Budget Burn Analysis</CardTitle>
+                <CardTitle>Budget Analysis</CardTitle>
                 <CardDescription>
-                  Track project spending and burn rate
+                  Time and material cost breakdown with burn rate
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-3 gap-4">
                   <div>
                     <p className="text-sm text-muted-foreground">Total Budget</p>
                     <p className="text-2xl font-bold">{formatCurrency(project.budgeted)}</p>
+                    <div className="text-xs text-muted-foreground mt-1 space-y-0.5">
+                      <div>Time: {formatCurrency(project.budgetedTime)}</div>
+                      <div>Material: {formatCurrency(project.budgetedMaterial)}</div>
+                    </div>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Spent to Date</p>
                     <p className="text-2xl font-bold">{formatCurrency(project.spent)}</p>
+                    <div className="text-xs text-muted-foreground mt-1 space-y-0.5">
+                      <div>Time: {formatCurrency(project.spentTime)}</div>
+                      <div>Material: {formatCurrency(project.spentMaterial)}</div>
+                    </div>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Remaining</p>
                     <p className="text-2xl font-bold text-status-success">
                       {formatCurrency(project.budgeted - project.spent)}
                     </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Daily Burn Rate</p>
-                    <p className="text-2xl font-bold">
-                      {formatCurrency(project.spent / project.daysElapsed)}
-                    </p>
+                    <div className="text-xs text-muted-foreground mt-1 space-y-0.5">
+                      <div>Time: {formatCurrency(project.budgetedTime - project.spentTime)}</div>
+                      <div>Material: {formatCurrency(project.budgetedMaterial - project.spentMaterial)}</div>
+                    </div>
                   </div>
                 </div>
-                <ProgressBar percent={project.budgetPercent} type="budget" />
+                
+                <Separator />
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-2">Time Cost</p>
+                    <ProgressBar 
+                      percent={(project.spentTime / project.budgetedTime) * 100} 
+                      type="timeline"
+                      showLabel={true}
+                    />
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-2">Material Cost</p>
+                    <ProgressBar 
+                      percent={(project.spentMaterial / project.budgetedMaterial) * 100} 
+                      type="budget"
+                      showLabel={true}
+                    />
+                  </div>
+                </div>
+                
                 <div className="bg-muted p-3 rounded-lg">
                   <p className="text-sm">
-                    At current burn rate, budget will be exhausted in{" "}
+                    Daily burn rate: <span className="font-bold">{formatCurrency(project.spent / project.daysElapsed)}</span>
+                    {" "}• Budget exhausted in{" "}
                     <span className="font-bold">
                       {Math.floor((project.budgeted - project.spent) / (project.spent / project.daysElapsed))} days
                     </span>
@@ -96,6 +124,119 @@ export function ProjectDetailModal({
                 </div>
               </CardContent>
             </Card>
+
+            {/* Weekly Activity */}
+            {project.weeklyActivities.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Weekly Activity Log</CardTitle>
+                  <CardDescription>
+                    Week-by-week progress with running totals and deltas
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    {project.weeklyActivities.map((week, index) => {
+                      const prevWeek = index > 0 ? project.weeklyActivities[index - 1] : null;
+                      const budgetDelta = prevWeek ? week.weekSpent - prevWeek.weekSpent : 0;
+                      const timeDelta = prevWeek ? week.weekTimeCost - prevWeek.weekTimeCost : 0;
+                      const materialDelta = prevWeek ? week.weekMaterialCost - prevWeek.weekMaterialCost : 0;
+                      const daysDelta = prevWeek ? week.weekDaysElapsed - prevWeek.weekDaysElapsed : 0;
+                      
+                      return (
+                        <div key={week.id} className="border rounded-lg p-4 space-y-3">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <h5 className="font-semibold">Week {week.weekNumber}</h5>
+                              <p className="text-sm text-muted-foreground">
+                                {format(week.weekStartDate, "MMM d")} - {format(week.weekEndDate, "MMM d, yyyy")}
+                              </p>
+                            </div>
+                            {prevWeek && (
+                              <Badge variant="outline" className={
+                                budgetDelta > prevWeek.weekSpent * 0.2
+                                  ? "bg-status-error-bg text-status-error border-status-error/20"
+                                  : budgetDelta > prevWeek.weekSpent * 0.1
+                                  ? "bg-status-warning-bg text-status-warning border-status-warning/20"
+                                  : "bg-status-success-bg text-status-success border-status-success/20"
+                              }>
+                                {budgetDelta > 0 ? "+" : ""}{formatCurrency(budgetDelta)} vs prev
+                              </Badge>
+                            )}
+                          </div>
+                          
+                          <div className="space-y-1">
+                            {week.activities.map((activity, i) => (
+                              <p key={i} className="text-sm">• {activity}</p>
+                            ))}
+                          </div>
+                          
+                          <Separator />
+                          
+                          <div className="grid grid-cols-2 gap-4 text-sm">
+                            <div>
+                              <p className="text-muted-foreground mb-1">This Week</p>
+                              <div className="space-y-0.5">
+                                <div className="flex justify-between">
+                                  <span>Total:</span>
+                                  <span className="font-semibold">{formatCurrency(week.weekSpent)}</span>
+                                </div>
+                                <div className="flex justify-between text-xs">
+                                  <span>Time:</span>
+                                  <span>{formatCurrency(week.weekTimeCost)}</span>
+                                </div>
+                                <div className="flex justify-between text-xs">
+                                  <span>Material:</span>
+                                  <span>{formatCurrency(week.weekMaterialCost)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span>Days:</span>
+                                  <span className="font-semibold">{week.weekDaysElapsed}</span>
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div>
+                              <p className="text-muted-foreground mb-1">Running Total</p>
+                              <div className="space-y-0.5">
+                                <div className="flex justify-between">
+                                  <span>Total:</span>
+                                  <span className="font-semibold">{formatCurrency(week.runningBudgetSpent)}</span>
+                                </div>
+                                <div className="flex justify-between text-xs">
+                                  <span>Time:</span>
+                                  <span>{formatCurrency(week.runningTimeCost)}</span>
+                                </div>
+                                <div className="flex justify-between text-xs">
+                                  <span>Material:</span>
+                                  <span>{formatCurrency(week.runningMaterialCost)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span>Days:</span>
+                                  <span className="font-semibold">{week.runningDaysElapsed}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          
+                          {prevWeek && (
+                            <div className="bg-muted p-2 rounded text-xs space-y-1">
+                              <p className="font-medium">Week-over-Week Changes:</p>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>Budget: <span className={budgetDelta > 0 ? "text-status-error" : "text-status-success"}>{budgetDelta > 0 ? "+" : ""}{formatCurrency(budgetDelta)}</span></div>
+                                <div>Time: <span className={timeDelta > 0 ? "text-status-error" : "text-status-success"}>{timeDelta > 0 ? "+" : ""}{formatCurrency(timeDelta)}</span></div>
+                                <div>Material: <span className={materialDelta > 0 ? "text-status-error" : "text-status-success"}>{materialDelta > 0 ? "+" : ""}{formatCurrency(materialDelta)}</span></div>
+                                <div>Days: <span className={daysDelta !== 0 ? "text-status-warning" : ""}>{daysDelta > 0 ? "+" : ""}{daysDelta}</span></div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Timeline & Delay History */}
             <Card>

@@ -44,6 +44,22 @@ export interface DelayLog {
   cumulativeDelay: number;
 }
 
+export interface WeeklyActivity {
+  id: string;
+  weekStartDate: Date;
+  weekEndDate: Date;
+  weekNumber: number;
+  activities: string[];
+  runningBudgetSpent: number;
+  runningTimeCost: number;
+  runningMaterialCost: number;
+  runningDaysElapsed: number;
+  weekSpent: number;
+  weekTimeCost: number;
+  weekMaterialCost: number;
+  weekDaysElapsed: number;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -53,7 +69,11 @@ export interface Project {
   
   // Budget
   budgeted: number;
+  budgetedTime: number;
+  budgetedMaterial: number;
   spent: number;
+  spentTime: number;
+  spentMaterial: number;
   budgetPercent: number;
   
   // Timeline
@@ -75,5 +95,6 @@ export interface Project {
   // Detailed data
   milestones: Milestone[];
   delayLogs: DelayLog[];
+  weeklyActivities: WeeklyActivity[];
   cumulativeDelay: number;
 }

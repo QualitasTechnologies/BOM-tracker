@@ -141,61 +141,6 @@ const Index = () => {
           </Card>
         </div>
 
-        {/* Weekly Activity Summary */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              This Week's Activity
-            </CardTitle>
-            <CardDescription>
-              Key metrics with week-over-week comparison
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
-                  <p className="text-sm text-muted-foreground">Stagnant Projects</p>
-                  <p className="text-2xl font-bold">{stats.critical}</p>
-                </div>
-                <Badge variant="outline" className="bg-status-success-bg text-status-success border-status-success/20">
-                  <TrendingDown className="h-3 w-3 mr-1" />
-                  -1
-                </Badge>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
-                  <p className="text-sm text-muted-foreground">Budget Overruns</p>
-                  <p className="text-2xl font-bold">2</p>
-                </div>
-                <Badge variant="outline" className="bg-secondary text-secondary-foreground border-border">
-                  No change
-                </Badge>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
-                  <p className="text-sm text-muted-foreground">Delays Logged</p>
-                  <p className="text-2xl font-bold">4 days</p>
-                </div>
-                <Badge variant="outline" className="bg-status-error-bg text-status-error border-status-error/20">
-                  <TrendingUp className="h-3 w-3 mr-1" />
-                  +7 days
-                </Badge>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
-                  <p className="text-sm text-muted-foreground">New Tasks Added</p>
-                  <p className="text-2xl font-bold">12</p>
-                </div>
-                <Badge variant="outline" className="bg-status-warning-bg text-status-warning border-status-warning/20">
-                  <TrendingUp className="h-3 w-3 mr-1" />
-                  +3
-                </Badge>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
         {/* Filters & Search */}
         <Card>
           <CardHeader>

@@ -8,7 +8,11 @@ export const mockProjects: Project[] = [
     owner: "Rahul Kumar",
     status: "active",
     budgeted: 1000000,
+    budgetedTime: 600000,
+    budgetedMaterial: 400000,
     spent: 920000,
+    spentTime: 570000,
+    spentMaterial: 350000,
     budgetPercent: 92,
     kickoffDate: new Date("2025-01-03"),
     originalTargetEnd: new Date("2025-03-01"),
@@ -132,6 +136,113 @@ export const mockProjects: Project[] = [
         loggedBy: "Rahul Kumar",
         cumulativeDelay: 21
       }
+    ],
+    weeklyActivities: [
+      {
+        id: "w1",
+        weekStartDate: new Date("2025-01-03"),
+        weekEndDate: new Date("2025-01-09"),
+        weekNumber: 1,
+        activities: ["Project kickoff completed", "Requirements gathering started", "Team onboarding"],
+        runningBudgetSpent: 85000,
+        runningTimeCost: 60000,
+        runningMaterialCost: 25000,
+        runningDaysElapsed: 7,
+        weekSpent: 85000,
+        weekTimeCost: 60000,
+        weekMaterialCost: 25000,
+        weekDaysElapsed: 7
+      },
+      {
+        id: "w2",
+        weekStartDate: new Date("2025-01-10"),
+        weekEndDate: new Date("2025-01-16"),
+        weekNumber: 2,
+        activities: ["Requirements finalized", "Hardware procurement initiated", "Client delayed sign-off by 5 days"],
+        runningBudgetSpent: 195000,
+        runningTimeCost: 135000,
+        runningMaterialCost: 60000,
+        runningDaysElapsed: 14,
+        weekSpent: 110000,
+        weekTimeCost: 75000,
+        weekMaterialCost: 35000,
+        weekDaysElapsed: 7
+      },
+      {
+        id: "w3",
+        weekStartDate: new Date("2025-01-17"),
+        weekEndDate: new Date("2025-01-23"),
+        weekNumber: 3,
+        activities: ["Hardware integration phase started", "Camera mounting setup", "Network configuration"],
+        runningBudgetSpent: 330000,
+        runningTimeCost: 210000,
+        runningMaterialCost: 120000,
+        runningDaysElapsed: 21,
+        weekSpent: 135000,
+        weekTimeCost: 75000,
+        weekMaterialCost: 60000,
+        weekDaysElapsed: 7
+      },
+      {
+        id: "w4",
+        weekStartDate: new Date("2025-01-24"),
+        weekEndDate: new Date("2025-01-30"),
+        weekNumber: 4,
+        activities: ["Custom mounting brackets required", "Additional hardware ordered", "Integration work continued"],
+        runningBudgetSpent: 475000,
+        runningTimeCost: 300000,
+        runningMaterialCost: 175000,
+        runningDaysElapsed: 28,
+        weekSpent: 145000,
+        weekTimeCost: 90000,
+        weekMaterialCost: 55000,
+        weekDaysElapsed: 7
+      },
+      {
+        id: "w5",
+        weekStartDate: new Date("2025-01-31"),
+        weekEndDate: new Date("2025-02-06"),
+        weekNumber: 5,
+        activities: ["Waiting for custom brackets delivery", "Software calibration work", "Testing protocols defined"],
+        runningBudgetSpent: 580000,
+        runningTimeCost: 360000,
+        runningMaterialCost: 220000,
+        runningDaysElapsed: 35,
+        weekSpent: 105000,
+        weekTimeCost: 60000,
+        weekMaterialCost: 45000,
+        weekDaysElapsed: 7
+      },
+      {
+        id: "w6",
+        weekStartDate: new Date("2025-02-07"),
+        weekEndDate: new Date("2025-02-13"),
+        weekNumber: 6,
+        activities: ["Custom brackets received", "Complex cable routing discovered", "Timeline extended by 8 days"],
+        runningBudgetSpent: 715000,
+        runningTimeCost: 450000,
+        runningMaterialCost: 265000,
+        runningDaysElapsed: 42,
+        weekSpent: 135000,
+        weekTimeCost: 90000,
+        weekMaterialCost: 45000,
+        weekDaysElapsed: 7
+      },
+      {
+        id: "w7",
+        weekStartDate: new Date("2025-02-14"),
+        weekEndDate: new Date("2025-02-20"),
+        weekNumber: 7,
+        activities: ["Cable routing rework", "Additional custom cables ordered", "Integration 80% complete"],
+        runningBudgetSpent: 830000,
+        runningTimeCost: 525000,
+        runningMaterialCost: 305000,
+        runningDaysElapsed: 49,
+        weekSpent: 115000,
+        weekTimeCost: 75000,
+        weekMaterialCost: 40000,
+        weekDaysElapsed: 7
+      }
     ]
   },
   {
@@ -141,7 +252,11 @@ export const mockProjects: Project[] = [
     owner: "Priya Singh",
     status: "active",
     budgeted: 800000,
+    budgetedTime: 700000,
+    budgetedMaterial: 100000,
     spent: 560000,
+    spentTime: 490000,
+    spentMaterial: 70000,
     budgetPercent: 70,
     kickoffDate: new Date("2025-01-15"),
     originalTargetEnd: new Date("2025-04-15"),
@@ -155,7 +270,8 @@ export const mockProjects: Project[] = [
     cumulativeDelay: 0,
     redFlags: [],
     milestones: [],
-    delayLogs: []
+    delayLogs: [],
+    weeklyActivities: []
   },
   {
     id: "3",
@@ -164,7 +280,11 @@ export const mockProjects: Project[] = [
     owner: "Amit Patel",
     status: "active",
     budgeted: 400000,
+    budgetedTime: 350000,
+    budgetedMaterial: 50000,
     spent: 380000,
+    spentTime: 340000,
+    spentMaterial: 40000,
     budgetPercent: 95,
     kickoffDate: new Date("2024-12-01"),
     originalTargetEnd: new Date("2025-02-28"),
@@ -191,7 +311,8 @@ export const mockProjects: Project[] = [
       }
     ],
     milestones: [],
-    delayLogs: []
+    delayLogs: [],
+    weeklyActivities: []
   },
   {
     id: "4",
@@ -200,7 +321,11 @@ export const mockProjects: Project[] = [
     owner: "Deepak Sharma",
     status: "active",
     budgeted: 1500000,
+    budgetedTime: 1200000,
+    budgetedMaterial: 300000,
     spent: 1100000,
+    spentTime: 880000,
+    spentMaterial: 220000,
     budgetPercent: 73,
     kickoffDate: new Date("2024-12-15"),
     originalTargetEnd: new Date("2025-05-15"),
@@ -214,7 +339,8 @@ export const mockProjects: Project[] = [
     cumulativeDelay: 0,
     redFlags: [],
     milestones: [],
-    delayLogs: []
+    delayLogs: [],
+    weeklyActivities: []
   },
   {
     id: "5",
@@ -223,7 +349,11 @@ export const mockProjects: Project[] = [
     owner: "Sneha Reddy",
     status: "active",
     budgeted: 600000,
+    budgetedTime: 550000,
+    budgetedMaterial: 50000,
     spent: 480000,
+    spentTime: 440000,
+    spentMaterial: 40000,
     budgetPercent: 80,
     kickoffDate: new Date("2025-01-08"),
     originalTargetEnd: new Date("2025-04-08"),
@@ -244,7 +374,8 @@ export const mockProjects: Project[] = [
       }
     ],
     milestones: [],
-    delayLogs: []
+    delayLogs: [],
+    weeklyActivities: []
   },
   {
     id: "6",
@@ -253,7 +384,11 @@ export const mockProjects: Project[] = [
     owner: "Vikram Gupta",
     status: "active",
     budgeted: 900000,
+    budgetedTime: 750000,
+    budgetedMaterial: 150000,
     spent: 270000,
+    spentTime: 225000,
+    spentMaterial: 45000,
     budgetPercent: 30,
     kickoffDate: new Date("2025-02-01"),
     originalTargetEnd: new Date("2025-05-01"),
@@ -267,6 +402,7 @@ export const mockProjects: Project[] = [
     cumulativeDelay: 0,
     redFlags: [],
     milestones: [],
-    delayLogs: []
+    delayLogs: [],
+    weeklyActivities: []
   }
 ];
