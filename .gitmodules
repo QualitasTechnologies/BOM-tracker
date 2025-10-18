@@ -1,0 +1,3 @@
+[submodule "proto-muse-28-new"]
+	path = proto-muse-28-new
+	url = https://github.com/QualitasTechnologies/proto-muse-28.git
