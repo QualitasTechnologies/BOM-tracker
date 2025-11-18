@@ -12,6 +12,7 @@ const {onRequest, onCall} = require("firebase-functions/v2/https");
 const logger = require("firebase-functions/logger");
 const {defineSecret} = require("firebase-functions/params");
 const admin = require("firebase-admin");
+const nodemailer = require("nodemailer");
 
 // Use built-in fetch in Node.js 22
 const fetch = globalThis.fetch;
@@ -21,8 +22,10 @@ if (!admin.apps.length) {
   admin.initializeApp();
 }
 
-// Define the OpenAI API Key as a secret
+// Define secrets
 const openaiApiKeySecret = defineSecret('OPENAI_API_KEY');
+const gmailUser = defineSecret('GMAIL_USER');
+const gmailAppPassword = defineSecret('GMAIL_APP_PASSWORD');
 
 // For cost control, you can set the maximum number of containers that can be
 // running at the same time. This helps mitigate the impact of unexpected
@@ -530,4 +533,289 @@ exports.getAllUsers = onCall(async (request) => {
     throw new Error('Failed to get users');
   }
 });
+
+// ==================== PURCHASE REQUEST FUNCTIONS ====================
+
+// Helper function to group BOM items by vendor
+const groupItemsByVendor = (categories, vendors) => {
+  const vendorMap = new Map();
+
+  // Create vendor lookup map
+  vendors.forEach(vendor => {
+    vendorMap.set(vendor.id, vendor);
+  });
+
+  // Group items by vendor
+  const grouped = {};
+
+  categories.forEach(category => {
+    category.items.forEach(item => {
+      // Get vendor information from finalizedVendor if available
+      const vendorId = item.finalizedVendor?.id || 'unassigned';
+      const vendorName = item.finalizedVendor?.name || 'Unassigned Vendor';
+
+      if (!grouped[vendorId]) {
+        const vendorInfo = vendorMap.get(vendorId) || {};
+        grouped[vendorId] = {
+          vendorId,
+          vendorName,
+          vendorEmail: vendorInfo.email || '',
+          vendorPhone: vendorInfo.phone || '',
+          vendorContact: vendorInfo.contactPerson || '',
+          paymentTerms: vendorInfo.paymentTerms || '',
+          leadTime: vendorInfo.leadTime || '',
+          items: []
+        };
+      }
+
+      grouped[vendorId].items.push({
+        name: item.name,
+        make: item.make || '',
+        sku: item.sku || '',
+        description: item.description || '',
+        quantity: item.quantity,
+        category: category.name,
+        unitPrice: item.finalizedVendor?.price || null
+      });
+    });
+  });
+
+  return Object.values(grouped);
+};
+
+// Helper function to generate HTML email
+const generatePREmailHTML = (data) => {
+  const { projectDetails, groupedItems, companyName, requestedBy } = data;
+  const date = new Date().toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  });
+
+  let totalItems = 0;
+  let totalEstimatedCost = 0;
+
+  groupedItems.forEach(vendor => {
+    totalItems += vendor.items.length;
+    vendor.items.forEach(item => {
+      if (item.unitPrice) {
+        totalEstimatedCost += item.unitPrice * item.quantity;
+      }
+    });
+  });
+
+  const vendorSectionsHTML = groupedItems.map((vendor, index) => {
+    const itemsHTML = vendor.items.map((item, itemIndex) => `
+      <tr style="border-bottom: 1px solid #eee;">
+        <td style="padding: 12px 8px;">${itemIndex + 1}</td>
+        <td style="padding: 12px 8px;"><strong>${item.name}</strong></td>
+        <td style="padding: 12px 8px;">${item.make}</td>
+        <td style="padding: 12px 8px;">${item.sku}</td>
+        <td style="padding: 12px 8px;">${item.description}</td>
+        <td style="padding: 12px 8px; text-align: center;">${item.quantity}</td>
+        <td style="padding: 12px 8px;">${item.category}</td>
+        ${item.unitPrice ? `<td style="padding: 12px 8px; text-align: right;">₹${item.unitPrice.toLocaleString('en-IN')}</td>` : '<td style="padding: 12px 8px; text-align: right;">-</td>'}
+      </tr>
+    `).join('');
+
+    const subtotal = vendor.items.reduce((sum, item) => {
+      return sum + (item.unitPrice ? item.unitPrice * item.quantity : 0);
+    }, 0);
+
+    return `
+      <div style="border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin: 20px 0; background: #ffffff;">
+        <h2 style="color: #0066cc; margin: 0 0 15px 0; font-size: 20px;">
+          ${index + 1}. ${vendor.vendorName}
+        </h2>
+        <div style="background: #f8f9fa; padding: 12px; border-radius: 4px; margin-bottom: 15px;">
+          ${vendor.vendorContact ? `<p style="margin: 4px 0;"><strong>Contact:</strong> ${vendor.vendorContact}</p>` : ''}
+          ${vendor.vendorEmail ? `<p style="margin: 4px 0;"><strong>Email:</strong> ${vendor.vendorEmail}</p>` : ''}
+          ${vendor.vendorPhone ? `<p style="margin: 4px 0;"><strong>Phone:</strong> ${vendor.vendorPhone}</p>` : ''}
+          ${vendor.paymentTerms ? `<p style="margin: 4px 0;"><strong>Payment Terms:</strong> ${vendor.paymentTerms}</p>` : ''}
+          ${vendor.leadTime ? `<p style="margin: 4px 0;"><strong>Lead Time:</strong> ${vendor.leadTime}</p>` : ''}
+        </div>
+
+        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+          <thead>
+            <tr style="background: #f5f5f5; border-bottom: 2px solid #ddd;">
+              <th style="padding: 12px 8px; text-align: left;">#</th>
+              <th style="padding: 12px 8px; text-align: left;">Item Name</th>
+              <th style="padding: 12px 8px; text-align: left;">Make/Brand</th>
+              <th style="padding: 12px 8px; text-align: left;">SKU/Part No.</th>
+              <th style="padding: 12px 8px; text-align: left;">Description</th>
+              <th style="padding: 12px 8px; text-align: center;">Quantity</th>
+              <th style="padding: 12px 8px; text-align: left;">Category</th>
+              <th style="padding: 12px 8px; text-align: right;">Unit Price</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemsHTML}
+          </tbody>
+        </table>
+
+        <div style="text-align: right; margin-top: 15px; padding: 12px; background: #f8f9fa; border-radius: 4px;">
+          <p style="margin: 4px 0;"><strong>Items for this vendor:</strong> ${vendor.items.length}</p>
+          ${subtotal > 0 ? `<p style="margin: 4px 0; font-size: 16px; color: #0066cc;"><strong>Subtotal:</strong> ₹${subtotal.toLocaleString('en-IN')}</p>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Purchase Request - ${projectDetails.projectName}</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4;">
+  <div style="max-width: 900px; margin: 20px auto; background: #ffffff; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+    <!-- Header -->
+    <div style="background: linear-gradient(135deg, #0066cc 0%, #0052a3 100%); color: white; padding: 30px; border-radius: 8px 8px 0 0;">
+      <h1 style="margin: 0 0 10px 0; font-size: 28px;">Purchase Request</h1>
+      <p style="margin: 0; font-size: 16px; opacity: 0.9;">
+        <strong>${companyName}</strong>
+      </p>
+    </div>
+
+    <!-- Project Info -->
+    <div style="padding: 25px; background: #f8f9fa; border-bottom: 2px solid #e9ecef;">
+      <table style="width: 100%; font-size: 14px;">
+        <tr>
+          <td style="padding: 8px 0;"><strong>Project:</strong></td>
+          <td style="padding: 8px 0;">${projectDetails.projectName} (${projectDetails.projectId})</td>
+          <td style="padding: 8px 0;"><strong>Client:</strong></td>
+          <td style="padding: 8px 0;">${projectDetails.clientName}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0;"><strong>Request Date:</strong></td>
+          <td style="padding: 8px 0;">${date}</td>
+          <td style="padding: 8px 0;"><strong>Requested By:</strong></td>
+          <td style="padding: 8px 0;">${requestedBy}</td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- Vendor Sections -->
+    <div style="padding: 25px;">
+      <h2 style="color: #333; margin-top: 0;">Items Grouped by Vendor</h2>
+      ${vendorSectionsHTML}
+    </div>
+
+    <!-- Summary -->
+    <div style="padding: 25px; background: #f8f9fa; border-top: 2px solid #e9ecef;">
+      <h3 style="color: #0066cc; margin-top: 0;">Summary</h3>
+      <table style="width: 100%; font-size: 14px;">
+        <tr>
+          <td style="padding: 8px 0;"><strong>Total Items:</strong></td>
+          <td style="padding: 8px 0;">${totalItems}</td>
+          <td style="padding: 8px 0;"><strong>Total Vendors:</strong></td>
+          <td style="padding: 8px 0;">${groupedItems.length}</td>
+        </tr>
+        ${totalEstimatedCost > 0 ? `
+        <tr>
+          <td style="padding: 8px 0;"><strong>Total Estimated Cost:</strong></td>
+          <td colspan="3" style="padding: 8px 0; font-size: 16px; color: #0066cc;"><strong>₹${totalEstimatedCost.toLocaleString('en-IN')}</strong></td>
+        </tr>
+        ` : ''}
+      </table>
+    </div>
+
+    <!-- Footer -->
+    <div style="padding: 20px; background: #343a40; color: #fff; text-align: center; font-size: 12px; border-radius: 0 0 8px 8px;">
+      <p style="margin: 0 0 5px 0;">This is an automated purchase request generated by BOM Tracker System</p>
+      <p style="margin: 0; opacity: 0.8;">Please review and create official purchase orders as needed</p>
+    </div>
+  </div>
+</body>
+</html>
+  `;
+};
+
+// Helper function to strip HTML for plain text version
+const stripHtml = (html) => {
+  return html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+};
+
+// Send Purchase Request via Gmail
+exports.sendPurchaseRequest = onCall(
+  { secrets: [gmailUser, gmailAppPassword] },
+  async (request) => {
+    const { auth, data } = request;
+
+    if (!auth) {
+      throw new Error('Authentication required');
+    }
+
+    try {
+      const {
+        projectDetails,
+        categories,
+        vendors,
+        recipients,
+        companyName
+      } = data;
+
+      // Validate required data
+      if (!projectDetails || !categories || !recipients || recipients.length === 0) {
+        throw new Error('Missing required data for purchase request');
+      }
+
+      // Get user info
+      const userRecord = await admin.auth().getUser(auth.uid);
+      const requestedBy = userRecord.email || 'Unknown User';
+
+      // Group items by vendor
+      const groupedItems = groupItemsByVendor(categories, vendors || []);
+
+      // Generate HTML email
+      const htmlContent = generatePREmailHTML({
+        projectDetails,
+        groupedItems,
+        companyName: companyName || 'Qualitas Technologies Pvt Ltd',
+        requestedBy
+      });
+
+      // Configure Gmail transporter
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: gmailUser.value(),
+          pass: gmailAppPassword.value()
+        }
+      });
+
+      // Send email
+      const info = await transporter.sendMail({
+        from: `${companyName || 'BOM Tracker'} <${gmailUser.value()}>`,
+        to: recipients.join(', '),
+        subject: `Purchase Request - ${projectDetails.projectName} - ${new Date().toLocaleDateString('en-IN')}`,
+        html: htmlContent,
+        text: stripHtml(htmlContent)
+      });
+
+      logger.info('Purchase request sent successfully', {
+        projectId: projectDetails.projectId,
+        projectName: projectDetails.projectName,
+        recipients: recipients,
+        itemCount: groupedItems.reduce((sum, vendor) => sum + vendor.items.length, 0),
+        vendorCount: groupedItems.length,
+        sentBy: auth.uid,
+        messageId: info.messageId
+      });
+
+      return {
+        success: true,
+        message: 'Purchase request sent successfully',
+        messageId: info.messageId,
+        recipients: recipients
+      };
+
+    } catch (error) {
+      logger.error('Error sending purchase request:', error);
+      throw new Error(`Failed to send purchase request: ${error.message}`);
+    }
+  }
+);
 

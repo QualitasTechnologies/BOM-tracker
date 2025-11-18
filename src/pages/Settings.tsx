@@ -44,11 +44,12 @@ import {
   TableHeader, 
   TableRow 
 } from '@/components/ui/table';
-import { 
-  Client, 
+import {
+  Client,
   Vendor,
   BOMSettings,
   BOMCategory,
+  PRSettings,
   addClient,
   updateClient,
   deleteClient,
@@ -63,7 +64,11 @@ import {
   initializeDefaultBOMSettings,
   validateClient,
   validateVendor,
-  getOEMVendors
+  getOEMVendors,
+  getPRSettings,
+  updatePRSettings,
+  validatePRSettings,
+  validateEmail
 } from '@/utils/settingsFirestore';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { downloadVendorCSVTemplate, parseVendorCSV, validateVendorData, CSVImportResult } from '@/utils/csvImport';
@@ -80,6 +85,7 @@ const Settings = () => {
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [oemVendors, setOemVendors] = useState<Vendor[]>([]);
   const [bomSettings, setBomSettings] = useState<BOMSettings | null>(null);
+  const [prSettings, setPRSettings] = useState<PRSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -104,6 +110,13 @@ const Settings = () => {
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [uploadingLogo, setUploadingLogo] = useState(false);
+
+  // Purchase Request settings states
+  const [prEmailInput, setPREmailInput] = useState('');
+  const [prRecipients, setPRRecipients] = useState<string[]>([]);
+  const [prCompanyName, setPRCompanyName] = useState('Qualitas Technologies Pvt Ltd');
+  const [prSaving, setPRSaving] = useState(false);
+  const [prError, setPRError] = useState<string | null>(null);
 
   // Handle CSV file import
   const handleCSVImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -177,6 +190,14 @@ const Settings = () => {
         const oems = await getOEMVendors();
         setOemVendors(oems);
         
+        // Load Purchase Request settings
+        const prSettingsData = await getPRSettings();
+        if (prSettingsData) {
+          setPRSettings(prSettingsData);
+          setPRRecipients(prSettingsData.recipients || []);
+          setPRCompanyName(prSettingsData.companyName || 'Qualitas Technologies Pvt Ltd');
+        }
+
         // Subscribe to real-time updates
         const unsubscribeClients = subscribeToClients(setClients);
         const unsubscribeVendors = subscribeToVendors((vendors) => {
@@ -185,9 +206,9 @@ const Settings = () => {
           setOemVendors(vendors.filter(v => v.type === 'OEM'));
         });
         const unsubscribeBOMSettings = subscribeToBOMSettings(setBomSettings);
-        
+
         setLoading(false);
-        
+
         // Cleanup function
         return () => {
           unsubscribeClients();
@@ -526,6 +547,70 @@ const Settings = () => {
     );
   }
 
+  // Purchase Request Settings Handlers
+  const handleAddPRRecipient = () => {
+    if (!prEmailInput.trim()) return;
+
+    const email = prEmailInput.trim();
+
+    // Validate email
+    if (!validateEmail(email)) {
+      setPRError('Invalid email format');
+      return;
+    }
+
+    // Check for duplicates
+    if (prRecipients.includes(email)) {
+      setPRError('Email already added');
+      return;
+    }
+
+    setPRRecipients([...prRecipients, email]);
+    setPREmailInput('');
+    setPRError(null);
+  };
+
+  const handleRemovePRRecipient = (email: string) => {
+    setPRRecipients(prRecipients.filter(e => e !== email));
+  };
+
+  const handleSavePRSettings = async () => {
+    try {
+      setPRSaving(true);
+      setPRError(null);
+
+      const settings = {
+        recipients: prRecipients,
+        companyName: prCompanyName
+      };
+
+      // Validate
+      const errors = validatePRSettings(settings);
+      if (errors.length > 0) {
+        setPRError(errors.join(', '));
+        setPRSaving(false);
+        return;
+      }
+
+      // Save to Firestore
+      await updatePRSettings(settings);
+
+      toast({
+        title: "Success",
+        description: "Purchase request settings saved successfully",
+      });
+    } catch (error: any) {
+      setPRError(error.message || 'Failed to save settings');
+      toast({
+        title: "Error",
+        description: "Failed to save purchase request settings",
+        variant: "destructive",
+      });
+    } finally {
+      setPRSaving(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="container mx-auto py-6 px-4">
@@ -562,7 +647,7 @@ const Settings = () => {
         )}
 
         <Tabs defaultValue="clients" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="clients" className="flex items-center gap-2">
               <Users size={16} />
               Clients ({clients.length})
@@ -574,6 +659,10 @@ const Settings = () => {
             <TabsTrigger value="bom" className="flex items-center gap-2">
               <Package size={16} />
               BOM Settings
+            </TabsTrigger>
+            <TabsTrigger value="purchase-request" className="flex items-center gap-2">
+              <Mail size={16} />
+              Purchase Request
             </TabsTrigger>
             <TabsTrigger value="general" className="flex items-center gap-2">
               <SettingsIcon size={16} />
@@ -1350,6 +1439,143 @@ const Settings = () => {
             </div>
           </TabsContent>
 
+          {/* Purchase Request Settings Tab */}
+          <TabsContent value="purchase-request">
+            <Card>
+              <CardHeader>
+                <CardTitle>Purchase Request Email Settings</CardTitle>
+                <CardDescription>
+                  Configure email recipients and company information for purchase requests
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Company Name */}
+                <div className="space-y-2">
+                  <Label htmlFor="prCompanyName">Company Name *</Label>
+                  <Input
+                    id="prCompanyName"
+                    value={prCompanyName}
+                    onChange={(e) => setPRCompanyName(e.target.value)}
+                    placeholder="Enter company name"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    This will appear in the email header
+                  </p>
+                </div>
+
+                <Separator />
+
+                {/* Email Recipients */}
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="prRecipients">Email Recipients *</Label>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Internal emails for supply chain and accounts team to receive purchase requests
+                    </p>
+                  </div>
+
+                  {/* Add Email Input */}
+                  <div className="flex gap-2">
+                    <Input
+                      id="prRecipients"
+                      type="email"
+                      value={prEmailInput}
+                      onChange={(e) => setPREmailInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddPRRecipient();
+                        }
+                      }}
+                      placeholder="Enter email address"
+                    />
+                    <Button
+                      type="button"
+                      onClick={handleAddPRRecipient}
+                      variant="outline"
+                    >
+                      <Plus size={16} className="mr-2" />
+                      Add
+                    </Button>
+                  </div>
+
+                  {/* Error Display */}
+                  {prError && (
+                    <Alert variant="destructive">
+                      <AlertDescription>{prError}</AlertDescription>
+                    </Alert>
+                  )}
+
+                  {/* Recipients List */}
+                  {prRecipients.length > 0 && (
+                    <div className="space-y-2">
+                      <Label>Added Recipients ({prRecipients.length})</Label>
+                      <div className="space-y-2">
+                        {prRecipients.map((email, index) => (
+                          <div
+                            key={index}
+                            className="flex items-center justify-between p-3 border rounded-lg bg-muted/50"
+                          >
+                            <div className="flex items-center gap-2">
+                              <Mail size={16} className="text-muted-foreground" />
+                              <span>{email}</span>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleRemovePRRecipient(email)}
+                            >
+                              <X size={16} />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {prRecipients.length === 0 && (
+                    <Alert>
+                      <Mail className="h-4 w-4" />
+                      <AlertDescription>
+                        No recipients added yet. Add at least one email address to receive purchase requests.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                </div>
+
+                <Separator />
+
+                {/* Save Button */}
+                <div className="flex justify-end gap-2">
+                  <Button
+                    onClick={handleSavePRSettings}
+                    disabled={prSaving || prRecipients.length === 0 || !prCompanyName.trim()}
+                  >
+                    {prSaving ? (
+                      <>
+                        <Loader2 size={16} className="mr-2 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      <>
+                        <Save size={16} className="mr-2" />
+                        Save Settings
+                      </>
+                    )}
+                  </Button>
+                </div>
+
+                {/* Help Text */}
+                <Alert>
+                  <Mail className="h-4 w-4" />
+                  <AlertDescription>
+                    <strong>How it works:</strong> When users create a purchase request from the BOM page,
+                    an email will be sent to all recipients listed above with the grouped BOM items by vendor.
+                  </AlertDescription>
+                </Alert>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           {/* General Settings Tab */}
           <TabsContent value="general">

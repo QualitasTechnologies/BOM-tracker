@@ -384,5 +384,90 @@ export const buildCategoryTree = (categories: BOMCategory[]): BOMCategory[] => {
   }));
 };
 
+// Purchase Request Settings Interface
+export interface PRSettings {
+  id: string;
+  recipients: string[]; // Array of email addresses
+  companyName: string;
+  updatedAt: Date;
+}
+
+// Purchase Request Settings Management
+const prSettingsRef = doc(db, "settings", "purchaseRequest");
+
+export const getPRSettings = async (): Promise<PRSettings | null> => {
+  try {
+    const docSnap = await getDoc(prSettingsRef);
+    if (docSnap.exists()) {
+      return { id: docSnap.id, ...docSnap.data() } as PRSettings;
+    }
+    // Return default settings if not found
+    return {
+      id: 'purchaseRequest',
+      recipients: [],
+      companyName: 'Qualitas Technologies Pvt Ltd',
+      updatedAt: new Date()
+    };
+  } catch (error) {
+    console.error("Error fetching PR settings:", error);
+    return null;
+  }
+};
+
+export const updatePRSettings = async (settings: Omit<PRSettings, 'id' | 'updatedAt'>) => {
+  try {
+    await setDoc(prSettingsRef, {
+      ...settings,
+      updatedAt: new Date()
+    }, { merge: true });
+  } catch (error) {
+    console.error("Error updating PR settings:", error);
+    throw error;
+  }
+};
+
+export const subscribeToPRSettings = (callback: (settings: PRSettings | null) => void): Unsubscribe => {
+  return onSnapshot(prSettingsRef, (docSnap) => {
+    if (docSnap.exists()) {
+      callback({ id: docSnap.id, ...docSnap.data() } as PRSettings);
+    } else {
+      callback({
+        id: 'purchaseRequest',
+        recipients: [],
+        companyName: 'Qualitas Technologies Pvt Ltd',
+        updatedAt: new Date()
+      });
+    }
+  });
+};
+
+// Email validation utility
+export const validateEmail = (email: string): boolean => {
+  return isValidEmail(email);
+};
+
+export const validatePRSettings = (settings: Partial<PRSettings>): string[] => {
+  const errors: string[] = [];
+
+  if (!settings.companyName?.trim()) {
+    errors.push('Company name is required');
+  }
+
+  if (!settings.recipients || settings.recipients.length === 0) {
+    errors.push('At least one recipient email is required');
+  }
+
+  // Validate each email
+  if (settings.recipients) {
+    settings.recipients.forEach((email, index) => {
+      if (!isValidEmail(email)) {
+        errors.push(`Invalid email format at position ${index + 1}: ${email}`);
+      }
+    });
+  }
+
+  return errors;
+};
+
 // Export collections for use in other components if needed
-export { clientsCol, vendorsCol, bomSettingsRef };
+export { clientsCol, vendorsCol, bomSettingsRef, prSettingsRef };

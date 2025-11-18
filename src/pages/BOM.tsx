@@ -12,6 +12,7 @@ import BOMHeader from '@/components/BOM/BOMHeader';
 import BOMCategoryCard from '@/components/BOM/BOMCategoryCard';
 import BOMPartDetails from '@/components/BOM/BOMPartDetails';
 import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
+import PurchaseRequestDialog from '@/components/BOM/PurchaseRequestDialog';
 import Sidebar from '@/components/Sidebar';
 import { saveAs } from 'file-saver';
 import { 
@@ -47,6 +48,7 @@ const BOM = () => {
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [addPartOpen, setAddPartOpen] = useState(false);
   const [importBOMOpen, setImportBOMOpen] = useState(false);
+  const [prDialogOpen, setPRDialogOpen] = useState(false);
   const [newPart, setNewPart] = useState({ 
     name: '', 
     make: '',
@@ -263,23 +265,8 @@ const BOM = () => {
     }
   };
 
-  const handleCreatePurchaseOrder = async () => {
-    setEmailStatus(null);
-    try {
-      const response = await fetch('http://localhost:5001/send-purchase-order', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: 'swathi.rao@btech.christuniversity.in' }), // Updated recipient
-      });
-      const data = await response.json();
-      if (data.success) {
-        setEmailStatus('Email sent successfully!');
-      } else {
-        setEmailStatus('Failed to send email: ' + data.error);
-      }
-    } catch (err: any) {
-      setEmailStatus('Error: ' + err.message);
-    }
+  const handleCreatePurchaseOrder = () => {
+    setPRDialogOpen(true);
   };
 
   // Filtered categories based on search and filter selections
@@ -711,6 +698,18 @@ const BOM = () => {
           }
         }}
       />
+
+      {/* Purchase Request Dialog */}
+      {projectDetails && (
+        <PurchaseRequestDialog
+          open={prDialogOpen}
+          onOpenChange={setPRDialogOpen}
+          projectId={projectId!}
+          projectDetails={projectDetails}
+          categories={categories}
+          vendors={vendors}
+        />
+      )}
     </div>
   );
 };
