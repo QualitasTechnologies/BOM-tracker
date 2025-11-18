@@ -28,7 +28,8 @@ import {
   Upload,
   Download,
   Search,
-  Filter
+  Filter,
+  AlertCircle
 } from 'lucide-react';
 import { 
   Dialog, 
@@ -112,6 +113,18 @@ const Settings = () => {
   const [importResults, setImportResults] = useState<CSVImportResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Import preview states
+  const [showImportPreview, setShowImportPreview] = useState(false);
+  const [importPreviewData, setImportPreviewData] = useState<{
+    newVendors: Array<{ vendor: Partial<Vendor>; lineNumber: number }>;
+    updateVendors: Array<{
+      vendor: Partial<Vendor>;
+      existing: Vendor;
+      lineNumber: number;
+      changes: string[];
+    }>;
+  } | null>(null);
+
   // Image upload states
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
@@ -136,20 +149,119 @@ const Settings = () => {
     try {
       const text = await file.text();
       const parsedData = parseVendorCSV(text);
-      
+
       const errors: string[] = [];
-      let successCount = 0;
+      const newVendors: Array<{ vendor: Partial<Vendor>; lineNumber: number }> = [];
+      const updateVendors: Array<{
+        vendor: Partial<Vendor>;
+        existing: Vendor;
+        lineNumber: number;
+        changes: string[];
+      }> = [];
 
       for (const { vendor, lineNumber } of parsedData) {
-        try {
-          // Validate vendor data
-          const validationErrors = validateVendorData(vendor, lineNumber);
-          if (validationErrors.length > 0) {
-            errors.push(...validationErrors);
-            continue;
-          }
+        // Validate vendor data
+        const validationErrors = validateVendorData(vendor, lineNumber);
+        if (validationErrors.length > 0) {
+          errors.push(...validationErrors);
+          continue;
+        }
 
-          // Add vendor to database
+        // Check if vendor exists (match by company name, case-insensitive)
+        const existingVendor = vendors.find(
+          v => v.company.toLowerCase() === vendor.company?.toLowerCase()
+        );
+
+        if (existingVendor) {
+          // Vendor exists - prepare for update
+          const changes = detectVendorChanges(existingVendor, vendor);
+          if (changes.length > 0) {
+            updateVendors.push({
+              vendor,
+              existing: existingVendor,
+              lineNumber,
+              changes
+            });
+          }
+          // If no changes, we silently skip it
+        } else {
+          // New vendor
+          newVendors.push({ vendor, lineNumber });
+        }
+      }
+
+      // Show import results if there were only errors
+      if (errors.length > 0 && newVendors.length === 0 && updateVendors.length === 0) {
+        setImportResults({ success: 0, errors });
+        setImporting(false);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+        return;
+      }
+
+      // Show preview dialog
+      setImportPreviewData({ newVendors, updateVendors });
+      setShowImportPreview(true);
+    } catch (err: any) {
+      setError(err.message || 'Failed to parse CSV file');
+    }
+
+    setImporting(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  // Detect changes between two vendors
+  const detectVendorChanges = (existing: Vendor, incoming: Partial<Vendor>): string[] => {
+    const changes: string[] = [];
+
+    if (incoming.type && incoming.type !== existing.type) {
+      changes.push(`Type: ${existing.type} → ${incoming.type}`);
+    }
+    if (incoming.email && incoming.email !== existing.email) {
+      changes.push(`Email: ${existing.email || '(empty)'} → ${incoming.email}`);
+    }
+    if (incoming.phone && incoming.phone !== existing.phone) {
+      changes.push(`Phone: ${existing.phone || '(empty)'} → ${incoming.phone}`);
+    }
+    if (incoming.website && incoming.website !== existing.website) {
+      changes.push(`Website: ${existing.website || '(empty)'} → ${incoming.website}`);
+    }
+    if (incoming.paymentTerms && incoming.paymentTerms !== existing.paymentTerms) {
+      changes.push(`Payment Terms: ${existing.paymentTerms} → ${incoming.paymentTerms}`);
+    }
+    if (incoming.leadTime && incoming.leadTime !== existing.leadTime) {
+      changes.push(`Lead Time: ${existing.leadTime} → ${incoming.leadTime}`);
+    }
+    if (incoming.address && incoming.address !== existing.address) {
+      changes.push(`Address: ${existing.address || '(empty)'} → ${incoming.address}`);
+    }
+    if (incoming.contactPerson && incoming.contactPerson !== existing.contactPerson) {
+      changes.push(`Contact: ${existing.contactPerson || '(empty)'} → ${incoming.contactPerson}`);
+    }
+    if (incoming.categories && JSON.stringify(incoming.categories) !== JSON.stringify(existing.categories || [])) {
+      changes.push(`Categories: ${existing.categories?.join(', ') || '(none)'} → ${incoming.categories.join(', ')}`);
+    }
+
+    return changes;
+  };
+
+  // Confirm and execute import
+  const handleConfirmImport = async () => {
+    if (!importPreviewData) return;
+
+    setImporting(true);
+    setShowImportPreview(false);
+
+    const errors: string[] = [];
+    let successCount = 0;
+
+    try {
+      // Add new vendors
+      for (const { vendor, lineNumber } of importPreviewData.newVendors) {
+        try {
           await addVendor({
             company: vendor.company!,
             email: vendor.email || '',
@@ -165,24 +277,45 @@ const Settings = () => {
             status: 'active',
             notes: vendor.notes || '',
             type: vendor.type || 'Dealer',
-            makes: vendor.makes || []
+            makes: vendor.makes || [],
+            categories: vendor.categories || []
           });
-
           successCount++;
         } catch (err: any) {
-          errors.push(`Line ${lineNumber}: ${err.message || 'Failed to import vendor'}`);
+          errors.push(`Line ${lineNumber}: ${err.message || 'Failed to add vendor'}`);
+        }
+      }
+
+      // Update existing vendors
+      for (const { vendor, existing, lineNumber } of importPreviewData.updateVendors) {
+        try {
+          await updateVendor(existing.id, {
+            type: vendor.type || existing.type,
+            email: vendor.email || existing.email,
+            phone: vendor.phone || existing.phone,
+            address: vendor.address || existing.address,
+            contactPerson: vendor.contactPerson || existing.contactPerson,
+            website: vendor.website || existing.website,
+            logo: vendor.logo || existing.logo,
+            paymentTerms: vendor.paymentTerms || existing.paymentTerms,
+            leadTime: vendor.leadTime || existing.leadTime,
+            notes: vendor.notes || existing.notes,
+            makes: vendor.makes || existing.makes,
+            categories: vendor.categories || existing.categories
+          });
+          successCount++;
+        } catch (err: any) {
+          errors.push(`Line ${lineNumber}: ${err.message || 'Failed to update vendor'}`);
         }
       }
 
       setImportResults({ success: successCount, errors });
     } catch (err: any) {
-      setError(err.message || 'Failed to parse CSV file');
+      setError(err.message || 'Failed to import vendors');
     }
 
     setImporting(false);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    setImportPreviewData(null);
   };
 
   // Load data on component mount
@@ -931,6 +1064,132 @@ const Settings = () => {
                       onChange={handleCSVImport}
                       style={{ display: 'none' }}
                     />
+
+                    {/* Import Preview Dialog */}
+                    <Dialog open={showImportPreview} onOpenChange={setShowImportPreview}>
+                      <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+                        <DialogHeader>
+                          <DialogTitle>Import Preview</DialogTitle>
+                          <DialogDescription>
+                            Review changes before importing vendors
+                          </DialogDescription>
+                        </DialogHeader>
+
+                        <div className="flex-1 overflow-y-auto space-y-4">
+                          {/* Summary */}
+                          {importPreviewData && (
+                            <div className="grid grid-cols-2 gap-4 p-4 bg-muted rounded-lg">
+                              <div>
+                                <p className="text-sm text-muted-foreground">New Vendors</p>
+                                <p className="text-2xl font-bold text-green-600">
+                                  {importPreviewData.newVendors.length}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-sm text-muted-foreground">Updates</p>
+                                <p className="text-2xl font-bold text-blue-600">
+                                  {importPreviewData.updateVendors.length}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* New Vendors */}
+                          {importPreviewData && importPreviewData.newVendors.length > 0 && (
+                            <div>
+                              <h3 className="font-semibold text-sm mb-2">
+                                New Vendors ({importPreviewData.newVendors.length})
+                              </h3>
+                              <div className="space-y-2">
+                                {importPreviewData.newVendors.map(({ vendor, lineNumber }) => (
+                                  <div
+                                    key={lineNumber}
+                                    className="border rounded-lg p-3 bg-green-50"
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <Badge variant="outline" className="bg-green-600 text-white">
+                                        NEW
+                                      </Badge>
+                                      <span className="font-semibold">{vendor.company}</span>
+                                      <Badge variant="secondary" className="text-xs">
+                                        {vendor.type || 'Dealer'}
+                                      </Badge>
+                                    </div>
+                                    {vendor.email && (
+                                      <p className="text-sm text-muted-foreground mt-1">
+                                        {vendor.email}
+                                      </p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Updates */}
+                          {importPreviewData && importPreviewData.updateVendors.length > 0 && (
+                            <div>
+                              <h3 className="font-semibold text-sm mb-2">
+                                Updates ({importPreviewData.updateVendors.length})
+                              </h3>
+                              <Alert className="mb-3">
+                                <AlertCircle className="h-4 w-4" />
+                                <AlertDescription>
+                                  The following vendors will be updated with new information
+                                </AlertDescription>
+                              </Alert>
+                              <div className="space-y-3">
+                                {importPreviewData.updateVendors.map(
+                                  ({ vendor, existing, changes, lineNumber }) => (
+                                    <div
+                                      key={lineNumber}
+                                      className="border rounded-lg p-3 bg-blue-50"
+                                    >
+                                      <div className="flex items-center gap-2 mb-2">
+                                        <Badge variant="outline" className="bg-blue-600 text-white">
+                                          UPDATE
+                                        </Badge>
+                                        <span className="font-semibold">{existing.company}</span>
+                                      </div>
+                                      <div className="text-sm space-y-1 ml-6">
+                                        {changes.map((change, idx) => (
+                                          <div key={idx} className="text-muted-foreground">
+                                            • {change}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex justify-end gap-2 pt-4 border-t">
+                          <Button
+                            variant="outline"
+                            onClick={() => {
+                              setShowImportPreview(false);
+                              setImportPreviewData(null);
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                          <Button onClick={handleConfirmImport} disabled={importing}>
+                            {importing ? (
+                              <>
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                Importing...
+                              </>
+                            ) : (
+                              'Confirm Import'
+                            )}
+                          </Button>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
+
                     <Dialog open={vendorDialog} onOpenChange={setVendorDialog}>
                     <DialogTrigger asChild>
                       <Button onClick={() => {
