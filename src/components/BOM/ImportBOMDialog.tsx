@@ -295,8 +295,8 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="@container max-w-6xl max-h-[90vh] overflow-hidden flex flex-col">
-        <DialogHeader>
+      <DialogContent className="@container max-w-6xl max-h-[90vh] flex flex-col">
+        <DialogHeader className="flex-shrink-0">
           <DialogTitle>Import BOM with AI</DialogTitle>
           <DialogDescription>
             Paste your BOM text content to automatically extract and edit items using AI analysis.
@@ -360,10 +360,10 @@ Example:
             </div>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="flex-1 flex flex-col overflow-hidden space-y-4">
             {/* Editable Table Section */}
-            <Card>
-              <CardHeader>
+            <Card className="flex-1 flex flex-col overflow-hidden">
+              <CardHeader className="flex-shrink-0">
                 <div className="flex items-center justify-between">
                   <div>
                     <CardTitle>Edit BOM Items</CardTitle>
@@ -376,9 +376,9 @@ Example:
                       <Plus className="h-4 w-4 mr-2" />
                       Add Row
                     </Button>
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={() => toggleAllItems(selectedCount !== editableItems.length)}
                     >
                       {selectedCount === editableItems.length ? 'Unselect All' : 'Select All'}
@@ -386,7 +386,7 @@ Example:
                   </div>
                 </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="flex-1 overflow-y-auto">
                 <div className="border rounded-lg">
                   <Table>
                     <TableHeader>
@@ -493,7 +493,7 @@ Example:
                     </TableBody>
                   </Table>
                 </div>
-                
+
                 {editableItems.some(item => !item.isValid) && (
                   <Alert className="mt-4">
                     <AlertCircle className="h-4 w-4" />
@@ -502,7 +502,7 @@ Example:
                     </AlertDescription>
                   </Alert>
                 )}
-                
+
                 <div className="mt-4 text-sm text-gray-600">
                   {selectedCount} of {editableItems.length} items selected • {validSelectedCount} valid items ready to import
                 </div>
@@ -510,17 +510,17 @@ Example:
             </Card>
 
             {error && (
-              <Alert variant="destructive">
+              <Alert variant="destructive" className="flex-shrink-0">
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
 
-            <div className="flex justify-end gap-2">
+            <div className="flex justify-end gap-2 flex-shrink-0 pt-2">
               <Button variant="outline" onClick={() => setShowTable(false)}>
                 Back to Text Input
               </Button>
-              <Button 
+              <Button
                 onClick={handleImport}
                 disabled={isImporting || validSelectedCount === 0}
                 className="bg-green-600 hover:bg-green-700"
