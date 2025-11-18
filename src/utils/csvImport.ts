@@ -5,41 +5,30 @@ export interface CSVImportResult {
   errors: string[];
 }
 
-// Download CSV template with sample data
-export const downloadVendorCSVTemplate = () => {
+// Export all vendors to CSV
+export const exportVendorsToCSV = (vendors: Vendor[]) => {
   const headers = [
     'Company', 'Type', 'Email', 'Phone', 'Website', 'Logo',
-    'PaymentTerms', 'LeadTime', 'Address', 'ContactPerson', 'Notes'
-  ];
-  
-  const sampleData = [
-    [
-      'Basler AG', 'OEM', 
-      'sales@baslerweb.com', '+49 4102 463 0', 'www.baslerweb.com', 'https://www.baslerweb.com/fp-1551958789/media/images/logos/basler-logo.svg',
-      'Net 30', '2 weeks', 'An der Strusbek 60-62, 22926 Ahrensburg, Germany',
-      'Sales Team', 'Leading German manufacturer of machine vision cameras'
-    ],
-    [
-      'Allied Vision Technologies GmbH', 'OEM',
-      'info@alliedvision.com', '', 'www.alliedvision.com', 'https://www.alliedvision.com/etc/clientlibs/allied-vision/img/logos/allied-vision-logo.svg',
-      'Net 30', '3 weeks', '', 'Sales Department',
-      'Founded 1989, specializes in FireWire, GigE, and Camera Link interfaces'
-    ],
-    [
-      'Machine Vision Store LLC', 'Dealer',
-      'sales@machinevisionstore.com', '+1-555-0123', 'www.machinevisionstore.com', '',
-      'Net 30', '1 week', '123 Tech Drive, Silicon Valley, CA 94000',
-      'John Smith', 'Authorized stocking distributor offering competitive prices'
-    ],
-    [
-      'LUCID Vision Labs Inc.', 'OEM',
-      'sales@thinklucid.com', '1-833-465-8243', 'www.thinklucid.com', 'https://thinklucid.com/wp-content/uploads/2019/05/LUCID-Vision-Labs-Logo-300x126.png',
-      'Net 30', '3 weeks', '4600 Jacombs Rd #110, Richmond B.C. Canada, V6V 3B1',
-      'Sales Team', 'Canadian manufacturer founded 2017, innovative cameras'
-    ]
+    'PaymentTerms', 'LeadTime', 'Address', 'ContactPerson', 'Categories', 'Notes'
   ];
 
-  const csvContent = [headers, ...sampleData]
+  // Convert vendors to CSV rows
+  const vendorRows = vendors.map(vendor => [
+    vendor.company || '',
+    vendor.type || 'Dealer',
+    vendor.email || '',
+    vendor.phone || '',
+    vendor.website || '',
+    vendor.logo || '',
+    vendor.paymentTerms || 'Net 30',
+    vendor.leadTime || '2 weeks',
+    vendor.address || '',
+    vendor.contactPerson || '',
+    vendor.categories?.join('; ') || '', // Join categories with semicolon
+    vendor.notes || ''
+  ]);
+
+  const csvContent = [headers, ...vendorRows]
     .map(row => row.map(field => `"${field}"`).join(','))
     .join('\n');
 
@@ -47,10 +36,14 @@ export const downloadVendorCSVTemplate = () => {
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'vendor_import_template.csv';
+  const timestamp = new Date().toISOString().split('T')[0];
+  a.download = `vendors_export_${timestamp}.csv`;
   a.click();
   window.URL.revokeObjectURL(url);
 };
+
+// Legacy function name for backwards compatibility
+export const downloadVendorCSVTemplate = exportVendorsToCSV;
 
 // Parse CSV content with proper handling of quoted fields
 export const parseVendorCSV = (csvText: string) => {
@@ -99,6 +92,10 @@ export const parseVendorCSV = (csvText: string) => {
           break;
         case 'contactperson':
           vendor.contactPerson = value;
+          break;
+        case 'categories':
+          // Split by semicolon and filter empty strings
+          vendor.categories = value ? value.split(';').map(c => c.trim()).filter(c => c) : [];
           break;
         case 'notes':
           vendor.notes = value;

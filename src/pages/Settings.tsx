@@ -73,7 +73,7 @@ import {
   validateEmail
 } from '@/utils/settingsFirestore';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { downloadVendorCSVTemplate, parseVendorCSV, validateVendorData, CSVImportResult } from '@/utils/csvImport';
+import { exportVendorsToCSV, parseVendorCSV, validateVendorData, CSVImportResult } from '@/utils/csvImport';
 import { uploadVendorLogo, ImageUploadResult } from '@/utils/imageUpload';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from '@/components/ui/use-toast';
@@ -904,11 +904,12 @@ const Settings = () => {
                   <div className="flex gap-2">
                     <Button
                       variant="outline"
-                      onClick={downloadVendorCSVTemplate}
+                      onClick={() => exportVendorsToCSV(vendors)}
+                      disabled={vendors.length === 0}
                       className="flex items-center gap-2"
                     >
                       <Download size={16} />
-                      Download Template
+                      Export Vendors
                     </Button>
                     <Button
                       variant="outline"
@@ -1318,6 +1319,7 @@ const Settings = () => {
                         <TableHead>Vendor</TableHead>
                         <TableHead>Type & Makes</TableHead>
                         <TableHead>Contact Info</TableHead>
+                        <TableHead>Categories</TableHead>
                         <TableHead>Terms</TableHead>
                         <TableHead>Actions</TableHead>
                       </TableRow>
@@ -1374,6 +1376,26 @@ const Settings = () => {
                                   <Phone size={12} />
                                   {vendor.phone}
                                 </div>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-wrap gap-1">
+                              {vendor.categories && vendor.categories.length > 0 ? (
+                                <>
+                                  {vendor.categories.slice(0, 2).map((category, index) => (
+                                    <Badge key={index} variant="outline" className="text-xs">
+                                      {category}
+                                    </Badge>
+                                  ))}
+                                  {vendor.categories.length > 2 && (
+                                    <Badge variant="outline" className="text-xs">
+                                      +{vendor.categories.length - 2}
+                                    </Badge>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">-</span>
                               )}
                             </div>
                           </TableCell>
