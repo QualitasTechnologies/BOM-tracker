@@ -91,8 +91,9 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
   }, [categories, vendors, open]);
 
   const groupItemsByVendor = (cats: BOMCategory[], vends: Vendor[]): GroupedItem[] => {
+    // Create a map of vendor names to vendor objects
     const vendorMap = new Map<string, Vendor>();
-    vends.forEach(v => vendorMap.set(v.id, v));
+    vends.forEach(v => vendorMap.set(v.company.toLowerCase(), v));
 
     const grouped: { [key: string]: GroupedItem } = {};
 
@@ -100,23 +101,23 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
       if (!category.items) return;
 
       category.items.forEach(item => {
-        // @ts-ignore - finalizedVendor might exist
-        const vendorId = item.finalizedVendor?.id || 'unassigned';
-        // @ts-ignore
+        // Use vendor name as the key (finalizedVendor only has name, not id)
         const vendorName = item.finalizedVendor?.name || 'Unassigned Vendor';
+        const vendorKey = vendorName.toLowerCase();
 
-        if (!grouped[vendorId]) {
-          const vendorInfo = vendorMap.get(vendorId);
-          grouped[vendorId] = {
-            vendorId,
-            vendorName,
+        if (!grouped[vendorKey]) {
+          // Look up vendor info by name
+          const vendorInfo = vendorMap.get(vendorKey);
+          grouped[vendorKey] = {
+            vendorId: vendorInfo?.id || 'unassigned',
+            vendorName: vendorName,
             vendorEmail: vendorInfo?.email || '',
             vendorPhone: vendorInfo?.phone || '',
             items: []
           };
         }
 
-        grouped[vendorId].items.push({
+        grouped[vendorKey].items.push({
           name: item.name,
           make: item.make || '',
           sku: item.sku || '',

@@ -8,7 +8,7 @@ export interface CSVImportResult {
 // Export all vendors to CSV
 export const exportVendorsToCSV = (vendors: Vendor[]) => {
   const headers = [
-    'Company', 'Type', 'Email', 'Phone', 'Website', 'Logo',
+    'Company', 'Type', 'Makes', 'Email', 'Phone', 'Website', 'Logo',
     'PaymentTerms', 'LeadTime', 'Address', 'ContactPerson', 'Categories', 'Notes'
   ];
 
@@ -16,6 +16,7 @@ export const exportVendorsToCSV = (vendors: Vendor[]) => {
   const vendorRows = vendors.map(vendor => [
     vendor.company || '',
     vendor.type || 'Dealer',
+    vendor.makes?.join('; ') || '', // Join makes with semicolon
     vendor.email || '',
     vendor.phone || '',
     vendor.website || '',
@@ -68,6 +69,11 @@ export const parseVendorCSV = (csvText: string) => {
           break;
         case 'type':
           vendor.type = (value === 'OEM' || value === 'Dealer') ? value as 'OEM' | 'Dealer' : 'Dealer';
+          break;
+        case 'makes':
+        case 'brands': // Support alternative naming
+          // Split by semicolon and filter empty strings
+          vendor.makes = value ? value.split(';').map(m => m.trim()).filter(m => m) : [];
           break;
         case 'email':
           vendor.email = value;

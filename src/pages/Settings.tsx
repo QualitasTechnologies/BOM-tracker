@@ -220,6 +220,9 @@ const Settings = () => {
     if (incoming.type && incoming.type !== existing.type) {
       changes.push(`Type: ${existing.type} → ${incoming.type}`);
     }
+    if (incoming.makes && JSON.stringify(incoming.makes) !== JSON.stringify(existing.makes || [])) {
+      changes.push(`Makes: ${existing.makes?.join(', ') || '(none)'} → ${incoming.makes.join(', ')}`);
+    }
     if (incoming.email && incoming.email !== existing.email) {
       changes.push(`Email: ${existing.email || '(empty)'} → ${incoming.email}`);
     }
