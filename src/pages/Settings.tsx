@@ -115,6 +115,7 @@ const Settings = () => {
   const [prEmailInput, setPREmailInput] = useState('');
   const [prRecipients, setPRRecipients] = useState<string[]>([]);
   const [prCompanyName, setPRCompanyName] = useState('Qualitas Technologies Pvt Ltd');
+  const [prFromEmail, setPRFromEmail] = useState('info@qualitastech.com');
   const [prSaving, setPRSaving] = useState(false);
   const [prError, setPRError] = useState<string | null>(null);
 
@@ -196,6 +197,7 @@ const Settings = () => {
           setPRSettings(prSettingsData);
           setPRRecipients(prSettingsData.recipients || []);
           setPRCompanyName(prSettingsData.companyName || 'Qualitas Technologies Pvt Ltd');
+          setPRFromEmail(prSettingsData.fromEmail || 'info@qualitastech.com');
         }
 
         // Subscribe to real-time updates
@@ -581,7 +583,8 @@ const Settings = () => {
 
       const settings = {
         recipients: prRecipients,
-        companyName: prCompanyName
+        companyName: prCompanyName,
+        fromEmail: prFromEmail
       };
 
       // Validate
@@ -1460,6 +1463,21 @@ const Settings = () => {
                   />
                   <p className="text-xs text-muted-foreground">
                     This will appear in the email header
+                  </p>
+                </div>
+
+                {/* Sender Email */}
+                <div className="space-y-2">
+                  <Label htmlFor="prFromEmail">Sender Email Address *</Label>
+                  <Input
+                    id="prFromEmail"
+                    type="email"
+                    value={prFromEmail}
+                    onChange={(e) => setPRFromEmail(e.target.value)}
+                    placeholder="info@qualitastech.com"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Must be verified in SendGrid. Emails will be sent from this address.
                   </p>
                 </div>
 

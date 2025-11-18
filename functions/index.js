@@ -12,7 +12,7 @@ const {onRequest, onCall} = require("firebase-functions/v2/https");
 const logger = require("firebase-functions/logger");
 const {defineSecret} = require("firebase-functions/params");
 const admin = require("firebase-admin");
-const nodemailer = require("nodemailer");
+const sgMail = require("@sendgrid/mail");
 
 // Use built-in fetch in Node.js 22
 const fetch = globalThis.fetch;
@@ -24,8 +24,7 @@ if (!admin.apps.length) {
 
 // Define secrets
 const openaiApiKeySecret = defineSecret('OPENAI_API_KEY');
-const gmailUser = defineSecret('GMAIL_USER');
-const gmailAppPassword = defineSecret('GMAIL_APP_PASSWORD');
+const sendgridApiKey = defineSecret('SENDGRID_API_KEY');
 
 // For cost control, you can set the maximum number of containers that can be
 // running at the same time. This helps mitigate the impact of unexpected
@@ -738,9 +737,9 @@ const stripHtml = (html) => {
   return html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 };
 
-// Send Purchase Request via Gmail
+// Send Purchase Request via SendGrid
 exports.sendPurchaseRequest = onCall(
-  { secrets: [gmailUser, gmailAppPassword] },
+  { secrets: [sendgridApiKey] },
   async (request) => {
     const { auth, data } = request;
 
@@ -754,7 +753,8 @@ exports.sendPurchaseRequest = onCall(
         categories,
         vendors,
         recipients,
-        companyName
+        companyName,
+        fromEmail
       } = data;
 
       // Validate required data
@@ -777,23 +777,20 @@ exports.sendPurchaseRequest = onCall(
         requestedBy
       });
 
-      // Configure Gmail transporter
-      const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: {
-          user: gmailUser.value(),
-          pass: gmailAppPassword.value()
-        }
-      });
+      // Configure SendGrid
+      sgMail.setApiKey(sendgridApiKey.value());
 
-      // Send email
-      const info = await transporter.sendMail({
-        from: `${companyName || 'BOM Tracker'} <${gmailUser.value()}>`,
-        to: recipients.join(', '),
+      // Prepare email message
+      const msg = {
+        to: recipients,
+        from: fromEmail || 'info@qualitastech.com', // Must be verified in SendGrid
         subject: `Purchase Request - ${projectDetails.projectName} - ${new Date().toLocaleDateString('en-IN')}`,
         html: htmlContent,
         text: stripHtml(htmlContent)
-      });
+      };
+
+      // Send email
+      const response = await sgMail.send(msg);
 
       logger.info('Purchase request sent successfully', {
         projectId: projectDetails.projectId,
@@ -802,13 +799,13 @@ exports.sendPurchaseRequest = onCall(
         itemCount: groupedItems.reduce((sum, vendor) => sum + vendor.items.length, 0),
         vendorCount: groupedItems.length,
         sentBy: auth.uid,
-        messageId: info.messageId
+        statusCode: response[0].statusCode
       });
 
       return {
         success: true,
         message: 'Purchase request sent successfully',
-        messageId: info.messageId,
+        statusCode: response[0].statusCode,
         recipients: recipients
       };
 

@@ -389,6 +389,7 @@ export interface PRSettings {
   id: string;
   recipients: string[]; // Array of email addresses
   companyName: string;
+  fromEmail: string; // Sender email (must be verified in SendGrid)
   updatedAt: Date;
 }
 
@@ -406,6 +407,7 @@ export const getPRSettings = async (): Promise<PRSettings | null> => {
       id: 'purchaseRequest',
       recipients: [],
       companyName: 'Qualitas Technologies Pvt Ltd',
+      fromEmail: 'info@qualitastech.com',
       updatedAt: new Date()
     };
   } catch (error) {
@@ -435,6 +437,7 @@ export const subscribeToPRSettings = (callback: (settings: PRSettings | null) =>
         id: 'purchaseRequest',
         recipients: [],
         companyName: 'Qualitas Technologies Pvt Ltd',
+        fromEmail: 'info@qualitastech.com',
         updatedAt: new Date()
       });
     }
@@ -451,6 +454,12 @@ export const validatePRSettings = (settings: Partial<PRSettings>): string[] => {
 
   if (!settings.companyName?.trim()) {
     errors.push('Company name is required');
+  }
+
+  if (!settings.fromEmail?.trim()) {
+    errors.push('Sender email is required');
+  } else if (!isValidEmail(settings.fromEmail)) {
+    errors.push('Invalid sender email format');
   }
 
   if (!settings.recipients || settings.recipients.length === 0) {

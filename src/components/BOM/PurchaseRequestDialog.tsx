@@ -52,6 +52,7 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
   const [recipients, setRecipients] = useState<string[]>([]);
   const [emailInput, setEmailInput] = useState('');
   const [companyName, setCompanyName] = useState('Qualitas Technologies Pvt Ltd');
+  const [fromEmail, setFromEmail] = useState('info@qualitastech.com');
   const [loading, setLoading] = useState(false);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +69,7 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
         if (settings) {
           setRecipients(settings.recipients || []);
           setCompanyName(settings.companyName || 'Qualitas Technologies Pvt Ltd');
+          setFromEmail(settings.fromEmail || 'info@qualitastech.com');
         }
       } catch (err) {
         console.error('Error loading PR settings:', err);
@@ -172,7 +174,8 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
         categories,
         vendors,
         recipients,
-        companyName
+        companyName,
+        fromEmail
       });
 
       toast({
