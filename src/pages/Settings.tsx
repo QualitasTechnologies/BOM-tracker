@@ -26,7 +26,9 @@ import {
   MapPin,
   Loader2,
   Upload,
-  Download
+  Download,
+  Search,
+  Filter
 } from 'lucide-react';
 import { 
   Dialog, 
@@ -86,6 +88,10 @@ const Settings = () => {
   const [oemVendors, setOemVendors] = useState<Vendor[]>([]);
   const [bomSettings, setBomSettings] = useState<BOMSettings | null>(null);
   const [prSettings, setPRSettings] = useState<PRSettings | null>(null);
+
+  // Vendor filtering states
+  const [vendorSearch, setVendorSearch] = useState('');
+  const [vendorCategoryFilter, setVendorCategoryFilter] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -349,7 +355,8 @@ const Settings = () => {
         status: 'active',
         notes: vendorForm.notes || '',
         type: vendorForm.type || 'Dealer',
-        makes: vendorForm.makes || []
+        makes: vendorForm.makes || [],
+        categories: vendorForm.categories || []
       });
       
       setVendorForm({});
@@ -626,6 +633,26 @@ const Settings = () => {
       </div>
     );
   }
+
+  // Filter vendors based on search and category
+  const filteredVendors = vendors.filter(vendor => {
+    // Search filter
+    const searchLower = vendorSearch.toLowerCase();
+    const matchesSearch = !vendorSearch ||
+      vendor.company.toLowerCase().includes(searchLower) ||
+      vendor.email?.toLowerCase().includes(searchLower) ||
+      vendor.contactPerson?.toLowerCase().includes(searchLower) ||
+      vendor.makes?.some(make => make.toLowerCase().includes(searchLower));
+
+    // Category filter
+    const matchesCategory = vendorCategoryFilter === 'all' ||
+      vendor.categories?.includes(vendorCategoryFilter);
+
+    return matchesSearch && matchesCategory;
+  });
+
+  // Get unique categories from BOM settings for filter dropdown
+  const availableCategories = bomSettings?.defaultCategories || [];
 
   return (
     <div className="container mx-auto py-6 px-4">
@@ -1120,6 +1147,53 @@ const Settings = () => {
                             </p>
                           </div>
                         )}
+
+                        {/* BOM Categories */}
+                        <div className="space-y-2 col-span-2">
+                          <Label>BOM Categories</Label>
+                          <div className="border rounded-md p-3 max-h-32 overflow-y-auto bg-background">
+                            {availableCategories.length === 0 ? (
+                              <p className="text-sm text-muted-foreground">No categories available. Configure BOM settings first.</p>
+                            ) : (
+                              <div className="grid grid-cols-2 @2xl:grid-cols-3 gap-2">
+                                {availableCategories.map((category) => (
+                                  <div key={category} className="flex items-center space-x-2">
+                                    <input
+                                      type="checkbox"
+                                      id={`category-${category}`}
+                                      checked={(vendorForm.categories || []).includes(category)}
+                                      onChange={(e) => {
+                                        const currentCategories = vendorForm.categories || [];
+                                        if (e.target.checked) {
+                                          setVendorForm({
+                                            ...vendorForm,
+                                            categories: [...currentCategories, category]
+                                          });
+                                        } else {
+                                          setVendorForm({
+                                            ...vendorForm,
+                                            categories: currentCategories.filter(cat => cat !== category)
+                                          });
+                                        }
+                                      }}
+                                      className="rounded border-gray-300"
+                                    />
+                                    <Label
+                                      htmlFor={`category-${category}`}
+                                      className="text-sm font-normal cursor-pointer"
+                                    >
+                                      {category}
+                                    </Label>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Select the BOM categories this vendor supplies (e.g., Vision Systems, Cameras, Motors)
+                          </p>
+                        </div>
+
                         <div className="col-span-2 space-y-2">
                           <Label htmlFor="vendorAddress">Address</Label>
                           <Input
@@ -1194,11 +1268,48 @@ const Settings = () => {
                 )}
               </CardHeader>
               <CardContent>
-                {vendors.length === 0 ? (
+                {/* Search and Filter Controls */}
+                <div className="flex flex-col @md:flex-row gap-4 mb-4">
+                  <div className="flex-1 relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                    <Input
+                      placeholder="Search vendors by name, email, contact, or makes..."
+                      value={vendorSearch}
+                      onChange={(e) => setVendorSearch(e.target.value)}
+                      className="pl-10"
+                    />
+                  </div>
+                  <div className="@md:w-64">
+                    <select
+                      value={vendorCategoryFilter}
+                      onChange={(e) => setVendorCategoryFilter(e.target.value)}
+                      className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                    >
+                      <option value="all">All Categories</option>
+                      {availableCategories.map((category) => (
+                        <option key={category} value={category}>
+                          {category}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {filteredVendors.length === 0 ? (
                   <div className="text-center py-8">
-                    <ShoppingCart className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-                    <p className="text-gray-500">No vendors added yet</p>
-                    <p className="text-gray-400 text-sm">Add your first vendor to get started</p>
+                    {vendors.length === 0 ? (
+                      <>
+                        <ShoppingCart className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+                        <p className="text-gray-500">No vendors added yet</p>
+                        <p className="text-gray-400 text-sm">Add your first vendor to get started</p>
+                      </>
+                    ) : (
+                      <>
+                        <Search className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+                        <p className="text-gray-500">No vendors match your search</p>
+                        <p className="text-gray-400 text-sm">Try adjusting your search or filters</p>
+                      </>
+                    )}
                   </div>
                 ) : (
                   <Table>
@@ -1212,7 +1323,7 @@ const Settings = () => {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {vendors.map((vendor) => (
+                      {filteredVendors.map((vendor) => (
                         <TableRow key={vendor.id}>
                           <TableCell>
                             <div className="flex items-center space-x-3">

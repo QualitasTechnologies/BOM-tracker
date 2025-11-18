@@ -28,7 +28,7 @@ export interface Client {
   updatedAt: Date;
 }
 
-// Vendor types and interfaces  
+// Vendor types and interfaces
 export interface Vendor {
   id: string;
   company: string;
@@ -46,6 +46,7 @@ export interface Vendor {
   notes?: string;
   type: 'OEM' | 'Dealer';
   makes: string[];
+  categories?: string[]; // BOM category names this vendor supplies
   createdAt: Date;
   updatedAt: Date;
 }
