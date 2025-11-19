@@ -11,6 +11,11 @@ import { useToast } from '@/components/ui/use-toast';
 import { getVendors, Vendor as DBVendor } from '@/utils/settingsFirestore';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
+import { uploadQuotation, getQuotationsForItem } from '@/utils/quotationFirestore';
+import { QuotationDocument } from '@/types/quotation';
+import { auth } from '@/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '@/firebase';
 
 interface DocumentInfo {
   name: string;

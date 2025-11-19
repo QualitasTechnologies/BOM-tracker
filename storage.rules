@@ -1,0 +1,36 @@
+rules_version = '2';
+
+// Firebase Storage Security Rules
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper function to check if file is a PDF
+    function isPDF() {
+      return request.resource.contentType == 'application/pdf';
+    }
+
+    // Helper function to check if file size is reasonable (max 10MB)
+    function isReasonableSize() {
+      return request.resource.size < 10 * 1024 * 1024;
+    }
+
+    // Quotation PDFs
+    match /quotations/{projectId}/{bomItemId}/{fileName} {
+      // Allow authenticated users to upload PDFs for their projects
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && isPDF()
+                   && isReasonableSize();
+      allow delete: if isAuthenticated();
+    }
+
+    // Default: deny all other access
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -816,3 +816,95 @@ exports.sendPurchaseRequest = onCall(
   }
 );
 
+// Extract text from PDF quotation
+// This function downloads a PDF from a URL and extracts its text content
+const pdfParse = require('pdf-parse');
+
+exports.extractQuotationText = onCall(
+  async (request) => {
+    const { auth, data } = request;
+
+    if (!auth) {
+      throw new Error('Authentication required');
+    }
+
+    try {
+      const { quotationId, fileUrl } = data;
+
+      if (!quotationId || !fileUrl) {
+        throw new Error('Missing required parameters: quotationId and fileUrl');
+      }
+
+      logger.info('Starting PDF text extraction', {
+        quotationId,
+        fileUrl,
+        userId: auth.uid
+      });
+
+      // Download the PDF file from Firebase Storage
+      const bucket = admin.storage().bucket();
+
+      // Extract the storage path from the URL
+      // URL format: https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{path}?...
+      const urlParts = fileUrl.split('/o/')[1];
+      if (!urlParts) {
+        throw new Error('Invalid file URL format');
+      }
+      const filePath = decodeURIComponent(urlParts.split('?')[0]);
+
+      logger.info('Downloading PDF', { filePath });
+
+      // Download file to buffer
+      const file = bucket.file(filePath);
+      const [fileBuffer] = await file.download();
+
+      logger.info('PDF downloaded, extracting text', {
+        bufferSize: fileBuffer.length
+      });
+
+      // Extract text from PDF
+      const pdfData = await pdfParse(fileBuffer);
+      const extractedText = pdfData.text;
+
+      logger.info('Text extraction complete', {
+        quotationId,
+        textLength: extractedText.length,
+        numPages: pdfData.numpages
+      });
+
+      // Update Firestore document with extracted text
+      await admin.firestore().collection('quotations').doc(quotationId).update({
+        extractedText: extractedText,
+        textExtractedAt: admin.firestore.FieldValue.serverTimestamp(),
+        status: 'text_extracted'
+      });
+
+      logger.info('Firestore updated successfully', { quotationId });
+
+      return {
+        success: true,
+        textLength: extractedText.length,
+        numPages: pdfData.numpages,
+        quotationId: quotationId
+      };
+
+    } catch (error) {
+      logger.error('Error extracting PDF text:', error);
+
+      // Update status to error if quotationId is available
+      if (data.quotationId) {
+        try {
+          await admin.firestore().collection('quotations').doc(data.quotationId).update({
+            status: 'error',
+            errorMessage: error.message
+          });
+        } catch (updateError) {
+          logger.error('Failed to update error status:', updateError);
+        }
+      }
+
+      throw new Error(`Failed to extract PDF text: ${error.message}`);
+    }
+  }
+);
+

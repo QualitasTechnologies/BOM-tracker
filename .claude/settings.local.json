@@ -12,7 +12,8 @@
       "mcp__Ref__ref_read_url",
       "Bash(firebase functions:secrets:set:*)",
       "Bash(firebase functions:list:*)",
-      "Bash(firebase functions:config:get:*)"
+      "Bash(firebase functions:config:get:*)",
+      "Bash(npm run build:*)"
     ],
     "deny": [],
     "ask": []
