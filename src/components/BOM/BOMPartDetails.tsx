@@ -521,7 +521,7 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
                   <div className="text-gray-400 text-sm italic flex items-center gap-2 p-2"><FileText size={16} />No documents uploaded yet.</div>
                 )}
                 {documents.map(doc => (
-                  <div key={doc.url} className="flex items-center gap-2 bg-gray-50 rounded px-2 py-1 border border-gray-200">
+                  <div key={doc.url} className="flex items-center gap-2 bg-gray-50 rounded px-2 py-1 border border-gray-200 group hover:bg-gray-100">
                     {docDeleteMode && (
                       <input
                         type="checkbox"
@@ -543,6 +543,20 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
                     >
                       {doc.name}
                     </a>
+                    {!docDeleteMode && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`Delete "${doc.name}"?`)) {
+                            setDocuments(documents.filter(d => d.url !== doc.url));
+                          }
+                        }}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-100 rounded"
+                        title="Delete document"
+                      >
+                        <X size={14} className="text-red-600" />
+                      </button>
+                    )}
                   </div>
                 ))}
                 {docDeleteMode && (
