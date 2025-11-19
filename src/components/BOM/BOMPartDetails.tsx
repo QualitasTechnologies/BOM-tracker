@@ -13,9 +13,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox';
 import { uploadQuotation, getQuotationsForItem } from '@/utils/quotationFirestore';
 import { QuotationDocument } from '@/types/quotation';
-import { auth } from '@/firebase';
+import { auth, storage, functions } from '@/firebase';
 import { httpsCallable } from 'firebase/functions';
-import { functions } from '@/firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 interface DocumentInfo {
   name: string;
@@ -168,19 +168,51 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
     }
   };
   const { toast } = useToast();
-  // Handle file upload for this part
-  const handleUploadDocs = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      // Simulate upload and URL creation
-      const newDocs: DocumentInfo[] = [
-        ...documents,
-        ...Array.from(e.target.files).map(f => ({
-          name: f.name,
-          url: URL.createObjectURL(f) // In real app, use storage URL
-        }))
-      ];
+  const [uploadingDocs, setUploadingDocs] = useState(false);
+
+  // Handle file upload for this part - REAL Firebase Storage upload
+  const handleUploadDocs = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || !partState) return;
+
+    const files = Array.from(e.target.files);
+    setUploadingDocs(true);
+
+    try {
+      const uploadPromises = files.map(async (file) => {
+        // Create unique filename with timestamp
+        const timestamp = Date.now();
+        const sanitizedFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+        const storagePath = `documents/${partState.id}/${timestamp}_${sanitizedFileName}`;
+
+        // Upload to Firebase Storage
+        const storageRef = ref(storage, storagePath);
+        await uploadBytes(storageRef, file);
+        const fileUrl = await getDownloadURL(storageRef);
+
+        return {
+          name: file.name,
+          url: fileUrl
+        };
+      });
+
+      const uploadedDocs = await Promise.all(uploadPromises);
+      const newDocs = [...documents, ...uploadedDocs];
+
       setDocuments(newDocs);
-      toast({ title: 'Upload Successful', description: `${e.target.files.length} document(s) uploaded.` });
+      toast({
+        title: 'Upload Successful',
+        description: `${files.length} document(s) uploaded to Firebase Storage.`
+      });
+    } catch (error) {
+      console.error('Error uploading documents:', error);
+      toast({
+        title: 'Upload Failed',
+        description: error instanceof Error ? error.message : 'Failed to upload documents',
+        variant: 'destructive',
+      });
+    } finally {
+      setUploadingDocs(false);
+      e.target.value = ''; // Reset file input
     }
   };
   // Description edit dialog state
@@ -460,9 +492,9 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
                 <span>Documents</span>
                 <div className="flex items-center gap-2">
                   <label className="cursor-pointer">
-                    <input type="file" multiple className="hidden" onChange={handleUploadDocs} />
-                    <span className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium" title="Add file">
-                      Add file
+                    <input type="file" multiple className="hidden" onChange={handleUploadDocs} disabled={uploadingDocs} />
+                    <span className={`px-3 py-1 ${uploadingDocs ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'} text-white rounded text-sm font-medium`} title="Add file">
+                      {uploadingDocs ? 'Uploading...' : 'Add file'}
                     </span>
                   </label>
                   <button

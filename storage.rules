@@ -28,6 +28,15 @@ service firebase.storage {
       allow delete: if isAuthenticated();
     }
 
+    // Regular documents for BOM items (any file type)
+    match /documents/{bomItemId}/{fileName} {
+      // Allow authenticated users to upload documents
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && isReasonableSize();
+      allow delete: if isAuthenticated();
+    }
+
     // Default: deny all other access
     match /{allPaths=**} {
       allow read, write: if false;
