@@ -243,7 +243,15 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                 <span className="text-xs text-gray-500 bg-gray-100 px-1 rounded whitespace-nowrap">Qty: {part.quantity}</span>
               </div>
               <div className="text-xs text-gray-600 truncate">{part.description}</div>
-              <div className="grid grid-cols-[auto_1fr] @md:grid-cols-[auto_auto] gap-2 @md:gap-4 text-xs text-gray-500 items-center">
+              <div className="grid grid-cols-[auto_1fr] @md:grid-cols-[auto_auto_auto] gap-2 @md:gap-4 text-xs text-gray-500 items-center">
+                {part.price && (
+                  <div className="flex items-center gap-1 whitespace-nowrap text-green-700 font-semibold">
+                    <span>₹{part.price.toLocaleString('en-IN')}</span>
+                    {part.quantity > 1 && (
+                      <span className="text-gray-400 font-normal">× {part.quantity}</span>
+                    )}
+                  </div>
+                )}
                 {part.expectedDelivery && (
                   <div className="flex items-center gap-1 whitespace-nowrap">
                     <Calendar size={10} />

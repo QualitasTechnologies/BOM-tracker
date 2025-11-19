@@ -10,7 +10,10 @@
 
 ### ⚙️ Settings Management
 - Client Management (add, edit, delete with validation)
-- Vendor Management (supplier database with payment terms, lead times)
+- Vendor Management (supplier database with payment terms, lead times, categories)
+  - CSV import/export with duplicate detection and preview
+  - Search and category filtering
+  - Automatic change detection and merge preview
 - BOM Settings (configurable categories, approval workflows)
 - Firebase real-time sync
 
@@ -25,19 +28,17 @@
 - Part ID removal (simplified structure)
 - Fixed vendor integration
 - Lead time optimization
+- Purchase Request system (SendGrid email integration)
+- CSV export/import with makes field support
+
+### 📊 Analytics & Dashboards
+- KPI Dashboard with real-time metrics
+- Project cost tracking and visualization
+- Profit/Loss analysis gauges
 
 ## 🚧 PENDING FEATURES
 
-### 📁 Current Work Items
-✅ **COMPLETED**: All current work items have been finished
-- ✅ AI import component integration testing - Fully integrated and working
-- ✅ Firebase Functions deployment (AI analysis endpoint) - Deployed successfully
-- ✅ OpenAI API key configuration - Configured and functional
-- ✅ Cross-browser compatibility testing - Using modern React/Vite stack with good browser support
-- ✅ Complete Integration Testing - End-to-end AI import workflow working
-- ✅ Performance Testing - Large file processing validated with comprehensive test suite
-
-### 🎯 Immediate Next (Week 1-2) - PRIORITY
+### 🎯 Immediate Next - PRIORITY
 
 #### 📊 CEO Dashboard & Project KPI System (HIGHEST PRIORITY)
 See CEO_Dashboard_PRD.md for complete specifications
@@ -131,10 +132,12 @@ See CEO_Dashboard_PRD.md for complete specifications
 
 ---
 
-#### 🔧 Other Priority Features
-15. **Vendor Comparison Tools** - Side-by-side quote comparisons
-16. **Export Capabilities** - PDF reports, Excel exports, purchase orders
-17. **Approval Workflows** - Multi-stage BOM approval process
+#### 🔧 BOM System Features
+15. **Quotation Parser** - AI-powered PDF quotation parsing and vendor matching (IN PROGRESS)
+16. **Vendor Comparison Tools** - Side-by-side quote comparisons
+17. **Advanced Export** - PDF reports, purchase orders
+18. **Approval Workflows** - Multi-stage BOM approval process
+19. **User Management Testing** - Validate RBAC and permission matrix
 
 ### 👥 User Management System Status
 🔧 **NEEDS TESTING**: User management system implemented but requires proper testing
@@ -165,9 +168,10 @@ See CEO_Dashboard_PRD.md for complete specifications
 - ✅ Timeline tracking with delay attribution - **Core feature of CEO Dashboard**
 - ✅ Estimation accuracy tracking - **Implemented in CEO Dashboard Phase 3**
 - ✅ Project health indicators - **Core feature of CEO Dashboard**
-- Vendor performance metrics
+- Vendor performance metrics and scorecards
+- User activity logs and audit trails
 - Profit/Loss analysis enhancements
-- User activity and audit logs
+- Custom report builder
 
 ### 🤖 Intelligent Part Automation (n8n Integration)
 - **Automatic Spec Sheet Scraping** - When BOM parts are added, trigger n8n workflows to find and download spec sheets from the internet

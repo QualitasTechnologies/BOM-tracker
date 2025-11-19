@@ -6,6 +6,7 @@ export interface BOMItem {
   make?: string;
   description: string;
   sku?: string;
+  price?: number; // Unit price for this item (can be set independently or from finalized vendor)
   thumbnailUrl?: string; // Thumbnail image URL for the part
   categoryId: string; // Now references category ID instead of name
   quantity: number;

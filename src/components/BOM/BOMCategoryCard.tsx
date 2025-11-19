@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import BOMPartRow from './BOMPartRow';
+import BOMPartDetails from './BOMPartDetails';
 import { useState } from 'react';
 
 interface DocumentInfo {
@@ -37,6 +38,7 @@ interface BOMCategory {
 
 interface BOMCategoryCardProps {
   category: BOMCategory;
+  selectedPart?: BOMItem | null;
   onToggle: () => void;
   onPartClick: (part: BOMItem) => void;
   onQuantityChange?: (itemId: string, newQuantity: number) => void;
@@ -47,9 +49,11 @@ interface BOMCategoryCardProps {
   onEditPart?: (itemId: string, updates: Partial<BOMItem>) => void;
   onPartCategoryChange?: (itemId: string, newCategory: string) => void;
   availableCategories?: string[];
+  onUpdatePart?: (updated: BOMItem) => void;
+  onCloseDetails?: () => void;
 }
 
-const BOMCategoryCard = ({ category, onToggle, onPartClick, onQuantityChange, onDeletePart, onDeleteCategory, onEditCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [] }: BOMCategoryCardProps) => {
+const BOMCategoryCard = ({ category, selectedPart, onToggle, onPartClick, onQuantityChange, onDeletePart, onDeleteCategory, onEditCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [], onUpdatePart, onCloseDetails }: BOMCategoryCardProps) => {
   const [showConfirm, setShowConfirm] = useState<false | 'warning' | 'confirm'>(false);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(category.name);
@@ -98,7 +102,7 @@ const BOMCategoryCard = ({ category, onToggle, onPartClick, onQuantityChange, on
     <Card className="relative">
       <Collapsible open={category.isExpanded} onOpenChange={onToggle}>
         <CollapsibleTrigger asChild>
-          <CardHeader className="cursor-pointer hover:bg-gray-50 transition-colors relative">
+          <CardHeader className="cursor-pointer hover:bg-gray-50 transition-colors relative py-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {category.isExpanded ? (
@@ -204,20 +208,32 @@ const BOMCategoryCard = ({ category, onToggle, onPartClick, onQuantityChange, on
           </CardHeader>
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <CardContent className="pt-0">
+          <CardContent className="pt-0 pb-3">
             <div className="space-y-2">
               {category.items.map((item) => (
-                <BOMPartRow
-                  key={item.id}
-                  part={item}
-                  onClick={() => onPartClick(item)}
-                  onQuantityChange={onQuantityChange}
-                  onDelete={onDeletePart}
-                  onStatusChange={onStatusChange}
-                  onEdit={onEditPart}
-                  onCategoryChange={onPartCategoryChange}
-                  availableCategories={availableCategories}
-                />
+                <div key={item.id}>
+                  <BOMPartRow
+                    part={item}
+                    onClick={() => onPartClick(item)}
+                    onQuantityChange={onQuantityChange}
+                    onDelete={onDeletePart}
+                    onStatusChange={onStatusChange}
+                    onEdit={onEditPart}
+                    onCategoryChange={onPartCategoryChange}
+                    availableCategories={availableCategories}
+                  />
+                  {/* Show details inline below the selected part */}
+                  {selectedPart?.id === item.id && (
+                    <div className="mt-3 ml-4 border-l-4 border-blue-400 pl-4">
+                      <BOMPartDetails
+                        part={selectedPart}
+                        onClose={onCloseDetails || (() => {})}
+                        onUpdatePart={onUpdatePart}
+                        onDeletePart={onDeletePart}
+                      />
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           </CardContent>

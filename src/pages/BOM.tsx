@@ -356,8 +356,8 @@ const BOM = () => {
       />
       
       <div className={`flex-1 ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
-        <main className="p-6">
-          <div className="max-w-7xl mx-auto">
+        <main className="p-4">
+          <div className="max-w-full mx-auto px-2">
             {/* BOM Header */}
             <BOMHeader
               projectName={projectDetails?.projectName || ''}
@@ -367,7 +367,7 @@ const BOM = () => {
             />
 
             {/* Search and Actions Bar */}
-            <div className="flex flex-col sm:flex-row gap-4 mb-6">
+            <div className="flex flex-col sm:flex-row gap-3 mb-4">
               <div className="relative flex-1 flex items-center gap-2">
                 <div className="flex-1 relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" size={20} />
@@ -412,55 +412,45 @@ const BOM = () => {
               </Alert>
             )}
 
-            {/* BOM Content */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Categories List */}
-              <div className="lg:col-span-2 space-y-4">
-                {filteredCategories.map((category) => (
-                  <BOMCategoryCard
-                    key={category.name}
-                    category={category}
-                    onToggle={() => toggleCategory(category.name)}
-                    onPartClick={handlePartClick}
-                    onQuantityChange={handleQuantityChange}
-                    onDeletePart={handleDeletePart}
-                    onDeleteCategory={(categoryName) => {
-                      // Handle category deletion - remove the entire category
-                      if (projectId) {
-                        const updatedCategories = categories.filter(cat => cat.name !== categoryName);
-                        updateBOMData(projectId, updatedCategories);
-                      }
-                    }}
-                    onEditCategory={handleEditCategory}
-                    onStatusChange={(itemId, newStatus) => {
-                      if (projectId) {
-                        updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
-                      }
-                    }}
-                    onEditPart={handleEditPart}
-                    onPartCategoryChange={handlePartCategoryChange}
-                    availableCategories={settingsCategories}
-                  />
-                ))}
-                
-                {filteredCategories.length === 0 && (
-                  <Card>
-                    <CardContent className="p-8 text-center">
-                      <p className="text-muted-foreground">No parts found matching your search criteria.</p>
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-
-              {/* Part Details */}
-              <div className="lg:col-span-1">
-                <BOMPartDetails
-                  part={selectedPart}
-                  onClose={() => setSelectedPart(null)}
-                  onUpdatePart={handleUpdatePart}
+            {/* BOM Content - Single Column Layout */}
+            <div className="space-y-4">
+              {filteredCategories.map((category) => (
+                <BOMCategoryCard
+                  key={category.name}
+                  category={category}
+                  selectedPart={selectedPart}
+                  onToggle={() => toggleCategory(category.name)}
+                  onPartClick={handlePartClick}
+                  onQuantityChange={handleQuantityChange}
                   onDeletePart={handleDeletePart}
+                  onDeleteCategory={(categoryName) => {
+                    // Handle category deletion - remove the entire category
+                    if (projectId) {
+                      const updatedCategories = categories.filter(cat => cat.name !== categoryName);
+                      updateBOMData(projectId, updatedCategories);
+                    }
+                  }}
+                  onEditCategory={handleEditCategory}
+                  onStatusChange={(itemId, newStatus) => {
+                    if (projectId) {
+                      updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                    }
+                  }}
+                  onEditPart={handleEditPart}
+                  onPartCategoryChange={handlePartCategoryChange}
+                  availableCategories={settingsCategories}
+                  onUpdatePart={handleUpdatePart}
+                  onCloseDetails={() => setSelectedPart(null)}
                 />
-              </div>
+              ))}
+
+              {filteredCategories.length === 0 && (
+                <Card>
+                  <CardContent className="p-8 text-center">
+                    <p className="text-muted-foreground">No parts found matching your search criteria.</p>
+                  </CardContent>
+                </Card>
+              )}
             </div>
           </div>
         </main>

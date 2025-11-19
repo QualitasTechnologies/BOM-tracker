@@ -80,6 +80,7 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
   const [color, setColor] = useState(colorMatch ? colorMatch[0].toLowerCase().includes('rgb') ? 'RGB' : 'Monochrome' : '');
   const [qty, setQty] = useState(part.quantity);
   const [partName, setPartName] = useState(part.name);
+  const [partPrice, setPartPrice] = useState(part.price || 0);
   const [addVendorOpen, setAddVendorOpen] = useState(false);
   const [pan, setPan] = useState('');
   const [gst, setGst] = useState('');
@@ -193,6 +194,7 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
       name: partName,
       description: newDescription,
       quantity: qty,
+      price: partPrice > 0 ? partPrice : undefined,
     };
     setPartState(updated);
     if (typeof onUpdatePart === 'function') onUpdatePart(updated);
@@ -283,7 +285,7 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
 
   return (
     <Card className="h-fit">
-      <CardHeader>
+      <CardHeader className="py-3">
         <div className="flex items-start justify-between">
           <div className="flex-1">
             <CardTitle className="text-lg">{partState?.name}</CardTitle>
@@ -313,6 +315,10 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
                     <label className="block text-sm font-medium mb-1">Quantity</label>
                     <input type="number" min={1} className="w-full border rounded p-2" value={qty} onChange={e => setQty(Number(e.target.value))} />
                   </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Unit Price (₹)</label>
+                    <input type="number" min={0} step="0.01" className="w-full border rounded p-2" value={partPrice} onChange={e => setPartPrice(Number(e.target.value))} placeholder="Enter unit price" />
+                  </div>
                 </form>
                 <DialogFooter className="mt-4 flex gap-2">
                   <button type="button" className="px-4 py-2 bg-blue-600 text-white rounded" onClick={handleSave}>Save</button>
@@ -329,13 +335,29 @@ const BOMPartDetails = ({ part, onClose, onUpdatePart, onDeletePart }: BOMPartDe
           </div>
         </div>
       </CardHeader>
-      
-      <CardContent className="space-y-6">
-        {/* Quantity Info */}
-        <div className="flex items-center justify-between mb-2 mt-1">
-          <span className="text-gray-600 font-medium text-sm">Quantity:</span>
-          <span className="font-medium text-base">{partState?.quantity}</span>
+
+      <CardContent className="space-y-4 py-3">
+        {/* Quantity and Price Info */}
+        <div className="grid grid-cols-2 gap-4 mb-2 mt-1">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-600 font-medium text-sm">Quantity:</span>
+            <span className="font-medium text-base">{partState?.quantity}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-gray-600 font-medium text-sm">Unit Price:</span>
+            <span className="font-medium text-base">
+              {partState?.price ? `₹${partState.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+            </span>
+          </div>
         </div>
+        {partState?.price && partState?.quantity && (
+          <div className="flex items-center justify-between p-2 bg-blue-50 rounded border border-blue-200">
+            <span className="text-blue-800 font-semibold text-sm">Total Cost:</span>
+            <span className="text-blue-900 font-bold text-lg">
+              ₹{(partState.price * partState.quantity).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+          </div>
+        )}
         {/* Description */}
         <div>
           <div className="flex items-center mb-2">
