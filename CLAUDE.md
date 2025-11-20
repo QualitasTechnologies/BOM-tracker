@@ -51,12 +51,18 @@
   - Unified data model for both components and services
   - Services tracked by duration (days, 0.5 minimum) and rate per day (₹/day)
   - Item type selector in add dialog (Component/Service)
+  - **Edit mode item type switching** - Change existing items between component/service
+    - Item type dropdown in edit mode
+    - Auto-cleanup: Switching to service clears make/SKU fields
+    - Dynamic UI: Fields show/hide based on selected type
+    - Full CRUD support for item type changes
   - Conditional field display (hide make/SKU/vendor fields for services)
   - Updated labels: "Duration" vs "Qty", "Rate" vs "Unit", with "days" suffix
   - Total cost calculation: duration × rate (same formula as quantity × price)
   - CSV export includes Item Type column with appropriate units
   - Backward compatible (existing items default to 'component')
   - Financial aggregation: Total project cost = Components + Services
+  - **Deployed**: Firebase Hosting (Nov 20, 2025)
 - **Canonical Category Management** (Nov 2025)
   - Single source of truth: Categories defined in Settings → Default Categories
   - Category validation: New parts must use canonical categories only
