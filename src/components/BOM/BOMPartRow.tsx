@@ -21,13 +21,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useState, useEffect } from 'react';
 import { getVendors, Vendor } from '@/utils/settingsFirestore';
 import QuantityControl from './QuantityControl';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface BOMItem {
   id: string;
+  itemType: 'component' | 'service';
   name: string;
   description: string;
   category: string;
-  quantity: number;
+  quantity: number; // For components: units, for services: days
+  price?: number; // For components: unit price, for services: rate per day
+  make?: string;
+  sku?: string;
   vendors: Array<{
     name: string;
     price: number;
@@ -53,7 +58,32 @@ interface BOMPartRowProps {
   linkedDocumentsCount?: number;
 }
 
+const statusStyles: Record<
+  BOMItem["status"],
+  { label: string; className: string }
+> = {
+  approved: {
+    label: "Approved",
+    className: "bg-blue-50 text-blue-700 border-blue-200",
+  },
+  ordered: {
+    label: "Ordered",
+    className: "bg-amber-50 text-amber-700 border-amber-200",
+  },
+  "not-ordered": {
+    label: "Not Ordered",
+    className: "bg-red-50 text-red-700 border-red-200",
+  },
+  received: {
+    label: "Received",
+    className: "bg-green-50 text-green-700 border-green-200",
+  },
+};
+
 const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [], linkedDocumentsCount = 0 }: BOMPartRowProps) => {
+  // Backward compatibility: default to 'component' if itemType is missing
+  const itemType = part.itemType || 'component';
+
   const [dialogOpen, setDialogOpen] = useState(false);
   const [vendors, setVendors] = useState(part.vendors);
   const [form, setForm] = useState({ name: '', price: 0, leadTime: '', availability: '' });
@@ -64,6 +94,7 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
   const [editing, setEditing] = useState(false);
   const [availableMakes, setAvailableMakes] = useState<string[]>([]);
   const [editForm, setEditForm] = useState({
+    itemType: part.itemType || 'component',
     name: part.name,
     make: part.make || '',
     description: part.description,
@@ -136,19 +167,16 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
     setDialogOpen(false);
   };
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'approved':
-        return <Badge className="bg-blue-100 text-blue-800 border-blue-200">Approved</Badge>;
-      case 'ordered':
-        return <Badge className="bg-amber-100 text-amber-800 border-amber-200">Ordered</Badge>;
-      case 'not-ordered':
-        return <Badge className="bg-red-100 text-red-800 border-red-200">Not Ordered</Badge>;
-      case 'received':
-        return <Badge className="bg-green-100 text-green-800 border-green-200">Received</Badge>;
-      default:
-        return <Badge variant="outline">Unknown</Badge>;
+  const getStatusBadge = (status: BOMItem["status"]) => {
+    const meta = statusStyles[status];
+    if (!meta) {
+      return <Badge variant="outline">Unknown</Badge>;
     }
+    return (
+      <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium ${meta.className}`}>
+        {meta.label}
+      </span>
+    );
   };
 
   return (
@@ -160,107 +188,187 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
         <div className="min-w-0">
           {editing ? (
             <div className="space-y-2">
-              <div className="grid grid-cols-[1fr_auto_auto_auto_auto] @lg:grid-cols-[2fr_1fr_1fr_auto_auto] gap-2 @md:gap-3">
-                <input
-                  placeholder="Part Name"
-                  className="text-sm font-medium bg-white border rounded px-2 py-1 truncate"
-                  value={editForm.name}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, name: e.target.value }))}
-                  onClick={(e) => e.stopPropagation()}
-                />
-                <div className="min-w-0" onClick={(e) => e.stopPropagation()}>
-                  <Select
-                    value={editForm.make}
-                    onValueChange={(value) => setEditForm(prev => ({ ...prev, make: value === "__NONE__" ? '' : (value || '') }))}
-                  >
-                    <SelectTrigger className="h-8 text-xs w-full">
-                      <SelectValue placeholder="Make" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__NONE__">None</SelectItem>
-                      {availableMakes
-                        .filter(make => make && make.trim() !== '')
-                        .map((make) => (
-                          <SelectItem key={make} value={make}>
-                            {make}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <input
-                  placeholder="SKU"
-                  className="text-sm bg-white border rounded px-2 py-1 truncate"
-                  value={editForm.sku}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, sku: e.target.value }))}
-                  onClick={(e) => e.stopPropagation()}
-                />
-                <input
-                  type="number"
-                  placeholder="Price"
-                  className="w-20 text-sm bg-white border rounded px-2 py-1"
-                  value={editForm.price || ''}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, price: e.target.value ? Number(e.target.value) : undefined }))}
-                  onClick={(e) => e.stopPropagation()}
-                />
-                <input
-                  type="number"
-                  placeholder="Qty"
-                  className="w-16 text-sm bg-white border rounded px-2 py-1"
-                  value={editForm.quantity}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, quantity: Number(e.target.value) }))}
-                  onClick={(e) => e.stopPropagation()}
-                />
+              {/* Item Type Selector */}
+              <div className="flex items-center gap-2 pb-1 border-b">
+                <label className="text-xs font-medium text-gray-600">Type:</label>
+                <Select
+                  value={editForm.itemType}
+                  onValueChange={(value: 'component' | 'service') => {
+                    setEditForm(prev => ({
+                      ...prev,
+                      itemType: value,
+                      // Clear make and sku when switching to service
+                      ...(value === 'service' && { make: '', sku: '' })
+                    }));
+                  }}
+                >
+                  <SelectTrigger className="h-7 w-32 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="component">Component</SelectItem>
+                    <SelectItem value="service">Service</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className={`grid gap-2 @md:gap-3 ${editForm.itemType === 'service' ? 'grid-cols-[1fr_auto_auto]' : 'grid-cols-[1fr_auto_auto_auto_auto] @lg:grid-cols-[2fr_1fr_1fr_auto_auto]'}`}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <input
+                      placeholder={editForm.itemType === 'service' ? 'Service Name' : 'Part Name'}
+                      className="text-sm font-medium bg-white border rounded px-2 py-1 truncate"
+                      value={editForm.name}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, name: e.target.value }))}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent>{editForm.itemType === 'service' ? 'Service name shown on BOM' : 'Internal name shown on BOM'}</TooltipContent>
+                </Tooltip>
+
+                {editForm.itemType === 'component' && (
+                  <>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="min-w-0" onClick={(e) => e.stopPropagation()}>
+                          <Select
+                            value={editForm.make}
+                            onValueChange={(value) => setEditForm(prev => ({ ...prev, make: value === "__NONE__" ? '' : (value || '') }))}
+                          >
+                            <SelectTrigger className="h-8 text-xs w-full">
+                              <SelectValue placeholder="Make" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__NONE__">None</SelectItem>
+                              {availableMakes
+                                .filter(make => make && make.trim() !== '')
+                                .map((make) => (
+                                  <SelectItem key={make} value={make}>
+                                    {make}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>Preferred vendor or manufacturer</TooltipContent>
+                    </Tooltip>
+
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <input
+                          placeholder="SKU"
+                          className="text-sm bg-white border rounded px-2 py-1 truncate"
+                          value={editForm.sku}
+                          onChange={(e) => setEditForm(prev => ({ ...prev, sku: e.target.value }))}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </TooltipTrigger>
+                      <TooltipContent>SKU / model number for procurement</TooltipContent>
+                    </Tooltip>
+                  </>
+                )}
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <input
+                      type="number"
+                      placeholder={editForm.itemType === 'service' ? '₹/day' : 'Price'}
+                      className="w-20 text-sm bg-white border rounded px-2 py-1"
+                      value={editForm.price || ''}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, price: e.target.value ? Number(e.target.value) : undefined }))}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {editForm.itemType === 'service' ? 'Rate per day in INR' : 'Unit price in INR'}
+                  </TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <input
+                      type="number"
+                      step={editForm.itemType === 'service' ? '0.5' : '1'}
+                      min={editForm.itemType === 'service' ? '0.5' : '1'}
+                      placeholder={editForm.itemType === 'service' ? 'Days' : 'Qty'}
+                      className="w-16 text-sm bg-white border rounded px-2 py-1"
+                      value={editForm.quantity}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, quantity: Number(e.target.value) }))}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {editForm.itemType === 'service' ? 'Duration in days (min 0.5)' : 'Quantity required for this project'}
+                  </TooltipContent>
+                </Tooltip>
               </div>
               <div className="grid grid-cols-[1fr] gap-2 @md:gap-3">
-                <input
-                  placeholder="Description"
-                  className="text-sm bg-white border rounded px-2 py-1 truncate"
-                  value={editForm.description}
-                  onChange={(e) => setEditForm(prev => ({ ...prev, description: e.target.value }))}
-                  onClick={(e) => e.stopPropagation()}
-                />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <input
+                      placeholder="Description"
+                      className="text-sm bg-white border rounded px-2 py-1 truncate"
+                      value={editForm.description}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, description: e.target.value }))}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent>Key specs or application notes</TooltipContent>
+                </Tooltip>
               </div>
             </div>
           ) : (
             <div className="space-y-1">
-              <div className="grid grid-cols-[1fr_auto_auto_auto] @md:grid-cols-[2fr_auto_auto_auto] gap-2 @md:gap-3 items-center">
-                <h4 className="font-medium text-gray-900 truncate min-w-0">{part.name}</h4>
-                {part.make && (
-                  <span className="text-xs text-blue-600 bg-blue-50 px-1 rounded whitespace-nowrap">{part.make}</span>
-                )}
-                {part.sku && (
-                  <span className="text-xs text-purple-600 bg-purple-50 px-1 rounded whitespace-nowrap">SKU: {part.sku}</span>
-                )}
-                {linkedDocumentsCount > 0 && (
-                  <span className="text-xs text-green-600 bg-green-50 px-1 rounded whitespace-nowrap flex items-center gap-1">
-                    <FileText size={12} />
-                    {linkedDocumentsCount}
-                  </span>
-                )}
-                <span className="text-xs text-gray-500 bg-gray-100 px-1 rounded whitespace-nowrap">Qty: {part.quantity}</span>
-              </div>
-              <div className="text-xs text-gray-600 truncate">{part.description}</div>
-              <div className="grid grid-cols-[auto_1fr] @md:grid-cols-[auto_auto_auto_auto] gap-2 @md:gap-4 text-xs text-gray-500 items-center">
+              <div className="flex flex-wrap items-center gap-2 justify-between">
+                <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
+                  <h4 className="font-medium text-gray-900 truncate">{part.name}</h4>
+                  {itemType === 'component' && part.make && (
+                    <span className="text-xs text-blue-600 bg-blue-50 px-1 rounded whitespace-nowrap">{part.make}</span>
+                  )}
+                  {itemType === 'component' && part.sku && (
+                    <span className="text-xs text-purple-600 bg-purple-50 px-1 rounded whitespace-nowrap">SKU: {part.sku}</span>
+                  )}
+                  {itemType === 'service' && (
+                    <span className="text-xs text-indigo-600 bg-indigo-50 px-1 rounded whitespace-nowrap">Service</span>
+                  )}
+                  {linkedDocumentsCount > 0 && (
+                    <span className="text-xs text-green-600 bg-green-50 px-1 rounded whitespace-nowrap flex items-center gap-1">
+                      <FileText size={12} />
+                      {linkedDocumentsCount}
+                    </span>
+                  )}
+                </div>
                 {part.price && (
-                  <>
-                    <div className="flex items-center gap-1 whitespace-nowrap text-gray-700">
-                      <span className="text-gray-500">Unit:</span>
-                      <span className="font-medium">₹{part.price.toLocaleString('en-IN')}</span>
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-gray-700">
+                    <div className="flex items-center gap-1 whitespace-nowrap">
+                      <span className="text-gray-500">
+                        {itemType === 'service' ? 'Rate:' : 'Unit:'}
+                      </span>
+                      <span className="font-medium">
+                        ₹{part.price.toLocaleString('en-IN')}
+                        {itemType === 'service' && '/day'}
+                      </span>
                     </div>
                     <div className="flex items-center gap-1 whitespace-nowrap text-green-700 font-semibold">
                       <span className="text-gray-500 font-normal">Total:</span>
                       <span>₹{(part.price * part.quantity).toLocaleString('en-IN')}</span>
                     </div>
-                  </>
+                  </div>
                 )}
-                {part.expectedDelivery && (
+              </div>
+              <div className="text-xs text-gray-600 truncate">{part.description}</div>
+              <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
+                <span className="text-xs text-gray-500 bg-gray-100 px-1 rounded whitespace-nowrap">
+                  {itemType === 'service' ? 'Duration:' : 'Qty:'} {part.quantity}{itemType === 'service' && ' days'}
+                </span>
+                {itemType === 'component' && part.expectedDelivery && (
                   <div className="flex items-center gap-1 whitespace-nowrap">
                     <Calendar size={10} />
                     <span>{part.expectedDelivery}</span>
                   </div>
                 )}
-                {part.finalizedVendor && (
+                {itemType === 'component' && part.finalizedVendor && (
                   <span className="truncate min-w-0">Vendor: {part.finalizedVendor.name}</span>
                 )}
               </div>
@@ -268,7 +376,7 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
           )}
         </div>
         
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2 self-start">
           {editing ? (
             <>
               <Button
@@ -300,6 +408,7 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                 onClick={(e) => {
                   e.stopPropagation();
                   setEditForm({
+                    itemType: part.itemType || 'component',
                     name: part.name,
                     make: part.make || '',
                     description: part.description,
@@ -316,18 +425,26 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
             </>
           ) : (
             <>
-              {/* Status dropdown */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <span onClick={(e) => e.stopPropagation()}>{getStatusBadge(part.status)}</span>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent>
-                  <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'approved')}>Approved</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'ordered')}>Ordered</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'not-ordered')}>Not Ordered</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'received')}>Received</DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {itemType === 'component' && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-0 py-0 bg-transparent hover:bg-transparent"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {getStatusBadge(part.status)}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent>
+                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'approved')}>Approved</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'ordered')}>Ordered</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'not-ordered')}>Not Ordered</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'received')}>Received</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
               
               {/* Actions dropdown */}
               <DropdownMenu>

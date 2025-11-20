@@ -1,16 +1,27 @@
 export type BOMStatus = 'not-ordered' | 'ordered' | 'received' | 'approved';
+export type BOMItemType = 'component' | 'service';
 
 export interface BOMItem {
   id: string;
+  itemType: BOMItemType; // NEW: Distinguish between component and service
   name: string;
   make?: string;
   description: string;
   sku?: string;
-  price?: number; // Unit price for this item (can be set independently or from finalized vendor)
-  thumbnailUrl?: string; // Thumbnail image URL for the part
-  categoryId: string; // Now references category ID instead of name
+
+  // For components: unit price (₹)
+  // For services: rate per day (₹/day)
+  price?: number;
+
+  // For components: quantity of units
+  // For services: duration in days (minimum 0.5)
   quantity: number;
-  order: number; // For drag-and-drop ordering within categories
+
+  thumbnailUrl?: string; // Thumbnail image URL for the part
+  category: string; // Category name (matches BOMCategory.name)
+  order?: number; // For drag-and-drop ordering within categories
+
+  // Vendor info (only applicable for components)
   vendors: Array<{
     name: string;
     price: number;
@@ -26,8 +37,16 @@ export interface BOMItem {
     leadTime: string;
     availability: string;
   };
-  createdAt: Date;
-  updatedAt: Date;
+
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+// UI display structure for BOM categories (grouping items)
+export interface BOMCategory {
+  name: string;
+  items: BOMItem[];
+  isExpanded: boolean;
 }
 
 // This is now just for UI state - actual categories are in settings

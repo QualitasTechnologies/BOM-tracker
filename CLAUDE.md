@@ -29,7 +29,43 @@
 - Fixed vendor integration
 - Lead time optimization
 - Purchase Request system (SendGrid email integration)
-- CSV export/import with makes field support
+- CSV export/import with makes field support and pricing columns
+- **Flattened UI Design** (Nov 2025)
+  - Removed nested detail panels (BOMPartDetails component eliminated - 880 lines)
+  - Inline editing for all fields including price
+  - Total cost calculation display (unit price × quantity)
+  - Compact category cards with inline item management
+  - 80% code reduction through flattened architecture
+- **Optimized Header** (Nov 2025)
+  - Sticky header with financial metrics (50% space reduction)
+  - Real-time total BOM cost calculation
+  - Pricing progress tracking (items priced / total items)
+  - Color-coded completion badges
+- **Centralized Document Management** (Nov 2025)
+  - Project-level document organization (Vendor Quotes, POs Outgoing, Customer PO)
+  - Document linking to multiple BOM items
+  - Visual indicators for linked documents on items (📄×3 badges)
+  - Firebase Storage integration with metadata tracking
+  - Collapsible UI for space optimization
+- **Services Tracking Module** (Nov 2025)
+  - Unified data model for both components and services
+  - Services tracked by duration (days, 0.5 minimum) and rate per day (₹/day)
+  - Item type selector in add dialog (Component/Service)
+  - Conditional field display (hide make/SKU/vendor fields for services)
+  - Updated labels: "Duration" vs "Qty", "Rate" vs "Unit", with "days" suffix
+  - Total cost calculation: duration × rate (same formula as quantity × price)
+  - CSV export includes Item Type column with appropriate units
+  - Backward compatible (existing items default to 'component')
+  - Financial aggregation: Total project cost = Components + Services
+- **Canonical Category Management** (Nov 2025)
+  - Single source of truth: Categories defined in Settings → Default Categories
+  - Category validation: New parts must use canonical categories only
+  - Category alignment UI: Warning banner for mismatched categories
+  - Merge functionality: Realign project categories to canonical categories
+  - Performance optimized: useMemo/useCallback for computed values
+  - Prevents category sprawl across projects
+  - Clear error messages guide users to Settings when needed
+  - Shows mismatched categories with item counts for easy decision-making
 
 ### 📊 Analytics & Dashboards
 - KPI Dashboard with real-time metrics
@@ -132,12 +168,13 @@ See CEO_Dashboard_PRD.md for complete specifications
 
 ---
 
-#### 🔧 BOM System Features
+#### 🔧 BOM & Services System Features
+
 15. **Quotation Parser** - AI-powered PDF quotation parsing and vendor matching (IN PROGRESS)
-16. **Vendor Comparison Tools** - Side-by-side quote comparisons
-17. **Advanced Export** - PDF reports, purchase orders
-18. **Approval Workflows** - Multi-stage BOM approval process
-19. **User Management Testing** - Validate RBAC and permission matrix
+16. **Advanced Export** - PDF reports, purchase orders
+17. **Approval Workflows** - Multi-stage BOM approval process
+18. **User Management Testing** - Validate RBAC and permission matrix
+19. **Vendor Performance Metrics** - Track vendor reliability, pricing trends, delivery accuracy
 
 ### 👥 User Management System Status
 🔧 **NEEDS TESTING**: User management system implemented but requires proper testing

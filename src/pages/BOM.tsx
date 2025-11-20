@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { Search, Plus, Download, Filter, X, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -22,7 +22,8 @@ import {
   updateBOMItem, 
   deleteBOMItem,
 } from '@/utils/projectFirestore';
-import { getVendors, Vendor, getBOMSettings } from '@/utils/settingsFirestore';
+import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
+import type { Vendor, BOMCategory as SettingsCategory } from '@/utils/settingsFirestore';
 import { BOMItem, BOMCategory, BOMStatus } from '@/types/bom';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/firebase';
@@ -50,12 +51,22 @@ const BOM = () => {
   const [addPartOpen, setAddPartOpen] = useState(false);
   const [importBOMOpen, setImportBOMOpen] = useState(false);
   const [prDialogOpen, setPRDialogOpen] = useState(false);
-  const [newPart, setNewPart] = useState({ 
-    name: '', 
+  const [newPart, setNewPart] = useState<{
+    itemType: 'component' | 'service';
+    name: string;
+    make: string;
+    description: string;
+    sku: string;
+    quantity: number;
+    price?: number;
+  }>({
+    itemType: 'component',
+    name: '',
     make: '',
     description: '',
     sku: '',
-    quantity: 1
+    quantity: 1,
+    price: undefined
   });
   const [categoryForPart, setCategoryForPart] = useState<string | null>(null);
   const [addPartError, setAddPartError] = useState<string | null>(null);
@@ -63,8 +74,47 @@ const BOM = () => {
   const [importSuccess, setImportSuccess] = useState<string | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [availableMakes, setAvailableMakes] = useState<string[]>([]);
-  const [settingsCategories, setSettingsCategories] = useState<string[]>([]);
+  const [canonicalCategories, setCanonicalCategories] = useState<SettingsCategory[]>([]);
+  const [categoryAlignmentSelections, setCategoryAlignmentSelections] = useState<Record<string, string>>({});
   const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([]);
+  const canonicalCategoryNames = useMemo(
+    () =>
+      canonicalCategories
+        .filter((cat) => !cat.parentId && cat.isActive !== false)
+        .map((cat) => cat.name),
+    [canonicalCategories]
+  );
+  const canonicalCategoriesAvailable = canonicalCategoryNames.length > 0;
+  const canonicalCategorySet = useMemo(
+    () => new Set(canonicalCategoryNames.map((name) => name.toLowerCase())),
+    [canonicalCategoryNames]
+  );
+  const mismatchedCategories = useMemo(
+    () => categories.filter((cat) => !canonicalCategorySet.has(cat.name.toLowerCase())),
+    [categories, canonicalCategorySet]
+  );
+
+  const isCanonicalCategory = useCallback(
+    (name: string | null | undefined) => !!name && canonicalCategorySet.has(name.toLowerCase()),
+    [canonicalCategorySet]
+  );
+
+  useEffect(() => {
+    setCategoryAlignmentSelections((prev) => {
+      let changed = false;
+      const next: Record<string, string> = {};
+      mismatchedCategories.forEach((cat) => {
+        const existing = prev[cat.name];
+        if (existing) {
+          next[cat.name] = existing;
+        }
+      });
+      if (Object.keys(next).length !== Object.keys(prev).length) {
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [mismatchedCategories]);
 
   // Load BOM data when project ID changes
   useEffect(() => {
@@ -134,8 +184,9 @@ const BOM = () => {
         // Load settings categories
         const bomSettings = await getBOMSettings();
         if (bomSettings && bomSettings.categories) {
-          const categoryNames = bomSettings.categories.map(cat => cat.name);
-          setSettingsCategories(categoryNames);
+          setCanonicalCategories(bomSettings.categories.filter(cat => !cat.parentId));
+        } else {
+          setCanonicalCategories([]);
         }
       } catch (error) {
         console.error('Error loading settings data:', error);
@@ -165,7 +216,18 @@ const BOM = () => {
     if (!projectId) return;
 
     setAddPartError(null);
-    if (!categoryForPart) return;
+    if (!canonicalCategoriesAvailable) {
+      setAddPartError('Define at least one category in Settings → Default Categories before adding items.');
+      return;
+    }
+    if (!categoryForPart) {
+      setAddPartError('Select a category before adding an item.');
+      return;
+    }
+    if (!isCanonicalCategory(categoryForPart)) {
+      setAddPartError('Selected category is not part of Settings. Add or rename categories in Settings first.');
+      return;
+    }
 
     let finalCategory = categoryForPart;
     let updatedCategories = categories;
@@ -181,42 +243,63 @@ const BOM = () => {
             ...cat,
             items: [...cat.items, {
               id: Date.now().toString(),
+              itemType: newPart.itemType,
               name: newPart.name,
-              make: newPart.make,
               description: newPart.description,
-              sku: newPart.sku,
               category: finalCategory || '',
               quantity: newPart.quantity,
+              price: newPart.price,
               vendors: [],
               status: 'not-ordered' as BOMStatus,
+              // Only include make and sku for components (Firestore doesn't accept undefined)
+              ...(newPart.itemType === 'component' && {
+                make: newPart.make,
+                sku: newPart.sku
+              })
             } as BOMItem]
           }
         : cat
     );
 
     await updateBOMData(projectId, newCategories);
-    
+
     // Reset form
-    setNewPart({ name: '', make: '', description: '', sku: '', quantity: 1 });
+    setNewPart({ itemType: 'component', name: '', make: '', description: '', sku: '', quantity: 1, price: undefined });
     setAddPartOpen(false);
     setCategoryForPart(null);
   };
 
   const handleEditCategory = async (oldName: string, newName: string) => {
-    if (!projectId) return;
+    if (!projectId || oldName === newName || !isCanonicalCategory(newName)) return;
 
-    const updatedCategories = categories.map(cat => {
+    let movedItems: BOMItem[] = [];
+    let wasExpanded = true;
+    const remainingCategories = categories.filter((cat) => {
       if (cat.name === oldName) {
-        return {
-          ...cat,
-          name: newName,
-          items: cat.items.map(item => ({ ...item, category: newName }))
-        };
+        movedItems = cat.items.map((item) => ({ ...item, category: newName }));
+        wasExpanded = cat.isExpanded;
+        return false;
       }
-      return cat;
+      return true;
     });
 
-    await updateBOMData(projectId, updatedCategories);
+    const targetIndex = remainingCategories.findIndex((cat) => cat.name === newName);
+    if (targetIndex >= 0) {
+      const target = remainingCategories[targetIndex];
+      remainingCategories[targetIndex] = {
+        ...target,
+        isExpanded: wasExpanded || target.isExpanded,
+        items: [...target.items, ...movedItems],
+      };
+    } else {
+      remainingCategories.push({
+        name: newName,
+        isExpanded: wasExpanded,
+        items: movedItems,
+      });
+    }
+
+    await updateBOMData(projectId, remainingCategories);
   };
 
   const handleDeletePart = async (itemId: string) => {
@@ -243,6 +326,7 @@ const BOM = () => {
 
   const handlePartCategoryChange = async (itemId: string, newCategory: string) => {
     if (!projectId) return;
+    if (!isCanonicalCategory(newCategory)) return;
     
     // Find the part and remove it from its current category
     let partToMove: BOMItem | null = null;
@@ -298,13 +382,15 @@ const BOM = () => {
       'Project ID',
       'Project Name',
       'Client Name',
-      'Part Name',
+      'Item Type',
+      'Name',
       'Make',
       'SKU',
       'Description',
       'Category',
-      'Quantity',
-      'Unit Price (₹)',
+      'Quantity/Duration',
+      'Unit',
+      'Unit Price/Rate (₹)',
       'Total Cost (₹)',
       'Status',
       'Expected Delivery',
@@ -313,23 +399,30 @@ const BOM = () => {
     ];
 
     const rows = categories.flatMap(category =>
-      category.items.map(item => [
-        projectDetails?.projectId || '',
-        projectDetails?.projectName || '',
-        projectDetails?.clientName || '',
-        item.name,
-        item.make || '',
-        item.sku || '',
-        item.description,
-        category.name,
-        item.quantity,
-        item.price !== undefined ? item.price : '',
-        item.price !== undefined ? item.price * item.quantity : '',
-        item.status === 'not-ordered' ? 'Pending' : item.status.charAt(0).toUpperCase() + item.status.slice(1),
-        item.expectedDelivery || '',
-        item.finalizedVendor?.name || '',
-        item.finalizedVendor?.price !== undefined ? item.finalizedVendor.price : ''
-      ])
+      category.items.map(item => {
+        const itemType = item.itemType || 'component';
+        const isService = itemType === 'service';
+
+        return [
+          projectDetails?.projectId || '',
+          projectDetails?.projectName || '',
+          projectDetails?.clientName || '',
+          isService ? 'Service' : 'Component',
+          item.name,
+          item.make || '',
+          item.sku || '',
+          item.description,
+          category.name,
+          item.quantity,
+          isService ? 'days' : 'units',
+          item.price !== undefined ? (isService ? `${item.price}/day` : item.price) : '',
+          item.price !== undefined ? item.price * item.quantity : '',
+          item.status === 'not-ordered' ? 'Pending' : item.status.charAt(0).toUpperCase() + item.status.slice(1),
+          !isService ? (item.expectedDelivery || '') : '',
+          !isService ? (item.finalizedVendor?.name || '') : '',
+          !isService && item.finalizedVendor?.price !== undefined ? item.finalizedVendor.price : ''
+        ];
+      })
     );
 
     const csvContent = [headers, ...rows]
@@ -439,6 +532,60 @@ const BOM = () => {
               </Alert>
             )}
 
+            {mismatchedCategories.length > 0 && (
+              <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-4 space-y-3">
+                <div className="text-sm font-semibold text-amber-900">
+                  {mismatchedCategories.length} project categories are not defined in Settings. Align them with a canonical category to keep BOM data consistent.
+                </div>
+                <div className="space-y-3">
+                  {mismatchedCategories.map((cat) => (
+                    <div key={cat.name} className="flex flex-wrap items-center gap-3">
+                      <span className="text-sm font-medium text-amber-900">{cat.name}</span>
+                      <span className="text-xs text-amber-700">({cat.items.length} items)</span>
+                      <Select
+                        value={categoryAlignmentSelections[cat.name] ?? ''}
+                        onValueChange={(value) =>
+                          setCategoryAlignmentSelections((prev) => ({ ...prev, [cat.name]: value }))
+                        }
+                        disabled={!canonicalCategoriesAvailable}
+                      >
+                        <SelectTrigger className="w-48 h-8 text-sm">
+                          <SelectValue placeholder="Select canonical category" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {canonicalCategoryNames.map((canonicalName) => (
+                            <SelectItem key={canonicalName} value={canonicalName}>
+                              {canonicalName}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          const target = categoryAlignmentSelections[cat.name];
+                          if (target) {
+                            void handleEditCategory(cat.name, target);
+                          }
+                        }}
+                        disabled={!categoryAlignmentSelections[cat.name] || !canonicalCategoriesAvailable}
+                      >
+                        Merge
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+                {!canonicalCategoriesAvailable && (
+                  <p className="text-xs text-red-700">
+                    No canonical categories are defined in Settings yet. Add at least one to resolve these entries.
+                  </p>
+                )}
+                <p className="text-xs text-amber-800">
+                  Need to add or rename a category? Use Settings → Default Categories so every project stays in sync.
+                </p>
+              </div>
+            )}
+
             {/* BOM Content - Single Column Layout */}
             <div className="space-y-4">
               {filteredCategories.map((category) => (
@@ -462,7 +609,7 @@ const BOM = () => {
                   }}
                   onEditPart={handleEditPart}
                   onPartCategoryChange={handlePartCategoryChange}
-                  availableCategories={settingsCategories}
+                  availableCategories={canonicalCategoryNames}
                   onUpdatePart={handleUpdatePart}
                   getDocumentCount={getDocumentCountForItem}
                 />
@@ -539,9 +686,11 @@ const BOM = () => {
       <Dialog open={addPartOpen} onOpenChange={setAddPartOpen}>
         <DialogContent className="@container max-w-[425px] max-h-[90vh] overflow-hidden flex flex-col">
           <DialogHeader>
-            <DialogTitle>Add Part</DialogTitle>
+            <DialogTitle>{newPart.itemType === 'service' ? 'Add Service' : 'Add Part'}</DialogTitle>
             <DialogDescription>
-              Add a new part to your BOM. Select or create a category for organization.
+              {newPart.itemType === 'service'
+                ? 'Add a new service to your BOM. Services are tracked by duration (days) and rate per day.'
+                : 'Add a new part to your BOM. Select or create a category for organization.'}
             </DialogDescription>
           </DialogHeader>
           {addPartError && (
@@ -551,8 +700,26 @@ const BOM = () => {
           )}
           <div className="space-y-4">
             <div>
+              <Label>Item Type</Label>
+              <Select
+                value={newPart.itemType}
+                onValueChange={(value: 'component' | 'service') => {
+                  setNewPart({ ...newPart, itemType: value, make: '', sku: '' });
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="component">Component / Part</SelectItem>
+                  <SelectItem value="service">Service</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
               <Label>Category</Label>
-              <Select 
+              <Select
                 value={categoryForPart ?? undefined}
                 onValueChange={(value) => {
                   setCategoryForPart(value || null);
@@ -562,10 +729,10 @@ const BOM = () => {
                   <SelectValue placeholder="Select Category" />
                 </SelectTrigger>
                 <SelectContent>
-                  {settingsCategories.length === 0 && (
+                  {canonicalCategoryNames.length === 0 && (
                     <SelectItem value="__LOADING__" disabled>Loading categories...</SelectItem>
                   )}
-                  {settingsCategories
+                  {canonicalCategoryNames
                     .filter(catName => catName && catName.trim() !== '') // Filter out empty categories
                     .map(catName => (
                       <SelectItem key={catName} value={catName}>{catName}</SelectItem>
@@ -575,66 +742,107 @@ const BOM = () => {
             </div>
 
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="partName">Part Name *</Label>
-                <Input
-                  id="partName"
-                  value={newPart.name}
-                  onChange={e => setNewPart({ ...newPart, name: e.target.value })}
-                  placeholder="Enter part name"
-                />
-              </div>
-              <div>
-                <Label htmlFor="make">Make</Label>
-                <Select
-                  value={newPart.make || undefined}
-                  onValueChange={(value) => setNewPart({ ...newPart, make: value === "__NONE__" ? '' : (value || '') })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select Make/Brand" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__NONE__">None</SelectItem>
-                    {availableMakes.length === 0 && vendors.length === 0 && (
-                      <SelectItem value="__LOADING__" disabled>Loading makes...</SelectItem>
-                    )}
-                    {availableMakes.length === 0 && vendors.length > 0 && (
-                      <SelectItem value="__NO_MAKES__" disabled>No makes found in vendors</SelectItem>
-                    )}
-                    {availableMakes
-                      .filter(make => make && make.trim() !== '') // Filter out empty makes
-                      .map((make) => (
-                        <SelectItem key={make} value={make}>
-                          {make}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+            {newPart.itemType === 'component' ? (
+              <>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="partName">Part Name *</Label>
+                    <Input
+                      id="partName"
+                      value={newPart.name}
+                      onChange={e => setNewPart({ ...newPart, name: e.target.value })}
+                      placeholder="Enter part name"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="make">Make</Label>
+                    <Select
+                      value={newPart.make || undefined}
+                      onValueChange={(value) => setNewPart({ ...newPart, make: value === "__NONE__" ? '' : (value || '') })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select Make/Brand" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__NONE__">None</SelectItem>
+                        {availableMakes.length === 0 && vendors.length === 0 && (
+                          <SelectItem value="__LOADING__" disabled>Loading makes...</SelectItem>
+                        )}
+                        {availableMakes.length === 0 && vendors.length > 0 && (
+                          <SelectItem value="__NO_MAKES__" disabled>No makes found in vendors</SelectItem>
+                        )}
+                        {availableMakes
+                          .filter(make => make && make.trim() !== '') // Filter out empty makes
+                          .map((make) => (
+                            <SelectItem key={make} value={make}>
+                              {make}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="sku">SKU/Part Number</Label>
-                <Input
-                  id="sku"
-                  value={newPart.sku}
-                  onChange={e => setNewPart({ ...newPart, sku: e.target.value })}
-                  placeholder="Product SKU or part #"
-                />
-              </div>
-              <div>
-                <Label htmlFor="quantity">Quantity *</Label>
-                <Input
-                  id="quantity"
-                  type="number"
-                  min={1}
-                  value={newPart.quantity}
-                  onChange={e => setNewPart({ ...newPart, quantity: Number(e.target.value) })}
-                />
-              </div>
-            </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="sku">SKU/Part Number</Label>
+                    <Input
+                      id="sku"
+                      value={newPart.sku}
+                      onChange={e => setNewPart({ ...newPart, sku: e.target.value })}
+                      placeholder="Product SKU or part #"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="quantity">Quantity *</Label>
+                    <Input
+                      id="quantity"
+                      type="number"
+                      min={1}
+                      value={newPart.quantity}
+                      onChange={e => setNewPart({ ...newPart, quantity: Number(e.target.value) })}
+                    />
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <Label htmlFor="serviceName">Service Name *</Label>
+                  <Input
+                    id="serviceName"
+                    value={newPart.name}
+                    onChange={e => setNewPart({ ...newPart, name: e.target.value })}
+                    placeholder="Enter service name"
+                  />
+                </div>
+
+                <div>
+                  <Label htmlFor="duration">Duration (days) *</Label>
+                  <Input
+                    id="duration"
+                    type="number"
+                    step="0.5"
+                    min="0.5"
+                    value={newPart.quantity}
+                    onChange={e => setNewPart({ ...newPart, quantity: Number(e.target.value) })}
+                    placeholder="Minimum 0.5 days"
+                  />
+                </div>
+
+                <div>
+                  <Label htmlFor="ratePerDay">Rate per Day (₹) *</Label>
+                  <Input
+                    id="ratePerDay"
+                    type="number"
+                    min="0"
+                    value={newPart.price || ''}
+                    onChange={e => setNewPart({ ...newPart, price: e.target.value ? Number(e.target.value) : undefined })}
+                    placeholder="Enter rate per day"
+                  />
+                </div>
+              </>
+            )}
 
             <div>
               <Label htmlFor="description">Description</Label>
