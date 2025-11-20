@@ -25,13 +25,16 @@ const CostAnalysis = () => {
   const [miscCost, setMiscCost] = useState(0);
   const [isEditingMisc, setIsEditingMisc] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [poValue, setPoValue] = useState(0);
+  const [isEditingPO, setIsEditingPO] = useState(false);
 
   const [materialCost, setMaterialCost] = useState(0);
   const [totalManHours, setTotalManHours] = useState(0);
+  const [currentBOM, setCurrentBOM] = useState<any[]>([]);
 
   const [searchParams] = useSearchParams();
   const projectIdParam = searchParams.get('project');
-  const [projectDetails, setProjectDetails] = useState<{ projectName: string; projectId: string; clientName: string; deadline: string } | null>(null);
+  const [projectDetails, setProjectDetails] = useState<{ projectName: string; projectId: string; clientName: string; deadline: string; status: string; bomSnapshot?: any[]; bomSnapshotDate?: string } | null>(null);
 
   useEffect(() => {
     const fetchAllData = async () => {
@@ -46,9 +49,13 @@ const CostAnalysis = () => {
           projectId: data.projectId || '',
           clientName: data.clientName || '',
           deadline: data.deadline || '',
+          status: data.status || '',
+          bomSnapshot: data.bomSnapshot || null,
+          bomSnapshotDate: data.bomSnapshotDate || null,
         });
         setCostPerHour(data.costPerHour || 0);
         setMiscCost(data.miscCost || 0);
+        setPoValue(data.poValue || 0);
         setEstimatedBudget(
           typeof data.estimatedBudget === 'number' && !isNaN(data.estimatedBudget)
             ? data.estimatedBudget
@@ -57,6 +64,8 @@ const CostAnalysis = () => {
       }
       // Fetch BOM and calculate material cost
       const bomCategories = await getBOMData(projectIdParam);
+      const bomItems = bomCategories.flatMap(cat => cat.items);
+      setCurrentBOM(bomItems);
       setMaterialCost(getTotalBOMCost(bomCategories));
       // Fetch engineers and calculate total man hours
       const engineers = await fetchEngineers(projectIdParam);
@@ -86,10 +95,18 @@ const CostAnalysis = () => {
     setIsEditingBudget(false);
   };
 
+  // Update PO value in Firestore
+  const handlePOValueBlur = async () => {
+    if (!projectIdParam) return;
+    await updateProject(projectIdParam, { poValue });
+    setIsEditingPO(false);
+  };
+
   const engineerCost = totalManHours * costPerHour;
   const totalCost = materialCost + engineerCost + miscCost;
-  const profitLoss = estimatedBudget - totalCost;
-  const isProfit = profitLoss > 0;
+  const grossProfit = poValue - totalCost;
+  const isProfit = grossProfit > 0;
+  const profitMargin = poValue ? ((grossProfit / poValue) * 100) : 0;
   const budgetUsage = (totalCost / estimatedBudget) * 100;
 
   const getStatusBadge = () => {
@@ -112,30 +129,6 @@ const CostAnalysis = () => {
     { name: "Material Cost", value: materialCost, color: "#8B5CF6" },
     { name: "Engineering Cost", value: engineerCost, color: "#06B6D4" },
     { name: "Miscellaneous Cost", value: miscCost, color: "#F59E42" },
-  ];
-
-  // Dummy distribution of total working hours across 3 months
-  const engineerHoursDist = [45, 55, 35];
-  const months = ["Jan", "Feb", "Mar"];
-  const monthlyCostData = months.map((month, i) => ({
-    month,
-    engineerHours: engineerHoursDist[i],
-    engineerCost: engineerHoursDist[i] * costPerHour,
-  }));
-
-  const budgetVsActualData = [
-    {
-      label: "Budget vs Actual",
-      estimated: estimatedBudget,
-      actual: totalCost,
-    },
-  ];
-
-  const profitabilityData = [
-    { week: "Week 1", profit: 50000 },
-    { week: "Week 2", profit: 35000 },
-    { week: "Week 3", profit: 25000 },
-    { week: "Week 4", profit: profitLoss },
   ];
 
   // Editable descriptions for cost items
@@ -327,174 +320,79 @@ const CostAnalysis = () => {
             </CardContent>
           </Card>
 
-          {/* Budget & Profitability */}
+          {/* PO Value & Profitability Summary */}
           <Card>
             <CardHeader>
-              <CardTitle>Budget & Profitability</CardTitle>
+              <CardTitle>PO Value & Profitability</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="text-center p-4 bg-muted rounded-lg">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* PO Value Card */}
+                <div className="text-center p-4 bg-blue-50 rounded-lg border-2 border-blue-200">
                   <div className="flex items-center justify-center gap-2 mb-2">
-                    <span className="text-sm text-muted-foreground">Estimated Budget</span>
-                    {!isEditingBudget && (
+                    <DollarSign className="h-4 w-4 text-blue-600" />
+                    <span className="text-sm font-medium text-blue-900">Customer PO Value</span>
+                    {!isEditingPO && (
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setIsEditingBudget(true)}
+                        onClick={() => setIsEditingPO(true)}
                         className="h-6 w-6 p-0"
                       >
                         <Edit2 className="h-3 w-3" />
                       </Button>
                     )}
                   </div>
-                  {isEditingBudget ? (
+                  {isEditingPO ? (
                     <Input
                       type="number"
-                      value={estimatedBudget === 0 ? '' : estimatedBudget}
+                      value={poValue === 0 ? '' : poValue}
                       onChange={(e) => {
                         const val = parseInt(e.target.value);
-                        setEstimatedBudget(isNaN(val) ? 0 : val);
+                        setPoValue(isNaN(val) ? 0 : val);
                       }}
-                      onBlur={handleEstimatedBudgetBlur}
+                      onBlur={handlePOValueBlur}
                       className="text-xl font-bold text-center"
                       autoFocus
                     />
                   ) : (
-                    <p className="text-2xl font-bold">{formatCurrency(estimatedBudget)}</p>
+                    <p className="text-3xl font-bold text-blue-900">{formatCurrency(poValue)}</p>
                   )}
                 </div>
-                {/* Material vs Engineer Card */}
-                <div className="text-center p-4 bg-muted rounded-lg flex flex-col items-center justify-center">
-                  <span className="text-sm text-muted-foreground mb-1">Material vs Engineer</span>
-                  <span className="text-2xl font-bold">
-                    {(() => {
-                      const mat = materialCost;
-                      const eng = engineerCost;
-                      const misc = miscCost;
-                      const total = mat + eng + misc;
-                      const matPct = total ? Math.round((mat / total) * 100) : 0;
-                      const engPct = total ? Math.round((eng / total) * 100) : 0;
-                      return <>{matPct}% <span className="text-base font-normal">/</span> {engPct}%</>;
-                    })()}
-                  </span>
+
+                {/* Total Cost Card */}
+                <div className="text-center p-4 bg-gray-50 rounded-lg border-2 border-gray-200">
+                  <div className="flex items-center justify-center gap-2 mb-2">
+                    <Package className="h-4 w-4 text-gray-600" />
+                    <span className="text-sm font-medium text-gray-700">Total Project Cost</span>
+                  </div>
+                  <p className="text-3xl font-bold text-gray-900">{formatCurrency(totalCost)}</p>
+                  <p className="text-xs text-gray-500 mt-1">BOM + Engineer + Misc</p>
                 </div>
-                {/* Profit Margin Card */}
-                <div className="text-center p-4 bg-muted rounded-lg flex flex-col items-center justify-center">
-                  <span className="text-sm text-muted-foreground mb-1">Profit Margin</span>
-                  <span className={`text-2xl font-bold ${profitLoss < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                    {(() => {
-                      const margin = estimatedBudget ? ((profitLoss / estimatedBudget) * 100) : 0;
-                      return `${margin >= 0 ? '' : '-'}${Math.abs(margin).toFixed(1)}%`;
-                    })()}
-                  </span>
-                </div>
-                <div className={`text-center p-4 rounded-lg ${isProfit ? 'bg-green-50' : 'bg-red-50'}`}>
+
+                {/* Gross Profit Card */}
+                <div className={`text-center p-4 rounded-lg border-2 ${isProfit ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
                   <div className="flex items-center justify-center gap-2 mb-2">
                     {isProfit ? (
                       <TrendingUp className="h-4 w-4 text-green-600" />
                     ) : (
                       <TrendingDown className="h-4 w-4 text-red-600" />
                     )}
-                    <span className="text-sm text-muted-foreground">
-                      {isProfit ? 'Profit' : 'Loss'}
+                    <span className={`text-sm font-medium ${isProfit ? 'text-green-900' : 'text-red-900'}`}>
+                      Gross {isProfit ? 'Profit' : 'Loss'}
                     </span>
                   </div>
-                  <p className={`text-2xl font-bold ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
-                    {formatCurrency(Math.abs(profitLoss))}
+                  <p className={`text-3xl font-bold ${isProfit ? 'text-green-900' : 'text-red-900'}`}>
+                    {formatCurrency(Math.abs(grossProfit))}
+                  </p>
+                  <p className={`text-sm font-medium mt-1 ${isProfit ? 'text-green-700' : 'text-red-700'}`}>
+                    {profitMargin.toFixed(1)}% margin
                   </p>
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          {/* Visual Insights */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Cost Composition Pie Chart */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Cost Composition</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={300}>
-                  <PieChart>
-                    <Pie
-                      data={costCompositionData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={90}
-                      dataKey="value"
-                      label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                    >
-                      {costCompositionData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
-                      ))}
-                    </Pie>
-                    <Tooltip formatter={(value) => formatCurrency(value as number)} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-
-            {/* Monthly Cost Trend */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Monthly Cost Trend</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={monthlyCostData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="month" />
-                    <YAxis yAxisId="left" orientation="left" tickFormatter={(value) => `${value}h`} />
-                    <YAxis yAxisId="right" orientation="right" tickFormatter={(value) => `₹${(value / 1000).toFixed(0)}K`} />
-                    <Tooltip formatter={(value, name) => {
-                      if (name === 'Engineer Cost') return formatCurrency(value as number);
-                      if (name === 'Engineer Hours') return `${value} hrs`;
-                      return value;
-                    }} />
-                    <Bar yAxisId="left" dataKey="engineerHours" fill="#8B5CF6" name="Engineer Hours" barSize={30} />
-                    <Bar yAxisId="right" dataKey="engineerCost" fill="#06B6D4" name="Engineer Cost" barSize={30} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-
-            {/* Budget vs Actual */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Budget vs Actual Cost</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={budgetVsActualData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="label" tick={{ fontWeight: 600 }} />
-                    <YAxis tickFormatter={(value) => value.toLocaleString()} />
-                    <Tooltip formatter={(value) => formatCurrency(value as number)} />
-                    <Bar dataKey="estimated" fill="#22c55e" name="Estimated Budget" barSize={60} />
-                    <Bar dataKey="actual" fill="#ef4444" name="Actual Cost" barSize={60} />
-                    <Legend iconType="rect" wrapperStyle={{ top: 0 }} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-
-            {/* Profitability Over Time */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Profit & Loss Meter</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {(() => {
-                  const percent = (profitLoss / estimatedBudget) * 100;
-                  const isProfitMeter = profitLoss >= 0;
-                  return <ProfitLossGauge percent={percent} isProfit={isProfitMeter} />;
-                })()}
-              </CardContent>
-            </Card>
-          </div>
 
           {/* Cost Items Table */}
           <Card>
@@ -560,6 +458,134 @@ const CostAnalysis = () => {
               </div>
             </CardContent>
           </Card>
+
+          {/* BOM Changes Since Ongoing Status */}
+          {projectDetails?.bomSnapshot && projectDetails.bomSnapshot.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>BOM Changes Since Order Won</CardTitle>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Snapshot taken on: {projectDetails.bomSnapshotDate ? new Date(projectDetails.bomSnapshotDate).toLocaleDateString() : 'N/A'}
+                </p>
+              </CardHeader>
+              <CardContent>
+                {(() => {
+                  const snapshot = projectDetails.bomSnapshot || [];
+                  const current = currentBOM;
+
+                  // Calculate added items
+                  const addedItems = current.filter(item =>
+                    !snapshot.some(snap => snap.id === item.id)
+                  );
+
+                  // Calculate removed items
+                  const removedItems = snapshot.filter(snap =>
+                    !current.some(item => item.id === snap.id)
+                  );
+
+                  // Calculate changed items (price or quantity changes)
+                  const changedItems = current
+                    .filter(item => {
+                      const snapItem = snapshot.find(snap => snap.id === item.id);
+                      if (!snapItem) return false;
+                      return (snapItem.price !== item.price) || (snapItem.quantity !== item.quantity);
+                    })
+                    .map(item => {
+                      const snapItem = snapshot.find(snap => snap.id === item.id)!;
+                      return {
+                        ...item,
+                        oldPrice: snapItem.price,
+                        oldQuantity: snapItem.quantity,
+                        priceDiff: (item.price || 0) - (snapItem.price || 0),
+                        quantityDiff: item.quantity - snapItem.quantity
+                      };
+                    });
+
+                  // Calculate cost difference
+                  const snapshotCost = snapshot.reduce((sum, item) => sum + (item.price || 0) * item.quantity, 0);
+                  const currentCost = materialCost;
+                  const costDiff = currentCost - snapshotCost;
+
+                  if (addedItems.length === 0 && removedItems.length === 0 && changedItems.length === 0) {
+                    return (
+                      <div className="text-center py-6 text-muted-foreground">
+                        <p>No changes to BOM since order was won</p>
+                        <p className="text-sm mt-1">BOM Cost: {formatCurrency(currentCost)}</p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-4">
+                      {/* Cost Summary */}
+                      <div className={`p-4 rounded-lg border-2 ${costDiff > 0 ? 'bg-red-50 border-red-200' : costDiff < 0 ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
+                        <div className="text-sm font-medium mb-1">Cost Change</div>
+                        <div className="flex items-center justify-between">
+                          <span>Original BOM Cost: {formatCurrency(snapshotCost)}</span>
+                          <span>Current BOM Cost: {formatCurrency(currentCost)}</span>
+                          <span className={`font-bold ${costDiff > 0 ? 'text-red-600' : costDiff < 0 ? 'text-green-600' : ''}`}>
+                            {costDiff > 0 ? '+' : ''}{formatCurrency(costDiff)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Added Items */}
+                      {addedItems.length > 0 && (
+                        <div>
+                          <h4 className="font-medium text-green-700 mb-2">✅ Added Items ({addedItems.length})</h4>
+                          <div className="space-y-1">
+                            {addedItems.map(item => (
+                              <div key={item.id} className="text-sm bg-green-50 p-2 rounded flex justify-between">
+                                <span>{item.name}</span>
+                                <span>{formatCurrency((item.price || 0) * item.quantity)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Removed Items */}
+                      {removedItems.length > 0 && (
+                        <div>
+                          <h4 className="font-medium text-red-700 mb-2">❌ Removed Items ({removedItems.length})</h4>
+                          <div className="space-y-1">
+                            {removedItems.map(item => (
+                              <div key={item.id} className="text-sm bg-red-50 p-2 rounded flex justify-between line-through">
+                                <span>{item.name}</span>
+                                <span>-{formatCurrency((item.price || 0) * item.quantity)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Changed Items */}
+                      {changedItems.length > 0 && (
+                        <div>
+                          <h4 className="font-medium text-blue-700 mb-2">🔄 Modified Items ({changedItems.length})</h4>
+                          <div className="space-y-2">
+                            {changedItems.map(item => (
+                              <div key={item.id} className="text-sm bg-blue-50 p-2 rounded">
+                                <div className="font-medium">{item.name}</div>
+                                <div className="text-xs text-gray-600 flex justify-between">
+                                  <span>
+                                    Qty: {item.oldQuantity} → {item.quantity} {item.quantityDiff !== 0 && `(${item.quantityDiff > 0 ? '+' : ''}${item.quantityDiff})`}
+                                  </span>
+                                  <span>
+                                    Price: {formatCurrency(item.oldPrice)} → {formatCurrency(item.price || 0)} {item.priceDiff !== 0 && `(${item.priceDiff > 0 ? '+' : ''}${formatCurrency(item.priceDiff)})`}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </CardContent>
+            </Card>
+          )}
 
           {/* Export Options */}
           <Card>

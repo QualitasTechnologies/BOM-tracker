@@ -8,7 +8,7 @@ interface ProjectCardProps {
   id: string;
   name: string;
   client: string;
-  status: 'planning' | 'active' | 'delayed' | 'completed';
+  status: 'Planning' | 'Ongoing' | 'Delayed' | 'Completed';
   progress: number;
   budget: number;
   spent: number;
@@ -30,10 +30,10 @@ const ProjectCard = ({
   materialsCount
 }: ProjectCardProps) => {
   const statusColors = {
-    planning: 'bg-gray-100 text-gray-800',
-    active: 'bg-green-100 text-green-800',
-    delayed: 'bg-red-100 text-red-800',
-    completed: 'bg-blue-100 text-blue-800'
+    Planning: 'bg-gray-100 text-gray-800',
+    Ongoing: 'bg-green-100 text-green-800',
+    Delayed: 'bg-red-100 text-red-800',
+    Completed: 'bg-blue-100 text-blue-800'
   };
 
   const budgetHealth = (spent / budget) * 100;
@@ -50,7 +50,7 @@ const ProjectCard = ({
           "px-2 py-1 rounded-full text-xs font-medium",
           statusColors[status]
         )}>
-          {status.charAt(0).toUpperCase() + status.slice(1)}
+          {status}
         </span>
       </div>
 

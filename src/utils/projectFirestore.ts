@@ -22,8 +22,11 @@ export interface Project {
   projectName: string;
   clientName: string;
   description: string;
-  status: "Ongoing" | "Delayed" | "Completed";
+  status: "Planning" | "Ongoing" | "Delayed" | "Completed";
   deadline: string; // ISO string
+  poValue?: number; // Purchase Order value from customer
+  bomSnapshot?: any[]; // Snapshot of BOM when status changed to 'Ongoing' (order won)
+  bomSnapshotDate?: string; // ISO string - when snapshot was taken
 }
 
 const projectsCol = collection(db, "projects");

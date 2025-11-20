@@ -20,6 +20,7 @@ import {
   Trash2,
   Save,
   X,
+  Check,
   Building,
   Mail,
   Phone,
@@ -88,6 +89,8 @@ const Settings = () => {
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [oemVendors, setOemVendors] = useState<Vendor[]>([]);
   const [bomSettings, setBomSettings] = useState<BOMSettings | null>(null);
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [categoryDraft, setCategoryDraft] = useState("");
   const [prSettings, setPRSettings] = useState<PRSettings | null>(null);
 
   // Vendor filtering states
@@ -383,7 +386,6 @@ const Settings = () => {
         phone: clientForm.phone || '',
         address: clientForm.address || '',
         contactPerson: clientForm.contactPerson || '',
-        status: 'active',
         notes: clientForm.notes || '' // Fixed: ensure notes is not undefined
       });
       
@@ -635,16 +637,11 @@ const Settings = () => {
     }
   };
 
-  const removeCategory = async (index: number) => {
+  const removeCategory = async (categoryId: string) => {
     if (!bomSettings) return;
     
     const currentCategories = bomSettings.categories || [];
-    const parentCategories = currentCategories.filter(cat => !cat.parentId);
-    const categoryToRemove = parentCategories[index]?.name;
-    
-    if (!categoryToRemove) return;
-    
-    const updatedCategories = currentCategories.filter(cat => cat.name !== categoryToRemove);
+    const updatedCategories = currentCategories.filter(cat => cat.id !== categoryId);
     const updatedSettings = {
       ...bomSettings,
       categories: updatedCategories,
@@ -657,6 +654,43 @@ const Settings = () => {
       await updateBOMSettings(updatedSettings);
     } catch (err: any) {
       setError(err.message || 'Failed to remove category');
+    }
+  };
+
+  const renameCategory = async (categoryId: string, newName: string) => {
+    if (!bomSettings) return;
+    const trimmedName = newName.trim();
+    if (!trimmedName) return;
+
+    const currentCategories = bomSettings.categories || [];
+    const duplicate = currentCategories.some(
+      (cat) =>
+        !cat.parentId &&
+        cat.id !== categoryId &&
+        cat.name.toLowerCase() === trimmedName.toLowerCase()
+    );
+    if (duplicate) {
+      setError('Category name already exists.');
+      return;
+    }
+
+    const updatedCategories = currentCategories.map((cat) =>
+      cat.id === categoryId ? { ...cat, name: trimmedName } : cat
+    );
+    const updatedSettings = {
+      ...bomSettings,
+      categories: updatedCategories,
+      defaultCategories: updatedCategories.filter((cat) => !cat.parentId).map((cat) => cat.name),
+    };
+
+    setBomSettings(updatedSettings);
+    setEditingCategoryId(null);
+    setCategoryDraft('');
+
+    try {
+      await updateBOMSettings(updatedSettings);
+    } catch (err: any) {
+      setError(err.message || 'Failed to rename category');
     }
   };
 
@@ -968,7 +1002,6 @@ const Settings = () => {
                       <TableRow>
                         <TableHead>Client</TableHead>
                         <TableHead>Contact Info</TableHead>
-                        <TableHead>Status</TableHead>
                         <TableHead>Actions</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -995,11 +1028,6 @@ const Settings = () => {
                                 </div>
                               )}
                             </div>
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant={client.status === 'active' ? 'default' : 'secondary'}>
-                              {client.status}
-                            </Badge>
                           </TableCell>
                           <TableCell>
                             <div className="flex gap-2">
@@ -1708,17 +1736,62 @@ const Settings = () => {
                       <div className="flex flex-wrap gap-2 mb-4">
                         {(bomSettings.categories || [])
                           .filter(cat => !cat.parentId)
-                          .map(cat => cat.name)
-                          .map((category, index) => (
-                          <Badge key={index} variant="secondary" className="px-3 py-1">
-                            {category}
-                            <button
-                              className="ml-2 hover:bg-red-200 rounded-full"
-                              onClick={() => removeCategory(index)}
-                            >
-                              <X size={12} />
-                            </button>
-                          </Badge>
+                          .map((category) => (
+                            <div key={category.id} className="flex items-center gap-1 bg-secondary text-secondary-foreground px-3 py-1 rounded-full">
+                              {editingCategoryId === category.id ? (
+                                <>
+                                  <Input
+                                    autoFocus
+                                    value={categoryDraft}
+                                    onChange={(e) => setCategoryDraft(e.target.value)}
+                                    className="h-8 w-32 text-sm"
+                                  />
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-7 w-7"
+                                    onClick={() => renameCategory(category.id, categoryDraft)}
+                                  >
+                                    <Check size={14} />
+                                  </Button>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-7 w-7"
+                                    onClick={() => {
+                                      setEditingCategoryId(null);
+                                      setCategoryDraft('');
+                                    }}
+                                  >
+                                    <X size={14} />
+                                  </Button>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="text-sm font-medium">{category.name}</span>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-7 w-7"
+                                    onClick={() => {
+                                      setEditingCategoryId(category.id);
+                                      setCategoryDraft(category.name);
+                                      setError(null);
+                                    }}
+                                  >
+                                    <Edit size={14} />
+                                  </Button>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-7 w-7 text-red-600 hover:text-red-700"
+                                    onClick={() => removeCategory(category.id)}
+                                  >
+                                    <Trash2 size={14} />
+                                  </Button>
+                                </>
+                              )}
+                            </div>
                         ))}
                       </div>
                       <div className="flex gap-2">

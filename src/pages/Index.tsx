@@ -87,13 +87,13 @@ const KPI = () => {
         
         setProjects(projectsData);
         setTotalProjects(projectsData.length);
-        setActiveProjects(projectsData.filter(p => p.status === 'active').length);
-        setCompletedProjects(projectsData.filter(p => p.status === 'completed').length);
-        
+        setActiveProjects(projectsData.filter(p => p.status === 'Ongoing').length);
+        setCompletedProjects(projectsData.filter(p => p.status === 'Completed').length);
+
         // Calculate overdue projects (simplified logic)
         const today = new Date();
         const overdue = projectsData.filter(p => {
-          if (p.status === 'completed') return false;
+          if (p.status === 'Completed') return false;
           if (!p.deadline) return false;
           return new Date(p.deadline) < today;
         }).length;

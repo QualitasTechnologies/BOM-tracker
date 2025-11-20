@@ -1,5 +1,5 @@
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,11 +9,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { subscribeToProjects } from "@/utils/projectFirestore";
 import { subscribeToClients, Client } from "@/utils/settingsFirestore";
+import type { FirestoreProject, NewProjectFormData } from "@/types/project";
 
 interface AddProjectDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAddProject: (project: any) => void;
+  onAddProject: (project: NewProjectFormData) => Promise<void> | void;
 }
 
 const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialogProps) => {
@@ -21,14 +22,14 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
   const [name, setName] = useState("");
   const [client, setClient] = useState("");
   const [description, setDescription] = useState("");
-  const [status, setStatus] = useState("ongoing");
+  const [status, setStatus] = useState<FirestoreProject["status"]>("Planning");
   const [deadline, setDeadline] = useState("");
   const [error, setError] = useState("");
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(false);
 
   // Generate a unique project ID
-  const generateProjectId = (existingProjects: any[]): string => {
+  const generateProjectId = (existingProjects: FirestoreProject[]): string => {
     const prefix = "PRJ";
     let counter = 1;
     
@@ -54,21 +55,18 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
 
   // Load clients when dialog opens
   useEffect(() => {
-    if (open) {
-      const unsubscribeClients = subscribeToClients(setClients);
-      return () => unsubscribeClients();
-    }
+    if (!open) return;
+    const unsubscribeClients = subscribeToClients(setClients);
+    return () => unsubscribeClients();
   }, [open]);
 
   // Generate project ID when dialog opens or when projects change
   useEffect(() => {
-    if (open) {
-      const unsubscribe = subscribeToProjects((projects) => {
-        const newId = generateProjectId(projects);
-        setId(newId);
-        unsubscribe();
-      });
-    }
+    if (!open) return;
+    const unsubscribe = subscribeToProjects((projects) => {
+      setId(generateProjectId(projects));
+    });
+    return () => unsubscribe();
   }, [open]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -77,42 +75,50 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
     setLoading(true);
 
     try {
-      // Check if project ID already exists
-      const unsubscribe = subscribeToProjects((projects) => {
-        const projectExists = projects.some(project => project.projectId === id);
-        unsubscribe(); // Unsubscribe immediately after checking
+      const unsubscribe = subscribeToProjects(async (projects) => {
+        unsubscribe();
 
+        const projectExists = projects.some((project) => project.projectId === id);
         if (projectExists) {
           setError("Project ID already exists. Please try again.");
           setLoading(false);
           return;
         }
 
-        // If ID is unique, proceed with project creation
-        onAddProject({
-          id,
-          name,
-          client,
-          description,
-          status,
-          deadline,
-        });
-
-        // Reset form
-        setId("");
-        setName("");
-        setClient("");
-        setDescription("");
-        setStatus("ongoing");
-        setDeadline("");
-        setLoading(false);
-        onOpenChange(false);
+        try {
+          await onAddProject({
+            id,
+            name,
+            client,
+            description,
+            status,
+            deadline,
+          });
+          setId("");
+          setName("");
+          setClient("");
+          setDescription("");
+          setStatus("Planning");
+          setDeadline("");
+          onOpenChange(false);
+        } catch (mutationError) {
+          console.error("AddProjectDialog: Failed to add project", mutationError);
+          setError("Failed to create project. Please try again.");
+        } finally {
+          setLoading(false);
+        }
       });
     } catch (err) {
+      console.error("AddProjectDialog: Subscription error", err);
       setError("Failed to create project. Please try again.");
       setLoading(false);
     }
   };
+
+  const selectableClients = useMemo(
+    () => clients.filter((clientItem) => clientItem.company?.trim()),
+    [clients]
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -155,25 +161,14 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
                 <SelectValue placeholder="Select a client" />
               </SelectTrigger>
               <SelectContent>
-                {clients
-                  .filter(clientItem => {
-                    const isValid = clientItem.company && clientItem.company.trim() !== '';
-                    if (!isValid) {
-                      console.log('AddProjectDialog: Filtering out invalid client:', clientItem);
-                    }
-                    return isValid;
-                  })
-                  .map((clientItem) => {
-                    console.log('AddProjectDialog: Creating SelectItem for client:', clientItem.company);
-                    return (
-                      <SelectItem key={clientItem.id} value={clientItem.company}>
-                        {clientItem.company}
-                      </SelectItem>
-                    );
-                  })}
+                {selectableClients.map((clientItem) => (
+                  <SelectItem key={clientItem.id} value={clientItem.company}>
+                    {clientItem.company}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
-            {clients.length === 0 && (
+            {selectableClients.length === 0 && (
               <p className="text-xs text-muted-foreground">No clients available. Add clients in Settings first.</p>
             )}
           </div>
@@ -190,14 +185,15 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
           </div>
           <div className="space-y-1">
             <Label htmlFor="status">Status</Label>
-            <Select value={status} onValueChange={setStatus}>
+            <Select value={status} onValueChange={(value) => setStatus(value as FirestoreProject["status"])}>
               <SelectTrigger className="h-8">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="ongoing">Ongoing</SelectItem>
-                <SelectItem value="delayed">Delayed</SelectItem>
-                <SelectItem value="completed">Completed</SelectItem>
+                <SelectItem value="Planning">Planning</SelectItem>
+                <SelectItem value="Ongoing">Ongoing</SelectItem>
+                <SelectItem value="Delayed">Delayed</SelectItem>
+                <SelectItem value="Completed">Completed</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -217,7 +213,7 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} className="h-8">
               Cancel
             </Button>
-            <Button type="submit" className="h-8" disabled={loading || clients.length === 0} onClick={handleSubmit}>
+            <Button type="submit" className="h-8" disabled={loading || clients.length === 0}>
               {loading ? "Creating..." : "Add Project"}
             </Button>
           </div>

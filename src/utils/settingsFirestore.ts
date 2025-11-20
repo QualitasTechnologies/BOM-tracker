@@ -22,7 +22,6 @@ export interface Client {
   phone: string;
   address: string;
   contactPerson: string;
-  status: 'active' | 'inactive';
   notes?: string;
   createdAt: Date;
   updatedAt: Date;

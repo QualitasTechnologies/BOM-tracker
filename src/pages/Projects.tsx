@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Search, Plus, Filter, Grid, List, Download, Calendar, User, FileText, Edit, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,10 +12,11 @@ import Sidebar from "@/components/Sidebar";
 import AddProjectDialog from "@/components/Project/AddProjectDialog";
 import EditProjectDialog from "@/components/Project/EditProjectDialog";
 import DeleteProjectDialog from "@/components/Project/DeleteProjectDialog";
-import { addProject, subscribeToProjects, updateProject, deleteProject, Project as FirestoreProject } from "@/utils/projectFirestore";
+import { addProject, subscribeToProjects, updateProject, deleteProject } from "@/utils/projectFirestore";
+import type { EditableProjectInput, FirestoreProject, NewProjectFormData, ProjectViewMode } from "@/types/project";
 
 const Projects = () => {
-  const [viewMode, setViewMode] = useState<"cards" | "table">("cards");
+  const [viewMode, setViewMode] = useState<ProjectViewMode>("cards");
   const [searchQuery, setSearchQuery] = useState("");
   const [clientFilter, setClientFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -23,7 +24,7 @@ const Projects = () => {
   const [isAddProjectDialogOpen, setIsAddProjectDialogOpen] = useState(false);
   const [isEditProjectDialogOpen, setIsEditProjectDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
-  const [selectedProject, setSelectedProject] = useState<any | null>(null);
+  const [selectedProject, setSelectedProject] = useState<FirestoreProject | null>(null);
   const [projects, setProjects] = useState<FirestoreProject[]>([]);
 
   useEffect(() => {
@@ -36,6 +37,8 @@ const Projects = () => {
 
   const getStatusBadge = (status: string) => {
     switch (status) {
+      case "Planning":
+        return <Badge className="bg-gray-100 text-gray-800 hover:bg-gray-100">📋 Planning</Badge>;
       case "Ongoing":
         return <Badge className="bg-green-100 text-green-800 hover:bg-green-100">🟢 Ongoing</Badge>;
       case "Delayed":
@@ -47,28 +50,21 @@ const Projects = () => {
     }
   };
 
-  const handleAddProject = async (newProject: any) => {
+  const handleAddProject = async (newProject: NewProjectFormData) => {
     // Map dialog fields to Firestore schema
     const project: FirestoreProject = {
       projectId: newProject.id,
       projectName: newProject.name,
       clientName: newProject.client,
       description: newProject.description,
-      status: mapStatusToFirestore(newProject.status),
+      status: newProject.status,
       deadline: newProject.deadline,
     };
     await addProject(project);
   };
 
-  const handleUpdateProject = async (updatedProject: any) => {
-    const projectId = updatedProject.projectId;
-    const updates: Partial<FirestoreProject> = {
-      projectName: updatedProject.projectName,
-      clientName: updatedProject.clientName,
-      description: updatedProject.description,
-      status: updatedProject.status,
-      deadline: updatedProject.deadline,
-    };
+  const handleUpdateProject = async (updatedProject: EditableProjectInput) => {
+    const { projectId, ...updates } = updatedProject;
     await updateProject(projectId, updates);
   };
 
@@ -80,37 +76,57 @@ const Projects = () => {
     }
   };
 
-  const handleEditClick = (project: any) => {
+  const handleEditClick = (project: FirestoreProject) => {
     setSelectedProject(project);
     setIsEditProjectDialogOpen(true);
   };
 
-  const handleDeleteClick = (project: any) => {
+  const handleDeleteClick = (project: FirestoreProject) => {
     setSelectedProject(project);
     setIsDeleteDialogOpen(true);
   };
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric'
+    const safeDate = new Date(dateString);
+    if (Number.isNaN(safeDate.getTime())) {
+      return "No deadline";
+    }
+    return safeDate.toLocaleDateString("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
     });
   };
 
-  const filteredProjects = projects.filter(project => {
-    const matchesSearch =
-      (project.projectName ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (project.clientName ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (project.projectId ?? "").toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesClient = clientFilter === "all" || project.clientName === clientFilter;
-    const matchesStatus = statusFilter === "all" || project.status === statusFilter;
-    return matchesSearch && matchesClient && matchesStatus;
-  });
+  // Derive the filtered list only when data or filters change.
+  const filteredProjects = useMemo(() => {
+    const normalizedQuery = searchQuery.toLowerCase().trim();
+    return projects.filter((project) => {
+      const projectName = project.projectName?.toLowerCase() ?? "";
+      const clientName = project.clientName?.toLowerCase() ?? "";
+      const projectId = project.projectId?.toLowerCase() ?? "";
 
-  const uniqueClients = [...new Set(projects.map(p => p.clientName))];
+      const matchesSearch =
+        projectName.includes(normalizedQuery) ||
+        clientName.includes(normalizedQuery) ||
+        projectId.includes(normalizedQuery);
 
-  const ProjectCard = ({ project }: { project: any }) => (
+      const matchesClient = clientFilter === "all" || project.clientName === clientFilter;
+      const matchesStatus = statusFilter === "all" || project.status === statusFilter;
+      return matchesSearch && matchesClient && matchesStatus;
+    });
+  }, [clientFilter, projects, searchQuery, statusFilter]);
+
+  // Build a deduplicated, sanitized client list for the filter dropdown.
+  const clientOptions = useMemo(
+    () =>
+      [...new Set(projects.map((p) => p.clientName?.trim()))].filter(
+        (client): client is string => Boolean(client && client.length)
+      ),
+    [projects]
+  );
+
+  const ProjectCard = ({ project }: { project: FirestoreProject }) => (
     <Card className="hover:shadow-lg transition-shadow duration-200 relative group">
       <Button
         variant="ghost"
@@ -213,21 +229,14 @@ const Projects = () => {
                     <Filter className="h-4 w-4 mr-2" />
                     <SelectValue placeholder="Filter by Client" />
                   </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Clients</SelectItem>
-                    {uniqueClients
-                      .filter(client => {
-                        const isValid = client && client.trim() !== '';
-                        if (!isValid) {
-                          console.log('Projects.tsx: Filtering out invalid client:', client);
-                        }
-                        return isValid;
-                      })
-                      .map(client => {
-                        console.log('Projects.tsx: Creating SelectItem for client:', client);
-                        return <SelectItem key={client} value={client}>{client}</SelectItem>;
-                      })}
-                  </SelectContent>
+                <SelectContent>
+                  <SelectItem value="all">All Clients</SelectItem>
+                  {clientOptions.map((client) => (
+                    <SelectItem key={client} value={client}>
+                      {client}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
                 </Select>
 
                 <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -236,6 +245,7 @@ const Projects = () => {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Status</SelectItem>
+                    <SelectItem value="Planning">Planning</SelectItem>
                     <SelectItem value="Ongoing">Ongoing</SelectItem>
                     <SelectItem value="Delayed">Delayed</SelectItem>
                     <SelectItem value="Completed">Completed</SelectItem>
@@ -356,13 +366,5 @@ const Projects = () => {
     </div>
   );
 };
-
-// Helper to map UI status to Firestore status
-function mapStatusToFirestore(status: string): FirestoreProject["status"] {
-  if (status === "ongoing") return "Ongoing";
-  if (status === "delayed") return "Delayed";
-  if (status === "completed") return "Completed";
-  return "Ongoing";
-}
 
 export default Projects;

@@ -17,6 +17,9 @@ interface BOMItem {
   description: string;
   category: string;
   quantity: number;
+  price?: number;
+  make?: string;
+  sku?: string;
   vendors: Array<{
     name: string;
     price: number;
@@ -48,6 +51,10 @@ interface BOMCategoryCardProps {
   onUpdatePart?: (updated: BOMItem) => void;
   getDocumentCount?: (itemId: string) => number;
 }
+
+const formatCurrency = (value: number) => {
+  return `₹${value.toLocaleString('en-IN')}`;
+};
 
 const BOMCategoryCard = ({ category, onToggle, onQuantityChange, onDeletePart, onDeleteCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [], onUpdatePart, getDocumentCount }: BOMCategoryCardProps) => {
   const [showConfirm, setShowConfirm] = useState<false | 'warning' | 'confirm'>(false);
@@ -92,12 +99,17 @@ const BOMCategoryCard = ({ category, onToggle, onQuantityChange, onDeletePart, o
     setShowConfirm(false);
   };
 
+  const categoryTotal = category.items.reduce((sum, item) => {
+    if (!item.price) return sum;
+    return sum + item.price * (item.quantity || 1);
+  }, 0);
+
   return (
     <Card className="relative">
       <Collapsible open={category.isExpanded} onOpenChange={onToggle}>
         <CollapsibleTrigger asChild>
           <CardHeader className="cursor-pointer hover:bg-gray-50 transition-colors relative py-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
               <div className="flex items-center gap-3">
                 {category.isExpanded ? (
                   <ChevronDown className="text-gray-500" size={20} />
@@ -105,12 +117,16 @@ const BOMCategoryCard = ({ category, onToggle, onQuantityChange, onDeletePart, o
                   <ChevronRight className="text-gray-500" size={20} />
                 )}
                 <Package className="text-blue-500" size={20} />
-                <div>
+                <div className="flex flex-wrap items-center gap-2 text-gray-600">
                   <h3 className="text-lg font-semibold text-gray-900">{category.name}</h3>
-                  <p className="text-sm text-gray-600">{category.items.length} parts</p>
+                  <span className="text-gray-300">•</span>
+                  <span className="text-sm">{category.items.length} parts</span>
                 </div>
               </div>
-              <div className="flex gap-2 items-center">
+              <div className="flex gap-2 items-center flex-wrap justify-end text-sm">
+                <span className="font-semibold text-gray-900 whitespace-nowrap">
+                  Total: {formatCurrency(categoryTotal)}
+                </span>
                 <Badge variant="outline" className="text-blue-600 border-blue-200">
                   {getStatusCount('approved')} Approved
                 </Badge>
