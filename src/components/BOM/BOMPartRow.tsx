@@ -1,5 +1,5 @@
 
-import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X } from 'lucide-react';
+import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -50,9 +50,10 @@ interface BOMPartRowProps {
   onEdit?: (itemId: string, updates: Partial<BOMItem>) => void;
   onCategoryChange?: (itemId: string, newCategory: string) => void;
   availableCategories?: string[];
+  linkedDocumentsCount?: number;
 }
 
-const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [] }: BOMPartRowProps) => {
+const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [], linkedDocumentsCount = 0 }: BOMPartRowProps) => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [vendors, setVendors] = useState(part.vendors);
   const [form, setForm] = useState({ name: '', price: 0, leadTime: '', availability: '' });
@@ -62,13 +63,14 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
   const [addPrevVendorIdx, setAddPrevVendorIdx] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [availableMakes, setAvailableMakes] = useState<string[]>([]);
-  const [editForm, setEditForm] = useState({ 
-    name: part.name, 
-    make: part.make || '', 
-    description: part.description, 
-    sku: part.sku || '', 
-    quantity: part.quantity, 
-    category: part.category 
+  const [editForm, setEditForm] = useState({
+    name: part.name,
+    make: part.make || '',
+    description: part.description,
+    sku: part.sku || '',
+    quantity: part.quantity,
+    price: part.price,
+    category: part.category
   });
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
@@ -158,7 +160,7 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
         <div className="min-w-0">
           {editing ? (
             <div className="space-y-2">
-              <div className="grid grid-cols-[1fr_auto_auto_auto] @lg:grid-cols-[2fr_1fr_1fr_auto] gap-2 @md:gap-3">
+              <div className="grid grid-cols-[1fr_auto_auto_auto_auto] @lg:grid-cols-[2fr_1fr_1fr_auto_auto] gap-2 @md:gap-3">
                 <input
                   placeholder="Part Name"
                   className="text-sm font-medium bg-white border rounded px-2 py-1 truncate"
@@ -195,13 +197,22 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                 />
                 <input
                   type="number"
+                  placeholder="Price"
+                  className="w-20 text-sm bg-white border rounded px-2 py-1"
+                  value={editForm.price || ''}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, price: e.target.value ? Number(e.target.value) : undefined }))}
+                  onClick={(e) => e.stopPropagation()}
+                />
+                <input
+                  type="number"
+                  placeholder="Qty"
                   className="w-16 text-sm bg-white border rounded px-2 py-1"
                   value={editForm.quantity}
                   onChange={(e) => setEditForm(prev => ({ ...prev, quantity: Number(e.target.value) }))}
                   onClick={(e) => e.stopPropagation()}
                 />
               </div>
-              <div className="grid grid-cols-[1fr_auto] gap-2 @md:gap-3">
+              <div className="grid grid-cols-[1fr] gap-2 @md:gap-3">
                 <input
                   placeholder="Description"
                   className="text-sm bg-white border rounded px-2 py-1 truncate"
@@ -209,25 +220,6 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                   onChange={(e) => setEditForm(prev => ({ ...prev, description: e.target.value }))}
                   onClick={(e) => e.stopPropagation()}
                 />
-                <div onClick={(e) => e.stopPropagation()}>
-                  <Select
-                    value={editForm.category}
-                    onValueChange={(value) => setEditForm(prev => ({ ...prev, category: value }))}
-                  >
-                    <SelectTrigger className="h-8 text-sm min-w-[100px]">
-                      <SelectValue placeholder="Select category" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {availableCategories.length === 0 ? (
-                        <SelectItem value="" disabled>No categories available</SelectItem>
-                      ) : (
-                        availableCategories.map(cat => (
-                          <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
               </div>
             </div>
           ) : (
@@ -240,17 +232,27 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                 {part.sku && (
                   <span className="text-xs text-purple-600 bg-purple-50 px-1 rounded whitespace-nowrap">SKU: {part.sku}</span>
                 )}
+                {linkedDocumentsCount > 0 && (
+                  <span className="text-xs text-green-600 bg-green-50 px-1 rounded whitespace-nowrap flex items-center gap-1">
+                    <FileText size={12} />
+                    {linkedDocumentsCount}
+                  </span>
+                )}
                 <span className="text-xs text-gray-500 bg-gray-100 px-1 rounded whitespace-nowrap">Qty: {part.quantity}</span>
               </div>
               <div className="text-xs text-gray-600 truncate">{part.description}</div>
-              <div className="grid grid-cols-[auto_1fr] @md:grid-cols-[auto_auto_auto] gap-2 @md:gap-4 text-xs text-gray-500 items-center">
+              <div className="grid grid-cols-[auto_1fr] @md:grid-cols-[auto_auto_auto_auto] gap-2 @md:gap-4 text-xs text-gray-500 items-center">
                 {part.price && (
-                  <div className="flex items-center gap-1 whitespace-nowrap text-green-700 font-semibold">
-                    <span>₹{part.price.toLocaleString('en-IN')}</span>
-                    {part.quantity > 1 && (
-                      <span className="text-gray-400 font-normal">× {part.quantity}</span>
-                    )}
-                  </div>
+                  <>
+                    <div className="flex items-center gap-1 whitespace-nowrap text-gray-700">
+                      <span className="text-gray-500">Unit:</span>
+                      <span className="font-medium">₹{part.price.toLocaleString('en-IN')}</span>
+                    </div>
+                    <div className="flex items-center gap-1 whitespace-nowrap text-green-700 font-semibold">
+                      <span className="text-gray-500 font-normal">Total:</span>
+                      <span>₹{(part.price * part.quantity).toLocaleString('en-IN')}</span>
+                    </div>
+                  </>
                 )}
                 {part.expectedDelivery && (
                   <div className="flex items-center gap-1 whitespace-nowrap">
@@ -297,21 +299,14 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                 className="h-6 w-6 p-0"
                 onClick={(e) => {
                   e.stopPropagation();
-                  setEditForm({ 
-                    name: part.name, 
-                    make: part.make || '', 
-                    description: part.description, 
-                    sku: part.sku || '', 
-                    quantity: part.quantity, 
-                    category: part.category 
-                  });
-                  setEditForm({ 
-                    name: part.name, 
-                    make: part.make || '', 
-                    description: part.description, 
-                    sku: part.sku || '', 
-                    quantity: part.quantity, 
-                    category: part.category 
+                  setEditForm({
+                    name: part.name,
+                    make: part.make || '',
+                    description: part.description,
+                    sku: part.sku || '',
+                    quantity: part.quantity,
+                    price: part.price,
+                    category: part.category
                   });
                   setEditing(false);
                 }}

@@ -1,0 +1,335 @@
+import { useState, useEffect } from 'react';
+import { FileText, Upload, Trash2, Link as LinkIcon, X } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Checkbox } from '@/components/ui/checkbox';
+import { useToast } from '@/components/ui/use-toast';
+import { auth } from '@/firebase';
+import {
+  uploadProjectDocument,
+  getProjectDocuments,
+  deleteProjectDocument,
+  linkDocumentToBOMItems
+} from '@/utils/projectDocumentFirestore';
+import { ProjectDocument, DocumentType, DOCUMENT_SECTIONS } from '@/types/projectDocument';
+import { BOMItem } from '@/types/bom';
+
+interface ProjectDocumentsProps {
+  projectId: string;
+  bomItems: BOMItem[]; // All BOM items for linking
+  onDocumentsChange?: () => void;
+}
+
+const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange }: ProjectDocumentsProps) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [documents, setDocuments] = useState<ProjectDocument[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [selectedType, setSelectedType] = useState<DocumentType>('vendor-quote');
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [selectedDocument, setSelectedDocument] = useState<ProjectDocument | null>(null);
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const { toast } = useToast();
+
+  // Load documents
+  useEffect(() => {
+    if (projectId) {
+      loadDocuments();
+    }
+  }, [projectId]);
+
+  const loadDocuments = async () => {
+    try {
+      const docs = await getProjectDocuments(projectId);
+      setDocuments(docs);
+      onDocumentsChange?.(); // Notify parent of document changes
+    } catch (error) {
+      console.error('Error loading documents:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load documents',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: DocumentType) => {
+    if (!e.target.files || !e.target.files[0]) return;
+
+    const file = e.target.files[0];
+    setUploading(true);
+
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error('User not authenticated');
+
+      await uploadProjectDocument(file, projectId, type, user.uid);
+      await loadDocuments();
+
+      toast({
+        title: 'Success',
+        description: 'Document uploaded successfully'
+      });
+    } catch (error) {
+      console.error('Error uploading document:', error);
+      toast({
+        title: 'Upload Failed',
+        description: error instanceof Error ? error.message : 'Failed to upload document',
+        variant: 'destructive'
+      });
+    } finally {
+      setUploading(false);
+      e.target.value = ''; // Reset input
+    }
+  };
+
+  const handleDelete = async (doc: ProjectDocument) => {
+    if (!window.confirm(`Delete "${doc.name}"?`)) return;
+
+    try {
+      await deleteProjectDocument(doc.id, doc.url);
+      await loadDocuments();
+
+      toast({
+        title: 'Success',
+        description: 'Document deleted successfully'
+      });
+    } catch (error) {
+      console.error('Error deleting document:', error);
+      toast({
+        title: 'Delete Failed',
+        description: 'Failed to delete document',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  const handleOpenLinkDialog = (doc: ProjectDocument) => {
+    setSelectedDocument(doc);
+    setSelectedItemIds(doc.linkedBOMItems || []);
+    setLinkDialogOpen(true);
+  };
+
+  const handleSaveLinks = async () => {
+    if (!selectedDocument) return;
+
+    try {
+      await linkDocumentToBOMItems(selectedDocument.id, selectedItemIds);
+      await loadDocuments();
+
+      toast({
+        title: 'Success',
+        description: 'Document links updated'
+      });
+
+      setLinkDialogOpen(false);
+      setSelectedDocument(null);
+      setSelectedItemIds([]);
+    } catch (error) {
+      console.error('Error updating links:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update document links',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  const getDocumentsByType = (type: DocumentType) => {
+    return documents.filter(doc => doc.type === type);
+  };
+
+  const formatFileSize = (bytes?: number) => {
+    if (!bytes) return '';
+    const mb = bytes / (1024 * 1024);
+    return mb < 1 ? `${Math.round(bytes / 1024)} KB` : `${mb.toFixed(2)} MB`;
+  };
+
+  const formatDate = (date: Date) => {
+    return new Date(date).toLocaleDateString('en-IN', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  };
+
+  return (
+    <Card className="mb-4">
+      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+        <CollapsibleTrigger asChild>
+          <CardHeader className="cursor-pointer hover:bg-gray-50 transition-colors py-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FileText className="text-blue-500" size={20} />
+                <CardTitle className="text-lg">Project Documents</CardTitle>
+                <Badge variant="outline">{documents.length} files</Badge>
+              </div>
+              <Button variant="ghost" size="sm">
+                {isOpen ? 'Hide' : 'Show'}
+              </Button>
+            </div>
+          </CardHeader>
+        </CollapsibleTrigger>
+
+        <CollapsibleContent>
+          <CardContent className="pt-0">
+            <Tabs value={selectedType} onValueChange={(value) => setSelectedType(value as DocumentType)}>
+              <TabsList className="grid w-full grid-cols-3">
+                {DOCUMENT_SECTIONS.map(section => (
+                  <TabsTrigger key={section.type} value={section.type}>
+                    {section.label} ({getDocumentsByType(section.type).length})
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+
+              {DOCUMENT_SECTIONS.map(section => (
+                <TabsContent key={section.type} value={section.type} className="space-y-3">
+                  {/* Upload Button */}
+                  <div className="flex items-center justify-between border-b pb-3">
+                    <p className="text-sm text-gray-600">{section.description}</p>
+                    <label className="cursor-pointer">
+                      <input
+                        type="file"
+                        className="hidden"
+                        onChange={(e) => handleFileUpload(e, section.type)}
+                        disabled={uploading}
+                        accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg"
+                      />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={uploading}
+                        onClick={(e) => e.preventDefault()}
+                      >
+                        <Upload className="mr-2 h-4 w-4" />
+                        {uploading ? 'Uploading...' : 'Upload File'}
+                      </Button>
+                    </label>
+                  </div>
+
+                  {/* Document List */}
+                  <div className="space-y-2">
+                    {getDocumentsByType(section.type).length === 0 ? (
+                      <div className="text-center py-8 text-gray-400 text-sm italic">
+                        No documents uploaded yet
+                      </div>
+                    ) : (
+                      getDocumentsByType(section.type).map(doc => (
+                        <div
+                          key={doc.id}
+                          className="flex items-center gap-3 p-3 bg-gray-50 rounded border border-gray-200 hover:bg-gray-100 transition-colors"
+                        >
+                          <FileText className="text-blue-600 flex-shrink-0" size={20} />
+
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <a
+                                href={doc.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-medium text-blue-700 hover:underline truncate"
+                                title={doc.name}
+                              >
+                                {doc.name}
+                              </a>
+                              {doc.linkedBOMItems && doc.linkedBOMItems.length > 0 && (
+                                <Badge variant="outline" className="text-xs">
+                                  <LinkIcon size={12} className="mr-1" />
+                                  {doc.linkedBOMItems.length} items
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">
+                              {formatDate(doc.uploadedAt)} • {formatFileSize(doc.fileSize)}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleOpenLinkDialog(doc)}
+                              title="Link to BOM items"
+                            >
+                              <LinkIcon size={16} />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDelete(doc)}
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                              title="Delete document"
+                            >
+                              <Trash2 size={16} />
+                            </Button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </TabsContent>
+              ))}
+            </Tabs>
+          </CardContent>
+        </CollapsibleContent>
+      </Collapsible>
+
+      {/* Link to BOM Items Dialog */}
+      <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
+        <DialogContent className="max-w-md max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Link Document to BOM Items</DialogTitle>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-y-auto">
+            <p className="text-sm text-gray-600 mb-3">
+              Select BOM items to link with: <strong>{selectedDocument?.name}</strong>
+            </p>
+
+            <div className="space-y-2">
+              {bomItems.length === 0 ? (
+                <p className="text-sm text-gray-400 italic">No BOM items available</p>
+              ) : (
+                bomItems.map(item => (
+                  <div key={item.id} className="flex items-center space-x-2 p-2 hover:bg-gray-50 rounded">
+                    <Checkbox
+                      id={item.id}
+                      checked={selectedItemIds.includes(item.id)}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          setSelectedItemIds([...selectedItemIds, item.id]);
+                        } else {
+                          setSelectedItemIds(selectedItemIds.filter(id => id !== item.id));
+                        }
+                      }}
+                    />
+                    <label htmlFor={item.id} className="flex-1 cursor-pointer text-sm">
+                      <div className="font-medium">{item.name}</div>
+                      <div className="text-xs text-gray-500">
+                        {item.category} • Qty: {item.quantity}
+                      </div>
+                    </label>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <DialogFooter className="mt-4">
+            <Button variant="outline" onClick={() => setLinkDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveLinks}>
+              Save Links ({selectedItemIds.length})
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+};
+
+export default ProjectDocuments;

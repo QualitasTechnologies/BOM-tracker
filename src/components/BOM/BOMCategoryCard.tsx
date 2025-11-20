@@ -1,10 +1,9 @@
 
-import { ChevronDown, ChevronRight, Package, Trash2, Pencil, FileText } from 'lucide-react';
+import { ChevronDown, ChevronRight, Package, Trash2 } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import BOMPartRow from './BOMPartRow';
-import BOMPartDetails from './BOMPartDetails';
 import { useState } from 'react';
 
 interface DocumentInfo {
@@ -38,25 +37,20 @@ interface BOMCategory {
 
 interface BOMCategoryCardProps {
   category: BOMCategory;
-  selectedPart?: BOMItem | null;
   onToggle: () => void;
-  onPartClick: (part: BOMItem) => void;
   onQuantityChange?: (itemId: string, newQuantity: number) => void;
   onDeletePart?: (itemId: string) => void;
   onDeleteCategory?: (categoryName: string) => void;
-  onEditCategory?: (oldName: string, newName: string) => void;
   onStatusChange?: (itemId: string, newStatus: string) => void;
   onEditPart?: (itemId: string, updates: Partial<BOMItem>) => void;
   onPartCategoryChange?: (itemId: string, newCategory: string) => void;
   availableCategories?: string[];
   onUpdatePart?: (updated: BOMItem) => void;
-  onCloseDetails?: () => void;
+  getDocumentCount?: (itemId: string) => number;
 }
 
-const BOMCategoryCard = ({ category, selectedPart, onToggle, onPartClick, onQuantityChange, onDeletePart, onDeleteCategory, onEditCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [], onUpdatePart, onCloseDetails }: BOMCategoryCardProps) => {
+const BOMCategoryCard = ({ category, onToggle, onQuantityChange, onDeletePart, onDeleteCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [], onUpdatePart, getDocumentCount }: BOMCategoryCardProps) => {
   const [showConfirm, setShowConfirm] = useState<false | 'warning' | 'confirm'>(false);
-  const [editing, setEditing] = useState(false);
-  const [editName, setEditName] = useState(category.name);
 
   const getStatusCount = (status: string) => {
     return category.items.filter(item => item.status === status).length;
@@ -112,44 +106,7 @@ const BOMCategoryCard = ({ category, selectedPart, onToggle, onPartClick, onQuan
                 )}
                 <Package className="text-blue-500" size={20} />
                 <div>
-                  <div className="flex items-center gap-1">
-                    {editing ? (
-                      <input
-                        className="text-lg font-semibold text-gray-900 border-b border-blue-400 bg-transparent outline-none px-1 w-40"
-                        value={editName}
-                        autoFocus
-                        onChange={e => setEditName(e.target.value)}
-                        onBlur={() => {
-                          setEditing(false);
-                          if (editName.trim() && editName !== category.name && onEditCategory) {
-                            onEditCategory(category.name, editName.trim());
-                          } else {
-                            setEditName(category.name);
-                          }
-                        }}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') {
-                            setEditing(false);
-                            if (editName.trim() && editName !== category.name && onEditCategory) {
-                              onEditCategory(category.name, editName.trim());
-                            } else {
-                              setEditName(category.name);
-                            }
-                          } else if (e.key === 'Escape') {
-                            setEditing(false);
-                            setEditName(category.name);
-                          }
-                        }}
-                      />
-                    ) : (
-                      <>
-                        <h3 className="text-lg font-semibold text-gray-900">{category.name}</h3>
-                        <button className="ml-1 p-1 text-gray-500 hover:text-blue-600 align-middle" aria-label="Edit category name" onClick={e => { e.stopPropagation(); setEditing(true); }}>
-                          <Pencil size={16} />
-                        </button>
-                      </>
-                    )}
-                  </div>
+                  <h3 className="text-lg font-semibold text-gray-900">{category.name}</h3>
                   <p className="text-sm text-gray-600">{category.items.length} parts</p>
                 </div>
               </div>
@@ -211,29 +168,18 @@ const BOMCategoryCard = ({ category, selectedPart, onToggle, onPartClick, onQuan
           <CardContent className="pt-0 pb-3">
             <div className="space-y-2">
               {category.items.map((item) => (
-                <div key={item.id}>
-                  <BOMPartRow
-                    part={item}
-                    onClick={() => onPartClick(item)}
-                    onQuantityChange={onQuantityChange}
-                    onDelete={onDeletePart}
-                    onStatusChange={onStatusChange}
-                    onEdit={onEditPart}
-                    onCategoryChange={onPartCategoryChange}
-                    availableCategories={availableCategories}
-                  />
-                  {/* Show details inline below the selected part */}
-                  {selectedPart?.id === item.id && (
-                    <div className="mt-3 ml-4 border-l-4 border-blue-400 pl-4">
-                      <BOMPartDetails
-                        part={selectedPart}
-                        onClose={onCloseDetails || (() => {})}
-                        onUpdatePart={onUpdatePart}
-                        onDeletePart={onDeletePart}
-                      />
-                    </div>
-                  )}
-                </div>
+                <BOMPartRow
+                  key={item.id}
+                  part={item}
+                  onClick={() => {}}
+                  onQuantityChange={onQuantityChange}
+                  onDelete={onDeletePart}
+                  onStatusChange={onStatusChange}
+                  onEdit={onEditPart}
+                  onCategoryChange={onPartCategoryChange}
+                  availableCategories={availableCategories}
+                  linkedDocumentsCount={getDocumentCount ? getDocumentCount(item.id) : 0}
+                />
               ))}
             </div>
           </CardContent>

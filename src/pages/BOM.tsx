@@ -10,9 +10,9 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Label } from '@/components/ui/label';
 import BOMHeader from '@/components/BOM/BOMHeader';
 import BOMCategoryCard from '@/components/BOM/BOMCategoryCard';
-import BOMPartDetails from '@/components/BOM/BOMPartDetails';
 import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
 import PurchaseRequestDialog from '@/components/BOM/PurchaseRequestDialog';
+import ProjectDocuments from '@/components/BOM/ProjectDocuments';
 import Sidebar from '@/components/Sidebar';
 import { saveAs } from 'file-saver';
 import { 
@@ -26,6 +26,8 @@ import { getVendors, Vendor, getBOMSettings } from '@/utils/settingsFirestore';
 import { BOMItem, BOMCategory, BOMStatus } from '@/types/bom';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/firebase';
+import { getProjectDocuments } from '@/utils/projectDocumentFirestore';
+import { ProjectDocument } from '@/types/projectDocument';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -38,7 +40,6 @@ import {
 const BOM = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedPart, setSelectedPart] = useState<BOMItem | null>(null);
   const [categories, setCategories] = useState<BOMCategory[]>([]);
   const { projectId } = useParams<{ projectId: string }>();
   console.log('projectId from URL params:', projectId);
@@ -63,6 +64,7 @@ const BOM = () => {
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [availableMakes, setAvailableMakes] = useState<string[]>([]);
   const [settingsCategories, setSettingsCategories] = useState<string[]>([]);
+  const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([]);
 
   // Load BOM data when project ID changes
   useEffect(() => {
@@ -83,15 +85,15 @@ const BOM = () => {
     return () => unsubscribe();
   }, [projectId]);
 
-  // Load project details
+  // Load project details and documents
   useEffect(() => {
     const loadProjectDetails = async () => {
       if (!projectId) return;
-      
+
       try {
         const projectRef = doc(db, 'projects', projectId);
         const projectSnap = await getDoc(projectRef);
-        
+
         if (projectSnap.exists()) {
           const projectData = projectSnap.data() as { projectName: string; projectId: string; clientName: string };
           setProjectDetails({
@@ -102,6 +104,10 @@ const BOM = () => {
         } else {
           console.error('Project not found');
         }
+
+        // Load project documents
+        const docs = await getProjectDocuments(projectId);
+        setProjectDocuments(docs);
       } catch (error) {
         console.error('Error loading project details:', error);
       }
@@ -153,10 +159,6 @@ const BOM = () => {
   const handleQuantityChange = async (itemId: string, newQuantity: number) => {
     if (!projectId) return;
     await updateBOMItem(projectId, categories, itemId, { quantity: newQuantity });
-  };
-
-  const handlePartClick = (part: BOMItem) => {
-    setSelectedPart(part);
   };
 
   const handleAddPart = async () => {
@@ -220,9 +222,6 @@ const BOM = () => {
   const handleDeletePart = async (itemId: string) => {
     if (!projectId) return;
     await deleteBOMItem(projectId, categories, itemId);
-    if (selectedPart?.id === itemId) {
-      setSelectedPart(null);
-    }
   };
 
   const handleUpdatePart = async (updatedPart: BOMItem) => {
@@ -233,6 +232,13 @@ const BOM = () => {
   const handleEditPart = async (itemId: string, updates: Partial<BOMItem>) => {
     if (!projectId) return;
     await updateBOMItem(projectId, categories, itemId, updates);
+  };
+
+  // Calculate document count for a BOM item
+  const getDocumentCountForItem = (itemId: string): number => {
+    return projectDocuments.filter(doc =>
+      doc.linkedBOMItems && doc.linkedBOMItems.includes(itemId)
+    ).length;
   };
 
   const handlePartCategoryChange = async (itemId: string, newCategory: string) => {
@@ -298,6 +304,8 @@ const BOM = () => {
       'Description',
       'Category',
       'Quantity',
+      'Unit Price (₹)',
+      'Total Cost (₹)',
       'Status',
       'Expected Delivery',
       'Selected Vendor',
@@ -315,6 +323,8 @@ const BOM = () => {
         item.description,
         category.name,
         item.quantity,
+        item.price !== undefined ? item.price : '',
+        item.price !== undefined ? item.price * item.quantity : '',
         item.status === 'not-ordered' ? 'Pending' : item.status.charAt(0).toUpperCase() + item.status.slice(1),
         item.expectedDelivery || '',
         item.finalizedVendor?.name || '',
@@ -330,21 +340,26 @@ const BOM = () => {
     saveAs(blob, 'bom_export.csv');
   };
 
-  // Calculate BOM statistics
-  const calculateBOMStats = () => {
+  // Calculate BOM financial metrics
+  const calculateBOMMetrics = () => {
     const allParts = categories.flatMap(cat => cat.items);
-    const totalParts = allParts.length;
-    const receivedParts = allParts.filter(part => part.status === 'received').length;
-    const orderedParts = allParts.filter(part => part.status === 'ordered').length;
-    const approvedParts = allParts.filter(part => part.status === 'approved').length;
-    const notOrderedParts = allParts.filter(part => part.status === 'not-ordered').length;
+    const totalItems = allParts.length;
+
+    // Calculate items with pricing
+    const itemsPriced = allParts.filter(part => part.price && part.price > 0).length;
+
+    // Calculate total cost
+    const totalCost = allParts.reduce((sum, part) => {
+      if (part.price && part.price > 0) {
+        return sum + (part.price * part.quantity);
+      }
+      return sum;
+    }, 0);
 
     return {
-      totalParts,
-      receivedParts,
-      orderedParts,
-      notOrderedParts,
-      approvedParts
+      totalItems,
+      itemsPriced,
+      totalCost
     };
   };
 
@@ -363,8 +378,20 @@ const BOM = () => {
               projectName={projectDetails?.projectName || ''}
               projectId={projectDetails?.projectId || ''}
               clientName={projectDetails?.clientName || ''}
-              stats={calculateBOMStats()}
+              {...calculateBOMMetrics()}
             />
+
+            {/* Project Documents - Centralized */}
+            {projectId && (
+              <ProjectDocuments
+                projectId={projectId}
+                bomItems={categories.flatMap(cat => cat.items)}
+                onDocumentsChange={() => {
+                  // Reload documents when they change
+                  getProjectDocuments(projectId).then(setProjectDocuments);
+                }}
+              />
+            )}
 
             {/* Search and Actions Bar */}
             <div className="flex flex-col sm:flex-row gap-3 mb-4">
@@ -418,9 +445,7 @@ const BOM = () => {
                 <BOMCategoryCard
                   key={category.name}
                   category={category}
-                  selectedPart={selectedPart}
                   onToggle={() => toggleCategory(category.name)}
-                  onPartClick={handlePartClick}
                   onQuantityChange={handleQuantityChange}
                   onDeletePart={handleDeletePart}
                   onDeleteCategory={(categoryName) => {
@@ -430,7 +455,6 @@ const BOM = () => {
                       updateBOMData(projectId, updatedCategories);
                     }
                   }}
-                  onEditCategory={handleEditCategory}
                   onStatusChange={(itemId, newStatus) => {
                     if (projectId) {
                       updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
@@ -440,7 +464,7 @@ const BOM = () => {
                   onPartCategoryChange={handlePartCategoryChange}
                   availableCategories={settingsCategories}
                   onUpdatePart={handleUpdatePart}
-                  onCloseDetails={() => setSelectedPart(null)}
+                  getDocumentCount={getDocumentCountForItem}
                 />
               ))}
 
