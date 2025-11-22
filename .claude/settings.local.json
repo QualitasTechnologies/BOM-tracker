@@ -14,7 +14,8 @@
       "Bash(firebase functions:list:*)",
       "Bash(firebase functions:config:get:*)",
       "Bash(npm run build:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(firebase deploy:*)"
     ],
     "deny": [],
     "ask": []

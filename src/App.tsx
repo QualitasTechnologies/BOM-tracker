@@ -61,7 +61,7 @@ const AppLayout: React.FC = () => {
       </header>
 
       {/* Main Content */}
-      <main className={`transition-all duration-300 ${collapsed ? 'ml-16' : 'ml-64'} px-4 py-6`}>
+      <main className={`transition-all duration-300 ${collapsed ? 'ml-16' : 'ml-64'}`}>
         <ErrorBoundary>
           <Routes>
             <Route path="/" element={<KPI />} />

@@ -37,6 +37,7 @@ import { doc, getDoc, collection, getDocs, query, orderBy, limit } from "firebas
 import { db } from "@/firebase";
 import { getBOMData, getTotalBOMCost } from "@/utils/projectFirestore";
 import { fetchEngineers, getTotalManHours } from "@/utils/timeTrackingFirestore";
+import PageLayout from "@/components/PageLayout";
 
 const KPI = () => {
   const navigate = useNavigate();
@@ -199,32 +200,30 @@ const KPI = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b bg-card">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold tracking-tight">KPI Dashboard</h1>
-              <p className="text-muted-foreground mt-1">
-                Real-time project metrics and business intelligence
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => navigate('/projects')}>
-                <FileText className="h-4 w-4 mr-2" />
-                View Projects
-              </Button>
-              <Button variant="outline" onClick={() => navigate('/cost-analysis')}>
-                <DollarSign className="h-4 w-4 mr-2" />
-                Cost Analysis
-              </Button>
-            </div>
+    <PageLayout
+      header={
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">KPI Dashboard</h1>
+            <p className="text-muted-foreground mt-1">
+              Real-time project metrics and business intelligence
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => navigate('/projects')}>
+              <FileText className="h-4 w-4 mr-2" />
+              View Projects
+            </Button>
+            <Button variant="outline" onClick={() => navigate('/cost-analysis')}>
+              <DollarSign className="h-4 w-4 mr-2" />
+              Cost Analysis
+            </Button>
           </div>
         </div>
-      </header>
-
-      <div className="container mx-auto px-6 py-8 space-y-8">
+      }
+      contentPadding="px-2 py-6"
+    >
+      <div className="space-y-8">
         {/* Summary Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <Card className="hover:shadow-md transition-shadow">
@@ -485,7 +484,7 @@ const KPI = () => {
           </CardContent>
         </Card>
       </div>
-    </div>
+    </PageLayout>
   );
 };
 

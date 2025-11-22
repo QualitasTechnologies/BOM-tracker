@@ -79,6 +79,7 @@ import { exportVendorsToCSV, parseVendorCSV, validateVendorData, CSVImportResult
 import { uploadVendorLogo, ImageUploadResult } from '@/utils/imageUpload';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from '@/components/ui/use-toast';
+import PageLayout from '@/components/PageLayout';
 
 const Settings = () => {
   // Auth check
@@ -697,21 +698,21 @@ const Settings = () => {
   // Check auth loading first
   if (authLoading) {
     return (
-      <div className="container mx-auto py-6 px-4">
+      <PageLayout contentPadding="px-2 py-6">
         <div className="flex items-center justify-center h-64">
           <div className="text-center">
             <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
             <p>Loading...</p>
           </div>
         </div>
-      </div>
+      </PageLayout>
     );
   }
 
   // Check admin access
   if (!user || !isAdmin) {
     return (
-      <div className="container mx-auto py-6 px-4">
+      <PageLayout contentPadding="px-2 py-6">
         <div className="flex items-center justify-center h-64">
           <div className="text-center">
             <X className="h-12 w-12 text-red-500 mx-auto mb-4" />
@@ -722,7 +723,7 @@ const Settings = () => {
             )}
           </div>
         </div>
-      </div>
+      </PageLayout>
     );
   }
 
@@ -793,14 +794,14 @@ const Settings = () => {
 
   if (loading) {
     return (
-      <div className="container mx-auto py-6 px-4">
+      <PageLayout contentPadding="px-2 py-6">
         <div className="flex items-center justify-center h-64">
           <div className="text-center">
             <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
             <p>Loading settings...</p>
           </div>
         </div>
-      </div>
+      </PageLayout>
     );
   }
 
@@ -825,12 +826,16 @@ const Settings = () => {
   const availableCategories = bomSettings?.defaultCategories || [];
 
   return (
-    <div className="container mx-auto py-6 px-4">
-      <div className="max-w-6xl mx-auto">
-        <div className="mb-8">
+    <PageLayout
+      header={
+        <div>
           <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
           <p className="text-gray-600 mt-2">Manage your system configuration and preferences</p>
         </div>
+      }
+      contentPadding="px-2 py-6"
+      maxWidth="max-w-6xl"
+    >
 
         {error && (
           <Alert variant="destructive" className="mb-6">
@@ -1610,7 +1615,8 @@ const Settings = () => {
                         <TableHead>Type & Makes</TableHead>
                         <TableHead>Contact Info</TableHead>
                         <TableHead>Categories</TableHead>
-                        <TableHead>Terms</TableHead>
+                        <TableHead>Payment Terms</TableHead>
+                        <TableHead>Lead Time</TableHead>
                         <TableHead>Actions</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -1690,10 +1696,10 @@ const Settings = () => {
                             </div>
                           </TableCell>
                           <TableCell>
-                            <div className="space-y-1 text-sm">
-                              <div>{vendor.paymentTerms}</div>
-                              <div className="text-muted-foreground">{vendor.leadTime}</div>
-                            </div>
+                            <div className="text-sm">{vendor.paymentTerms || '-'}</div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="text-sm text-muted-foreground">{vendor.leadTime || '-'}</div>
                           </TableCell>
                           <TableCell>
                             <div className="flex gap-2">
@@ -2191,8 +2197,7 @@ const Settings = () => {
             </div>
           </TabsContent>
         </Tabs>
-      </div>
-    </div>
+    </PageLayout>
   );
 };
 

@@ -7,7 +7,7 @@ import { ArrowLeft, TrendingUp, TrendingDown, FileDown, Edit2, DollarSign, Clock
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LineChart, Line, ResponsiveContainer, Legend } from "recharts";
 import { Progress } from "@/components/ui/progress";
-import Sidebar from "@/components/Sidebar";
+import PageLayout from "@/components/PageLayout";
 import ProfitLossGauge from "@/components/ProfitLossGauge";
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "@/firebase";
@@ -24,7 +24,6 @@ const CostAnalysis = () => {
   const [isEditingRate, setIsEditingRate] = useState(false);
   const [miscCost, setMiscCost] = useState(0);
   const [isEditingMisc, setIsEditingMisc] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [poValue, setPoValue] = useState(0);
   const [isEditingPO, setIsEditingPO] = useState(false);
 
@@ -166,7 +165,7 @@ const CostAnalysis = () => {
   // Check admin access
   if (!user || !user.isAdmin) {
     return (
-      <div className="container mx-auto py-6 px-4">
+      <PageLayout contentPadding="px-2 py-6">
         <div className="flex items-center justify-center h-64">
           <div className="text-center">
             <X className="h-12 w-12 text-red-500 mx-auto mb-4" />
@@ -182,26 +181,20 @@ const CostAnalysis = () => {
             </Button>
           </div>
         </div>
-      </div>
+      </PageLayout>
     );
   }
 
   return (
-    <div className="flex min-h-screen bg-background">
-      <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
-      <div className={`flex-1 transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
-        <div className="border-b bg-card">
-          <div className="container mx-auto px-4 py-4">
-            <div className="flex items-center gap-4">
-              {/* Removed Back to Dashboard button */}
-              <div className="flex items-center gap-2">
-                <h1 className="text-2xl font-bold">Cost Analysis</h1>
-              </div>
-            </div>
-          </div>
+    <PageLayout
+      header={
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold">Cost Analysis</h1>
         </div>
-
-        <div className="container mx-auto px-4 py-6 space-y-6">
+      }
+      contentPadding="px-2 py-6"
+    >
+      <div className="space-y-6">
           {/* Project Snapshot */}
           <Card>
             <CardHeader>
@@ -605,9 +598,8 @@ const CostAnalysis = () => {
               </div>
             </CardContent>
           </Card>
-        </div>
       </div>
-    </div>
+    </PageLayout>
   );
 };
 

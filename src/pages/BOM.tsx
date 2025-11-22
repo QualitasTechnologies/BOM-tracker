@@ -13,7 +13,7 @@ import BOMCategoryCard from '@/components/BOM/BOMCategoryCard';
 import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
 import PurchaseRequestDialog from '@/components/BOM/PurchaseRequestDialog';
 import ProjectDocuments from '@/components/BOM/ProjectDocuments';
-import Sidebar from '@/components/Sidebar';
+import PageLayout from '@/components/PageLayout';
 import { saveAs } from 'file-saver';
 import { 
   getBOMData, 
@@ -39,7 +39,6 @@ import {
 } from '@/components/ui/alert-dialog';
 
 const BOM = () => {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [categories, setCategories] = useState<BOMCategory[]>([]);
   const { projectId } = useParams<{ projectId: string }>();
@@ -457,15 +456,10 @@ const BOM = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background flex">
-      <Sidebar 
-        collapsed={sidebarCollapsed} 
-        onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} 
-      />
-      
-      <div className={`flex-1 ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
-        <main className="p-4">
-          <div className="max-w-full mx-auto px-2">
+    <>
+      <PageLayout
+        header={
+          <>
             {/* BOM Header */}
             <BOMHeader
               projectName={projectDetails?.projectName || ''}
@@ -487,7 +481,7 @@ const BOM = () => {
             )}
 
             {/* Search and Actions Bar */}
-            <div className="flex flex-col sm:flex-row gap-3 mb-4">
+            <div className="flex flex-col sm:flex-row gap-3 mt-6">
               <div className="relative flex-1 flex items-center gap-2">
                 <div className="flex-1 relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" size={20} />
@@ -585,47 +579,48 @@ const BOM = () => {
                 </p>
               </div>
             )}
+          </>
+        }
+        contentPadding="px-2 py-6"
+      >
+        {/* BOM Content - Single Column Layout */}
+        <div className="space-y-4">
+          {filteredCategories.map((category) => (
+            <BOMCategoryCard
+              key={category.name}
+              category={category}
+              onToggle={() => toggleCategory(category.name)}
+              onQuantityChange={handleQuantityChange}
+              onDeletePart={handleDeletePart}
+              onDeleteCategory={(categoryName) => {
+                // Handle category deletion - remove the entire category
+                if (projectId) {
+                  const updatedCategories = categories.filter(cat => cat.name !== categoryName);
+                  updateBOMData(projectId, updatedCategories);
+                }
+              }}
+              onStatusChange={(itemId, newStatus) => {
+                if (projectId) {
+                  updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                }
+              }}
+              onEditPart={handleEditPart}
+              onPartCategoryChange={handlePartCategoryChange}
+              availableCategories={canonicalCategoryNames}
+              onUpdatePart={handleUpdatePart}
+              getDocumentCount={getDocumentCountForItem}
+            />
+          ))}
 
-            {/* BOM Content - Single Column Layout */}
-            <div className="space-y-4">
-              {filteredCategories.map((category) => (
-                <BOMCategoryCard
-                  key={category.name}
-                  category={category}
-                  onToggle={() => toggleCategory(category.name)}
-                  onQuantityChange={handleQuantityChange}
-                  onDeletePart={handleDeletePart}
-                  onDeleteCategory={(categoryName) => {
-                    // Handle category deletion - remove the entire category
-                    if (projectId) {
-                      const updatedCategories = categories.filter(cat => cat.name !== categoryName);
-                      updateBOMData(projectId, updatedCategories);
-                    }
-                  }}
-                  onStatusChange={(itemId, newStatus) => {
-                    if (projectId) {
-                      updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
-                    }
-                  }}
-                  onEditPart={handleEditPart}
-                  onPartCategoryChange={handlePartCategoryChange}
-                  availableCategories={canonicalCategoryNames}
-                  onUpdatePart={handleUpdatePart}
-                  getDocumentCount={getDocumentCountForItem}
-                />
-              ))}
-
-              {filteredCategories.length === 0 && (
-                <Card>
-                  <CardContent className="p-8 text-center">
-                    <p className="text-muted-foreground">No parts found matching your search criteria.</p>
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-          </div>
-        </main>
-      </div>
+          {filteredCategories.length === 0 && (
+            <Card>
+              <CardContent className="p-8 text-center">
+                <p className="text-muted-foreground">No parts found matching your search criteria.</p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </PageLayout>
 
       {/* Filter Dialog */}
       <Dialog open={filterOpen} onOpenChange={setFilterOpen}>
@@ -932,7 +927,7 @@ const BOM = () => {
           vendors={vendors}
         />
       )}
-    </div>
+    </>
   );
 };
 
