@@ -76,6 +76,7 @@ const BOM = () => {
   const [canonicalCategories, setCanonicalCategories] = useState<SettingsCategory[]>([]);
   const [categoryAlignmentSelections, setCategoryAlignmentSelections] = useState<Record<string, string>>({});
   const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([]);
+  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const canonicalCategoryNames = useMemo(
     () =>
       canonicalCategories
@@ -172,10 +173,10 @@ const BOM = () => {
         // Load vendors
         const vendorsData = await getVendors();
         setVendors(vendorsData);
-        
+
         // Extract vendor company names as makes/brands
         const companyNames = vendorsData.map(vendor => vendor.company).filter(company => company.trim() !== '');
-        
+
         // Remove duplicates and sort
         const uniqueMakes = [...new Set(companyNames)].sort();
         setAvailableMakes(uniqueMakes);
@@ -189,6 +190,9 @@ const BOM = () => {
         }
       } catch (error) {
         console.error('Error loading settings data:', error);
+      } finally {
+        // Mark categories as loaded (prevents flash on initial render)
+        setCategoriesLoaded(true);
       }
     };
 
@@ -526,7 +530,7 @@ const BOM = () => {
               </Alert>
             )}
 
-            {mismatchedCategories.length > 0 && (
+            {categoriesLoaded && mismatchedCategories.length > 0 && (
               <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-4 space-y-3">
                 <div className="text-sm font-semibold text-amber-900">
                   {mismatchedCategories.length} project categories are not defined in Settings. Align them with a canonical category to keep BOM data consistent.
@@ -581,7 +585,6 @@ const BOM = () => {
             )}
           </>
         }
-        contentPadding="px-2 py-6"
       >
         {/* BOM Content - Single Column Layout */}
         <div className="space-y-4">

@@ -289,7 +289,6 @@ const Projects = () => {
           </div>
         </>
       }
-      contentPadding="px-2 py-6"
     >
           {viewMode === "cards" ? (
             /* Card View */

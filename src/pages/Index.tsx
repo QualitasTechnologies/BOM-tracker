@@ -221,7 +221,6 @@ const KPI = () => {
           </div>
         </div>
       }
-      contentPadding="px-2 py-6"
     >
       <div className="space-y-8">
         {/* Summary Cards */}

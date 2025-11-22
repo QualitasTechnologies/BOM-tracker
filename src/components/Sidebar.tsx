@@ -50,10 +50,11 @@ const Sidebar = ({ collapsed, onToggle }: SidebarProps) => {
 
   return (
     <div className={cn(
-      "bg-slate-900 text-white flex flex-col relative",
+      "bg-slate-900 text-white flex-col relative",
+      "h-screen fixed top-0 left-0 z-40",
+      "hidden md:flex", // Hide on mobile, show on medium+ screens
       mounted ? "transition-all duration-300 ease-in-out" : "",
-      collapsed ? "w-16" : "w-64",
-      "h-screen fixed top-0 left-0 z-40"
+      collapsed ? "w-16" : "w-64"
     )}>
       {/* Header */}
       <div className="p-4 border-b border-slate-700">

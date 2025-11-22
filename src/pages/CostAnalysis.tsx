@@ -165,7 +165,7 @@ const CostAnalysis = () => {
   // Check admin access
   if (!user || !user.isAdmin) {
     return (
-      <PageLayout contentPadding="px-2 py-6">
+      <PageLayout>
         <div className="flex items-center justify-center h-64">
           <div className="text-center">
             <X className="h-12 w-12 text-red-500 mx-auto mb-4" />
@@ -192,7 +192,6 @@ const CostAnalysis = () => {
           <h1 className="text-2xl font-bold">Cost Analysis</h1>
         </div>
       }
-      contentPadding="px-2 py-6"
     >
       <div className="space-y-6">
           {/* Project Snapshot */}

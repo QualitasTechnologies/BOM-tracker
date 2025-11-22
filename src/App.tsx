@@ -17,6 +17,7 @@ import NotFound from "./pages/NotFound";
 import Settings from "./pages/Settings";
 import KPI from "./pages/Index"; // Using Index as KPI dashboard
 import React, { createContext, useContext, useState } from 'react';
+import { cn } from '@/lib/utils';
 
 const queryClient = new QueryClient();
 
@@ -43,7 +44,10 @@ const AppLayout: React.FC = () => {
       <Sidebar collapsed={collapsed} onToggle={toggle} />
       
       {/* Header */}
-      <header className={`bg-white shadow-sm border-b border-gray-200 px-6 py-4 transition-all duration-300 ${collapsed ? 'ml-16' : 'ml-64'}`}>
+      <header className={cn(
+        "bg-white shadow-sm border-b border-gray-200 px-4 py-4 transition-all duration-300",
+        collapsed ? "md:ml-16" : "md:ml-64"
+      )}>
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-6">
             <img 
@@ -61,7 +65,10 @@ const AppLayout: React.FC = () => {
       </header>
 
       {/* Main Content */}
-      <main className={`transition-all duration-300 ${collapsed ? 'ml-16' : 'ml-64'}`}>
+      <main className={cn(
+        "transition-all duration-300",
+        collapsed ? "md:ml-16" : "md:ml-64"
+      )}>
         <ErrorBoundary>
           <Routes>
             <Route path="/" element={<KPI />} />

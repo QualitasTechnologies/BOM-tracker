@@ -698,7 +698,7 @@ const Settings = () => {
   // Check auth loading first
   if (authLoading) {
     return (
-      <PageLayout contentPadding="px-2 py-6">
+      <PageLayout>
         <div className="flex items-center justify-center h-64">
           <div className="text-center">
             <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
@@ -712,7 +712,7 @@ const Settings = () => {
   // Check admin access
   if (!user || !isAdmin) {
     return (
-      <PageLayout contentPadding="px-2 py-6">
+      <PageLayout>
         <div className="flex items-center justify-center h-64">
           <div className="text-center">
             <X className="h-12 w-12 text-red-500 mx-auto mb-4" />
@@ -794,7 +794,7 @@ const Settings = () => {
 
   if (loading) {
     return (
-      <PageLayout contentPadding="px-2 py-6">
+      <PageLayout>
         <div className="flex items-center justify-center h-64">
           <div className="text-center">
             <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
@@ -833,7 +833,6 @@ const Settings = () => {
           <p className="text-gray-600 mt-2">Manage your system configuration and preferences</p>
         </div>
       }
-      contentPadding="px-2 py-6"
       maxWidth="max-w-6xl"
     >
 

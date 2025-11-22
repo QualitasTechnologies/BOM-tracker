@@ -78,7 +78,7 @@ const TimeTracking = () => {
 
   if (isInitializing) {
     return (
-      <PageLayout contentPadding="px-2 py-6">
+      <PageLayout>
         <div className="text-center">
           <div className="animate-pulse">Initializing time tracking...</div>
         </div>
@@ -107,7 +107,6 @@ const TimeTracking = () => {
         </div>
       }
       headerBorder={false}
-      contentPadding="px-2 py-6"
     >
       <TimeEntryTab />
     </PageLayout>

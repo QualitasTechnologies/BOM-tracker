@@ -13,7 +13,7 @@ interface PageLayoutProps {
   headerBorder?: boolean;
   /**
    * Custom padding for the content area
-   * @default 'px-2 py-6'
+   * @default 'px-4 py-6'
    */
   contentPadding?: string;
   /**
@@ -31,11 +31,11 @@ const PageLayout: React.FC<PageLayoutProps> = ({
   children,
   header,
   headerBorder = true,
-  contentPadding = 'px-2 py-6',
+  contentPadding = 'px-4 py-6',
   maxWidth = 'max-w-7xl',
 }) => {
   return (
-    <div className="w-full">
+    <div className="w-full overflow-x-hidden">
       {/* Optional Header Section */}
       {header && (
         <div className={`bg-card ${headerBorder ? 'border-b' : ''}`}>
