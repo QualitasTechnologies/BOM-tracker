@@ -216,13 +216,13 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
               className="h-8"
             />
           </div>
-          </form>
           <div className="flex justify-end gap-2 pt-4 mt-4 border-t bg-background">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} className="h-8">
               Cancel
             </Button>
             <Button type="submit" className="h-8">Update Project</Button>
           </div>
+        </form>
       </DialogContent>
     </Dialog>
   );
