@@ -84,10 +84,15 @@ export const updateBOMData = async (projectId: string, categories: BOMCategory[]
 };
 
 export const updateBOMItem = async (projectId: string, categories: BOMCategory[], itemId: string, updates: Partial<BOMItem>) => {
+  // Filter out undefined values from updates to prevent Firestore errors
+  const cleanUpdates = Object.fromEntries(
+    Object.entries(updates).filter(([_, value]) => value !== undefined)
+  );
+
   const updatedCategories = categories.map(category => ({
     ...category,
     items: category.items.map(item =>
-      item.id === itemId ? { ...item, ...updates } : item
+      item.id === itemId ? { ...item, ...cleanUpdates } : item
     )
   }));
   await updateBOMData(projectId, updatedCategories);

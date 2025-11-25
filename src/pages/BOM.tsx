@@ -251,9 +251,9 @@ const BOM = () => {
               description: newPart.description,
               category: finalCategory || '',
               quantity: newPart.quantity,
-              price: newPart.price,
               vendors: [],
               status: 'not-ordered' as BOMStatus,
+              ...(newPart.price !== undefined ? { price: newPart.price } : {}),
               // Only include make and sku for components (Firestore doesn't accept undefined)
               ...(newPart.itemType === 'component' && {
                 make: newPart.make,
