@@ -995,6 +995,12 @@ const BOM = () => {
               expectedArrival: data.expectedArrival,
               poNumber: data.poNumber,
               linkedPODocumentId: data.linkedPODocumentId,
+              finalizedVendor: {
+                name: data.finalizedVendor.name,
+                price: selectedItemForOrder.price || 0,
+                leadTime: data.finalizedVendor.leadTime,
+                availability: 'In Stock',
+              },
             });
           }
           setSelectedItemForOrder(null);

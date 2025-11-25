@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { FileText, Package, Upload, Loader2, AlertCircle } from 'lucide-react';
+import { FileText, Package, Upload, Loader2, Building2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -17,11 +17,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/components/ui/use-toast';
 import { BOMItem, calculateExpectedArrival, parseLeadTimeToDays } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
 import { uploadProjectDocument } from '@/utils/projectDocumentFirestore';
+import { getVendors, Vendor } from '@/utils/settingsFirestore';
 import { auth } from '@/firebase';
 
 interface OrderItemDialogProps {
@@ -35,6 +35,10 @@ interface OrderItemDialogProps {
     expectedArrival: string;
     poNumber?: string;
     linkedPODocumentId: string;
+    finalizedVendor: {
+      name: string;
+      leadTime: string;
+    };
   }) => void;
   onDocumentUploaded?: (doc: ProjectDocument) => void;
 }
@@ -55,30 +59,54 @@ const OrderItemDialog = ({
   const [calculatedArrival, setCalculatedArrival] = useState<string>('');
   const [leadTimeDays, setLeadTimeDays] = useState<number>(0);
   const [uploading, setUploading] = useState(false);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [selectedVendorId, setSelectedVendorId] = useState<string>('');
+  const [customLeadTime, setCustomLeadTime] = useState<string>('');
+  const [useCustomLeadTime, setUseCustomLeadTime] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
-  // Check if vendor is specified
-  const hasVendor = item?.finalizedVendor?.name;
-
-  // Calculate expected arrival when order date changes
+  // Load vendors from Settings
   useEffect(() => {
-    if (item && orderDate && hasVendor) {
-      const leadTime = item.finalizedVendor?.leadTime || '';
-      const days = parseLeadTimeToDays(leadTime);
+    const loadVendors = async () => {
+      try {
+        const vendorsData = await getVendors();
+        // Only show active vendors
+        setVendors(vendorsData.filter(v => v.status === 'active'));
+      } catch (error) {
+        console.error('Error loading vendors:', error);
+      }
+    };
+    loadVendors();
+  }, []);
+
+  // Get selected vendor
+  const selectedVendor = vendors.find(v => v.id === selectedVendorId);
+
+  // Get effective lead time (custom or from vendor)
+  const effectiveLeadTime = useCustomLeadTime ? customLeadTime : (selectedVendor?.leadTime || '');
+
+  // Calculate expected arrival when order date or lead time changes
+  useEffect(() => {
+    if (orderDate && effectiveLeadTime) {
+      const days = parseLeadTimeToDays(effectiveLeadTime);
       setLeadTimeDays(days);
 
       if (days > 0) {
         const arrival = calculateExpectedArrival(orderDate, days);
         setCalculatedArrival(arrival);
+        // Only auto-set if not manually changed
         if (!expectedArrival || expectedArrival === calculatedArrival) {
           setExpectedArrival(arrival);
         }
       } else {
         setCalculatedArrival('');
       }
+    } else {
+      setCalculatedArrival('');
+      setLeadTimeDays(0);
     }
-  }, [item, orderDate, hasVendor]);
+  }, [orderDate, effectiveLeadTime]);
 
   // Reset form when dialog opens
   useEffect(() => {
@@ -87,26 +115,43 @@ const OrderItemDialog = ({
       setOrderDate(today);
       setPONumber(item.poNumber || '');
       setLinkedPODocumentId(item.linkedPODocumentId || '');
+      setSelectedVendorId('');
+      setCustomLeadTime('');
+      setUseCustomLeadTime(false);
+      setExpectedArrival('');
+      setCalculatedArrival('');
+      setLeadTimeDays(0);
+    }
+  }, [open, item]);
 
-      if (hasVendor) {
-        const leadTime = item.finalizedVendor?.leadTime || '';
-        const days = parseLeadTimeToDays(leadTime);
-        setLeadTimeDays(days);
-        if (days > 0) {
-          const arrival = calculateExpectedArrival(today, days);
-          setExpectedArrival(arrival);
-          setCalculatedArrival(arrival);
-        } else {
-          setExpectedArrival('');
-          setCalculatedArrival('');
+  // Try to pre-select vendor based on item's make when vendors load
+  useEffect(() => {
+    if (open && item && vendors.length > 0 && !selectedVendorId) {
+      // If item has a make, try to pre-select matching vendor
+      if (item.make) {
+        const matchingVendor = vendors.find(v =>
+          v.company.toLowerCase() === item.make?.toLowerCase() ||
+          v.makes.some(m => m.toLowerCase() === item.make?.toLowerCase())
+        );
+        if (matchingVendor) {
+          setSelectedVendorId(matchingVendor.id);
         }
-      } else {
-        setExpectedArrival('');
-        setCalculatedArrival('');
-        setLeadTimeDays(0);
       }
     }
-  }, [open, item, hasVendor]);
+  }, [open, item, vendors]);
+
+  // Update expected arrival when vendor changes
+  useEffect(() => {
+    if (selectedVendor && orderDate && !useCustomLeadTime) {
+      const days = parseLeadTimeToDays(selectedVendor.leadTime);
+      setLeadTimeDays(days);
+      if (days > 0) {
+        const arrival = calculateExpectedArrival(orderDate, days);
+        setCalculatedArrival(arrival);
+        setExpectedArrival(arrival);
+      }
+    }
+  }, [selectedVendorId, orderDate, useCustomLeadTime]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || !e.target.files[0] || !projectId) return;
@@ -140,25 +185,28 @@ const OrderItemDialog = ({
   };
 
   const handleConfirm = () => {
-    if (!canSubmit) return;
+    if (!canSubmit || !selectedVendor) return;
 
     onConfirm({
       orderDate,
       expectedArrival,
       poNumber: poNumber || undefined,
       linkedPODocumentId,
+      finalizedVendor: {
+        name: selectedVendor.company,
+        leadTime: effectiveLeadTime,
+      },
     });
     onOpenChange(false);
   };
 
   const isExpectedArrivalModified = expectedArrival && calculatedArrival && expectedArrival !== calculatedArrival;
   const hasPODocument = linkedPODocumentId && linkedPODocumentId !== '__NONE__';
-  const canSubmit = hasVendor && hasPODocument && expectedArrival;
+  const hasVendor = !!selectedVendorId;
+  const hasLeadTime = !!effectiveLeadTime;
+  const canSubmit = hasVendor && hasPODocument && expectedArrival && hasLeadTime;
 
   if (!item) return null;
-
-  const vendorName = item.finalizedVendor?.name;
-  const leadTimeStr = item.finalizedVendor?.leadTime || 'Not specified';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -171,131 +219,189 @@ const OrderItemDialog = ({
         </DialogHeader>
 
         <div className="space-y-3 py-2">
-          {/* Vendor Required Alert */}
-          {!hasVendor && (
-            <Alert variant="destructive" className="py-2">
-              <AlertCircle className="h-4 w-4" />
-              <AlertDescription className="text-sm">
-                A vendor must be selected before marking as ordered. Edit the item to set a finalized vendor.
-              </AlertDescription>
-            </Alert>
-          )}
-
           {/* Item Info */}
           <div className="bg-gray-50 rounded-md p-2.5 space-y-0.5 text-sm">
             <div className="font-medium text-gray-900">{item.name}</div>
             <div className="text-gray-600 text-xs flex flex-wrap gap-x-3">
-              <span>Vendor: {vendorName || <span className="text-red-500">Not set</span>}</span>
-              {hasVendor && <span>Lead Time: {leadTimeStr}</span>}
+              {item.make && <span>Make: {item.make}</span>}
+              {item.sku && <span>SKU: {item.sku}</span>}
+              <span>Qty: {item.quantity}</span>
+              {item.price && <span>₹{(item.price * item.quantity).toLocaleString('en-IN')}</span>}
             </div>
           </div>
 
+          {/* Vendor Selection - Required */}
+          <div className="space-y-1">
+            <Label className="text-xs font-medium">
+              Vendor <span className="text-red-500">*</span>
+            </Label>
+            <Select value={selectedVendorId} onValueChange={setSelectedVendorId}>
+              <SelectTrigger className={`h-8 text-sm ${!hasVendor ? 'border-red-300' : ''}`}>
+                <SelectValue placeholder="Select vendor" />
+              </SelectTrigger>
+              <SelectContent>
+                {vendors.map((vendor) => (
+                  <SelectItem key={vendor.id} value={vendor.id}>
+                    <span className="flex items-center gap-2">
+                      <Building2 className="h-3 w-3" />
+                      {vendor.company}
+                      {vendor.leadTime && (
+                        <span className="text-gray-500 text-xs">({vendor.leadTime})</span>
+                      )}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!hasVendor && (
+              <p className="text-xs text-red-500">Vendor is required</p>
+            )}
+          </div>
+
+          {/* Lead Time - shown after vendor selection */}
           {hasVendor && (
-            <>
-              {/* Order Date & Expected Arrival */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="orderDate" className="text-xs font-medium">
-                    Order Date <span className="text-red-500">*</span>
-                  </Label>
-                  <Input
-                    id="orderDate"
-                    type="date"
-                    value={orderDate}
-                    onChange={(e) => setOrderDate(e.target.value)}
-                    className="h-8 text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="expectedArrival" className="text-xs font-medium">
-                    Expected Arrival <span className="text-red-500">*</span>
-                    {isExpectedArrivalModified && (
-                      <span className="text-amber-600 ml-1">(edited)</span>
-                    )}
-                  </Label>
-                  <Input
-                    id="expectedArrival"
-                    type="date"
-                    value={expectedArrival}
-                    onChange={(e) => setExpectedArrival(e.target.value)}
-                    className="h-8 text-sm"
-                  />
-                </div>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-medium">
+                  Lead Time <span className="text-red-500">*</span>
+                </Label>
+                <button
+                  type="button"
+                  className="text-xs text-blue-600 hover:underline"
+                  onClick={() => {
+                    setUseCustomLeadTime(!useCustomLeadTime);
+                    if (!useCustomLeadTime) {
+                      setCustomLeadTime(selectedVendor?.leadTime || '');
+                    }
+                  }}
+                >
+                  {useCustomLeadTime ? 'Use vendor default' : 'Override'}
+                </button>
               </div>
-
-              {calculatedArrival && (
-                <p className="text-xs text-gray-500">
-                  Calculated: {leadTimeDays}d → {new Date(calculatedArrival).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                  {isExpectedArrivalModified && (
-                    <button
-                      type="button"
-                      className="text-blue-600 hover:underline ml-2"
-                      onClick={() => setExpectedArrival(calculatedArrival)}
-                    >
-                      Reset
-                    </button>
-                  )}
-                </p>
-              )}
-
-              {/* PO Number */}
-              <div className="space-y-1">
-                <Label htmlFor="poNumber" className="text-xs font-medium">PO Number</Label>
+              {useCustomLeadTime ? (
                 <Input
-                  id="poNumber"
                   type="text"
-                  placeholder="e.g., PO-2025-0042"
-                  value={poNumber}
-                  onChange={(e) => setPONumber(e.target.value)}
+                  placeholder="e.g., 14 days, 2 weeks"
+                  value={customLeadTime}
+                  onChange={(e) => setCustomLeadTime(e.target.value)}
+                  className="h-8 text-sm"
+                />
+              ) : (
+                <div className="text-sm bg-gray-100 px-3 py-1.5 rounded">
+                  {selectedVendor?.leadTime || 'Not specified'}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Order Date & Expected Arrival */}
+          {hasVendor && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label htmlFor="orderDate" className="text-xs font-medium">
+                  Order Date <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="orderDate"
+                  type="date"
+                  value={orderDate}
+                  onChange={(e) => setOrderDate(e.target.value)}
                   className="h-8 text-sm"
                 />
               </div>
-
-              {/* PO Document - Required */}
               <div className="space-y-1">
-                <Label className="text-xs font-medium">
-                  PO Document <span className="text-red-500">*</span>
+                <Label htmlFor="expectedArrival" className="text-xs font-medium">
+                  Expected Arrival <span className="text-red-500">*</span>
+                  {isExpectedArrivalModified && (
+                    <span className="text-amber-600 ml-1">(edited)</span>
+                  )}
                 </Label>
-                <div className="flex gap-2">
-                  <Select value={linkedPODocumentId} onValueChange={setLinkedPODocumentId}>
-                    <SelectTrigger className={`h-8 text-sm flex-1 ${!hasPODocument ? 'border-red-300' : ''}`}>
-                      <SelectValue placeholder="Select or upload PO" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__NONE__" disabled>Select a PO document</SelectItem>
-                      {availablePODocuments.map((doc) => (
-                        <SelectItem key={doc.id} value={doc.id}>
-                          <span className="flex items-center gap-2">
-                            <FileText className="h-3 w-3" />
-                            {doc.name}
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
-                    onChange={handleFileUpload}
-                    className="hidden"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8 px-2.5"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploading}
-                  >
-                    {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                  </Button>
-                </div>
-                {!hasPODocument && (
-                  <p className="text-xs text-red-500">PO document is required</p>
-                )}
+                <Input
+                  id="expectedArrival"
+                  type="date"
+                  value={expectedArrival}
+                  onChange={(e) => setExpectedArrival(e.target.value)}
+                  className="h-8 text-sm"
+                />
               </div>
-            </>
+            </div>
+          )}
+
+          {hasVendor && calculatedArrival && (
+            <p className="text-xs text-gray-500">
+              Calculated: {leadTimeDays}d → {new Date(calculatedArrival).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+              {isExpectedArrivalModified && (
+                <button
+                  type="button"
+                  className="text-blue-600 hover:underline ml-2"
+                  onClick={() => setExpectedArrival(calculatedArrival)}
+                >
+                  Reset
+                </button>
+              )}
+            </p>
+          )}
+
+          {/* PO Number */}
+          {hasVendor && (
+            <div className="space-y-1">
+              <Label htmlFor="poNumber" className="text-xs font-medium">PO Number</Label>
+              <Input
+                id="poNumber"
+                type="text"
+                placeholder="e.g., PO-2025-0042"
+                value={poNumber}
+                onChange={(e) => setPONumber(e.target.value)}
+                className="h-8 text-sm"
+              />
+            </div>
+          )}
+
+          {/* PO Document - Required */}
+          {hasVendor && (
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">
+                PO Document <span className="text-red-500">*</span>
+              </Label>
+              <div className="flex gap-2">
+                <Select value={linkedPODocumentId} onValueChange={setLinkedPODocumentId}>
+                  <SelectTrigger className={`h-8 text-sm flex-1 ${!hasPODocument ? 'border-red-300' : ''}`}>
+                    <SelectValue placeholder="Select or upload PO" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__NONE__" disabled>Select a PO document</SelectItem>
+                    {availablePODocuments.map((doc) => (
+                      <SelectItem key={doc.id} value={doc.id}>
+                        <span className="flex items-center gap-2">
+                          <FileText className="h-3 w-3" />
+                          {doc.name}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-2.5"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                >
+                  {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                </Button>
+              </div>
+              {!hasPODocument && (
+                <p className="text-xs text-red-500">PO document is required</p>
+              )}
+            </div>
           )}
         </div>
 
