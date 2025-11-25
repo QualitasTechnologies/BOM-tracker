@@ -1,5 +1,5 @@
 
-import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText } from 'lucide-react';
+import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText, Clock, AlertTriangle, CheckCircle2, Package } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -22,6 +22,7 @@ import { useState, useEffect } from 'react';
 import { getVendors, Vendor } from '@/utils/settingsFirestore';
 import QuantityControl from './QuantityControl';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { getInwardStatus, InwardStatus } from '@/types/bom';
 
 interface BOMItem {
   id: string;
@@ -43,6 +44,11 @@ interface BOMItem {
   expectedDelivery?: string;
   poNumber?: string;
   finalizedVendor?: { name: string; price: number; leadTime: string; availability: string };
+  // Inward tracking fields
+  orderDate?: string;
+  expectedArrival?: string;
+  actualArrival?: string;
+  linkedPODocumentId?: string;
 }
 
 interface BOMPartRowProps {
@@ -57,6 +63,79 @@ interface BOMPartRowProps {
   availableCategories?: string[];
   linkedDocumentsCount?: number;
 }
+
+// Helper function to format date
+const formatDateShort = (dateStr: string | undefined): string => {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+};
+
+// Helper function to calculate days until arrival
+const getDaysUntilArrival = (expectedArrival: string | undefined): number | null => {
+  if (!expectedArrival) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const expected = new Date(expectedArrival);
+  expected.setHours(0, 0, 0, 0);
+  return Math.ceil((expected.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+};
+
+// Inward status badge component
+const InwardStatusBadge = ({ part }: { part: BOMItem }) => {
+  const inwardStatus = getInwardStatus(part);
+  const daysUntil = getDaysUntilArrival(part.expectedArrival);
+
+  if (inwardStatus === 'not-ordered' || !part.expectedArrival) return null;
+
+  const statusConfig: Record<InwardStatus, { icon: React.ReactNode; className: string; label: string }> = {
+    'overdue': {
+      icon: <AlertTriangle size={10} />,
+      className: 'text-red-600 bg-red-50',
+      label: `LATE ${Math.abs(daysUntil || 0)}d`
+    },
+    'arriving-soon': {
+      icon: <Clock size={10} />,
+      className: 'text-amber-600 bg-amber-50',
+      label: `${daysUntil}d`
+    },
+    'on-track': {
+      icon: <Package size={10} />,
+      className: 'text-gray-600 bg-gray-100',
+      label: `${daysUntil}d`
+    },
+    'received': {
+      icon: <CheckCircle2 size={10} />,
+      className: 'text-green-600 bg-green-50',
+      label: 'Received'
+    },
+    'not-ordered': {
+      icon: null,
+      className: '',
+      label: ''
+    }
+  };
+
+  const config = statusConfig[inwardStatus];
+  if (!config.icon) return null;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className={`flex items-center gap-1 px-1.5 py-0.5 rounded whitespace-nowrap ${config.className}`}>
+          {config.icon}
+          <span className="font-medium">{config.label}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>
+        <div className="text-xs">
+          <div>Expected: {formatDateShort(part.expectedArrival)}</div>
+          {part.orderDate && <div>Ordered: {formatDateShort(part.orderDate)}</div>}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+};
 
 const statusStyles: Record<
   BOMItem["status"],
@@ -362,14 +441,18 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                 <span className="text-xs text-gray-500 bg-gray-100 px-1 rounded whitespace-nowrap">
                   {itemType === 'service' ? 'Duration:' : 'Qty:'} {part.quantity}{itemType === 'service' && ' days'}
                 </span>
-                {itemType === 'component' && part.expectedDelivery && (
-                  <div className="flex items-center gap-1 whitespace-nowrap">
-                    <Calendar size={10} />
-                    <span>{part.expectedDelivery}</span>
-                  </div>
-                )}
                 {itemType === 'component' && part.finalizedVendor && (
                   <span className="truncate min-w-0">Vendor: {part.finalizedVendor.name}</span>
+                )}
+                {/* Inward Tracking Status */}
+                {itemType === 'component' && part.status === 'ordered' && (
+                  <InwardStatusBadge part={part} />
+                )}
+                {itemType === 'component' && (part.status === 'received' || part.status === 'approved') && part.actualArrival && (
+                  <span className="flex items-center gap-1 text-green-600 whitespace-nowrap">
+                    <CheckCircle2 size={10} />
+                    Rcvd: {formatDateShort(part.actualArrival)}
+                  </span>
                 )}
               </div>
             </div>

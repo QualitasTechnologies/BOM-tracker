@@ -13,18 +13,21 @@ import BOMCategoryCard from '@/components/BOM/BOMCategoryCard';
 import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
 import PurchaseRequestDialog from '@/components/BOM/PurchaseRequestDialog';
 import ProjectDocuments from '@/components/BOM/ProjectDocuments';
+import OrderItemDialog from '@/components/BOM/OrderItemDialog';
+import ReceiveItemDialog from '@/components/BOM/ReceiveItemDialog';
+import InwardTracking from '@/components/BOM/InwardTracking';
 import PageLayout from '@/components/PageLayout';
 import { saveAs } from 'file-saver';
-import { 
-  getBOMData, 
-  subscribeToBOM, 
-  updateBOMData, 
-  updateBOMItem, 
+import {
+  getBOMData,
+  subscribeToBOM,
+  updateBOMData,
+  updateBOMItem,
   deleteBOMItem,
 } from '@/utils/projectFirestore';
 import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
 import type { Vendor, BOMCategory as SettingsCategory } from '@/utils/settingsFirestore';
-import { BOMItem, BOMCategory, BOMStatus } from '@/types/bom';
+import { BOMItem, BOMCategory, BOMStatus, calculateExpectedArrival, parseLeadTimeToDays } from '@/types/bom';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { getProjectDocuments } from '@/utils/projectDocumentFirestore';
@@ -77,6 +80,11 @@ const BOM = () => {
   const [categoryAlignmentSelections, setCategoryAlignmentSelections] = useState<Record<string, string>>({});
   const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([]);
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
+  // Inward tracking dialog states
+  const [orderDialogOpen, setOrderDialogOpen] = useState(false);
+  const [receiveDialogOpen, setReceiveDialogOpen] = useState(false);
+  const [selectedItemForOrder, setSelectedItemForOrder] = useState<BOMItem | null>(null);
+  const [selectedItemForReceive, setSelectedItemForReceive] = useState<BOMItem | null>(null);
   const canonicalCategoryNames = useMemo(
     () =>
       canonicalCategories
@@ -92,6 +100,12 @@ const BOM = () => {
   const mismatchedCategories = useMemo(
     () => categories.filter((cat) => !canonicalCategorySet.has(cat.name.toLowerCase())),
     [categories, canonicalCategorySet]
+  );
+
+  // Filter PO documents for the order dialog
+  const poDocuments = useMemo(
+    () => projectDocuments.filter((doc) => doc.type === 'outgoing-po'),
+    [projectDocuments]
   );
 
   const isCanonicalCategory = useCallback(
@@ -586,6 +600,16 @@ const BOM = () => {
           </>
         }
       >
+        {/* Inward Tracking Section */}
+        <InwardTracking
+          categories={categories}
+          documents={projectDocuments}
+          onItemClick={(item) => {
+            // Could navigate to item or open details
+            console.log('Item clicked:', item.name);
+          }}
+        />
+
         {/* BOM Content - Single Column Layout */}
         <div className="space-y-4">
           {filteredCategories.map((category) => (
@@ -603,9 +627,34 @@ const BOM = () => {
                 }
               }}
               onStatusChange={(itemId, newStatus) => {
-                if (projectId) {
-                  updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                if (!projectId) return;
+
+                // Find the item
+                let targetItem: BOMItem | null = null;
+                for (const cat of categories) {
+                  const found = cat.items.find(item => item.id === itemId);
+                  if (found) {
+                    targetItem = found;
+                    break;
+                  }
                 }
+
+                // If changing to "ordered", show the order dialog
+                if (newStatus === 'ordered' && targetItem) {
+                  setSelectedItemForOrder(targetItem);
+                  setOrderDialogOpen(true);
+                  return;
+                }
+
+                // If changing to "received", show the receive dialog
+                if (newStatus === 'received' && targetItem) {
+                  setSelectedItemForReceive(targetItem);
+                  setReceiveDialogOpen(true);
+                  return;
+                }
+
+                // For other status changes, update directly
+                updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
               }}
               onEditPart={handleEditPart}
               onPartCategoryChange={handlePartCategoryChange}
@@ -930,6 +979,42 @@ const BOM = () => {
           vendors={vendors}
         />
       )}
+
+      {/* Order Item Dialog */}
+      <OrderItemDialog
+        open={orderDialogOpen}
+        onOpenChange={setOrderDialogOpen}
+        item={selectedItemForOrder}
+        availablePODocuments={poDocuments}
+        onConfirm={(data) => {
+          if (projectId && selectedItemForOrder) {
+            updateBOMItem(projectId, categories, selectedItemForOrder.id, {
+              status: 'ordered',
+              orderDate: data.orderDate,
+              expectedArrival: data.expectedArrival,
+              poNumber: data.poNumber,
+              linkedPODocumentId: data.linkedPODocumentId === '__NONE__' ? undefined : data.linkedPODocumentId,
+            });
+          }
+          setSelectedItemForOrder(null);
+        }}
+      />
+
+      {/* Receive Item Dialog */}
+      <ReceiveItemDialog
+        open={receiveDialogOpen}
+        onOpenChange={setReceiveDialogOpen}
+        item={selectedItemForReceive}
+        onConfirm={(data) => {
+          if (projectId && selectedItemForReceive) {
+            updateBOMItem(projectId, categories, selectedItemForReceive.id, {
+              status: 'received',
+              actualArrival: data.actualArrival,
+            });
+          }
+          setSelectedItemForReceive(null);
+        }}
+      />
     </>
   );
 };

@@ -72,6 +72,29 @@
   - Prevents category sprawl across projects
   - Clear error messages guide users to Settings when needed
   - Shows mismatched categories with item counts for easy decision-making
+- **Inward Tracking System** (Nov 2025)
+  - Track ordered items and expected arrival dates
+  - **Order Date Capture**: When status changes to "Ordered", dialog captures:
+    - Order date (defaults to today)
+    - PO number (optional)
+    - Link to PO document (from uploaded POs Outgoing)
+    - Auto-calculated expected arrival (orderDate + vendor lead time)
+  - **Lead Time Parsing**: Supports various formats ("14 days", "2 weeks", "1 month")
+  - **Receive Confirmation**: When status changes to "Received", captures actual arrival date
+  - **Inline Status Indicators**: BOM items show arrival status badges:
+    - 🔴 Red: Overdue (past expected arrival)
+    - 🟡 Yellow: Arriving soon (within 7 days)
+    - ⚪ Gray: On track (> 7 days away)
+    - 🟢 Green: Received (with actual arrival date)
+  - **Inward Tracking Dashboard**: Collapsible section showing:
+    - Summary cards: Ordered, Arriving Soon, Overdue, Received counts
+    - Filterable table with item details, PO links, and status
+    - Sorted by urgency (overdue first, then by expected date)
+  - **Data Model Extensions**:
+    - `orderDate`: ISO string when PO was placed
+    - `expectedArrival`: Calculated from orderDate + leadTime
+    - `actualArrival`: When item was received
+    - `linkedPODocumentId`: Reference to uploaded PO document
 
 ### 📊 Analytics & Dashboards
 - KPI Dashboard with real-time metrics
