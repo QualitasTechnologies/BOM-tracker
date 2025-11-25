@@ -1,7 +1,8 @@
 
-import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText, Clock, AlertTriangle, CheckCircle2, Package } from 'lucide-react';
+import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText, Clock, AlertTriangle, CheckCircle2, Package, Plus } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -181,9 +182,12 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
     quantity: part.quantity,
     price: part.price,
     category: part.category,
-    finalizedVendor: part.finalizedVendor
+    finalizedVendor: part.finalizedVendor,
+    vendors: part.vendors || []
   });
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showAddVendorForm, setShowAddVendorForm] = useState(false);
+  const [newVendor, setNewVendor] = useState({ name: '', price: 0, leadTime: '', availability: 'In Stock' });
 
   // Load vendors and extract makes
   useEffect(() => {
@@ -397,35 +401,155 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                   <TooltipContent>Key specs or application notes</TooltipContent>
                 </Tooltip>
               </div>
-              {/* Vendor Selection for components */}
-              {editForm.itemType === 'component' && part.vendors && part.vendors.length > 0 && (
-                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                  <span className="text-xs text-gray-500">Vendor:</span>
-                  <Select
-                    value={editForm.finalizedVendor?.name || '__NONE__'}
-                    onValueChange={(value) => {
-                      if (value === '__NONE__') {
-                        setEditForm(prev => ({ ...prev, finalizedVendor: undefined }));
-                      } else {
-                        const selected = part.vendors.find(v => v.name === value);
-                        if (selected) {
-                          setEditForm(prev => ({ ...prev, finalizedVendor: selected }));
+              {/* Vendor Selection/Entry for components */}
+              {editForm.itemType === 'component' && (
+                <div className="space-y-2 border-t pt-2 mt-1" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-gray-600">Vendor for Ordering:</span>
+                    {!showAddVendorForm && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-xs px-2"
+                        onClick={() => setShowAddVendorForm(true)}
+                      >
+                        <Plus className="h-3 w-3 mr-1" />
+                        Add Vendor Quote
+                      </Button>
+                    )}
+                  </div>
+
+                  {/* Add new vendor form */}
+                  {showAddVendorForm && (
+                    <div className="bg-blue-50 border border-blue-200 rounded p-2 space-y-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div onClick={(e) => e.stopPropagation()}>
+                          <Select
+                            value={newVendor.name || '__SELECT__'}
+                            onValueChange={(value) => setNewVendor(prev => ({ ...prev, name: value === '__SELECT__' ? '' : value }))}
+                          >
+                            <SelectTrigger className="h-7 text-xs">
+                              <SelectValue placeholder="Select vendor" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__SELECT__" disabled>Select vendor</SelectItem>
+                              {availableMakes.map((vendor) => (
+                                <SelectItem key={vendor} value={vendor}>{vendor}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <Input
+                          type="number"
+                          placeholder="Price (₹)"
+                          className="h-7 text-xs"
+                          value={newVendor.price || ''}
+                          onChange={(e) => setNewVendor(prev => ({ ...prev, price: Number(e.target.value) }))}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Input
+                          placeholder="Lead time (e.g., 14 days)"
+                          className="h-7 text-xs"
+                          value={newVendor.leadTime}
+                          onChange={(e) => setNewVendor(prev => ({ ...prev, leadTime: e.target.value }))}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <div onClick={(e) => e.stopPropagation()}>
+                          <Select
+                            value={newVendor.availability}
+                            onValueChange={(value) => setNewVendor(prev => ({ ...prev, availability: value }))}
+                          >
+                            <SelectTrigger className="h-7 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="In Stock">In Stock</SelectItem>
+                              <SelectItem value="Limited">Limited</SelectItem>
+                              <SelectItem value="Out of Stock">Out of Stock</SelectItem>
+                              <SelectItem value="On Order">On Order</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 text-xs"
+                          onClick={() => {
+                            setShowAddVendorForm(false);
+                            setNewVendor({ name: '', price: 0, leadTime: '', availability: 'In Stock' });
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-6 text-xs"
+                          disabled={!newVendor.name || !newVendor.leadTime}
+                          onClick={() => {
+                            const vendorToAdd = { ...newVendor };
+                            setEditForm(prev => ({
+                              ...prev,
+                              vendors: [...prev.vendors, vendorToAdd],
+                              finalizedVendor: vendorToAdd // Auto-select the newly added vendor
+                            }));
+                            setShowAddVendorForm(false);
+                            setNewVendor({ name: '', price: 0, leadTime: '', availability: 'In Stock' });
+                          }}
+                        >
+                          Add & Select
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Vendor selection dropdown */}
+                  {editForm.vendors.length > 0 && (
+                    <Select
+                      value={editForm.finalizedVendor?.name || '__NONE__'}
+                      onValueChange={(value) => {
+                        if (value === '__NONE__') {
+                          setEditForm(prev => ({ ...prev, finalizedVendor: undefined }));
+                        } else {
+                          const selected = editForm.vendors.find(v => v.name === value);
+                          if (selected) {
+                            setEditForm(prev => ({ ...prev, finalizedVendor: selected }));
+                          }
                         }
-                      }
-                    }}
-                  >
-                    <SelectTrigger className="h-7 text-xs flex-1">
-                      <SelectValue placeholder="Select vendor" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__NONE__">No vendor selected</SelectItem>
-                      {part.vendors.map((v, idx) => (
-                        <SelectItem key={idx} value={v.name}>
-                          {v.name} - ₹{v.price?.toLocaleString('en-IN')} ({v.leadTime})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                      }}
+                    >
+                      <SelectTrigger className="h-7 text-xs">
+                        <SelectValue placeholder="Select vendor for ordering" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__NONE__">No vendor selected</SelectItem>
+                        {editForm.vendors.map((v, idx) => (
+                          <SelectItem key={idx} value={v.name}>
+                            {v.name} - ₹{v.price?.toLocaleString('en-IN')} ({v.leadTime})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+
+                  {/* Show current selection */}
+                  {editForm.finalizedVendor && (
+                    <div className="text-xs text-green-700 bg-green-50 px-2 py-1 rounded">
+                      Selected: {editForm.finalizedVendor.name} - ₹{editForm.finalizedVendor.price?.toLocaleString('en-IN')} ({editForm.finalizedVendor.leadTime})
+                    </div>
+                  )}
+
+                  {!editForm.finalizedVendor && editForm.vendors.length === 0 && !showAddVendorForm && (
+                    <div className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded">
+                      Add a vendor quote to enable ordering
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -531,8 +655,11 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                     quantity: part.quantity,
                     price: part.price,
                     category: part.category,
-                    finalizedVendor: part.finalizedVendor
+                    finalizedVendor: part.finalizedVendor,
+                    vendors: part.vendors || []
                   });
+                  setShowAddVendorForm(false);
+                  setNewVendor({ name: '', price: 0, leadTime: '', availability: 'In Stock' });
                   setEditing(false);
                 }}
               >
