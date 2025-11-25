@@ -33,7 +33,11 @@ const projectsCol = collection(db, "projects");
 
 // Add a new project (projectId as document ID)
 export const addProject = async (project: Project) => {
-  await setDoc(doc(projectsCol, project.projectId), project);
+  // Filter out undefined values to prevent Firestore errors
+  const cleanProject = Object.fromEntries(
+    Object.entries(project).filter(([_, value]) => value !== undefined)
+  );
+  await setDoc(doc(projectsCol, project.projectId), cleanProject);
 };
 
 // Get all projects (real-time listener)
@@ -49,7 +53,11 @@ export const subscribeToProjects = (
 
 // Update a project
 export const updateProject = async (projectId: string, updates: Partial<Project>) => {
-  await updateDoc(doc(projectsCol, projectId), updates);
+  // Filter out undefined values to prevent Firestore errors
+  const cleanUpdates = Object.fromEntries(
+    Object.entries(updates).filter(([_, value]) => value !== undefined)
+  );
+  await updateDoc(doc(projectsCol, projectId), cleanUpdates);
 };
 
 // Delete a project
