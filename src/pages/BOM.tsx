@@ -985,6 +985,7 @@ const BOM = () => {
         open={orderDialogOpen}
         onOpenChange={setOrderDialogOpen}
         item={selectedItemForOrder}
+        projectId={projectId || ''}
         availablePODocuments={poDocuments}
         onConfirm={(data) => {
           if (projectId && selectedItemForOrder) {
@@ -993,10 +994,14 @@ const BOM = () => {
               orderDate: data.orderDate,
               expectedArrival: data.expectedArrival,
               poNumber: data.poNumber,
-              linkedPODocumentId: data.linkedPODocumentId === '__NONE__' ? undefined : data.linkedPODocumentId,
+              linkedPODocumentId: data.linkedPODocumentId,
             });
           }
           setSelectedItemForOrder(null);
+        }}
+        onDocumentUploaded={(newDoc) => {
+          // Add the new document to the list
+          setProjectDocuments(prev => [...prev, newDoc]);
         }}
       />
 

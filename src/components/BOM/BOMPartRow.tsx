@@ -180,7 +180,8 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
     sku: part.sku || '',
     quantity: part.quantity,
     price: part.price,
-    category: part.category
+    category: part.category,
+    finalizedVendor: part.finalizedVendor
   });
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
@@ -396,6 +397,37 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                   <TooltipContent>Key specs or application notes</TooltipContent>
                 </Tooltip>
               </div>
+              {/* Vendor Selection for components */}
+              {editForm.itemType === 'component' && part.vendors && part.vendors.length > 0 && (
+                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  <span className="text-xs text-gray-500">Vendor:</span>
+                  <Select
+                    value={editForm.finalizedVendor?.name || '__NONE__'}
+                    onValueChange={(value) => {
+                      if (value === '__NONE__') {
+                        setEditForm(prev => ({ ...prev, finalizedVendor: undefined }));
+                      } else {
+                        const selected = part.vendors.find(v => v.name === value);
+                        if (selected) {
+                          setEditForm(prev => ({ ...prev, finalizedVendor: selected }));
+                        }
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="h-7 text-xs flex-1">
+                      <SelectValue placeholder="Select vendor" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__NONE__">No vendor selected</SelectItem>
+                      {part.vendors.map((v, idx) => (
+                        <SelectItem key={idx} value={v.name}>
+                          {v.name} - ₹{v.price?.toLocaleString('en-IN')} ({v.leadTime})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-1">
@@ -498,7 +530,8 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                     sku: part.sku || '',
                     quantity: part.quantity,
                     price: part.price,
-                    category: part.category
+                    category: part.category,
+                    finalizedVendor: part.finalizedVendor
                   });
                   setEditing(false);
                 }}
