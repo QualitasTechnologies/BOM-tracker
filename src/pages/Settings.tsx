@@ -9,8 +9,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { 
-  User, 
+import {
+  User,
   Users,
   Package,
   ShoppingCart,
@@ -30,7 +30,8 @@ import {
   Download,
   Search,
   Filter,
-  AlertCircle
+  AlertCircle,
+  Tag
 } from 'lucide-react';
 import { 
   Dialog, 
@@ -80,6 +81,9 @@ import { uploadVendorLogo, ImageUploadResult } from '@/utils/imageUpload';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from '@/components/ui/use-toast';
 import PageLayout from '@/components/PageLayout';
+import BrandsTab from '@/components/settings/BrandsTab';
+import { Brand } from '@/types/brand';
+import { subscribeToBrands } from '@/utils/brandFirestore';
 
 const Settings = () => {
   // Auth check
@@ -89,6 +93,7 @@ const Settings = () => {
   const [clients, setClients] = useState<Client[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [oemVendors, setOemVendors] = useState<Vendor[]>([]);
+  const [brands, setBrands] = useState<Brand[]>([]);
   const [bomSettings, setBomSettings] = useState<BOMSettings | null>(null);
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [categoryDraft, setCategoryDraft] = useState("");
@@ -354,6 +359,9 @@ const Settings = () => {
           setOemVendors(vendors.filter(v => v.type === 'OEM'));
         });
         const unsubscribeBOMSettings = subscribeToBOMSettings(setBomSettings);
+        const unsubscribeBrands = subscribeToBrands((brandsData) => {
+          setBrands(brandsData.filter(b => b.status === 'active'));
+        });
 
         setLoading(false);
 
@@ -362,6 +370,7 @@ const Settings = () => {
           unsubscribeClients();
           unsubscribeVendors();
           unsubscribeBOMSettings();
+          unsubscribeBrands();
         };
       } catch (err: any) {
         setError(err.message || 'Failed to load settings data');
@@ -495,6 +504,7 @@ const Settings = () => {
         notes: vendorForm.notes || '',
         type: vendorForm.type || 'Dealer',
         makes: vendorForm.makes || [],
+        distributedBrands: vendorForm.distributedBrands || [],
         categories: vendorForm.categories || []
       });
       
@@ -594,20 +604,6 @@ const Settings = () => {
     } catch (err: any) {
       setError(err.message || 'Failed to delete vendor');
     }
-  };
-
-
-  // BOM Settings functions
-  const handleSaveBOMSettings = async () => {
-    if (!bomSettings) return;
-    
-    setSaving(true);
-    try {
-      await updateBOMSettings(bomSettings);
-    } catch (err: any) {
-      setError(err.message || 'Failed to save BOM settings');
-    }
-    setSaving(false);
   };
 
   const addCategory = async (newCategory: string) => {
@@ -851,7 +847,7 @@ const Settings = () => {
         )}
 
         <Tabs defaultValue="clients" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-5">
+          <TabsList className="grid w-full grid-cols-6">
             <TabsTrigger value="clients" className="flex items-center gap-2">
               <Users size={16} />
               Clients ({clients.length})
@@ -859,6 +855,10 @@ const Settings = () => {
             <TabsTrigger value="vendors" className="flex items-center gap-2">
               <ShoppingCart size={16} />
               Vendors ({vendors.length})
+            </TabsTrigger>
+            <TabsTrigger value="brands" className="flex items-center gap-2">
+              <Tag size={16} />
+              Brands
             </TabsTrigger>
             <TabsTrigger value="bom" className="flex items-center gap-2">
               <Package size={16} />
@@ -1395,42 +1395,53 @@ const Settings = () => {
                             </SelectContent>
                           </Select>
                         </div>
-                        {/* Only show Makes/Brands field for Dealers */}
+                        {/* Only show Distributed Brands field for Dealers */}
                         {vendorForm.type === 'Dealer' && (
                           <div className="space-y-2">
-                            <Label>Makes/Brands (OEMs represented)</Label>
+                            <Label>Distributed Brands</Label>
                             <div className="border rounded-md p-3 max-h-32 overflow-y-auto bg-background">
-                              {oemVendors.length === 0 ? (
-                                <p className="text-sm text-muted-foreground">No OEM vendors available. Add some OEM vendors first.</p>
+                              {brands.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">No brands available. Add brands in the Brands tab first.</p>
                               ) : (
                                 <div className="space-y-2">
-                                  {oemVendors.map((oem) => (
-                                    <div key={oem.id} className="flex items-center space-x-2">
+                                  {brands.map((brand) => (
+                                    <div key={brand.id} className="flex items-center space-x-2">
                                       <input
                                         type="checkbox"
-                                        id={`oem-${oem.id}`}
-                                        checked={(vendorForm.makes || []).includes(oem.company)}
+                                        id={`brand-${brand.id}`}
+                                        checked={(vendorForm.distributedBrands || []).includes(brand.id)}
                                         onChange={(e) => {
+                                          const currentBrands = vendorForm.distributedBrands || [];
                                           const currentMakes = vendorForm.makes || [];
                                           if (e.target.checked) {
                                             setVendorForm({
                                               ...vendorForm,
-                                              makes: [...currentMakes, oem.company]
+                                              distributedBrands: [...currentBrands, brand.id],
+                                              // Also update makes for backward compatibility
+                                              makes: [...currentMakes, brand.name]
                                             });
                                           } else {
                                             setVendorForm({
                                               ...vendorForm,
-                                              makes: currentMakes.filter(make => make !== oem.company)
+                                              distributedBrands: currentBrands.filter(id => id !== brand.id),
+                                              makes: currentMakes.filter(name => name !== brand.name)
                                             });
                                           }
                                         }}
                                         className="rounded border-gray-300"
                                       />
-                                      <Label 
-                                        htmlFor={`oem-${oem.id}`} 
-                                        className="text-sm font-normal cursor-pointer"
+                                      <Label
+                                        htmlFor={`brand-${brand.id}`}
+                                        className="text-sm font-normal cursor-pointer flex items-center gap-2"
                                       >
-                                        {oem.company}
+                                        {brand.logo && (
+                                          <img
+                                            src={brand.logo}
+                                            alt=""
+                                            className="w-4 h-4 object-contain"
+                                          />
+                                        )}
+                                        {brand.name}
                                       </Label>
                                     </div>
                                   ))}
@@ -1438,7 +1449,7 @@ const Settings = () => {
                               )}
                             </div>
                             <p className="text-xs text-muted-foreground">
-                              Select the OEM brands this dealer represents
+                              Select the brands this dealer distributes
                             </p>
                           </div>
                         )}
@@ -1727,6 +1738,11 @@ const Settings = () => {
             </Card>
           </TabsContent>
 
+          {/* Brands Tab */}
+          <TabsContent value="brands">
+            <BrandsTab />
+          </TabsContent>
+
           {/* BOM Settings Tab */}
           <TabsContent value="bom">
             <div className="space-y-6">
@@ -1823,91 +1839,6 @@ const Settings = () => {
                           <Plus size={16} />
                         </Button>
                       </div>
-                    </>
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>BOM Workflow Settings</CardTitle>
-                  <CardDescription>Configure BOM approval and quotation settings</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-6">
-                  {bomSettings && (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <div className="space-y-1">
-                          <Label>Auto-approval for orders</Label>
-                          <p className="text-sm text-muted-foreground">Automatically approve orders from trusted vendors</p>
-                        </div>
-                        <Switch
-                          checked={bomSettings.autoApprovalEnabled}
-                          onCheckedChange={(checked) => 
-                            setBomSettings({...bomSettings, autoApprovalEnabled: checked})
-                          }
-                        />
-                      </div>
-                      <Separator />
-                      <div className="flex items-center justify-between">
-                        <div className="space-y-1">
-                          <Label>Require vendor quotes</Label>
-                          <p className="text-sm text-muted-foreground">Require quotes before placing orders</p>
-                        </div>
-                        <Switch
-                          checked={bomSettings.requireVendorQuotes}
-                          onCheckedChange={(checked) => 
-                            setBomSettings({...bomSettings, requireVendorQuotes: checked})
-                          }
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Minimum vendor quotes required</Label>
-                        <Select 
-                          value={bomSettings.minimumVendorQuotes.toString()} 
-                          onValueChange={(value) => 
-                            setBomSettings({...bomSettings, minimumVendorQuotes: parseInt(value)})
-                          }
-                        >
-                          <SelectTrigger className="w-32">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="1">1</SelectItem>
-                            <SelectItem value="2">2</SelectItem>
-                            <SelectItem value="3">3</SelectItem>
-                            <SelectItem value="4">4</SelectItem>
-                            <SelectItem value="5">5</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Cost calculation method</Label>
-                        <Select 
-                          value={bomSettings.costCalculationMethod} 
-                          onValueChange={(value: 'average' | 'lowest' | 'selected') => 
-                            setBomSettings({...bomSettings, costCalculationMethod: value})
-                          }
-                        >
-                          <SelectTrigger className="w-48">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="average">Average of quotes</SelectItem>
-                            <SelectItem value="lowest">Lowest quote</SelectItem>
-                            <SelectItem value="selected">Selected vendor only</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <Button 
-                        className="flex items-center gap-2"
-                        onClick={handleSaveBOMSettings}
-                        disabled={saving}
-                      >
-                        {saving && <Loader2 size={16} className="animate-spin" />}
-                        <Save size={16} />
-                        Save BOM Settings
-                      </Button>
                     </>
                   )}
                 </CardContent>

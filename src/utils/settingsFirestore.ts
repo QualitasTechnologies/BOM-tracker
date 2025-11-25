@@ -44,7 +44,8 @@ export interface Vendor {
   status: 'active' | 'inactive';
   notes?: string;
   type: 'OEM' | 'Dealer';
-  makes: string[];
+  makes: string[];                    // Legacy: free-text brand names (kept for backward compatibility)
+  distributedBrands?: string[];       // NEW: Brand IDs from Brands collection (for Dealers)
   categories?: string[]; // BOM category names this vendor supplies
   createdAt: Date;
   updatedAt: Date;
@@ -70,10 +71,11 @@ export interface BOMSettings {
   categories?: BOMCategory[]; // Optional enhanced categories
   defaultStatuses: string[];
   defaultUnits: string[];
-  autoApprovalEnabled: boolean;
-  requireVendorQuotes: boolean;
-  minimumVendorQuotes: number;
-  costCalculationMethod: 'average' | 'lowest' | 'selected';
+  // Deprecated workflow fields (kept for backward compatibility with existing data)
+  autoApprovalEnabled?: boolean;
+  requireVendorQuotes?: boolean;
+  minimumVendorQuotes?: number;
+  costCalculationMethod?: 'average' | 'lowest' | 'selected';
   updatedAt: Date;
 }
 
@@ -333,12 +335,8 @@ export const initializeDefaultBOMSettings = async () => {
     await updateBOMSettings({
       defaultCategories: categoryNames, // Backward compatibility
       categories: enhancedCategories, // Future enhancement
-      defaultStatuses: ['not-ordered', 'ordered', 'received', 'approved'],
-      defaultUnits: ['pcs', 'kg', 'm', 'l', 'set', 'pack'],
-      autoApprovalEnabled: false,
-      requireVendorQuotes: true,
-      minimumVendorQuotes: 2,
-      costCalculationMethod: 'average'
+      defaultStatuses: ['not-ordered', 'ordered', 'received'],
+      defaultUnits: ['pcs', 'kg', 'm', 'l', 'set', 'pack']
     });
   }
 };

@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { FileText, Package, Upload, Loader2, AlertCircle } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { FileText, Package, Upload, Loader2, Search, Check, ChevronsUpDown } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -17,12 +17,26 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import { cn } from '@/lib/utils';
 import { useToast } from '@/components/ui/use-toast';
 import { BOMItem, calculateExpectedArrival, parseLeadTimeToDays } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
 import { uploadProjectDocument } from '@/utils/projectDocumentFirestore';
 import { auth } from '@/firebase';
+import { Vendor } from '@/utils/settingsFirestore';
 
 interface OrderItemDialogProps {
   open: boolean;
@@ -30,11 +44,19 @@ interface OrderItemDialogProps {
   item: BOMItem | null;
   projectId: string;
   availablePODocuments: ProjectDocument[];
+  vendors: Vendor[]; // List of all vendors (OEMs and Dealers)
   onConfirm: (data: {
     orderDate: string;
     expectedArrival: string;
     poNumber?: string;
     linkedPODocumentId: string;
+    vendor: {
+      id: string;
+      name: string;
+      price: number;
+      leadTime: string;
+      availability: string;
+    };
   }) => void;
   onDocumentUploaded?: (doc: ProjectDocument) => void;
 }
@@ -45,6 +67,7 @@ const OrderItemDialog = ({
   item,
   projectId,
   availablePODocuments,
+  vendors,
   onConfirm,
   onDocumentUploaded,
 }: OrderItemDialogProps) => {
@@ -54,31 +77,52 @@ const OrderItemDialog = ({
   const [expectedArrival, setExpectedArrival] = useState<string>('');
   const [calculatedArrival, setCalculatedArrival] = useState<string>('');
   const [leadTimeDays, setLeadTimeDays] = useState<number>(0);
+  const [selectedVendorId, setSelectedVendorId] = useState<string>('');
+  const [vendorPopoverOpen, setVendorPopoverOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
-  // Check if vendor is specified
-  const hasVendor = item?.finalizedVendor?.name;
+  // Get selected vendor details
+  const selectedVendor = vendors.find(v => v.id === selectedVendorId);
+  const hasVendor = !!selectedVendor;
 
-  // Calculate expected arrival when order date changes
+  // Filter to show only active vendors, sorted by type (OEM first) then name
+  const activeVendors = useMemo(() => {
+    return vendors
+      .filter(v => v.status === 'active')
+      .sort((a, b) => {
+        // Sort by type first (OEM before Dealer)
+        if (a.type !== b.type) {
+          return a.type === 'OEM' ? -1 : 1;
+        }
+        // Then by company name
+        return a.company.localeCompare(b.company);
+      });
+  }, [vendors]);
+
+  // Calculate expected arrival when order date or vendor changes
   useEffect(() => {
-    if (item && orderDate && hasVendor) {
-      const leadTime = item.finalizedVendor?.leadTime || '';
+    if (item && orderDate && selectedVendor) {
+      const leadTime = selectedVendor.leadTime || '';
       const days = parseLeadTimeToDays(leadTime);
       setLeadTimeDays(days);
 
       if (days > 0) {
         const arrival = calculateExpectedArrival(orderDate, days);
         setCalculatedArrival(arrival);
+        // Auto-update expected arrival if not manually modified
         if (!expectedArrival || expectedArrival === calculatedArrival) {
           setExpectedArrival(arrival);
         }
       } else {
         setCalculatedArrival('');
       }
+    } else if (!selectedVendor) {
+      setLeadTimeDays(0);
+      setCalculatedArrival('');
     }
-  }, [item, orderDate, hasVendor]);
+  }, [item, orderDate, selectedVendor]);
 
   // Reset form when dialog opens
   useEffect(() => {
@@ -87,26 +131,12 @@ const OrderItemDialog = ({
       setOrderDate(today);
       setPONumber(item.poNumber || '');
       setLinkedPODocumentId(item.linkedPODocumentId || '');
-
-      if (hasVendor) {
-        const leadTime = item.finalizedVendor?.leadTime || '';
-        const days = parseLeadTimeToDays(leadTime);
-        setLeadTimeDays(days);
-        if (days > 0) {
-          const arrival = calculateExpectedArrival(today, days);
-          setExpectedArrival(arrival);
-          setCalculatedArrival(arrival);
-        } else {
-          setExpectedArrival('');
-          setCalculatedArrival('');
-        }
-      } else {
-        setExpectedArrival('');
-        setCalculatedArrival('');
-        setLeadTimeDays(0);
-      }
+      setSelectedVendorId(''); // Reset vendor selection
+      setExpectedArrival('');
+      setCalculatedArrival('');
+      setLeadTimeDays(0);
     }
-  }, [open, item, hasVendor]);
+  }, [open, item]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || !e.target.files[0] || !projectId) return;
@@ -140,13 +170,20 @@ const OrderItemDialog = ({
   };
 
   const handleConfirm = () => {
-    if (!canSubmit) return;
+    if (!canSubmit || !selectedVendor) return;
 
     onConfirm({
       orderDate,
       expectedArrival,
       poNumber: poNumber || undefined,
       linkedPODocumentId,
+      vendor: {
+        id: selectedVendor.id,
+        name: selectedVendor.company,
+        price: item?.price || 0,
+        leadTime: selectedVendor.leadTime,
+        availability: 'In Stock', // Default value
+      },
     });
     onOpenChange(false);
   };
@@ -157,8 +194,9 @@ const OrderItemDialog = ({
 
   if (!item) return null;
 
-  const vendorName = item.finalizedVendor?.name;
-  const leadTimeStr = item.finalizedVendor?.leadTime || 'Not specified';
+  // Group vendors by type for display
+  const oemVendors = activeVendors.filter(v => v.type === 'OEM');
+  const dealerVendors = activeVendors.filter(v => v.type === 'Dealer');
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -171,23 +209,124 @@ const OrderItemDialog = ({
         </DialogHeader>
 
         <div className="space-y-3 py-2">
-          {/* Vendor Required Alert */}
-          {!hasVendor && (
-            <Alert variant="destructive" className="py-2">
-              <AlertCircle className="h-4 w-4" />
-              <AlertDescription className="text-sm">
-                A vendor must be selected before marking as ordered. Edit the item to set a finalized vendor.
-              </AlertDescription>
-            </Alert>
-          )}
-
           {/* Item Info */}
           <div className="bg-gray-50 rounded-md p-2.5 space-y-0.5 text-sm">
             <div className="font-medium text-gray-900">{item.name}</div>
             <div className="text-gray-600 text-xs flex flex-wrap gap-x-3">
-              <span>Vendor: {vendorName || <span className="text-red-500">Not set</span>}</span>
-              {hasVendor && <span>Lead Time: {leadTimeStr}</span>}
+              {item.make && <span>Make: {item.make}</span>}
+              {item.sku && <span>SKU: {item.sku}</span>}
+              <span>Qty: {item.quantity}</span>
             </div>
+          </div>
+
+          {/* Vendor Selection - Searchable Combobox */}
+          <div className="space-y-1">
+            <Label className="text-xs font-medium">
+              Select Vendor <span className="text-red-500">*</span>
+            </Label>
+            <Popover open={vendorPopoverOpen} onOpenChange={setVendorPopoverOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  role="combobox"
+                  aria-expanded={vendorPopoverOpen}
+                  className={cn(
+                    "w-full h-8 justify-between text-sm font-normal",
+                    !hasVendor && "border-red-300 text-muted-foreground"
+                  )}
+                >
+                  {selectedVendor ? (
+                    <span className="flex items-center gap-2 truncate">
+                      <span className={cn(
+                        "px-1.5 py-0.5 rounded text-[10px] font-medium",
+                        selectedVendor.type === 'OEM' ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"
+                      )}>
+                        {selectedVendor.type}
+                      </span>
+                      {selectedVendor.company}
+                    </span>
+                  ) : (
+                    "Search and select vendor..."
+                  )}
+                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[350px] p-0" align="start">
+                <Command>
+                  <CommandInput placeholder="Search vendors..." />
+                  <CommandList>
+                    <CommandEmpty>No vendor found.</CommandEmpty>
+                    {oemVendors.length > 0 && (
+                      <CommandGroup heading="OEM / Brands">
+                        {oemVendors.map((vendor) => (
+                          <CommandItem
+                            key={vendor.id}
+                            value={`${vendor.company} ${vendor.type}`}
+                            onSelect={() => {
+                              setSelectedVendorId(vendor.id);
+                              setVendorPopoverOpen(false);
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                selectedVendorId === vendor.id ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            <div className="flex flex-col">
+                              <span className="font-medium">{vendor.company}</span>
+                              {vendor.leadTime && (
+                                <span className="text-xs text-gray-500">Lead time: {vendor.leadTime}</span>
+                              )}
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+                    {dealerVendors.length > 0 && (
+                      <CommandGroup heading="Dealers / Distributors">
+                        {dealerVendors.map((vendor) => (
+                          <CommandItem
+                            key={vendor.id}
+                            value={`${vendor.company} ${vendor.type}`}
+                            onSelect={() => {
+                              setSelectedVendorId(vendor.id);
+                              setVendorPopoverOpen(false);
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                selectedVendorId === vendor.id ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            <div className="flex flex-col">
+                              <span className="font-medium">{vendor.company}</span>
+                              {vendor.leadTime && (
+                                <span className="text-xs text-gray-500">Lead time: {vendor.leadTime}</span>
+                              )}
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+                    {activeVendors.length === 0 && (
+                      <div className="py-6 text-center text-sm text-muted-foreground">
+                        No active vendors available. Add vendors in Settings.
+                      </div>
+                    )}
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+            {!hasVendor && (
+              <p className="text-xs text-red-500">Please select a vendor</p>
+            )}
+            {selectedVendor && (
+              <p className="text-xs text-gray-500">
+                {selectedVendor.type} · Lead time: {selectedVendor.leadTime || 'Not specified'}
+              </p>
+            )}
           </div>
 
           {hasVendor && (

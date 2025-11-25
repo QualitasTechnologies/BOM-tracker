@@ -129,9 +129,9 @@ const InwardTracking = ({ categories, documents, onItemClick }: InwardTrackingPr
 
   // Filter items for table
   const filteredItems = useMemo(() => {
-    // Only show items that have been ordered (status is ordered, received, or approved)
+    // Only show items that have been ordered (status is ordered or received)
     let items = allItems.filter(item =>
-      item.status === 'ordered' || item.status === 'received' || item.status === 'approved'
+      item.status === 'ordered' || item.status === 'received'
     );
 
     if (filterStatus !== 'all') {

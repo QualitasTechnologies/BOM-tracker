@@ -20,6 +20,8 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useState, useEffect } from 'react';
 import { getVendors, Vendor } from '@/utils/settingsFirestore';
+import { getActiveBrands } from '@/utils/brandFirestore';
+import { Brand } from '@/types/brand';
 import QuantityControl from './QuantityControl';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getInwardStatus, InwardStatus } from '@/types/bom';
@@ -40,7 +42,7 @@ interface BOMItem {
     leadTime: string;
     availability: string;
   }>;
-  status: 'not-ordered' | 'ordered' | 'received' | 'approved';
+  status: 'not-ordered' | 'ordered' | 'received';
   expectedDelivery?: string;
   poNumber?: string;
   finalizedVendor?: { name: string; price: number; leadTime: string; availability: string };
@@ -141,17 +143,13 @@ const statusStyles: Record<
   BOMItem["status"],
   { label: string; className: string }
 > = {
-  approved: {
-    label: "Approved",
-    className: "bg-blue-50 text-blue-700 border-blue-200",
+  "not-ordered": {
+    label: "Not Ordered",
+    className: "bg-red-50 text-red-700 border-red-200",
   },
   ordered: {
     label: "Ordered",
     className: "bg-amber-50 text-amber-700 border-amber-200",
-  },
-  "not-ordered": {
-    label: "Not Ordered",
-    className: "bg-red-50 text-red-700 border-red-200",
   },
   received: {
     label: "Received",
@@ -171,7 +169,7 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
   const [showDeleteConfirmIdx, setShowDeleteConfirmIdx] = useState<number | null>(null);
   const [addPrevVendorIdx, setAddPrevVendorIdx] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
-  const [availableMakes, setAvailableMakes] = useState<string[]>([]);
+  const [availableBrands, setAvailableBrands] = useState<Brand[]>([]);
   const [editForm, setEditForm] = useState({
     itemType: part.itemType || 'component',
     name: part.name,
@@ -185,27 +183,20 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
   });
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  // Load vendors and extract makes
+  // Load brands for make dropdown
   useEffect(() => {
-    const loadVendors = async () => {
+    const loadBrands = async () => {
       try {
-        const vendorsData = await getVendors();
-        
-        // Extract vendor company names as makes/brands
-        const companyNames = vendorsData
-          .map(vendor => vendor.company)
-          .filter(company => company && company.trim() !== '') // Ensure company exists and is not empty
-          .map(company => company.trim()); // Trim whitespace
-        
-        // Remove duplicates and sort
-        const uniqueMakes = [...new Set(companyNames)].sort();
-        setAvailableMakes(uniqueMakes);
+        const brandsData = await getActiveBrands();
+        // Sort by name
+        const sortedBrands = brandsData.sort((a, b) => a.name.localeCompare(b.name));
+        setAvailableBrands(sortedBrands);
       } catch (error) {
-        console.error('Error loading vendors:', error);
+        console.error('Error loading brands:', error);
       }
     };
 
-    loadVendors();
+    loadBrands();
   }, []);
 
   // Handle selecting a current vendor for editing
@@ -316,22 +307,29 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                             onValueChange={(value) => setEditForm(prev => ({ ...prev, make: value === "__NONE__" ? '' : (value || '') }))}
                           >
                             <SelectTrigger className="h-8 text-xs w-full">
-                              <SelectValue placeholder="Make" />
+                              <SelectValue placeholder="Brand" />
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="__NONE__">None</SelectItem>
-                              {availableMakes
-                                .filter(make => make && make.trim() !== '')
-                                .map((make) => (
-                                  <SelectItem key={make} value={make}>
-                                    {make}
-                                  </SelectItem>
-                                ))}
+                              {availableBrands.map((brand) => (
+                                <SelectItem key={brand.id} value={brand.name}>
+                                  <span className="flex items-center gap-2">
+                                    {brand.logo && (
+                                      <img
+                                        src={brand.logo}
+                                        alt=""
+                                        className="w-4 h-4 object-contain"
+                                      />
+                                    )}
+                                    {brand.name}
+                                  </span>
+                                </SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                         </div>
                       </TooltipTrigger>
-                      <TooltipContent>Preferred vendor or manufacturer</TooltipContent>
+                      <TooltipContent>Brand / OEM manufacturer</TooltipContent>
                     </Tooltip>
 
                     <Tooltip>
@@ -480,7 +478,7 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                 {itemType === 'component' && part.status === 'ordered' && (
                   <InwardStatusBadge part={part} />
                 )}
-                {itemType === 'component' && (part.status === 'received' || part.status === 'approved') && part.actualArrival && (
+                {itemType === 'component' && part.status === 'received' && part.actualArrival && (
                   <span className="flex items-center gap-1 text-green-600 whitespace-nowrap">
                     <CheckCircle2 size={10} />
                     Rcvd: {formatDateShort(part.actualArrival)}
@@ -554,10 +552,15 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent>
-                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'approved')}>Approved</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'ordered')}>Ordered</DropdownMenuItem>
                     <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'not-ordered')}>Not Ordered</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'received')}>Received</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'ordered')}>Ordered</DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => onStatusChange?.(part.id, 'received')}
+                      disabled={part.status === 'not-ordered'}
+                      className={part.status === 'not-ordered' ? 'opacity-50 cursor-not-allowed' : ''}
+                    >
+                      Received {part.status === 'not-ordered' && '(must be ordered first)'}
+                    </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}

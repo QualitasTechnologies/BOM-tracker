@@ -26,6 +26,8 @@ import {
   deleteBOMItem,
 } from '@/utils/projectFirestore';
 import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
+import { getActiveBrands } from '@/utils/brandFirestore';
+import { Brand } from '@/types/brand';
 import type { Vendor, BOMCategory as SettingsCategory } from '@/utils/settingsFirestore';
 import { BOMItem, BOMCategory, BOMStatus, calculateExpectedArrival, parseLeadTimeToDays } from '@/types/bom';
 import { doc, getDoc } from 'firebase/firestore';
@@ -75,7 +77,7 @@ const BOM = () => {
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState<string | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
-  const [availableMakes, setAvailableMakes] = useState<string[]>([]);
+  const [availableBrands, setAvailableBrands] = useState<Brand[]>([]);
   const [canonicalCategories, setCanonicalCategories] = useState<SettingsCategory[]>([]);
   const [categoryAlignmentSelections, setCategoryAlignmentSelections] = useState<Record<string, string>>({});
   const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([]);
@@ -180,7 +182,7 @@ const BOM = () => {
     loadProjectDetails();
   }, [projectId]);
 
-  // Load settings data (vendors, makes, categories)
+  // Load settings data (vendors, brands, categories)
   useEffect(() => {
     const loadSettingsData = async () => {
       try {
@@ -188,12 +190,10 @@ const BOM = () => {
         const vendorsData = await getVendors();
         setVendors(vendorsData);
 
-        // Extract vendor company names as makes/brands
-        const companyNames = vendorsData.map(vendor => vendor.company).filter(company => company.trim() !== '');
-
-        // Remove duplicates and sort
-        const uniqueMakes = [...new Set(companyNames)].sort();
-        setAvailableMakes(uniqueMakes);
+        // Load brands for make dropdown
+        const brandsData = await getActiveBrands();
+        const sortedBrands = brandsData.sort((a, b) => a.name.localeCompare(b.name));
+        setAvailableBrands(sortedBrands);
 
         // Load settings categories
         const bomSettings = await getBOMSettings();
@@ -683,7 +683,7 @@ const BOM = () => {
           <div className="space-y-4">
             <div>
               <div className="font-semibold text-sm mb-2">Status</div>
-              {['ordered', 'received', 'not-ordered', 'approved'].map(status => (
+              {['not-ordered', 'ordered', 'received'].map(status => (
                 <label key={status} className="flex items-center gap-2 mb-1">
                   <input
                     type="checkbox"
@@ -802,29 +802,33 @@ const BOM = () => {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="make">Make</Label>
+                    <Label htmlFor="make">Brand</Label>
                     <Select
                       value={newPart.make || undefined}
                       onValueChange={(value) => setNewPart({ ...newPart, make: value === "__NONE__" ? '' : (value || '') })}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="Select Make/Brand" />
+                        <SelectValue placeholder="Select Brand" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__NONE__">None</SelectItem>
-                        {availableMakes.length === 0 && vendors.length === 0 && (
-                          <SelectItem value="__LOADING__" disabled>Loading makes...</SelectItem>
+                        {availableBrands.length === 0 && (
+                          <SelectItem value="__LOADING__" disabled>No brands available. Add brands in Settings.</SelectItem>
                         )}
-                        {availableMakes.length === 0 && vendors.length > 0 && (
-                          <SelectItem value="__NO_MAKES__" disabled>No makes found in vendors</SelectItem>
-                        )}
-                        {availableMakes
-                          .filter(make => make && make.trim() !== '') // Filter out empty makes
-                          .map((make) => (
-                            <SelectItem key={make} value={make}>
-                              {make}
-                            </SelectItem>
-                          ))}
+                        {availableBrands.map((brand) => (
+                          <SelectItem key={brand.id} value={brand.name}>
+                            <span className="flex items-center gap-2">
+                              {brand.logo && (
+                                <img
+                                  src={brand.logo}
+                                  alt=""
+                                  className="w-4 h-4 object-contain"
+                                />
+                              )}
+                              {brand.name}
+                            </span>
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -987,6 +991,7 @@ const BOM = () => {
         item={selectedItemForOrder}
         projectId={projectId || ''}
         availablePODocuments={poDocuments}
+        vendors={vendors}
         onConfirm={(data) => {
           if (projectId && selectedItemForOrder) {
             updateBOMItem(projectId, categories, selectedItemForOrder.id, {
@@ -995,6 +1000,12 @@ const BOM = () => {
               expectedArrival: data.expectedArrival,
               poNumber: data.poNumber,
               linkedPODocumentId: data.linkedPODocumentId,
+              finalizedVendor: {
+                name: data.vendor.name,
+                price: data.vendor.price,
+                leadTime: data.vendor.leadTime,
+                availability: data.vendor.availability,
+              },
             });
           }
           setSelectedItemForOrder(null);
@@ -1031,8 +1042,6 @@ function mapStatusToFirestore(status: string): BOMStatus {
       return 'ordered';
     case 'received':
       return 'received';
-    case 'approved':
-      return 'approved';
     default:
       return 'not-ordered';
   }

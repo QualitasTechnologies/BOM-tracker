@@ -1,4 +1,4 @@
-export type BOMStatus = 'not-ordered' | 'ordered' | 'received' | 'approved';
+export type BOMStatus = 'not-ordered' | 'ordered' | 'received';
 export type BOMItemType = 'component' | 'service';
 
 export interface BOMItem {
@@ -54,7 +54,7 @@ export type InwardStatus = 'not-ordered' | 'on-track' | 'arriving-soon' | 'overd
 // Helper function to calculate inward status
 export function getInwardStatus(item: BOMItem): InwardStatus {
   if (item.status === 'not-ordered' || item.itemType === 'service') return 'not-ordered';
-  if (item.status === 'received' || item.status === 'approved') return 'received';
+  if (item.status === 'received') return 'received';
   if (!item.expectedArrival) return 'on-track';
 
   const today = new Date();
