@@ -98,16 +98,24 @@ export async function linkDocumentToBOMItems(
  * Delete a project document
  */
 export async function deleteProjectDocument(documentId: string, fileUrl: string): Promise<void> {
-  // Delete from Firestore
-  await deleteDoc(doc(db, 'projectDocuments', documentId));
-
-  // Delete from Storage
+  // Delete from Storage first
   try {
-    const storageRef = ref(storage, fileUrl);
-    await deleteObject(storageRef);
+    // Extract storage path from the download URL
+    // URL format: https://firebasestorage.googleapis.com/v0/b/BUCKET/o/PATH?token=...
+    // The path is URL-encoded between /o/ and ?
+    const match = fileUrl.match(/\/o\/(.+?)\?/);
+    if (match && match[1]) {
+      const storagePath = decodeURIComponent(match[1]);
+      const storageRef = ref(storage, storagePath);
+      await deleteObject(storageRef);
+    }
   } catch (error) {
     console.error('Error deleting file from storage:', error);
+    // Continue to delete Firestore record even if storage deletion fails
   }
+
+  // Delete from Firestore
+  await deleteDoc(doc(db, 'projectDocuments', documentId));
 }
 
 /**

@@ -37,6 +37,31 @@ service firebase.storage {
       allow delete: if isAuthenticated();
     }
 
+    // Project documents (vendor quotes, POs, customer POs)
+    match /projects/{projectId}/documents/{docType}/{fileName} {
+      // Allow authenticated users to upload project documents
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && isReasonableSize();
+      allow delete: if isAuthenticated();
+    }
+
+    // Vendor logos
+    match /vendor-logos/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && isReasonableSize();
+      allow delete: if isAuthenticated();
+    }
+
+    // Brand logos
+    match /brand-logos/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && isReasonableSize();
+      allow delete: if isAuthenticated();
+    }
+
     // Default: deny all other access
     match /{allPaths=**} {
       allow read, write: if false;

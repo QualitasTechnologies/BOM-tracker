@@ -1,9 +1,9 @@
-export type BOMStatus = 'not-ordered' | 'ordered' | 'received' | 'approved';
+export type BOMStatus = 'not-ordered' | 'ordered' | 'received';
 export type BOMItemType = 'component' | 'service';
 
 export interface BOMItem {
   id: string;
-  itemType: BOMItemType; // NEW: Distinguish between component and service
+  itemType: BOMItemType; // Distinguish between component and service
   name: string;
   make?: string;
   description: string;
@@ -38,8 +38,67 @@ export interface BOMItem {
     availability: string;
   };
 
+  // Inward Tracking fields (for components)
+  orderDate?: string; // ISO string - when PO was placed
+  expectedArrival?: string; // ISO string - calculated from orderDate + leadTime
+  actualArrival?: string; // ISO string - when item was actually received
+  linkedPODocumentId?: string; // Reference to outgoing-po document
+
   createdAt?: Date;
   updatedAt?: Date;
+}
+
+// Helper type for inward tracking status
+export type InwardStatus = 'not-ordered' | 'on-track' | 'arriving-soon' | 'overdue' | 'received';
+
+// Helper function to calculate inward status
+export function getInwardStatus(item: BOMItem): InwardStatus {
+  if (item.status === 'not-ordered' || item.itemType === 'service') return 'not-ordered';
+  if (item.status === 'received') return 'received';
+  if (!item.expectedArrival) return 'on-track';
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const expected = new Date(item.expectedArrival);
+  expected.setHours(0, 0, 0, 0);
+
+  const daysUntilArrival = Math.ceil((expected.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+  if (daysUntilArrival < 0) return 'overdue';
+  if (daysUntilArrival <= 7) return 'arriving-soon';
+  return 'on-track';
+}
+
+// Calculate expected arrival from order date and lead time
+export function calculateExpectedArrival(orderDate: string, leadTimeDays: number): string {
+  const date = new Date(orderDate);
+  date.setDate(date.getDate() + leadTimeDays);
+  return date.toISOString().split('T')[0];
+}
+
+// Parse lead time string (e.g., "14 days", "2-3 weeks") to number of days
+export function parseLeadTimeToDays(leadTime: string): number {
+  if (!leadTime) return 0;
+
+  const lower = leadTime.toLowerCase().trim();
+
+  // Match patterns like "14 days", "14days", "14 d"
+  const daysMatch = lower.match(/(\d+)\s*(?:days?|d)/);
+  if (daysMatch) return parseInt(daysMatch[1], 10);
+
+  // Match patterns like "2 weeks", "2-3 weeks"
+  const weeksMatch = lower.match(/(\d+)(?:\s*-\s*\d+)?\s*(?:weeks?|w)/);
+  if (weeksMatch) return parseInt(weeksMatch[1], 10) * 7;
+
+  // Match patterns like "1 month", "1-2 months"
+  const monthsMatch = lower.match(/(\d+)(?:\s*-\s*\d+)?\s*(?:months?|m)/);
+  if (monthsMatch) return parseInt(monthsMatch[1], 10) * 30;
+
+  // Try to parse as plain number (assume days)
+  const plainNumber = parseInt(lower, 10);
+  if (!isNaN(plainNumber)) return plainNumber;
+
+  return 0;
 }
 
 // UI display structure for BOM categories (grouping items)

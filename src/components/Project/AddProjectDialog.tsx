@@ -208,7 +208,6 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
               className="h-8"
             />
           </div>
-          </form>
           <div className="flex justify-end gap-2 pt-4 mt-4 border-t bg-background">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} className="h-8">
               Cancel
@@ -217,6 +216,7 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
               {loading ? "Creating..." : "Add Project"}
             </Button>
           </div>
+        </form>
       </DialogContent>
     </Dialog>
   );

@@ -33,7 +33,11 @@ const projectsCol = collection(db, "projects");
 
 // Add a new project (projectId as document ID)
 export const addProject = async (project: Project) => {
-  await setDoc(doc(projectsCol, project.projectId), project);
+  // Filter out undefined values to prevent Firestore errors
+  const cleanProject = Object.fromEntries(
+    Object.entries(project).filter(([_, value]) => value !== undefined)
+  );
+  await setDoc(doc(projectsCol, project.projectId), cleanProject);
 };
 
 // Get all projects (real-time listener)
@@ -49,7 +53,11 @@ export const subscribeToProjects = (
 
 // Update a project
 export const updateProject = async (projectId: string, updates: Partial<Project>) => {
-  await updateDoc(doc(projectsCol, projectId), updates);
+  // Filter out undefined values to prevent Firestore errors
+  const cleanUpdates = Object.fromEntries(
+    Object.entries(updates).filter(([_, value]) => value !== undefined)
+  );
+  await updateDoc(doc(projectsCol, projectId), cleanUpdates);
 };
 
 // Delete a project
@@ -84,10 +92,15 @@ export const updateBOMData = async (projectId: string, categories: BOMCategory[]
 };
 
 export const updateBOMItem = async (projectId: string, categories: BOMCategory[], itemId: string, updates: Partial<BOMItem>) => {
+  // Filter out undefined values from updates to prevent Firestore errors
+  const cleanUpdates = Object.fromEntries(
+    Object.entries(updates).filter(([_, value]) => value !== undefined)
+  );
+
   const updatedCategories = categories.map(category => ({
     ...category,
     items: category.items.map(item =>
-      item.id === itemId ? { ...item, ...updates } : item
+      item.id === itemId ? { ...item, ...cleanUpdates } : item
     )
   }));
   await updateBOMData(projectId, updatedCategories);

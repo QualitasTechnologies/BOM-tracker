@@ -27,7 +27,7 @@ interface BOMItem {
     availability: string;
     documents?: DocumentInfo[];
   }>;
-  status: 'not-ordered' | 'ordered' | 'received' | 'approved';
+  status: 'not-ordered' | 'ordered' | 'received';
   expectedDelivery?: string;
   poNumber?: string;
 }
@@ -127,17 +127,14 @@ const BOMCategoryCard = ({ category, onToggle, onQuantityChange, onDeletePart, o
                 <span className="font-semibold text-gray-900 whitespace-nowrap">
                   Total: {formatCurrency(categoryTotal)}
                 </span>
-                <Badge variant="outline" className="text-blue-600 border-blue-200">
-                  {getStatusCount('approved')} Approved
-                </Badge>
-                <Badge variant="outline" className="text-green-600 border-green-200">
-                  {getStatusCount('received')} received
-                </Badge>
-                <Badge variant="outline" className="text-amber-600 border-amber-200">
-                  {getStatusCount('ordered')} ordered
-                </Badge>
                 <Badge variant="outline" className="text-red-600 border-red-200">
                   {getStatusCount('not-ordered')} Not Ordered
+                </Badge>
+                <Badge variant="outline" className="text-amber-600 border-amber-200">
+                  {getStatusCount('ordered')} Ordered
+                </Badge>
+                <Badge variant="outline" className="text-green-600 border-green-200">
+                  {getStatusCount('received')} Received
                 </Badge>
                 {/* Trash icon button */}
                 <button

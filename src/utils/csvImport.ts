@@ -183,3 +183,94 @@ const isValidWebsite = (website: string): boolean => {
     return false;
   }
 };
+
+// =====================================================
+// BRAND CSV IMPORT/EXPORT FUNCTIONS
+// =====================================================
+
+import { Brand, BrandInput } from '@/types/brand';
+
+export interface BrandCSVImportResult {
+  success: number;
+  errors: string[];
+}
+
+// Export brands to CSV
+export const exportBrandsToCSV = (brands: Brand[]) => {
+  const headers = ['Name', 'Website', 'Description', 'Status'];
+
+  const brandRows = brands.map(brand => [
+    brand.name || '',
+    brand.website || '',
+    brand.description || '',
+    brand.status || 'active'
+  ]);
+
+  const csvContent = [headers, ...brandRows]
+    .map(row => row.map(field => `"${field}"`).join(','))
+    .join('\n');
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const timestamp = new Date().toISOString().split('T')[0];
+  a.download = `brands_export_${timestamp}.csv`;
+  a.click();
+  window.URL.revokeObjectURL(url);
+};
+
+// Parse Brand CSV content
+export const parseBrandCSV = (csvText: string) => {
+  const lines = csvText.trim().split('\n');
+  if (lines.length < 2) {
+    throw new Error('CSV file must contain at least a header row and one data row');
+  }
+
+  const headers = parseCSVLine(lines[0]);
+
+  return lines.slice(1).map((line, index) => {
+    const values = parseCSVLine(line);
+
+    const brand: Partial<BrandInput> = {};
+    headers.forEach((header, i) => {
+      const value = values[i]?.trim() || '';
+
+      switch (header.toLowerCase().replace(/[^a-z]/g, '')) {
+        case 'name':
+        case 'brand':
+        case 'brandname':
+          brand.name = value;
+          break;
+        case 'website':
+        case 'url':
+          brand.website = value;
+          break;
+        case 'description':
+        case 'desc':
+          brand.description = value;
+          break;
+        case 'status':
+          brand.status = value === 'inactive' ? 'inactive' : 'active';
+          break;
+      }
+    });
+
+    return { brand, lineNumber: index + 2 };
+  });
+};
+
+// Validate brand data
+export const validateBrandData = (brand: Partial<BrandInput>, lineNumber: number): string[] => {
+  const errors: string[] = [];
+
+  if (!brand.name?.trim()) {
+    errors.push(`Line ${lineNumber}: Brand name is required`);
+  }
+
+  if (brand.website && !isValidWebsite(brand.website)) {
+    errors.push(`Line ${lineNumber}: Invalid website format`);
+  }
+
+  return errors;
+};

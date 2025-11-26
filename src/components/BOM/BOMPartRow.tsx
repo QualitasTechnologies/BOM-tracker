@@ -1,5 +1,5 @@
 
-import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText } from 'lucide-react';
+import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText, Clock, AlertTriangle, CheckCircle2, Package } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -20,8 +20,11 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useState, useEffect } from 'react';
 import { getVendors, Vendor } from '@/utils/settingsFirestore';
+import { getActiveBrands } from '@/utils/brandFirestore';
+import { Brand } from '@/types/brand';
 import QuantityControl from './QuantityControl';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { getInwardStatus, InwardStatus } from '@/types/bom';
 
 interface BOMItem {
   id: string;
@@ -39,10 +42,15 @@ interface BOMItem {
     leadTime: string;
     availability: string;
   }>;
-  status: 'not-ordered' | 'ordered' | 'received' | 'approved';
+  status: 'not-ordered' | 'ordered' | 'received';
   expectedDelivery?: string;
   poNumber?: string;
   finalizedVendor?: { name: string; price: number; leadTime: string; availability: string };
+  // Inward tracking fields
+  orderDate?: string;
+  expectedArrival?: string;
+  actualArrival?: string;
+  linkedPODocumentId?: string;
 }
 
 interface BOMPartRowProps {
@@ -58,21 +66,90 @@ interface BOMPartRowProps {
   linkedDocumentsCount?: number;
 }
 
+// Helper function to format date
+const formatDateShort = (dateStr: string | undefined): string => {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+};
+
+// Helper function to calculate days until arrival
+const getDaysUntilArrival = (expectedArrival: string | undefined): number | null => {
+  if (!expectedArrival) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const expected = new Date(expectedArrival);
+  expected.setHours(0, 0, 0, 0);
+  return Math.ceil((expected.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+};
+
+// Inward status badge component
+const InwardStatusBadge = ({ part }: { part: BOMItem }) => {
+  const inwardStatus = getInwardStatus(part);
+  const daysUntil = getDaysUntilArrival(part.expectedArrival);
+
+  if (inwardStatus === 'not-ordered' || !part.expectedArrival) return null;
+
+  const statusConfig: Record<InwardStatus, { icon: React.ReactNode; className: string; label: string }> = {
+    'overdue': {
+      icon: <AlertTriangle size={10} />,
+      className: 'text-red-600 bg-red-50',
+      label: `LATE ${Math.abs(daysUntil || 0)}d`
+    },
+    'arriving-soon': {
+      icon: <Clock size={10} />,
+      className: 'text-amber-600 bg-amber-50',
+      label: `${daysUntil}d`
+    },
+    'on-track': {
+      icon: <Package size={10} />,
+      className: 'text-gray-600 bg-gray-100',
+      label: `${daysUntil}d`
+    },
+    'received': {
+      icon: <CheckCircle2 size={10} />,
+      className: 'text-green-600 bg-green-50',
+      label: 'Received'
+    },
+    'not-ordered': {
+      icon: null,
+      className: '',
+      label: ''
+    }
+  };
+
+  const config = statusConfig[inwardStatus];
+  if (!config.icon) return null;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className={`flex items-center gap-1 px-1.5 py-0.5 rounded whitespace-nowrap ${config.className}`}>
+          {config.icon}
+          <span className="font-medium">{config.label}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>
+        <div className="text-xs">
+          <div>Expected: {formatDateShort(part.expectedArrival)}</div>
+          {part.orderDate && <div>Ordered: {formatDateShort(part.orderDate)}</div>}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+};
+
 const statusStyles: Record<
   BOMItem["status"],
   { label: string; className: string }
 > = {
-  approved: {
-    label: "Approved",
-    className: "bg-blue-50 text-blue-700 border-blue-200",
+  "not-ordered": {
+    label: "Not Ordered",
+    className: "bg-red-50 text-red-700 border-red-200",
   },
   ordered: {
     label: "Ordered",
     className: "bg-amber-50 text-amber-700 border-amber-200",
-  },
-  "not-ordered": {
-    label: "Not Ordered",
-    className: "bg-red-50 text-red-700 border-red-200",
   },
   received: {
     label: "Received",
@@ -92,7 +169,7 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
   const [showDeleteConfirmIdx, setShowDeleteConfirmIdx] = useState<number | null>(null);
   const [addPrevVendorIdx, setAddPrevVendorIdx] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
-  const [availableMakes, setAvailableMakes] = useState<string[]>([]);
+  const [availableBrands, setAvailableBrands] = useState<Brand[]>([]);
   const [editForm, setEditForm] = useState({
     itemType: part.itemType || 'component',
     name: part.name,
@@ -101,31 +178,25 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
     sku: part.sku || '',
     quantity: part.quantity,
     price: part.price,
-    category: part.category
+    category: part.category,
+    finalizedVendor: part.finalizedVendor
   });
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  // Load vendors and extract makes
+  // Load brands for make dropdown
   useEffect(() => {
-    const loadVendors = async () => {
+    const loadBrands = async () => {
       try {
-        const vendorsData = await getVendors();
-        
-        // Extract vendor company names as makes/brands
-        const companyNames = vendorsData
-          .map(vendor => vendor.company)
-          .filter(company => company && company.trim() !== '') // Ensure company exists and is not empty
-          .map(company => company.trim()); // Trim whitespace
-        
-        // Remove duplicates and sort
-        const uniqueMakes = [...new Set(companyNames)].sort();
-        setAvailableMakes(uniqueMakes);
+        const brandsData = await getActiveBrands();
+        // Sort by name
+        const sortedBrands = brandsData.sort((a, b) => a.name.localeCompare(b.name));
+        setAvailableBrands(sortedBrands);
       } catch (error) {
-        console.error('Error loading vendors:', error);
+        console.error('Error loading brands:', error);
       }
     };
 
-    loadVendors();
+    loadBrands();
   }, []);
 
   // Handle selecting a current vendor for editing
@@ -236,22 +307,29 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                             onValueChange={(value) => setEditForm(prev => ({ ...prev, make: value === "__NONE__" ? '' : (value || '') }))}
                           >
                             <SelectTrigger className="h-8 text-xs w-full">
-                              <SelectValue placeholder="Make" />
+                              <SelectValue placeholder="Brand" />
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="__NONE__">None</SelectItem>
-                              {availableMakes
-                                .filter(make => make && make.trim() !== '')
-                                .map((make) => (
-                                  <SelectItem key={make} value={make}>
-                                    {make}
-                                  </SelectItem>
-                                ))}
+                              {availableBrands.map((brand) => (
+                                <SelectItem key={brand.id} value={brand.name}>
+                                  <span className="flex items-center gap-2">
+                                    {brand.logo && (
+                                      <img
+                                        src={brand.logo}
+                                        alt=""
+                                        className="w-4 h-4 object-contain"
+                                      />
+                                    )}
+                                    {brand.name}
+                                  </span>
+                                </SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                         </div>
                       </TooltipTrigger>
-                      <TooltipContent>Preferred vendor or manufacturer</TooltipContent>
+                      <TooltipContent>Brand / OEM manufacturer</TooltipContent>
                     </Tooltip>
 
                     <Tooltip>
@@ -317,6 +395,37 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                   <TooltipContent>Key specs or application notes</TooltipContent>
                 </Tooltip>
               </div>
+              {/* Vendor Selection for components */}
+              {editForm.itemType === 'component' && part.vendors && part.vendors.length > 0 && (
+                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  <span className="text-xs text-gray-500">Vendor:</span>
+                  <Select
+                    value={editForm.finalizedVendor?.name || '__NONE__'}
+                    onValueChange={(value) => {
+                      if (value === '__NONE__') {
+                        setEditForm(prev => ({ ...prev, finalizedVendor: undefined }));
+                      } else {
+                        const selected = part.vendors.find(v => v.name === value);
+                        if (selected) {
+                          setEditForm(prev => ({ ...prev, finalizedVendor: selected }));
+                        }
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="h-7 text-xs flex-1">
+                      <SelectValue placeholder="Select vendor" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__NONE__">No vendor selected</SelectItem>
+                      {part.vendors.map((v, idx) => (
+                        <SelectItem key={idx} value={v.name}>
+                          {v.name} - ₹{v.price?.toLocaleString('en-IN')} ({v.leadTime})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-1">
@@ -362,14 +471,18 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                 <span className="text-xs text-gray-500 bg-gray-100 px-1 rounded whitespace-nowrap">
                   {itemType === 'service' ? 'Duration:' : 'Qty:'} {part.quantity}{itemType === 'service' && ' days'}
                 </span>
-                {itemType === 'component' && part.expectedDelivery && (
-                  <div className="flex items-center gap-1 whitespace-nowrap">
-                    <Calendar size={10} />
-                    <span>{part.expectedDelivery}</span>
-                  </div>
-                )}
                 {itemType === 'component' && part.finalizedVendor && (
                   <span className="truncate min-w-0">Vendor: {part.finalizedVendor.name}</span>
+                )}
+                {/* Inward Tracking Status */}
+                {itemType === 'component' && part.status === 'ordered' && (
+                  <InwardStatusBadge part={part} />
+                )}
+                {itemType === 'component' && part.status === 'received' && part.actualArrival && (
+                  <span className="flex items-center gap-1 text-green-600 whitespace-nowrap">
+                    <CheckCircle2 size={10} />
+                    Rcvd: {formatDateShort(part.actualArrival)}
+                  </span>
                 )}
               </div>
             </div>
@@ -415,7 +528,8 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                     sku: part.sku || '',
                     quantity: part.quantity,
                     price: part.price,
-                    category: part.category
+                    category: part.category,
+                    finalizedVendor: part.finalizedVendor
                   });
                   setEditing(false);
                 }}
@@ -438,10 +552,15 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent>
-                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'approved')}>Approved</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'ordered')}>Ordered</DropdownMenuItem>
                     <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'not-ordered')}>Not Ordered</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'received')}>Received</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onStatusChange?.(part.id, 'ordered')}>Ordered</DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => onStatusChange?.(part.id, 'received')}
+                      disabled={part.status === 'not-ordered'}
+                      className={part.status === 'not-ordered' ? 'opacity-50 cursor-not-allowed' : ''}
+                    >
+                      Received {part.status === 'not-ordered' && '(must be ordered first)'}
+                    </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { FileText, Upload, Trash2, Link as LinkIcon, X } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { FileText, Upload, Trash2, Link as LinkIcon, X, AlertCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -202,10 +202,12 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange }: ProjectDoc
                         variant="outline"
                         size="sm"
                         disabled={uploading}
-                        onClick={(e) => e.preventDefault()}
+                        asChild
                       >
-                        <Upload className="mr-2 h-4 w-4" />
-                        {uploading ? 'Uploading...' : 'Upload File'}
+                        <span>
+                          <Upload className="mr-2 h-4 w-4" />
+                          {uploading ? 'Uploading...' : 'Upload File'}
+                        </span>
                       </Button>
                     </label>
                   </div>
@@ -289,31 +291,69 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange }: ProjectDoc
               Select BOM items to link with: <strong>{selectedDocument?.name}</strong>
             </p>
 
+            {/* For PO documents, show 1-to-1 constraint notice */}
+            {selectedDocument?.type === 'outgoing-po' && (
+              <div className="flex items-start gap-2 p-2 mb-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+                <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+                <span>Each item can only be linked to one PO. Items already linked to another PO are disabled.</span>
+              </div>
+            )}
+
             <div className="space-y-2">
               {bomItems.length === 0 ? (
                 <p className="text-sm text-gray-400 italic">No BOM items available</p>
               ) : (
-                bomItems.map(item => (
-                  <div key={item.id} className="flex items-center space-x-2 p-2 hover:bg-gray-50 rounded">
-                    <Checkbox
-                      id={item.id}
-                      checked={selectedItemIds.includes(item.id)}
-                      onCheckedChange={(checked) => {
-                        if (checked) {
-                          setSelectedItemIds([...selectedItemIds, item.id]);
-                        } else {
-                          setSelectedItemIds(selectedItemIds.filter(id => id !== item.id));
-                        }
-                      }}
-                    />
-                    <label htmlFor={item.id} className="flex-1 cursor-pointer text-sm">
-                      <div className="font-medium">{item.name}</div>
-                      <div className="text-xs text-gray-500">
-                        {item.category} • Qty: {item.quantity}
-                      </div>
-                    </label>
-                  </div>
-                ))
+                bomItems.map(item => {
+                  // For PO documents: check if item is already linked to ANOTHER PO
+                  const isOutgoingPO = selectedDocument?.type === 'outgoing-po';
+                  const itemLinkedToOtherPO = isOutgoingPO && documents.some(
+                    doc => doc.type === 'outgoing-po' &&
+                           doc.id !== selectedDocument?.id &&
+                           doc.linkedBOMItems?.includes(item.id)
+                  );
+                  const isCurrentlyLinked = selectedItemIds.includes(item.id);
+                  const isDisabled = itemLinkedToOtherPO && !isCurrentlyLinked;
+
+                  // Find which PO it's linked to (for display)
+                  const linkedPOName = itemLinkedToOtherPO
+                    ? documents.find(
+                        doc => doc.type === 'outgoing-po' &&
+                               doc.id !== selectedDocument?.id &&
+                               doc.linkedBOMItems?.includes(item.id)
+                      )?.name
+                    : null;
+
+                  return (
+                    <div
+                      key={item.id}
+                      className={`flex items-center space-x-2 p-2 rounded ${isDisabled ? 'bg-gray-100 opacity-60' : 'hover:bg-gray-50'}`}
+                    >
+                      <Checkbox
+                        id={item.id}
+                        checked={isCurrentlyLinked}
+                        disabled={isDisabled}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setSelectedItemIds([...selectedItemIds, item.id]);
+                          } else {
+                            setSelectedItemIds(selectedItemIds.filter(id => id !== item.id));
+                          }
+                        }}
+                      />
+                      <label htmlFor={item.id} className={`flex-1 text-sm ${isDisabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                        <div className="font-medium">{item.name}</div>
+                        <div className="text-xs text-gray-500">
+                          {item.category} • Qty: {item.quantity}
+                          {linkedPOName && (
+                            <span className="text-amber-600 ml-2">
+                              (linked to: {linkedPOName.length > 20 ? linkedPOName.substring(0, 20) + '...' : linkedPOName})
+                            </span>
+                          )}
+                        </div>
+                      </label>
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>
