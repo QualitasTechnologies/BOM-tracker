@@ -12,6 +12,8 @@ import BOMHeader from '@/components/BOM/BOMHeader';
 import BOMCategoryCard from '@/components/BOM/BOMCategoryCard';
 import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
 import PurchaseRequestDialog from '@/components/BOM/PurchaseRequestDialog';
+import OrderItemDialog from '@/components/BOM/OrderItemDialog';
+import ReceiveItemDialog from '@/components/BOM/ReceiveItemDialog';
 import ProjectDocuments from '@/components/BOM/ProjectDocuments';
 import Sidebar from '@/components/Sidebar';
 import { saveAs } from 'file-saver';
@@ -51,6 +53,10 @@ const BOM = () => {
   const [addPartOpen, setAddPartOpen] = useState(false);
   const [importBOMOpen, setImportBOMOpen] = useState(false);
   const [prDialogOpen, setPRDialogOpen] = useState(false);
+  const [orderDialogOpen, setOrderDialogOpen] = useState(false);
+  const [receiveDialogOpen, setReceiveDialogOpen] = useState(false);
+  const [selectedItemForOrder, setSelectedItemForOrder] = useState<BOMItem | null>(null);
+  const [selectedItemForReceive, setSelectedItemForReceive] = useState<BOMItem | null>(null);
   const [newPart, setNewPart] = useState<{
     itemType: 'component' | 'service';
     name: string;
@@ -519,7 +525,7 @@ const BOM = () => {
                   Export
                 </Button>
                 <Button variant="outline" onClick={handleCreatePurchaseOrder}>
-                  Create Purchase Order
+                  Create PR
                 </Button>
               </div>
             </div>
@@ -603,15 +609,41 @@ const BOM = () => {
                     }
                   }}
                   onStatusChange={(itemId, newStatus) => {
-                    if (projectId) {
-                      updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                    if (!projectId) return;
+
+                    // Find the item
+                    let targetItem: BOMItem | null = null;
+                    for (const cat of categories) {
+                      const found = cat.items.find(item => item.id === itemId);
+                      if (found) {
+                        targetItem = found;
+                        break;
+                      }
                     }
+
+                    // If changing to "ordered", show the order dialog
+                    if (newStatus === 'ordered' && targetItem) {
+                      setSelectedItemForOrder(targetItem);
+                      setOrderDialogOpen(true);
+                      return;
+                    }
+
+                    // If changing to "received", show the receive dialog
+                    if (newStatus === 'received' && targetItem) {
+                      setSelectedItemForReceive(targetItem);
+                      setReceiveDialogOpen(true);
+                      return;
+                    }
+
+                    // For other status changes, update directly
+                    updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
                   }}
                   onEditPart={handleEditPart}
                   onPartCategoryChange={handlePartCategoryChange}
                   availableCategories={canonicalCategoryNames}
                   onUpdatePart={handleUpdatePart}
                   getDocumentCount={getDocumentCountForItem}
+                  vendors={vendors}
                 />
               ))}
 
@@ -932,6 +964,50 @@ const BOM = () => {
           vendors={vendors}
         />
       )}
+
+      {/* Order Item Dialog - shown when changing status to "ordered" */}
+      {projectId && (
+        <OrderItemDialog
+          open={orderDialogOpen}
+          onOpenChange={setOrderDialogOpen}
+          item={selectedItemForOrder}
+          projectId={projectId}
+          availablePODocuments={projectDocuments.filter(doc => doc.category === 'outgoing-po')}
+          vendors={vendors}
+          onConfirm={(data) => {
+            if (selectedItemForOrder && projectId) {
+              updateBOMItem(projectId, categories, selectedItemForOrder.id, {
+                status: 'ordered',
+                orderDate: data.orderDate,
+                expectedArrival: data.expectedArrival,
+                poNumber: data.poNumber,
+                linkedPODocumentId: data.linkedPODocumentId,
+                finalizedVendor: data.vendor,
+              });
+            }
+            setSelectedItemForOrder(null);
+          }}
+          onDocumentUploaded={(doc) => {
+            setProjectDocuments(prev => [...prev, doc]);
+          }}
+        />
+      )}
+
+      {/* Receive Item Dialog - shown when changing status to "received" */}
+      <ReceiveItemDialog
+        open={receiveDialogOpen}
+        onOpenChange={setReceiveDialogOpen}
+        item={selectedItemForReceive}
+        onConfirm={(data) => {
+          if (selectedItemForReceive && projectId) {
+            updateBOMItem(projectId, categories, selectedItemForReceive.id, {
+              status: 'received',
+              actualArrival: data.actualArrival,
+            });
+          }
+          setSelectedItemForReceive(null);
+        }}
+      />
     </div>
   );
 };

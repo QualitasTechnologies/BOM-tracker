@@ -77,15 +77,16 @@
   - **Order Date Capture**: When status changes to "Ordered", dialog captures:
     - Order date (defaults to today)
     - PO number (optional)
-    - Link to PO document (from uploaded POs Outgoing)
+    - Link to PO document (required - from uploaded POs Outgoing or upload new)
+    - Vendor selection (required - pre-filled if finalizedVendor exists)
     - Auto-calculated expected arrival (orderDate + vendor lead time)
   - **Lead Time Parsing**: Supports various formats ("14 days", "2 weeks", "1 month")
   - **Receive Confirmation**: When status changes to "Received", captures actual arrival date
   - **Inline Status Indicators**: BOM items show arrival status badges:
-    - 🔴 Red: Overdue (past expected arrival)
-    - 🟡 Yellow: Arriving soon (within 7 days)
-    - ⚪ Gray: On track (> 7 days away)
-    - 🟢 Green: Received (with actual arrival date)
+    - Red: Overdue (past expected arrival)
+    - Yellow: Arriving soon (within 7 days)
+    - Gray: On track (> 7 days away)
+    - Green: Received (with actual arrival date)
   - **Inward Tracking Dashboard**: Collapsible section showing:
     - Summary cards: Ordered, Arriving Soon, Overdue, Received counts
     - Filterable table with item details, PO links, and status
@@ -95,6 +96,19 @@
     - `expectedArrival`: Calculated from orderDate + leadTime
     - `actualArrival`: When item was received
     - `linkedPODocumentId`: Reference to uploaded PO document
+- **Vendor Selection in Edit Mode** (Nov 2025)
+  - Select vendor from global vendor list when editing BOM items
+  - Vendors grouped by type (OEM first, then Dealer)
+  - Shows vendor lead time in dropdown
+  - Persisted as finalizedVendor on the item
+- **Purchase Request (PR) System** (Nov 2025)
+  - "Create PR" button sends internal email to supply chain team
+  - **Item Selection**: Checkboxes to select which items to include (all selected by default)
+  - **Vendor Per Item**: Dropdown to assign/change vendor for each item (pre-filled from finalizedVendor)
+  - **Mandatory CC**: Logged-in user always receives a copy of the PR email
+  - **Grouped by Vendor**: Email groups items by vendor for easy PO creation
+  - Recipients configured in Settings → Purchase Request tab
+  - SendGrid integration for email delivery
 
 ### 📊 Analytics & Dashboards
 - KPI Dashboard with real-time metrics
