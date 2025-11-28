@@ -1,5 +1,5 @@
 
-import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText, Clock, AlertTriangle, CheckCircle2, Package } from 'lucide-react';
+import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText, Clock, AlertTriangle, CheckCircle2, Package, Unlink } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -61,6 +61,13 @@ interface GlobalVendor {
   status: 'active' | 'inactive';
 }
 
+interface LinkedDocument {
+  id: string;
+  name: string;
+  type: 'vendor-quote' | 'outgoing-po' | 'customer-po';
+  url: string;
+}
+
 interface BOMPartRowProps {
   part: BOMItem;
   onClick: () => void;
@@ -72,6 +79,8 @@ interface BOMPartRowProps {
   onCategoryChange?: (itemId: string, newCategory: string) => void;
   availableCategories?: string[];
   linkedDocumentsCount?: number;
+  linkedDocuments?: LinkedDocument[];
+  onUnlinkDocument?: (documentId: string, itemId: string) => void;
   globalVendors?: GlobalVendor[];
 }
 
@@ -166,7 +175,7 @@ const statusStyles: Record<
   },
 };
 
-const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [], linkedDocumentsCount = 0, globalVendors = [] }: BOMPartRowProps) => {
+const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [], linkedDocumentsCount = 0, linkedDocuments = [], onUnlinkDocument, globalVendors = [] }: BOMPartRowProps) => {
   // Backward compatibility: default to 'component' if itemType is missing
   const itemType = part.itemType || 'component';
 
@@ -453,6 +462,49 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                         ))}
                     </SelectContent>
                   </Select>
+                </div>
+              )}
+              {/* Linked Documents Section - shown in edit mode */}
+              {linkedDocuments.length > 0 && (
+                <div className="border-t pt-2 mt-2" onClick={(e) => e.stopPropagation()}>
+                  <span className="text-xs text-gray-500 font-medium">Linked Documents:</span>
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {linkedDocuments.map((doc) => (
+                      <div
+                        key={doc.id}
+                        className="flex items-center gap-2 px-2 py-1.5 rounded border bg-gray-50 text-xs"
+                      >
+                        <FileText size={14} className="text-gray-500 flex-shrink-0" />
+                        <a
+                          href={doc.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline max-w-[180px] truncate text-gray-700"
+                          title={doc.name}
+                        >
+                          {doc.name}
+                        </a>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 ${
+                          doc.type === 'vendor-quote'
+                            ? 'bg-blue-100 text-blue-700'
+                            : doc.type === 'outgoing-po'
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-purple-100 text-purple-700'
+                        }`}>
+                          {doc.type === 'vendor-quote' ? 'Quote' : doc.type === 'outgoing-po' ? 'PO' : 'Customer PO'}
+                        </span>
+                        {onUnlinkDocument && (
+                          <button
+                            onClick={() => onUnlinkDocument(doc.id, part.id)}
+                            className="p-1 hover:bg-red-100 rounded flex-shrink-0"
+                            title="Unlink document from this item"
+                          >
+                            <X size={14} className="text-red-500" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

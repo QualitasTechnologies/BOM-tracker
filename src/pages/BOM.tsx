@@ -345,6 +345,40 @@ const BOM = () => {
     ).length;
   };
 
+  // Get linked documents for a BOM item
+  const getDocumentsForItem = (itemId: string) => {
+    return projectDocuments
+      .filter(doc => doc.linkedBOMItems && doc.linkedBOMItems.includes(itemId))
+      .map(doc => ({
+        id: doc.id,
+        name: doc.name,
+        type: doc.type,
+        url: doc.url
+      }));
+  };
+
+  // Unlink a document from a BOM item
+  const handleUnlinkDocument = async (documentId: string, itemId: string) => {
+    const doc = projectDocuments.find(d => d.id === documentId);
+    if (!doc || !doc.linkedBOMItems) return;
+
+    const updatedLinkedItems = doc.linkedBOMItems.filter(id => id !== itemId);
+
+    try {
+      await linkDocumentToBOMItems(documentId, updatedLinkedItems);
+      // Update local state
+      setProjectDocuments(prev =>
+        prev.map(d =>
+          d.id === documentId
+            ? { ...d, linkedBOMItems: updatedLinkedItems }
+            : d
+        )
+      );
+    } catch (error) {
+      console.error('Error unlinking document:', error);
+    }
+  };
+
   const handlePartCategoryChange = async (itemId: string, newCategory: string) => {
     if (!projectId) return;
     if (!isCanonicalCategory(newCategory)) return;
@@ -698,6 +732,8 @@ const BOM = () => {
                   availableCategories={canonicalCategoryNames}
                   onUpdatePart={handleUpdatePart}
                   getDocumentCount={getDocumentCountForItem}
+                  getDocumentsForItem={getDocumentsForItem}
+                  onUnlinkDocument={handleUnlinkDocument}
                   vendors={vendors}
                 />
               ))}

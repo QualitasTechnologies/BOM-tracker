@@ -11,6 +11,13 @@ interface DocumentInfo {
   url: string;
 }
 
+interface LinkedDocument {
+  id: string;
+  name: string;
+  type: 'vendor-quote' | 'outgoing-po' | 'customer-po';
+  url: string;
+}
+
 interface BOMItem {
   id: string;
   name: string;
@@ -58,6 +65,8 @@ interface BOMCategoryCardProps {
   availableCategories?: string[];
   onUpdatePart?: (updated: BOMItem) => void;
   getDocumentCount?: (itemId: string) => number;
+  getDocumentsForItem?: (itemId: string) => LinkedDocument[];
+  onUnlinkDocument?: (documentId: string, itemId: string) => void;
   vendors?: Vendor[];
 }
 
@@ -65,7 +74,7 @@ const formatCurrency = (value: number) => {
   return `₹${value.toLocaleString('en-IN')}`;
 };
 
-const BOMCategoryCard = ({ category, onToggle, onQuantityChange, onDeletePart, onDeleteCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [], onUpdatePart, getDocumentCount, vendors = [] }: BOMCategoryCardProps) => {
+const BOMCategoryCard = ({ category, onToggle, onQuantityChange, onDeletePart, onDeleteCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [], onUpdatePart, getDocumentCount, getDocumentsForItem, onUnlinkDocument, vendors = [] }: BOMCategoryCardProps) => {
   const [showConfirm, setShowConfirm] = useState<false | 'warning' | 'confirm'>(false);
 
   const getStatusCount = (status: string) => {
@@ -201,6 +210,8 @@ const BOMCategoryCard = ({ category, onToggle, onQuantityChange, onDeletePart, o
                   onCategoryChange={onPartCategoryChange}
                   availableCategories={availableCategories}
                   linkedDocumentsCount={getDocumentCount ? getDocumentCount(item.id) : 0}
+                  linkedDocuments={getDocumentsForItem ? getDocumentsForItem(item.id) : []}
+                  onUnlinkDocument={onUnlinkDocument}
                   globalVendors={vendors}
                 />
               ))}
