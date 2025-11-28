@@ -10,30 +10,32 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-interface DeleteProjectDialogProps {
+interface ArchiveProjectDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
   projectName: string;
 }
 
-const DeleteProjectDialog = ({ open, onOpenChange, onConfirm, projectName }: DeleteProjectDialogProps) => {
+const ArchiveProjectDialog = ({ open, onOpenChange, onConfirm, projectName }: ArchiveProjectDialogProps) => {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+          <AlertDialogTitle>Archive Project?</AlertDialogTitle>
           <AlertDialogDescription>
-            This action cannot be undone. This will permanently delete the project "{projectName}".
+            This will archive the project "{projectName}". The project and all its data will be preserved and can be restored later if needed.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={onConfirm}>Delete</AlertDialogAction>
+          <AlertDialogAction onClick={onConfirm}>Archive</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
   );
 };
 
-export default DeleteProjectDialog; 
+// Export with both names for backward compatibility
+export default ArchiveProjectDialog;
+export { ArchiveProjectDialog }; 

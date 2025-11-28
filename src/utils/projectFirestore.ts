@@ -23,11 +23,12 @@ export interface Project {
   projectName: string;
   clientName: string;
   description: string;
-  status: "Planning" | "Ongoing" | "Delayed" | "Completed";
+  status: "Planning" | "Ongoing" | "Delayed" | "Completed" | "Archived";
   deadline: string; // ISO string
   poValue?: number; // Purchase Order value from customer
   bomSnapshot?: any[]; // Snapshot of BOM when status changed to 'Ongoing' (order won)
   bomSnapshotDate?: string; // ISO string - when snapshot was taken
+  archivedAt?: string; // ISO string - when project was archived
 }
 
 const projectsCol = collection(db, "projects");
@@ -61,7 +62,24 @@ export const updateProject = async (projectId: string, updates: Partial<Project>
   await updateDoc(doc(projectsCol, projectId), cleanUpdates);
 };
 
-// Delete a project
+// Archive a project (soft delete - sets status to Archived)
+export const archiveProject = async (projectId: string) => {
+  await updateDoc(doc(projectsCol, projectId), {
+    status: "Archived",
+    archivedAt: new Date().toISOString()
+  });
+};
+
+// Restore an archived project
+export const restoreProject = async (projectId: string, previousStatus: Project["status"] = "Planning") => {
+  const cleanUpdates = {
+    status: previousStatus === "Archived" ? "Planning" : previousStatus,
+    archivedAt: null // Remove the archived timestamp
+  };
+  await updateDoc(doc(projectsCol, projectId), cleanUpdates);
+};
+
+// Permanently delete a project (use with caution - data cannot be recovered)
 export const deleteProject = async (projectId: string) => {
   await deleteDoc(doc(projectsCol, projectId));
 };

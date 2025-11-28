@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, X, Wrench, Clock, DollarSign } from "lucide-react";
+import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, Archive, Wrench, Clock, DollarSign } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import Sidebar from "@/components/Sidebar";
 import AddProjectDialog from "@/components/Project/AddProjectDialog";
 import EditProjectDialog from "@/components/Project/EditProjectDialog";
 import DeleteProjectDialog from "@/components/Project/DeleteProjectDialog";
-import { addProject, subscribeToProjects, updateProject, deleteProject } from "@/utils/projectFirestore";
+import { addProject, subscribeToProjects, updateProject, archiveProject } from "@/utils/projectFirestore";
 import type { EditableProjectInput, FirestoreProject, NewProjectFormData, ProjectViewMode } from "@/types/project";
 
 const Projects = () => {
@@ -68,9 +68,9 @@ const Projects = () => {
     await updateProject(projectId, updates);
   };
 
-  const handleDeleteProject = async () => {
+  const handleArchiveProject = async () => {
     if (selectedProject) {
-      await deleteProject(selectedProject.projectId);
+      await archiveProject(selectedProject.projectId);
       setIsDeleteDialogOpen(false);
       setSelectedProject(null);
     }
@@ -81,7 +81,7 @@ const Projects = () => {
     setIsEditProjectDialogOpen(true);
   };
 
-  const handleDeleteClick = (project: FirestoreProject) => {
+  const handleArchiveClick = (project: FirestoreProject) => {
     setSelectedProject(project);
     setIsDeleteDialogOpen(true);
   };
@@ -99,9 +99,13 @@ const Projects = () => {
   };
 
   // Derive the filtered list only when data or filters change.
+  // Archived projects are hidden by default
   const filteredProjects = useMemo(() => {
     const normalizedQuery = searchQuery.toLowerCase().trim();
     return projects.filter((project) => {
+      // Always hide archived projects
+      if (project.status === "Archived") return false;
+
       const projectName = project.projectName?.toLowerCase() ?? "";
       const clientName = project.clientName?.toLowerCase() ?? "";
       const projectId = project.projectId?.toLowerCase() ?? "";
@@ -152,10 +156,11 @@ const Projects = () => {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => handleDeleteClick(project)}
-              className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+              onClick={() => handleArchiveClick(project)}
+              className="h-8 w-8 p-0 text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+              title="Archive project"
             >
-              <X className="h-4 w-4" />
+              <Archive className="h-4 w-4" />
             </Button>
           </div>
         </div>
@@ -399,7 +404,7 @@ const Projects = () => {
       <DeleteProjectDialog
         open={isDeleteDialogOpen}
         onOpenChange={setIsDeleteDialogOpen}
-        onConfirm={handleDeleteProject}
+        onConfirm={handleArchiveProject}
         projectName={selectedProject?.projectName || ""}
       />
     </div>
