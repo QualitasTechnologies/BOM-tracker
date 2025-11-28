@@ -17,7 +17,11 @@
       "Bash(git push:*)",
       "Bash(firebase deploy:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(cat:*)",
+      "Bash(npm run test:run:*)",
+      "Bash(git pull:*)"
     ],
     "deny": [],
     "ask": []

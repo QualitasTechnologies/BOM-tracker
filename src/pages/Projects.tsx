@@ -128,25 +128,40 @@ const Projects = () => {
 
   const ProjectCard = ({ project }: { project: FirestoreProject }) => (
     <Card className="hover:shadow-lg transition-shadow duration-200 relative group overflow-hidden">
-      <Button
-        variant="ghost"
-        size="sm"
-        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity !bg-transparent hover:!bg-transparent focus:!bg-transparent"
-        onClick={() => handleDeleteClick(project)}
-      >
-        <X className="h-3 w-3 text-red-500" strokeWidth={1.5}/>
-      </Button>
       <CardHeader className="pb-3">
-        <div className="flex justify-between items-start">
-          <CardTitle className="text-lg font-semibold">{project.projectName}</CardTitle>
-          <div className="flex items-center gap-2">
-            {getStatusBadge(project.status)}
-            <Button variant="ghost" size="sm" onClick={() => handleEditClick(project)}>
+        <div className="flex justify-between items-start gap-3 mb-2">
+          <div className="flex-1 min-w-0 pr-2">
+            <CardTitle className="text-lg font-semibold leading-tight mb-1 break-words">
+              {project.projectName}
+            </CardTitle>
+            {project.description && (
+              <p className="text-sm text-muted-foreground leading-relaxed line-clamp-2">
+                {project.description}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleEditClick(project)}
+              className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+            >
               <Edit className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleDeleteClick(project)}
+              className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+            >
+              <X className="h-4 w-4" />
             </Button>
           </div>
         </div>
-        <p className="text-sm text-muted-foreground mt-1">{project.description}</p>
+        <div className="flex items-center">
+          {getStatusBadge(project.status)}
+        </div>
       </CardHeader>
       
       <CardContent className="pt-0 space-y-3">
