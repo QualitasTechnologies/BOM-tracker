@@ -9,8 +9,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { 
-  User, 
+import {
+  User,
   Users,
   Package,
   ShoppingCart,
@@ -30,7 +30,8 @@ import {
   Download,
   Search,
   Filter,
-  AlertCircle
+  AlertCircle,
+  Tag
 } from 'lucide-react';
 import { 
   Dialog, 
@@ -79,6 +80,9 @@ import { exportVendorsToCSV, parseVendorCSV, validateVendorData, CSVImportResult
 import { uploadVendorLogo, ImageUploadResult } from '@/utils/imageUpload';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from '@/components/ui/use-toast';
+import BrandsTab from '@/components/settings/BrandsTab';
+import { Brand } from '@/types/brand';
+import { subscribeToBrands } from '@/utils/brandFirestore';
 
 const Settings = () => {
   // Auth check
@@ -88,6 +92,7 @@ const Settings = () => {
   const [clients, setClients] = useState<Client[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [oemVendors, setOemVendors] = useState<Vendor[]>([]);
+  const [brands, setBrands] = useState<Brand[]>([]);
   const [bomSettings, setBomSettings] = useState<BOMSettings | null>(null);
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [categoryDraft, setCategoryDraft] = useState("");
@@ -353,6 +358,9 @@ const Settings = () => {
           setOemVendors(vendors.filter(v => v.type === 'OEM'));
         });
         const unsubscribeBOMSettings = subscribeToBOMSettings(setBomSettings);
+        const unsubscribeBrands = subscribeToBrands((brandsData) => {
+          setBrands(brandsData.filter(b => b.status === 'active'));
+        });
 
         setLoading(false);
 
@@ -361,6 +369,7 @@ const Settings = () => {
           unsubscribeClients();
           unsubscribeVendors();
           unsubscribeBOMSettings();
+          unsubscribeBrands();
         };
       } catch (err: any) {
         setError(err.message || 'Failed to load settings data');
@@ -494,6 +503,7 @@ const Settings = () => {
         notes: vendorForm.notes || '',
         type: vendorForm.type || 'Dealer',
         makes: vendorForm.makes || [],
+        distributedBrands: vendorForm.distributedBrands || [],
         categories: vendorForm.categories || []
       });
       
@@ -863,6 +873,10 @@ const Settings = () => {
             <TabsTrigger value="purchase-request" className="flex items-center gap-2">
               <Mail size={16} />
               Purchase Request
+            </TabsTrigger>
+            <TabsTrigger value="brands" className="flex items-center gap-2">
+              <Tag size={16} />
+              Brands
             </TabsTrigger>
             <TabsTrigger value="general" className="flex items-center gap-2">
               <SettingsIcon size={16} />
@@ -2061,6 +2075,11 @@ const Settings = () => {
                 </Alert>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* Brands Tab */}
+          <TabsContent value="brands">
+            <BrandsTab />
           </TabsContent>
 
           {/* General Settings Tab */}

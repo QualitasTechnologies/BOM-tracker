@@ -605,6 +605,15 @@ const BOM = () => {
               </Alert>
             )}
 
+            {/* Inward Tracking Section */}
+            <InwardTracking
+              categories={categories}
+              documents={projectDocuments}
+              onItemClick={(item) => {
+                console.log('Item clicked:', item.name);
+              }}
+            />
+
             {/* BOM Content - Single Column Layout */}
             <div className="space-y-4">
               {filteredCategories.map((category) => (
