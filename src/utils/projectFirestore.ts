@@ -14,6 +14,7 @@ import {
   getDoc
 } from "firebase/firestore";
 import type { BOMItem, BOMCategory, BOMStatus } from "@/types/bom";
+import { sanitizeBOMItemForFirestore } from "@/types/bom";
 
 export type { BOMItem, BOMCategory, BOMStatus };
 
@@ -88,7 +89,12 @@ export const subscribeToBOM = (projectId: string, callback: (categories: BOMCate
 
 export const updateBOMData = async (projectId: string, categories: BOMCategory[]) => {
   const bomRef = doc(db, 'projects', projectId, 'bom', 'data');
-  await setDoc(bomRef, { categories }, { merge: true });
+  // Sanitize all items to prevent undefined values from causing Firestore errors
+  const sanitizedCategories = categories.map(category => ({
+    ...category,
+    items: category.items.map(item => sanitizeBOMItemForFirestore(item) as BOMItem)
+  }));
+  await setDoc(bomRef, { categories: sanitizedCategories }, { merge: true });
 };
 
 export const updateBOMItem = async (projectId: string, categories: BOMCategory[], itemId: string, updates: Partial<BOMItem>) => {

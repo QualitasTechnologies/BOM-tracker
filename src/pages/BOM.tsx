@@ -247,14 +247,12 @@ const BOM = () => {
               description: newPart.description,
               category: finalCategory || '',
               quantity: newPart.quantity,
-              price: newPart.price,
               vendors: [],
               status: 'not-ordered' as BOMStatus,
-              // Only include make and sku for components (Firestore doesn't accept undefined)
-              ...(newPart.itemType === 'component' && {
-                make: newPart.make,
-                sku: newPart.sku
-              })
+              // Only include optional fields if they have values (Firestore doesn't accept undefined)
+              ...(newPart.price !== undefined && { price: newPart.price }),
+              ...(newPart.itemType === 'component' && newPart.make && { make: newPart.make }),
+              ...(newPart.itemType === 'component' && newPart.sku && { sku: newPart.sku })
             } as BOMItem]
           }
         : cat

@@ -140,3 +140,40 @@ export interface Vendor {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/**
+ * Sanitizes a BOM item for Firestore storage by removing undefined values.
+ * Firestore does not accept undefined values - they must be omitted from the object.
+ * This function creates a clean object with only defined values.
+ */
+export function sanitizeBOMItemForFirestore(item: Partial<BOMItem>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+
+  // Required fields - these should always be present
+  if (item.id !== undefined) sanitized.id = item.id;
+  if (item.itemType !== undefined) sanitized.itemType = item.itemType;
+  if (item.name !== undefined) sanitized.name = item.name;
+  if (item.description !== undefined) sanitized.description = item.description;
+  if (item.quantity !== undefined) sanitized.quantity = item.quantity;
+  if (item.category !== undefined) sanitized.category = item.category;
+  if (item.status !== undefined) sanitized.status = item.status;
+  if (item.vendors !== undefined) sanitized.vendors = item.vendors;
+
+  // Optional fields - only include if they have a value
+  if (item.make !== undefined) sanitized.make = item.make;
+  if (item.sku !== undefined) sanitized.sku = item.sku;
+  if (item.price !== undefined) sanitized.price = item.price;
+  if (item.thumbnailUrl !== undefined) sanitized.thumbnailUrl = item.thumbnailUrl;
+  if (item.order !== undefined) sanitized.order = item.order;
+  if (item.expectedDelivery !== undefined) sanitized.expectedDelivery = item.expectedDelivery;
+  if (item.poNumber !== undefined) sanitized.poNumber = item.poNumber;
+  if (item.finalizedVendor !== undefined) sanitized.finalizedVendor = item.finalizedVendor;
+  if (item.orderDate !== undefined) sanitized.orderDate = item.orderDate;
+  if (item.expectedArrival !== undefined) sanitized.expectedArrival = item.expectedArrival;
+  if (item.actualArrival !== undefined) sanitized.actualArrival = item.actualArrival;
+  if (item.linkedPODocumentId !== undefined) sanitized.linkedPODocumentId = item.linkedPODocumentId;
+  if (item.createdAt !== undefined) sanitized.createdAt = item.createdAt;
+  if (item.updatedAt !== undefined) sanitized.updatedAt = item.updatedAt;
+
+  return sanitized;
+}

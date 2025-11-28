@@ -3,6 +3,7 @@ import {
   getInwardStatus,
   calculateExpectedArrival,
   parseLeadTimeToDays,
+  sanitizeBOMItemForFirestore,
   type BOMItem,
   type InwardStatus
 } from '../bom';
@@ -335,6 +336,272 @@ describe('parseLeadTimeToDays', () => {
       expect(parseLeadTimeToDays('5 business days')).toBe(5); // Matches days pattern
       expect(parseLeadTimeToDays('14 calendar days')).toBe(14);
       expect(parseLeadTimeToDays('4 weeks lead time')).toBe(28);
+    });
+  });
+});
+
+describe('sanitizeBOMItemForFirestore', () => {
+  describe('removes undefined values', () => {
+    it('excludes undefined optional fields from output', () => {
+      const item: Partial<BOMItem> = {
+        id: '1',
+        itemType: 'component',
+        name: 'Test Item',
+        description: 'Description',
+        quantity: 1,
+        category: 'Test',
+        status: 'not-ordered',
+        vendors: [],
+        // price is intentionally undefined
+        // make is intentionally undefined
+        // sku is intentionally undefined
+      };
+
+      const result = sanitizeBOMItemForFirestore(item);
+
+      // Should NOT have undefined fields as keys
+      expect(Object.keys(result)).not.toContain('price');
+      expect(Object.keys(result)).not.toContain('make');
+      expect(Object.keys(result)).not.toContain('sku');
+
+      // Should have defined fields
+      expect(result.id).toBe('1');
+      expect(result.name).toBe('Test Item');
+    });
+
+    it('includes fields with value 0 (falsy but defined)', () => {
+      const item: Partial<BOMItem> = {
+        id: '1',
+        itemType: 'component',
+        name: 'Free Sample',
+        description: 'A free item',
+        quantity: 1,
+        category: 'Test',
+        status: 'not-ordered',
+        vendors: [],
+        price: 0, // Zero price - should be included
+      };
+
+      const result = sanitizeBOMItemForFirestore(item);
+
+      expect(result.price).toBe(0);
+      expect(Object.keys(result)).toContain('price');
+    });
+
+    it('includes empty string fields (falsy but defined)', () => {
+      const item: Partial<BOMItem> = {
+        id: '1',
+        itemType: 'component',
+        name: 'Test',
+        description: '',  // Empty string - should be included
+        quantity: 1,
+        category: 'Test',
+        status: 'not-ordered',
+        vendors: [],
+        make: '',  // Empty string - should be included
+      };
+
+      const result = sanitizeBOMItemForFirestore(item);
+
+      expect(result.description).toBe('');
+      expect(result.make).toBe('');
+    });
+
+    it('includes null values (Firestore accepts null)', () => {
+      const item: Partial<BOMItem> = {
+        id: '1',
+        itemType: 'component',
+        name: 'Test',
+        description: 'Desc',
+        quantity: 1,
+        category: 'Test',
+        status: 'not-ordered',
+        vendors: [],
+        // @ts-expect-error - testing null handling
+        price: null,
+      };
+
+      const result = sanitizeBOMItemForFirestore(item);
+
+      // null !== undefined, so it should be included
+      expect(Object.keys(result)).toContain('price');
+      expect(result.price).toBeNull();
+    });
+  });
+
+  describe('handles all BOM item fields correctly', () => {
+    it('includes all defined required fields', () => {
+      const item: Partial<BOMItem> = {
+        id: 'item-123',
+        itemType: 'component',
+        name: 'Servo Motor',
+        description: 'High precision servo',
+        quantity: 4,
+        category: 'Motors',
+        status: 'ordered',
+        vendors: [
+          { name: 'Vendor A', price: 1000, leadTime: '2 weeks', availability: 'In Stock' }
+        ],
+      };
+
+      const result = sanitizeBOMItemForFirestore(item);
+
+      expect(result.id).toBe('item-123');
+      expect(result.itemType).toBe('component');
+      expect(result.name).toBe('Servo Motor');
+      expect(result.description).toBe('High precision servo');
+      expect(result.quantity).toBe(4);
+      expect(result.category).toBe('Motors');
+      expect(result.status).toBe('ordered');
+      expect(result.vendors).toHaveLength(1);
+    });
+
+    it('includes all defined optional fields', () => {
+      const item: Partial<BOMItem> = {
+        id: '1',
+        itemType: 'component',
+        name: 'Test',
+        description: 'Desc',
+        quantity: 1,
+        category: 'Test',
+        status: 'ordered',
+        vendors: [],
+        // All optional fields
+        make: 'Siemens',
+        sku: 'SKU-12345',
+        price: 5000,
+        thumbnailUrl: 'https://example.com/img.jpg',
+        order: 5,
+        expectedDelivery: '2025-12-01',
+        poNumber: 'PO-001',
+        finalizedVendor: { name: 'Vendor A', price: 5000, leadTime: '1 week', availability: 'In Stock' },
+        orderDate: '2025-11-20',
+        expectedArrival: '2025-11-30',
+        actualArrival: '2025-11-28',
+        linkedPODocumentId: 'doc-123',
+      };
+
+      const result = sanitizeBOMItemForFirestore(item);
+
+      expect(result.make).toBe('Siemens');
+      expect(result.sku).toBe('SKU-12345');
+      expect(result.price).toBe(5000);
+      expect(result.thumbnailUrl).toBe('https://example.com/img.jpg');
+      expect(result.order).toBe(5);
+      expect(result.expectedDelivery).toBe('2025-12-01');
+      expect(result.poNumber).toBe('PO-001');
+      expect(result.finalizedVendor).toEqual({ name: 'Vendor A', price: 5000, leadTime: '1 week', availability: 'In Stock' });
+      expect(result.orderDate).toBe('2025-11-20');
+      expect(result.expectedArrival).toBe('2025-11-30');
+      expect(result.actualArrival).toBe('2025-11-28');
+      expect(result.linkedPODocumentId).toBe('doc-123');
+    });
+
+    it('handles service items correctly', () => {
+      const item: Partial<BOMItem> = {
+        id: '1',
+        itemType: 'service',
+        name: 'Integration Services',
+        description: 'System integration',
+        quantity: 5, // 5 days
+        category: 'Services',
+        status: 'not-ordered',
+        vendors: [],
+        price: 3000, // rate per day
+        // make and sku should be undefined for services
+      };
+
+      const result = sanitizeBOMItemForFirestore(item);
+
+      expect(result.itemType).toBe('service');
+      expect(result.price).toBe(3000);
+      expect(Object.keys(result)).not.toContain('make');
+      expect(Object.keys(result)).not.toContain('sku');
+    });
+  });
+
+  describe('prevents Firestore errors', () => {
+    it('result object has no undefined values', () => {
+      const item: Partial<BOMItem> = {
+        id: '1',
+        itemType: 'component',
+        name: 'Test',
+        description: 'Desc',
+        quantity: 1,
+        category: 'Test',
+        status: 'not-ordered',
+        vendors: [],
+        price: undefined,
+        make: undefined,
+        sku: undefined,
+        thumbnailUrl: undefined,
+        order: undefined,
+        expectedDelivery: undefined,
+        poNumber: undefined,
+        finalizedVendor: undefined,
+        orderDate: undefined,
+        expectedArrival: undefined,
+        actualArrival: undefined,
+        linkedPODocumentId: undefined,
+      };
+
+      const result = sanitizeBOMItemForFirestore(item);
+
+      // Check that NO value in the result is undefined
+      const values = Object.values(result);
+      const hasUndefined = values.some(v => v === undefined);
+      expect(hasUndefined).toBe(false);
+    });
+
+    it('returns minimal object when only required fields provided', () => {
+      const item: Partial<BOMItem> = {
+        id: '1',
+        itemType: 'component',
+        name: 'Minimal Item',
+        description: 'Test',
+        quantity: 1,
+        category: 'Test',
+        status: 'not-ordered',
+        vendors: [],
+      };
+
+      const result = sanitizeBOMItemForFirestore(item);
+
+      // Should only have the 8 required fields
+      expect(Object.keys(result).length).toBe(8);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('handles empty object input', () => {
+      const result = sanitizeBOMItemForFirestore({});
+
+      expect(Object.keys(result).length).toBe(0);
+    });
+
+    it('handles empty vendors array', () => {
+      const item: Partial<BOMItem> = {
+        id: '1',
+        vendors: [],
+      };
+
+      const result = sanitizeBOMItemForFirestore(item);
+
+      expect(result.vendors).toEqual([]);
+    });
+
+    it('preserves Date objects for timestamp fields', () => {
+      const now = new Date();
+      const item: Partial<BOMItem> = {
+        id: '1',
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const result = sanitizeBOMItemForFirestore(item);
+
+      expect(result.createdAt).toBe(now);
+      expect(result.updatedAt).toBe(now);
     });
   });
 });
