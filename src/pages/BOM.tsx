@@ -12,24 +12,21 @@ import BOMHeader from '@/components/BOM/BOMHeader';
 import BOMCategoryCard from '@/components/BOM/BOMCategoryCard';
 import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
 import PurchaseRequestDialog from '@/components/BOM/PurchaseRequestDialog';
-import ProjectDocuments from '@/components/BOM/ProjectDocuments';
 import OrderItemDialog from '@/components/BOM/OrderItemDialog';
 import ReceiveItemDialog from '@/components/BOM/ReceiveItemDialog';
-import InwardTracking from '@/components/BOM/InwardTracking';
-import PageLayout from '@/components/PageLayout';
+import ProjectDocuments from '@/components/BOM/ProjectDocuments';
+import Sidebar from '@/components/Sidebar';
 import { saveAs } from 'file-saver';
-import {
-  getBOMData,
-  subscribeToBOM,
-  updateBOMData,
-  updateBOMItem,
+import { 
+  getBOMData, 
+  subscribeToBOM, 
+  updateBOMData, 
+  updateBOMItem, 
   deleteBOMItem,
 } from '@/utils/projectFirestore';
 import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
-import { getActiveBrands } from '@/utils/brandFirestore';
-import { Brand } from '@/types/brand';
 import type { Vendor, BOMCategory as SettingsCategory } from '@/utils/settingsFirestore';
-import { BOMItem, BOMCategory, BOMStatus, calculateExpectedArrival, parseLeadTimeToDays } from '@/types/bom';
+import { BOMItem, BOMCategory, BOMStatus } from '@/types/bom';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { getProjectDocuments, linkDocumentToBOMItems } from '@/utils/projectDocumentFirestore';
@@ -59,6 +56,7 @@ interface OrderDialogData {
 }
 
 const BOM = () => {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [categories, setCategories] = useState<BOMCategory[]>([]);
   const { projectId } = useParams<{ projectId: string }>();
@@ -70,6 +68,10 @@ const BOM = () => {
   const [addPartOpen, setAddPartOpen] = useState(false);
   const [importBOMOpen, setImportBOMOpen] = useState(false);
   const [prDialogOpen, setPRDialogOpen] = useState(false);
+  const [orderDialogOpen, setOrderDialogOpen] = useState(false);
+  const [receiveDialogOpen, setReceiveDialogOpen] = useState(false);
+  const [selectedItemForOrder, setSelectedItemForOrder] = useState<BOMItem | null>(null);
+  const [selectedItemForReceive, setSelectedItemForReceive] = useState<BOMItem | null>(null);
   const [newPart, setNewPart] = useState<{
     itemType: 'component' | 'service';
     name: string;
@@ -92,16 +94,10 @@ const BOM = () => {
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState<string | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
-  const [availableBrands, setAvailableBrands] = useState<Brand[]>([]);
+  const [availableMakes, setAvailableMakes] = useState<string[]>([]);
   const [canonicalCategories, setCanonicalCategories] = useState<SettingsCategory[]>([]);
   const [categoryAlignmentSelections, setCategoryAlignmentSelections] = useState<Record<string, string>>({});
   const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([]);
-  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
-  // Inward tracking dialog states
-  const [orderDialogOpen, setOrderDialogOpen] = useState(false);
-  const [receiveDialogOpen, setReceiveDialogOpen] = useState(false);
-  const [selectedItemForOrder, setSelectedItemForOrder] = useState<BOMItem | null>(null);
-  const [selectedItemForReceive, setSelectedItemForReceive] = useState<BOMItem | null>(null);
   const canonicalCategoryNames = useMemo(
     () =>
       canonicalCategories
@@ -117,12 +113,6 @@ const BOM = () => {
   const mismatchedCategories = useMemo(
     () => categories.filter((cat) => !canonicalCategorySet.has(cat.name.toLowerCase())),
     [categories, canonicalCategorySet]
-  );
-
-  // Filter PO documents for the order dialog
-  const poDocuments = useMemo(
-    () => projectDocuments.filter((doc) => doc.type === 'outgoing-po'),
-    [projectDocuments]
   );
 
   const isCanonicalCategory = useCallback(
@@ -197,18 +187,20 @@ const BOM = () => {
     loadProjectDetails();
   }, [projectId]);
 
-  // Load settings data (vendors, brands, categories)
+  // Load settings data (vendors, makes, categories)
   useEffect(() => {
     const loadSettingsData = async () => {
       try {
         // Load vendors
         const vendorsData = await getVendors();
         setVendors(vendorsData);
-
-        // Load brands for make dropdown
-        const brandsData = await getActiveBrands();
-        const sortedBrands = brandsData.sort((a, b) => a.name.localeCompare(b.name));
-        setAvailableBrands(sortedBrands);
+        
+        // Extract vendor company names as makes/brands
+        const companyNames = vendorsData.map(vendor => vendor.company).filter(company => company.trim() !== '');
+        
+        // Remove duplicates and sort
+        const uniqueMakes = [...new Set(companyNames)].sort();
+        setAvailableMakes(uniqueMakes);
 
         // Load settings categories
         const bomSettings = await getBOMSettings();
@@ -219,9 +211,6 @@ const BOM = () => {
         }
       } catch (error) {
         console.error('Error loading settings data:', error);
-      } finally {
-        // Mark categories as loaded (prevents flash on initial render)
-        setCategoriesLoaded(true);
       }
     };
 
@@ -280,9 +269,9 @@ const BOM = () => {
               description: newPart.description,
               category: finalCategory || '',
               quantity: newPart.quantity,
+              price: newPart.price,
               vendors: [],
               status: 'not-ordered' as BOMStatus,
-              ...(newPart.price !== undefined ? { price: newPart.price } : {}),
               // Only include make and sku for components (Firestore doesn't accept undefined)
               ...(newPart.itemType === 'component' && {
                 make: newPart.make,
@@ -524,10 +513,15 @@ const BOM = () => {
   };
 
   return (
-    <>
-      <PageLayout
-        header={
-          <>
+    <div className="min-h-screen bg-background flex">
+      <Sidebar 
+        collapsed={sidebarCollapsed} 
+        onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} 
+      />
+      
+      <div className={`flex-1 ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
+        <main className="p-4">
+          <div className="max-w-full mx-auto px-2">
             {/* BOM Header */}
             <BOMHeader
               projectName={projectDetails?.projectName || ''}
@@ -554,7 +548,7 @@ const BOM = () => {
             )}
 
             {/* Search and Actions Bar */}
-            <div className="flex flex-col sm:flex-row gap-3 mt-6">
+            <div className="flex flex-col sm:flex-row gap-3 mb-4">
               <div className="relative flex-1 flex items-center gap-2">
                 <div className="flex-1 relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" size={20} />
@@ -586,7 +580,7 @@ const BOM = () => {
                   Export
                 </Button>
                 <Button variant="outline" onClick={handleCreatePurchaseOrder}>
-                  Create Purchase Order
+                  Create PR
                 </Button>
               </div>
             </div>
@@ -599,7 +593,7 @@ const BOM = () => {
               </Alert>
             )}
 
-            {categoriesLoaded && mismatchedCategories.length > 0 && (
+            {mismatchedCategories.length > 0 && (
               <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-4 space-y-3">
                 <div className="text-sm font-semibold text-amber-900">
                   {mismatchedCategories.length} project categories are not defined in Settings. Align them with a canonical category to keep BOM data consistent.
@@ -652,82 +646,73 @@ const BOM = () => {
                 </p>
               </div>
             )}
-          </>
-        }
-      >
-        {/* Inward Tracking Section */}
-        <InwardTracking
-          categories={categories}
-          documents={projectDocuments}
-          onItemClick={(item) => {
-            // Could navigate to item or open details
-            console.log('Item clicked:', item.name);
-          }}
-        />
 
-        {/* BOM Content - Single Column Layout */}
-        <div className="space-y-4">
-          {filteredCategories.map((category) => (
-            <BOMCategoryCard
-              key={category.name}
-              category={category}
-              onToggle={() => toggleCategory(category.name)}
-              onQuantityChange={handleQuantityChange}
-              onDeletePart={handleDeletePart}
-              onDeleteCategory={(categoryName) => {
-                // Handle category deletion - remove the entire category
-                if (projectId) {
-                  const updatedCategories = categories.filter(cat => cat.name !== categoryName);
-                  updateBOMData(projectId, updatedCategories);
-                }
-              }}
-              onStatusChange={(itemId, newStatus) => {
-                if (!projectId) return;
+            {/* BOM Content - Single Column Layout */}
+            <div className="space-y-4">
+              {filteredCategories.map((category) => (
+                <BOMCategoryCard
+                  key={category.name}
+                  category={category}
+                  onToggle={() => toggleCategory(category.name)}
+                  onQuantityChange={handleQuantityChange}
+                  onDeletePart={handleDeletePart}
+                  onDeleteCategory={(categoryName) => {
+                    // Handle category deletion - remove the entire category
+                    if (projectId) {
+                      const updatedCategories = categories.filter(cat => cat.name !== categoryName);
+                      updateBOMData(projectId, updatedCategories);
+                    }
+                  }}
+                  onStatusChange={(itemId, newStatus) => {
+                    if (!projectId) return;
 
-                // Find the item
-                let targetItem: BOMItem | null = null;
-                for (const cat of categories) {
-                  const found = cat.items.find(item => item.id === itemId);
-                  if (found) {
-                    targetItem = found;
-                    break;
-                  }
-                }
+                    // Find the item
+                    let targetItem: BOMItem | null = null;
+                    for (const cat of categories) {
+                      const found = cat.items.find(item => item.id === itemId);
+                      if (found) {
+                        targetItem = found;
+                        break;
+                      }
+                    }
 
-                // If changing to "ordered", show the order dialog
-                if (newStatus === 'ordered' && targetItem) {
-                  setSelectedItemForOrder(targetItem);
-                  setOrderDialogOpen(true);
-                  return;
-                }
+                    // If changing to "ordered", show the order dialog
+                    if (newStatus === 'ordered' && targetItem) {
+                      setSelectedItemForOrder(targetItem);
+                      setOrderDialogOpen(true);
+                      return;
+                    }
 
-                // If changing to "received", show the receive dialog
-                if (newStatus === 'received' && targetItem) {
-                  setSelectedItemForReceive(targetItem);
-                  setReceiveDialogOpen(true);
-                  return;
-                }
+                    // If changing to "received", show the receive dialog
+                    if (newStatus === 'received' && targetItem) {
+                      setSelectedItemForReceive(targetItem);
+                      setReceiveDialogOpen(true);
+                      return;
+                    }
 
-                // For other status changes, update directly
-                updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
-              }}
-              onEditPart={handleEditPart}
-              onPartCategoryChange={handlePartCategoryChange}
-              availableCategories={canonicalCategoryNames}
-              onUpdatePart={handleUpdatePart}
-              getDocumentCount={getDocumentCountForItem}
-            />
-          ))}
+                    // For other status changes, update directly
+                    updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                  }}
+                  onEditPart={handleEditPart}
+                  onPartCategoryChange={handlePartCategoryChange}
+                  availableCategories={canonicalCategoryNames}
+                  onUpdatePart={handleUpdatePart}
+                  getDocumentCount={getDocumentCountForItem}
+                  vendors={vendors}
+                />
+              ))}
 
-          {filteredCategories.length === 0 && (
-            <Card>
-              <CardContent className="p-8 text-center">
-                <p className="text-muted-foreground">No parts found matching your search criteria.</p>
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      </PageLayout>
+              {filteredCategories.length === 0 && (
+                <Card>
+                  <CardContent className="p-8 text-center">
+                    <p className="text-muted-foreground">No parts found matching your search criteria.</p>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          </div>
+        </main>
+      </div>
 
       {/* Filter Dialog */}
       <Dialog open={filterOpen} onOpenChange={setFilterOpen}>
@@ -738,7 +723,7 @@ const BOM = () => {
           <div className="space-y-4">
             <div>
               <div className="font-semibold text-sm mb-2">Status</div>
-              {['not-ordered', 'ordered', 'received'].map(status => (
+              {['ordered', 'received', 'not-ordered', 'approved'].map(status => (
                 <label key={status} className="flex items-center gap-2 mb-1">
                   <input
                     type="checkbox"
@@ -857,33 +842,29 @@ const BOM = () => {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="make">Brand</Label>
+                    <Label htmlFor="make">Make</Label>
                     <Select
                       value={newPart.make || undefined}
                       onValueChange={(value) => setNewPart({ ...newPart, make: value === "__NONE__" ? '' : (value || '') })}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="Select Brand" />
+                        <SelectValue placeholder="Select Make/Brand" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__NONE__">None</SelectItem>
-                        {availableBrands.length === 0 && (
-                          <SelectItem value="__LOADING__" disabled>No brands available. Add brands in Settings.</SelectItem>
+                        {availableMakes.length === 0 && vendors.length === 0 && (
+                          <SelectItem value="__LOADING__" disabled>Loading makes...</SelectItem>
                         )}
-                        {availableBrands.map((brand) => (
-                          <SelectItem key={brand.id} value={brand.name}>
-                            <span className="flex items-center gap-2">
-                              {brand.logo && (
-                                <img
-                                  src={brand.logo}
-                                  alt=""
-                                  className="w-4 h-4 object-contain"
-                                />
-                              )}
-                              {brand.name}
-                            </span>
-                          </SelectItem>
-                        ))}
+                        {availableMakes.length === 0 && vendors.length > 0 && (
+                          <SelectItem value="__NO_MAKES__" disabled>No makes found in vendors</SelectItem>
+                        )}
+                        {availableMakes
+                          .filter(make => make && make.trim() !== '') // Filter out empty makes
+                          .map((make) => (
+                            <SelectItem key={make} value={make}>
+                              {make}
+                            </SelectItem>
+                          ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1039,28 +1020,30 @@ const BOM = () => {
         />
       )}
 
-      {/* Order Item Dialog */}
-      <OrderItemDialog
-        open={orderDialogOpen}
-        onOpenChange={setOrderDialogOpen}
-        item={selectedItemForOrder}
-        projectId={projectId || ''}
-        availablePODocuments={poDocuments}
-        vendors={vendors}
-        onConfirm={handleOrderDialogConfirm}
-        onDocumentUploaded={(newDoc) => {
-          // Add the new document to the list
-          setProjectDocuments(prev => [...prev, newDoc]);
-        }}
-      />
+      {/* Order Item Dialog - shown when changing status to "ordered" */}
+      {projectId && (
+        <OrderItemDialog
+          open={orderDialogOpen}
+          onOpenChange={setOrderDialogOpen}
+          item={selectedItemForOrder}
+          projectId={projectId}
+          availablePODocuments={poDocuments}
+          vendors={vendors}
+          onConfirm={handleOrderDialogConfirm}
+          onDocumentUploaded={(newDoc) => {
+            // Add the new document to the list
+            setProjectDocuments(prev => [...prev, newDoc]);
+          }}
+        />
+      )}
 
-      {/* Receive Item Dialog */}
+      {/* Receive Item Dialog - shown when changing status to "received" */}
       <ReceiveItemDialog
         open={receiveDialogOpen}
         onOpenChange={setReceiveDialogOpen}
         item={selectedItemForReceive}
         onConfirm={(data) => {
-          if (projectId && selectedItemForReceive) {
+          if (selectedItemForReceive && projectId) {
             updateBOMItem(projectId, categories, selectedItemForReceive.id, {
               status: 'received',
               actualArrival: data.actualArrival,
@@ -1069,7 +1052,7 @@ const BOM = () => {
           setSelectedItemForReceive(null);
         }}
       />
-    </>
+    </div>
   );
 };
 
@@ -1080,6 +1063,8 @@ function mapStatusToFirestore(status: string): BOMStatus {
       return 'ordered';
     case 'received':
       return 'received';
+    case 'approved':
+      return 'approved';
     default:
       return 'not-ordered';
   }

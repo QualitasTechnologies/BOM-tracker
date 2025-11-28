@@ -1,5 +1,5 @@
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -35,7 +35,6 @@ interface SidebarProps {
 const Sidebar = ({ collapsed, onToggle }: SidebarProps) => {
   const location = useLocation();
   const { user } = useAuth();
-  const [mounted, setMounted] = useState(false);
   
   // Combine menu items based on user role
   const menuItems = [
@@ -43,18 +42,11 @@ const Sidebar = ({ collapsed, onToggle }: SidebarProps) => {
     ...(user?.isAdmin ? adminMenuItems : [])
   ];
 
-  useEffect(() => {
-    // Prevent transition on initial mount
-    setMounted(true);
-  }, []);
-
   return (
     <div className={cn(
-      "bg-slate-900 text-white flex-col relative",
-      "h-screen fixed top-0 left-0 z-40",
-      "hidden md:flex", // Hide on mobile, show on medium+ screens
-      mounted ? "transition-all duration-300 ease-in-out" : "",
-      collapsed ? "w-16" : "w-64"
+      "bg-slate-900 text-white flex flex-col transition-all duration-300 ease-in-out relative",
+      collapsed ? "w-16" : "w-64",
+      "h-screen fixed top-0 left-0 z-40"
     )}>
       {/* Header */}
       <div className="p-4 border-b border-slate-700">

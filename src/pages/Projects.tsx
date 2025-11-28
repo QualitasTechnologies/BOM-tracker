@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, X } from "lucide-react";
+import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, X, Wrench, Clock, DollarSign } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,18 +8,19 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table as TableComponent, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Separator } from "@/components/ui/separator";
+import Sidebar from "@/components/Sidebar";
 import AddProjectDialog from "@/components/Project/AddProjectDialog";
 import EditProjectDialog from "@/components/Project/EditProjectDialog";
 import DeleteProjectDialog from "@/components/Project/DeleteProjectDialog";
 import { addProject, subscribeToProjects, updateProject, deleteProject } from "@/utils/projectFirestore";
 import type { EditableProjectInput, FirestoreProject, NewProjectFormData, ProjectViewMode } from "@/types/project";
-import PageLayout from "@/components/PageLayout";
 
 const Projects = () => {
   const [viewMode, setViewMode] = useState<ProjectViewMode>("cards");
   const [searchQuery, setSearchQuery] = useState("");
   const [clientFilter, setClientFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isAddProjectDialogOpen, setIsAddProjectDialogOpen] = useState(false);
   const [isEditProjectDialogOpen, setIsEditProjectDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
@@ -126,78 +127,81 @@ const Projects = () => {
   );
 
   const ProjectCard = ({ project }: { project: FirestoreProject }) => (
-    <Card className="hover:shadow-lg transition-shadow duration-200 relative group">
+    <Card className="hover:shadow-lg transition-shadow duration-200 relative group overflow-hidden">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity !bg-transparent hover:!bg-transparent focus:!bg-transparent"
+        onClick={() => handleDeleteClick(project)}
+      >
+        <X className="h-3 w-3 text-red-500" strokeWidth={1.5}/>
+      </Button>
       <CardHeader className="pb-3">
-        <div className="flex justify-between items-start gap-3 mb-2">
-          <div className="flex-1 min-w-0 pr-2">
-            <CardTitle className="text-lg font-semibold leading-tight mb-1 break-words">
-              {project.projectName}
-            </CardTitle>
-            {project.description && (
-              <p className="text-sm text-muted-foreground leading-relaxed line-clamp-2">
-                {project.description}
-              </p>
-            )}
-          </div>
-          <div className="flex items-center gap-1.5 flex-shrink-0">
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              onClick={() => handleEditClick(project)}
-              className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-            >
+        <div className="flex justify-between items-start">
+          <CardTitle className="text-lg font-semibold">{project.projectName}</CardTitle>
+          <div className="flex items-center gap-2">
+            {getStatusBadge(project.status)}
+            <Button variant="ghost" size="sm" onClick={() => handleEditClick(project)}>
               <Edit className="h-4 w-4" />
             </Button>
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              onClick={() => handleDeleteClick(project)}
-              className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
-            >
-              <X className="h-4 w-4" />
-            </Button>
           </div>
         </div>
-        <div className="flex items-center">
-          {getStatusBadge(project.status)}
-        </div>
+        <p className="text-sm text-muted-foreground mt-1">{project.description}</p>
       </CardHeader>
       
-      <CardContent className="pt-0 pb-3 space-y-2.5">
+      <CardContent className="pt-0 space-y-3">
         <div className="flex items-center gap-2 text-sm">
-          <FileText className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-          <span className="font-medium text-xs">ID:</span>
-          <span className="text-muted-foreground text-sm break-all">{project.projectId}</span>
+          <FileText className="h-4 w-4 text-muted-foreground" />
+          <span className="font-medium">ID:</span>
+          <span className="text-muted-foreground">{project.projectId}</span>
         </div>
         
         <div className="flex items-center gap-2 text-sm">
-          <User className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-          <span className="font-medium text-xs">Client:</span>
-          <span className="text-muted-foreground text-sm break-words">{project.clientName}</span>
+          <User className="h-4 w-4 text-muted-foreground" />
+          <span className="font-medium">Client:</span>
+          <span className="text-muted-foreground">{project.clientName}</span>
         </div>
         
         <div className="flex items-center gap-2 text-sm">
-          <Calendar className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-          <span className="font-medium text-xs">Deadline:</span>
-          <span className="text-muted-foreground text-sm">{formatDate(project.deadline)}</span>
+          <Calendar className="h-4 w-4 text-muted-foreground" />
+          <span className="font-medium">Deadline:</span>
+          <span className="text-muted-foreground">{formatDate(project.deadline)}</span>
         </div>
       </CardContent>
       
-      <CardFooter className="pt-3 pb-4 border-t">
-        <div className="flex gap-2 w-full">
-          <Button asChild variant="outline" size="sm" className="flex-1 text-xs">
-            <Link to={`/project/${project.projectId}/bom`}>
-              🔧 BOM
+      <CardFooter className="pt-0 px-4 pb-4 overflow-hidden">
+        <div className="flex gap-1.5 sm:gap-2 w-full min-w-0">
+          <Button 
+            asChild 
+            variant="outline" 
+            size="sm" 
+            className="flex-1 min-w-0 px-2 sm:px-3 overflow-hidden"
+          >
+            <Link to={`/project/${project.projectId}/bom`} className="flex items-center justify-center gap-1.5 sm:gap-2 min-w-0">
+              <Wrench className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0 text-purple-600" />
+              <span className="hidden sm:inline text-xs sm:text-sm">BOM</span>
             </Link>
           </Button>
-          <Button asChild variant="outline" size="sm" className="flex-1 text-xs">
-            <Link to={`/time-tracking?project=${project.projectId}`}>
-              ⏱️ Time
+          <Button 
+            asChild 
+            variant="outline" 
+            size="sm" 
+            className="flex-1 min-w-0 px-2 sm:px-3 overflow-hidden"
+          >
+            <Link to={`/time-tracking?project=${project.projectId}`} className="flex items-center justify-center gap-1.5 sm:gap-2 min-w-0">
+              <Clock className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0 text-purple-600" />
+              <span className="hidden sm:inline text-xs sm:text-sm">Time</span>
             </Link>
           </Button>
-          <Button asChild variant="outline" size="sm" className="flex-1 text-xs">
-            <Link to={`/cost-analysis?project=${project.projectId}`}>
-              💰 Cost
+          <Button 
+            asChild 
+            variant="outline" 
+            size="sm" 
+            className="flex-1 min-w-0 px-2 sm:px-3 overflow-hidden"
+          >
+            <Link to={`/cost-analysis?project=${project.projectId}`} className="flex items-center justify-center gap-1.5 sm:gap-2 min-w-0">
+              <DollarSign className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0 text-orange-600" />
+              <span className="hidden sm:inline text-xs sm:text-sm">Cost</span>
             </Link>
           </Button>
         </div>
@@ -206,93 +210,98 @@ const Projects = () => {
   );
 
   return (
-    <PageLayout
-      header={
-        <>
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div className="flex items-center gap-3">
-              <h1 className="text-3xl font-bold">Projects</h1>
-              <span className="text-muted-foreground">({filteredProjects.length} projects)</span>
-            </div>
-          </div>
-
-          {/* Controls */}
-          <div className="flex flex-col gap-4 mt-6 md:flex-row md:items-center md:justify-between">
-            <div className="flex items-center gap-3 flex-1 max-w-md">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search projects..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10"
-                />
+    <div className="flex min-h-screen bg-background">
+      <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
+      <div className={`flex-1 transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
+        {/* Header */}
+        <div className="bg-card border-b">
+          <div className="container mx-auto px-6 py-6">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="flex items-center gap-3">
+                <h1 className="text-3xl font-bold">Projects</h1>
+                <span className="text-muted-foreground">({filteredProjects.length} projects)</span>
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <Button onClick={() => setIsAddProjectDialogOpen(true)}>
-                <Plus className="h-4 w-4 mr-2" />
-                Add New Project
-              </Button>
-              <Select value={clientFilter} onValueChange={setClientFilter}>
-                <SelectTrigger className="w-40">
-                  <Filter className="h-4 w-4 mr-2" />
-                  <SelectValue placeholder="Filter by Client" />
-                </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Clients</SelectItem>
-                {clientOptions.map((client) => (
-                  <SelectItem key={client} value={client}>
-                    {client}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-              </Select>
+            {/* Controls */}
+            <div className="flex flex-col gap-4 mt-6 md:flex-row md:items-center md:justify-between">
+              <div className="flex items-center gap-3 flex-1 max-w-md">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search projects..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-10"
+                  />
+                </div>
+              </div>
 
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-36">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
+              <div className="flex items-center gap-3">
+                <Button onClick={() => setIsAddProjectDialogOpen(true)}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add New Project
+                </Button>
+                <Select value={clientFilter} onValueChange={setClientFilter}>
+                  <SelectTrigger className="w-40">
+                    <Filter className="h-4 w-4 mr-2" />
+                    <SelectValue placeholder="Filter by Client" />
+                  </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Status</SelectItem>
-                  <SelectItem value="Planning">Planning</SelectItem>
-                  <SelectItem value="Ongoing">Ongoing</SelectItem>
-                  <SelectItem value="Delayed">Delayed</SelectItem>
-                  <SelectItem value="Completed">Completed</SelectItem>
+                  <SelectItem value="all">All Clients</SelectItem>
+                  {clientOptions.map((client) => (
+                    <SelectItem key={client} value={client}>
+                      {client}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
-              </Select>
+                </Select>
 
-              <Separator orientation="vertical" className="h-6" />
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                  <SelectTrigger className="w-36">
+                    <SelectValue placeholder="Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Status</SelectItem>
+                    <SelectItem value="Planning">Planning</SelectItem>
+                    <SelectItem value="Ongoing">Ongoing</SelectItem>
+                    <SelectItem value="Delayed">Delayed</SelectItem>
+                    <SelectItem value="Completed">Completed</SelectItem>
+                  </SelectContent>
+                </Select>
 
-              <div className="flex rounded-lg border">
-                <Button
-                  variant={viewMode === "cards" ? "default" : "ghost"}
-                  size="sm"
-                  onClick={() => setViewMode("cards")}
-                  className="rounded-r-none"
-                >
-                  <Grid className="h-4 w-4 mr-2" />
-                  Cards
-                </Button>
-                <Button
-                  variant={viewMode === "table" ? "default" : "ghost"}
-                  size="sm"
-                  onClick={() => setViewMode("table")}
-                  className="rounded-l-none"
-                >
-                  <List className="h-4 w-4 mr-2" />
-                  Table
-                </Button>
+                <Separator orientation="vertical" className="h-6" />
+
+                <div className="flex rounded-lg border">
+                  <Button
+                    variant={viewMode === "cards" ? "default" : "ghost"}
+                    size="sm"
+                    onClick={() => setViewMode("cards")}
+                    className="rounded-r-none"
+                  >
+                    <Grid className="h-4 w-4 mr-2" />
+                    Cards
+                  </Button>
+                  <Button
+                    variant={viewMode === "table" ? "default" : "ghost"}
+                    size="sm"
+                    onClick={() => setViewMode("table")}
+                    className="rounded-l-none"
+                  >
+                    <List className="h-4 w-4 mr-2" />
+                    Table
+                  </Button>
+                </div>
               </div>
             </div>
           </div>
-        </>
-      }
-    >
+        </div>
+
+        {/* Content */}
+        <div className="container mx-auto px-6 py-8">
           {viewMode === "cards" ? (
             /* Card View */
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredProjects.map((project) => (
                 <ProjectCard key={project.projectId} project={project} />
               ))}
@@ -325,34 +334,22 @@ const Projects = () => {
                       <TableCell>{formatDate(project.deadline)}</TableCell>
                       <TableCell>{getStatusBadge(project.status)}</TableCell>
                       <TableCell>
-                        <div className="flex gap-2 justify-center items-center">
-                          <Button asChild variant="outline" size="sm">
-                            <Link to={`/project/${project.projectId}/bom`}>🔧</Link>
+                        <div className="flex gap-1 justify-center">
+                          <Button asChild variant="outline" size="sm" title="BOM">
+                            <Link to={`/project/${project.projectId}/bom`}>
+                              <Wrench className="h-4 w-4 text-purple-600" />
+                            </Link>
                           </Button>
-                          <Button asChild variant="outline" size="sm">
-                            <Link to={`/time-tracking?project=${project.projectId}`}>⏱️</Link>
+                          <Button asChild variant="outline" size="sm" title="Time">
+                            <Link to={`/time-tracking?project=${project.projectId}`}>
+                              <Clock className="h-4 w-4 text-purple-600" />
+                            </Link>
                           </Button>
-                          <Button asChild variant="outline" size="sm">
-                            <Link to={`/cost-analysis?project=${project.projectId}`}>💰</Link>
+                          <Button asChild variant="outline" size="sm" title="Cost">
+                            <Link to={`/cost-analysis?project=${project.projectId}`}>
+                              <DollarSign className="h-4 w-4 text-orange-600" />
+                            </Link>
                           </Button>
-                          <div className="flex items-center gap-1 ml-1">
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
-                              onClick={() => handleEditClick(project)}
-                              className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-                            >
-                              <Edit className="h-4 w-4" />
-                            </Button>
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
-                              onClick={() => handleDeleteClick(project)}
-                              className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
-                            >
-                              <X className="h-4 w-4" />
-                            </Button>
-                          </div>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -371,6 +368,8 @@ const Projects = () => {
               </Button>
             </div>
           )}
+        </div>
+      </div>
       <AddProjectDialog
         open={isAddProjectDialogOpen}
         onOpenChange={setIsAddProjectDialogOpen}
@@ -388,7 +387,7 @@ const Projects = () => {
         onConfirm={handleDeleteProject}
         projectName={selectedProject?.projectName || ""}
       />
-    </PageLayout>
+    </div>
   );
 };
 

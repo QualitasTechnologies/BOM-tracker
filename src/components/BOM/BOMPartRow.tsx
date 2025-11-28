@@ -53,6 +53,14 @@ interface BOMItem {
   linkedPODocumentId?: string;
 }
 
+interface GlobalVendor {
+  id: string;
+  company: string;
+  leadTime: string;
+  type: 'OEM' | 'Dealer';
+  status: 'active' | 'inactive';
+}
+
 interface BOMPartRowProps {
   part: BOMItem;
   onClick: () => void;
@@ -64,6 +72,7 @@ interface BOMPartRowProps {
   onCategoryChange?: (itemId: string, newCategory: string) => void;
   availableCategories?: string[];
   linkedDocumentsCount?: number;
+  globalVendors?: GlobalVendor[];
 }
 
 // Helper function to format date
@@ -157,7 +166,7 @@ const statusStyles: Record<
   },
 };
 
-const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [], linkedDocumentsCount = 0 }: BOMPartRowProps) => {
+const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [], linkedDocumentsCount = 0, globalVendors = [] }: BOMPartRowProps) => {
   // Backward compatibility: default to 'component' if itemType is missing
   const itemType = part.itemType || 'component';
 
@@ -395,8 +404,8 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                   <TooltipContent>Key specs or application notes</TooltipContent>
                 </Tooltip>
               </div>
-              {/* Vendor Selection for components */}
-              {editForm.itemType === 'component' && part.vendors && part.vendors.length > 0 && (
+              {/* Vendor Selection for components - use globalVendors */}
+              {editForm.itemType === 'component' && globalVendors.length > 0 && (
                 <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                   <span className="text-xs text-gray-500">Vendor:</span>
                   <Select
@@ -405,23 +414,43 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                       if (value === '__NONE__') {
                         setEditForm(prev => ({ ...prev, finalizedVendor: undefined }));
                       } else {
-                        const selected = part.vendors.find(v => v.name === value);
+                        const selected = globalVendors.find(v => v.company === value);
                         if (selected) {
-                          setEditForm(prev => ({ ...prev, finalizedVendor: selected }));
+                          setEditForm(prev => ({
+                            ...prev,
+                            finalizedVendor: {
+                              name: selected.company,
+                              price: editForm.price || 0,
+                              leadTime: selected.leadTime,
+                              availability: 'In Stock'
+                            }
+                          }));
                         }
                       }
                     }}
                   >
-                    <SelectTrigger className="h-7 text-xs flex-1">
+                    <SelectTrigger className="h-7 text-xs flex-1 min-w-[150px]">
                       <SelectValue placeholder="Select vendor" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__NONE__">No vendor selected</SelectItem>
-                      {part.vendors.map((v, idx) => (
-                        <SelectItem key={idx} value={v.name}>
-                          {v.name} - ₹{v.price?.toLocaleString('en-IN')} ({v.leadTime})
-                        </SelectItem>
-                      ))}
+                      {globalVendors
+                        .filter(v => v.status === 'active')
+                        .sort((a, b) => {
+                          if (a.type !== b.type) return a.type === 'OEM' ? -1 : 1;
+                          return a.company.localeCompare(b.company);
+                        })
+                        .map((v) => (
+                          <SelectItem key={v.id} value={v.company}>
+                            <span className="flex items-center gap-2">
+                              <span className={`px-1 py-0.5 rounded text-[10px] ${v.type === 'OEM' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}`}>
+                                {v.type}
+                              </span>
+                              {v.company}
+                              {v.leadTime && <span className="text-gray-500">({v.leadTime})</span>}
+                            </span>
+                          </SelectItem>
+                        ))}
                     </SelectContent>
                   </Select>
                 </div>

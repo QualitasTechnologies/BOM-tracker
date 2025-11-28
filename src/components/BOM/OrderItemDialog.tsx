@@ -130,12 +130,12 @@ const OrderItemDialog = ({
       const today = new Date().toISOString().split('T')[0];
       setOrderDate(today);
       setPONumber(item.poNumber || '');
-      
+
       // Check if item is already linked via linkedBOMItems (from ProjectDocuments)
       // This handles the case where a PO was linked before the item was marked as ordered
       let preSelectedDocId = item.linkedPODocumentId || '';
       if (!preSelectedDocId && item.id) {
-        const linkedDoc = availablePODocuments.find(doc => 
+        const linkedDoc = availablePODocuments.find(doc =>
           doc.linkedBOMItems && doc.linkedBOMItems.includes(item.id)
         );
         if (linkedDoc) {
@@ -143,13 +143,21 @@ const OrderItemDialog = ({
         }
       }
       setLinkedPODocumentId(preSelectedDocId);
-      
-      setSelectedVendorId(''); // Reset vendor selection
+
+      // Pre-fill vendor if finalizedVendor exists - find matching vendor by name
+      if (item.finalizedVendor?.name) {
+        const matchingVendor = vendors.find(
+          v => v.company.toLowerCase() === item.finalizedVendor?.name.toLowerCase()
+        );
+        setSelectedVendorId(matchingVendor?.id || '');
+      } else {
+        setSelectedVendorId('');
+      }
       setExpectedArrival('');
       setCalculatedArrival('');
       setLeadTimeDays(0);
     }
-  }, [open, item, availablePODocuments]);
+  }, [open, item, availablePODocuments, vendors]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || !e.target.files[0] || !projectId || !item) return;
