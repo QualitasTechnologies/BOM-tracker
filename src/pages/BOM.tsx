@@ -14,6 +14,7 @@ import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
 import PurchaseRequestDialog from '@/components/BOM/PurchaseRequestDialog';
 import OrderItemDialog from '@/components/BOM/OrderItemDialog';
 import ReceiveItemDialog from '@/components/BOM/ReceiveItemDialog';
+import InwardTracking from '@/components/BOM/InwardTracking';
 import ProjectDocuments from '@/components/BOM/ProjectDocuments';
 import Sidebar from '@/components/Sidebar';
 import { saveAs } from 'file-saver';
@@ -214,7 +215,7 @@ const BOM = () => {
     if (!projectId) return;
 
     setAddPartError(null);
-    if (!canonicalCategoriesAvailable) {
+    if (canonicalCategoryNames.length === 0) {
       setAddPartError('Define at least one category in Settings → Default Categories before adding items.');
       return;
     }
