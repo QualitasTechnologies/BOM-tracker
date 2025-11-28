@@ -1027,7 +1027,7 @@ const BOM = () => {
           onOpenChange={setOrderDialogOpen}
           item={selectedItemForOrder}
           projectId={projectId}
-          availablePODocuments={poDocuments}
+          availablePODocuments={projectDocuments.filter(doc => doc.category === 'outgoing-po')}
           vendors={vendors}
           onConfirm={handleOrderDialogConfirm}
           onDocumentUploaded={(newDoc) => {
