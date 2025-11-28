@@ -34,7 +34,7 @@ import { cn } from '@/lib/utils';
 import { useToast } from '@/components/ui/use-toast';
 import { BOMItem, calculateExpectedArrival, parseLeadTimeToDays } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
-import { uploadProjectDocument } from '@/utils/projectDocumentFirestore';
+import { uploadProjectDocument, linkDocumentToBOMItems } from '@/utils/projectDocumentFirestore';
 import { auth } from '@/firebase';
 import { Vendor } from '@/utils/settingsFirestore';
 
@@ -130,16 +130,29 @@ const OrderItemDialog = ({
       const today = new Date().toISOString().split('T')[0];
       setOrderDate(today);
       setPONumber(item.poNumber || '');
-      setLinkedPODocumentId(item.linkedPODocumentId || '');
+      
+      // Check if item is already linked via linkedBOMItems (from ProjectDocuments)
+      // This handles the case where a PO was linked before the item was marked as ordered
+      let preSelectedDocId = item.linkedPODocumentId || '';
+      if (!preSelectedDocId && item.id) {
+        const linkedDoc = availablePODocuments.find(doc => 
+          doc.linkedBOMItems && doc.linkedBOMItems.includes(item.id)
+        );
+        if (linkedDoc) {
+          preSelectedDocId = linkedDoc.id;
+        }
+      }
+      setLinkedPODocumentId(preSelectedDocId);
+      
       setSelectedVendorId(''); // Reset vendor selection
       setExpectedArrival('');
       setCalculatedArrival('');
       setLeadTimeDays(0);
     }
-  }, [open, item]);
+  }, [open, item, availablePODocuments]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || !e.target.files[0] || !projectId) return;
+    if (!e.target.files || !e.target.files[0] || !projectId || !item) return;
 
     const file = e.target.files[0];
     setUploading(true);
@@ -149,6 +162,10 @@ const OrderItemDialog = ({
       if (!user) throw new Error('User not authenticated');
 
       const newDoc = await uploadProjectDocument(file, projectId, 'outgoing-po', user.uid);
+      
+      // Link the document to this BOM item
+      await linkDocumentToBOMItems(newDoc.id, [item.id]);
+      
       onDocumentUploaded?.(newDoc);
       setLinkedPODocumentId(newDoc.id);
 

@@ -1,14 +1,11 @@
 import React, { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { Settings, Bell } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 const UserProfile: React.FC = () => {
   const { user, signOutUser } = useAuth();
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [imageError, setImageError] = useState(false);
-  const navigate = useNavigate();
-
   const handleSignOut = async () => {
     setIsSigningOut(true);
     await signOutUser();
@@ -22,27 +19,6 @@ const UserProfile: React.FC = () => {
 
   return (
     <div className="flex items-center gap-4">
-      {/* Notification and Settings Icons */}
-      <div className="flex items-center gap-2">
-        <button
-          className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors duration-200 relative"
-          title="Notifications"
-        >
-          <Bell size={20} />
-          <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
-            3
-          </span>
-        </button>
-        
-        <button
-          onClick={() => navigate('/settings')}
-          className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors duration-200"
-          title="Settings"
-        >
-          <Settings size={20} />
-        </button>
-      </div>
-
       {/* User Avatar */}
       {!shouldShowFallback ? (
         <img

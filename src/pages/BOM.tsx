@@ -32,8 +32,9 @@ import type { Vendor, BOMCategory as SettingsCategory } from '@/utils/settingsFi
 import { BOMItem, BOMCategory, BOMStatus, calculateExpectedArrival, parseLeadTimeToDays } from '@/types/bom';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/firebase';
-import { getProjectDocuments } from '@/utils/projectDocumentFirestore';
+import { getProjectDocuments, linkDocumentToBOMItems } from '@/utils/projectDocumentFirestore';
 import { ProjectDocument } from '@/types/projectDocument';
+import { syncPODocumentLinks } from '@/utils/bomDocumentLinking';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -42,6 +43,20 @@ import {
   AlertDialogFooter,
   AlertDialogAction
 } from '@/components/ui/alert-dialog';
+
+interface OrderDialogData {
+  orderDate: string;
+  expectedArrival: string;
+  poNumber?: string;
+  linkedPODocumentId: string;
+  vendor: {
+    id: string;
+    name: string;
+    price: number;
+    leadTime: string;
+    availability: string;
+  };
+}
 
 const BOM = () => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -473,6 +488,41 @@ const BOM = () => {
     };
   };
 
+  const handleOrderDialogConfirm = async (data: OrderDialogData) => {
+    if (!projectId || !selectedItemForOrder) {
+      return;
+    }
+
+    await updateBOMItem(projectId, categories, selectedItemForOrder.id, {
+      status: 'ordered',
+      orderDate: data.orderDate,
+      expectedArrival: data.expectedArrival,
+      poNumber: data.poNumber,
+      linkedPODocumentId: data.linkedPODocumentId,
+      finalizedVendor: {
+        name: data.vendor.name,
+        price: data.vendor.price,
+        leadTime: data.vendor.leadTime,
+        availability: data.vendor.availability,
+      },
+    });
+
+    try {
+      const updatedDocs = await syncPODocumentLinks({
+        itemId: selectedItemForOrder.id,
+        newDocumentId: data.linkedPODocumentId,
+        previousDocumentId: selectedItemForOrder.linkedPODocumentId,
+        documents: projectDocuments,
+        linkDocument: linkDocumentToBOMItems,
+      });
+      setProjectDocuments(updatedDocs);
+    } catch (error) {
+      console.error('Error syncing PO document links:', error);
+    }
+
+    setSelectedItemForOrder(null);
+  };
+
   return (
     <>
       <PageLayout
@@ -494,6 +544,11 @@ const BOM = () => {
                 onDocumentsChange={() => {
                   // Reload documents when they change
                   getProjectDocuments(projectId).then(setProjectDocuments);
+                }}
+                onBOMItemUpdate={async (itemId: string, updates: Partial<BOMItem>) => {
+                  if (projectId) {
+                    await updateBOMItem(projectId, categories, itemId, updates);
+                  }
                 }}
               />
             )}
@@ -992,24 +1047,7 @@ const BOM = () => {
         projectId={projectId || ''}
         availablePODocuments={poDocuments}
         vendors={vendors}
-        onConfirm={(data) => {
-          if (projectId && selectedItemForOrder) {
-            updateBOMItem(projectId, categories, selectedItemForOrder.id, {
-              status: 'ordered',
-              orderDate: data.orderDate,
-              expectedArrival: data.expectedArrival,
-              poNumber: data.poNumber,
-              linkedPODocumentId: data.linkedPODocumentId,
-              finalizedVendor: {
-                name: data.vendor.name,
-                price: data.vendor.price,
-                leadTime: data.vendor.leadTime,
-                availability: data.vendor.availability,
-              },
-            });
-          }
-          setSelectedItemForOrder(null);
-        }}
+        onConfirm={handleOrderDialogConfirm}
         onDocumentUploaded={(newDoc) => {
           // Add the new document to the list
           setProjectDocuments(prev => [...prev, newDoc]);

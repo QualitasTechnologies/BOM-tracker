@@ -22,9 +22,10 @@ interface ProjectDocumentsProps {
   projectId: string;
   bomItems: BOMItem[]; // All BOM items for linking
   onDocumentsChange?: () => void;
+  onBOMItemUpdate?: (itemId: string, updates: Partial<BOMItem>) => Promise<void>; // Callback to update BOM items
 }
 
-const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange }: ProjectDocumentsProps) => {
+const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate }: ProjectDocumentsProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -118,6 +119,24 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange }: ProjectDoc
 
     try {
       await linkDocumentToBOMItems(selectedDocument.id, selectedItemIds);
+      
+      // For outgoing-po documents, also update BOM items' linkedPODocumentId field
+      if (selectedDocument.type === 'outgoing-po' && onBOMItemUpdate) {
+        // Get previous linked items to know which ones to unlink
+        const previousLinkedIds = selectedDocument.linkedBOMItems || [];
+        
+        // Update items that are now linked: set their linkedPODocumentId
+        for (const itemId of selectedItemIds) {
+          await onBOMItemUpdate(itemId, { linkedPODocumentId: selectedDocument.id });
+        }
+        
+        // Update items that are no longer linked: clear their linkedPODocumentId
+        const unlinkedIds = previousLinkedIds.filter(id => !selectedItemIds.includes(id));
+        for (const itemId of unlinkedIds) {
+          await onBOMItemUpdate(itemId, { linkedPODocumentId: undefined });
+        }
+      }
+      
       await loadDocuments();
 
       toast({
