@@ -862,6 +862,10 @@ const Settings = () => {
               <Users size={16} />
               Clients ({clients.length})
             </TabsTrigger>
+            <TabsTrigger value="brands" className="flex items-center gap-2">
+              <Tag size={16} />
+              Brands
+            </TabsTrigger>
             <TabsTrigger value="vendors" className="flex items-center gap-2">
               <ShoppingCart size={16} />
               Vendors ({vendors.length})
@@ -873,10 +877,6 @@ const Settings = () => {
             <TabsTrigger value="purchase-request" className="flex items-center gap-2">
               <Mail size={16} />
               Purchase Request
-            </TabsTrigger>
-            <TabsTrigger value="brands" className="flex items-center gap-2">
-              <Tag size={16} />
-              Brands
             </TabsTrigger>
             <TabsTrigger value="general" className="flex items-center gap-2">
               <SettingsIcon size={16} />
