@@ -1621,7 +1621,7 @@ const Settings = () => {
                     <TableHeader>
                       <TableRow>
                         <TableHead>Vendor</TableHead>
-                        <TableHead>Type & Makes</TableHead>
+                        <TableHead>Type</TableHead>
                         <TableHead>Contact Info</TableHead>
                         <TableHead>Categories</TableHead>
                         <TableHead>Terms</TableHead>
@@ -1647,25 +1647,9 @@ const Settings = () => {
                             </div>
                           </TableCell>
                           <TableCell>
-                            <div>
-                              <Badge variant={vendor.type === 'OEM' ? 'default' : 'secondary'} className="text-xs mb-1">
-                                {vendor.type || 'Dealer'}
-                              </Badge>
-                              {vendor.makes && vendor.makes.length > 0 && (
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                  {vendor.makes.slice(0, 3).map((make, index) => (
-                                    <Badge key={index} variant="outline" className="text-xs">
-                                      {make}
-                                    </Badge>
-                                  ))}
-                                  {vendor.makes.length > 3 && (
-                                    <Badge variant="outline" className="text-xs">
-                                      +{vendor.makes.length - 3}
-                                    </Badge>
-                                  )}
-                                </div>
-                              )}
-                            </div>
+                            <Badge variant={vendor.type === 'OEM' ? 'default' : 'secondary'} className="text-xs">
+                              {vendor.type || 'Dealer'}
+                            </Badge>
                           </TableCell>
                           <TableCell>
                             <div className="space-y-1">
