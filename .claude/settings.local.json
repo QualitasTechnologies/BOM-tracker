@@ -22,7 +22,9 @@
       "Bash(cat:*)",
       "Bash(npm run test:run:*)",
       "Bash(git pull:*)",
-      "Bash(git show:*)"
+      "Bash(git show:*)",
+      "Bash(dir \"C:\\Software\\BOM-Tracker\\BOM-tracker\\coverage\")",
+      "Bash(ForEach-Object { $_FullName })"
     ],
     "deny": [],
     "ask": []
