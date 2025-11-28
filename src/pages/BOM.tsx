@@ -96,7 +96,6 @@ const BOM = () => {
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [availableMakes, setAvailableMakes] = useState<string[]>([]);
   const [canonicalCategories, setCanonicalCategories] = useState<SettingsCategory[]>([]);
-  const [categoryAlignmentSelections, setCategoryAlignmentSelections] = useState<Record<string, string>>({});
   const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([]);
   const canonicalCategoryNames = useMemo(
     () =>
@@ -105,37 +104,15 @@ const BOM = () => {
         .map((cat) => cat.name),
     [canonicalCategories]
   );
-  const canonicalCategoriesAvailable = canonicalCategoryNames.length > 0;
   const canonicalCategorySet = useMemo(
     () => new Set(canonicalCategoryNames.map((name) => name.toLowerCase())),
     [canonicalCategoryNames]
-  );
-  const mismatchedCategories = useMemo(
-    () => categories.filter((cat) => !canonicalCategorySet.has(cat.name.toLowerCase())),
-    [categories, canonicalCategorySet]
   );
 
   const isCanonicalCategory = useCallback(
     (name: string | null | undefined) => !!name && canonicalCategorySet.has(name.toLowerCase()),
     [canonicalCategorySet]
   );
-
-  useEffect(() => {
-    setCategoryAlignmentSelections((prev) => {
-      let changed = false;
-      const next: Record<string, string> = {};
-      mismatchedCategories.forEach((cat) => {
-        const existing = prev[cat.name];
-        if (existing) {
-          next[cat.name] = existing;
-        }
-      });
-      if (Object.keys(next).length !== Object.keys(prev).length) {
-        changed = true;
-      }
-      return changed ? next : prev;
-    });
-  }, [mismatchedCategories]);
 
   // Load BOM data when project ID changes
   useEffect(() => {
@@ -625,60 +602,6 @@ const BOM = () => {
                   {importSuccess}
                 </AlertDescription>
               </Alert>
-            )}
-
-            {mismatchedCategories.length > 0 && (
-              <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-4 space-y-3">
-                <div className="text-sm font-semibold text-amber-900">
-                  {mismatchedCategories.length} project categories are not defined in Settings. Align them with a canonical category to keep BOM data consistent.
-                </div>
-                <div className="space-y-3">
-                  {mismatchedCategories.map((cat) => (
-                    <div key={cat.name} className="flex flex-wrap items-center gap-3">
-                      <span className="text-sm font-medium text-amber-900">{cat.name}</span>
-                      <span className="text-xs text-amber-700">({cat.items.length} items)</span>
-                      <Select
-                        value={categoryAlignmentSelections[cat.name] ?? ''}
-                        onValueChange={(value) =>
-                          setCategoryAlignmentSelections((prev) => ({ ...prev, [cat.name]: value }))
-                        }
-                        disabled={!canonicalCategoriesAvailable}
-                      >
-                        <SelectTrigger className="w-48 h-8 text-sm">
-                          <SelectValue placeholder="Select canonical category" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {canonicalCategoryNames.map((canonicalName) => (
-                            <SelectItem key={canonicalName} value={canonicalName}>
-                              {canonicalName}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          const target = categoryAlignmentSelections[cat.name];
-                          if (target) {
-                            void handleEditCategory(cat.name, target);
-                          }
-                        }}
-                        disabled={!categoryAlignmentSelections[cat.name] || !canonicalCategoriesAvailable}
-                      >
-                        Merge
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-                {!canonicalCategoriesAvailable && (
-                  <p className="text-xs text-red-700">
-                    No canonical categories are defined in Settings yet. Add at least one to resolve these entries.
-                  </p>
-                )}
-                <p className="text-xs text-amber-800">
-                  Need to add or rename a category? Use Settings → Default Categories so every project stays in sync.
-                </p>
-              </div>
             )}
 
             {/* BOM Content - Single Column Layout */}
