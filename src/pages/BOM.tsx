@@ -32,7 +32,7 @@ import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { getProjectDocuments, linkDocumentToBOMItems } from '@/utils/projectDocumentFirestore';
 import { ProjectDocument } from '@/types/projectDocument';
-import { syncPODocumentLinks } from '@/utils/bomDocumentLinking';
+import { syncPODocumentLinks, getOutgoingPODocuments } from '@/utils/bomDocumentLinking';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -996,7 +996,7 @@ const BOM = () => {
           onOpenChange={setOrderDialogOpen}
           item={selectedItemForOrder}
           projectId={projectId}
-          availablePODocuments={projectDocuments.filter(doc => doc.type === 'outgoing-po')}
+          availablePODocuments={getOutgoingPODocuments(projectDocuments)}
           vendors={vendors}
           onConfirm={handleOrderDialogConfirm}
           onDocumentUploaded={(newDoc) => {
