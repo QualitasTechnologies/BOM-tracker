@@ -418,7 +418,7 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
       const functions = getFunctions();
       const sendPR = httpsCallable(functions, 'sendPurchaseRequest');
 
-      // Build categories with only selected items and include vendor ID
+      // Build categories with only selected items and include vendor ID and quote info
       const filteredCategories = categories.map(cat => ({
         ...cat,
         items: cat.items.filter(item => {
@@ -426,7 +426,10 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
           return selectableItem?.isSelected;
         }).map(item => {
           const selectableItem = selectableItems.find(si => si.id === item.id);
-          // IMPORTANT: Include vendor ID for proper grouping in Firebase function
+          const linkedQuote = selectableItem?.linkedQuoteId
+            ? vendorQuotes.find(q => q.id === selectableItem.linkedQuoteId)
+            : null;
+          // IMPORTANT: Include vendor ID and quote info for Firebase function
           return {
             ...item,
             finalizedVendor: selectableItem?.selectedVendorId
@@ -437,7 +440,12 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
                   leadTime: '',
                   availability: ''
                 }
-              : item.finalizedVendor
+              : item.finalizedVendor,
+            linkedQuote: linkedQuote ? {
+              id: linkedQuote.id,
+              name: linkedQuote.name,
+              url: linkedQuote.url
+            } : null
           };
         })
       })).filter(cat => cat.items.length > 0);

@@ -574,7 +574,8 @@ const groupItemsByVendor = (categories, vendors) => {
         description: item.description || '',
         quantity: item.quantity,
         category: category.name,
-        unitPrice: item.finalizedVendor?.price || null
+        unitPrice: item.finalizedVendor?.price || null,
+        linkedQuote: item.linkedQuote || null
       });
     });
   });
@@ -614,6 +615,7 @@ const generatePREmailHTML = (data) => {
         <td style="padding: 12px 8px; text-align: center;">${item.quantity}</td>
         <td style="padding: 12px 8px;">${item.category}</td>
         ${item.unitPrice ? `<td style="padding: 12px 8px; text-align: right;">₹${item.unitPrice.toLocaleString('en-IN')}</td>` : '<td style="padding: 12px 8px; text-align: right;">-</td>'}
+        <td style="padding: 12px 8px;">${item.linkedQuote ? `📄 <a href="${item.linkedQuote.url}" style="color: #0066cc; text-decoration: none;">${item.linkedQuote.name}</a>` : '-'}</td>
       </tr>
     `).join('');
 
@@ -645,6 +647,7 @@ const generatePREmailHTML = (data) => {
               <th style="padding: 12px 8px; text-align: center;">Quantity</th>
               <th style="padding: 12px 8px; text-align: left;">Category</th>
               <th style="padding: 12px 8px; text-align: right;">Unit Price</th>
+              <th style="padding: 12px 8px; text-align: left;">Quote</th>
             </tr>
           </thead>
           <tbody>
@@ -786,7 +789,13 @@ exports.sendPurchaseRequest = onCall(
         from: fromEmail || 'info@qualitastech.com', // Must be verified in SendGrid
         subject: `Purchase Request - ${projectDetails.projectName} - ${new Date().toLocaleDateString('en-IN')}`,
         html: htmlContent,
-        text: stripHtml(htmlContent)
+        text: stripHtml(htmlContent),
+        trackingSettings: {
+          clickTracking: {
+            enable: false,
+            enableText: false
+          }
+        }
       };
 
       // Send email

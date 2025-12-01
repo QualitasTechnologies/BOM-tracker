@@ -2300,6 +2300,25 @@ interface DocumentMatch {
 - Real-time refresh (on-demand or 1-minute polling is sufficient)
 - Formal change approval workflows
 
+### Planned Future Enhancement: Password-Protected Document Links
+
+**Problem:**
+- Vendor quote links in PR emails are accessible to anyone with the link
+- Firebase Storage URLs provide direct access without authentication
+- Sensitive pricing/vendor information could be exposed via forwarded emails
+
+**Proposed Solution:**
+- Implement password gate before documents can be viewed via shared links
+- Options to consider:
+  - Firebase Storage security rules with authenticated access
+  - Time-limited signed URLs with password verification endpoint
+  - Proxy endpoint that validates password before redirecting to document
+- Ensures sensitive pricing/vendor information is not exposed via shared email links
+
+**Priority:** Medium - Security enhancement for document sharing
+
+---
+
 ### Out of Scope for Phase 3 (BOM Tracker - PO Creation & AI Compliance)
 
 **Procurement Features:**
