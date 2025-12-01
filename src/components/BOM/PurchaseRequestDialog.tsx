@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Loader2, Send, Mail, X, AlertCircle, User, Search, Check } from 'lucide-react';
+import { Loader2, Send, Mail, X, AlertCircle, User, Search, Check, FileText, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -11,6 +11,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { BOMCategory, BOMItem } from '@/types/bom';
 import { Vendor, getPRSettings } from '@/utils/settingsFirestore';
+import { ProjectDocument } from '@/types/projectDocument';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { toast } from '@/components/ui/use-toast';
 import { auth } from '@/firebase';
@@ -27,6 +28,7 @@ interface PurchaseRequestDialogProps {
   };
   categories: BOMCategory[];
   vendors: Vendor[];
+  documents: ProjectDocument[];
 }
 
 interface SelectableItem {
@@ -40,6 +42,8 @@ interface SelectableItem {
   selectedVendorId: string;
   selectedVendorName: string;
   isSelected: boolean;
+  linkedQuoteId: string;
+  linkedQuoteName: string;
 }
 
 interface GroupedItem {
@@ -177,7 +181,8 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
   projectId,
   projectDetails,
   categories,
-  vendors
+  vendors,
+  documents
 }) => {
   const [recipients, setRecipients] = useState<string[]>([]);
   const [emailInput, setEmailInput] = useState('');
@@ -197,6 +202,13 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
   const activeVendors = useMemo(() => {
     return vendors.filter(v => v.status === 'active');
   }, [vendors]);
+
+  // Vendor quotes for selection (only vendor-quote type documents)
+  const vendorQuotes = useMemo(() => {
+    return documents
+      .filter(d => d.type === 'vendor-quote')
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [documents]);
 
   // Load PR settings when dialog opens
   useEffect(() => {
@@ -250,6 +262,17 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
           }
         }
 
+        // Find linked vendor quote document for this item
+        let linkedQuoteId = '';
+        let linkedQuoteName = '';
+        const linkedQuote = documents.find(
+          d => d.type === 'vendor-quote' && d.linkedBOMItems?.includes(item.id)
+        );
+        if (linkedQuote) {
+          linkedQuoteId = linkedQuote.id;
+          linkedQuoteName = linkedQuote.name;
+        }
+
         items.push({
           id: item.id,
           name: item.name,
@@ -260,13 +283,15 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
           category: category.name,
           selectedVendorId: vendorId,
           selectedVendorName: vendorName,
-          isSelected: true // All selected by default
+          isSelected: true, // All selected by default
+          linkedQuoteId,
+          linkedQuoteName
         });
       });
     });
 
     setSelectableItems(items);
-  }, [categories, vendors, open]);
+  }, [categories, vendors, documents, open]);
 
   // Group selected items by vendor for preview
   const groupedItems = useMemo((): GroupedItem[] => {
@@ -327,6 +352,16 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
     );
   };
 
+  const handleQuoteChange = (itemId: string, quoteId: string, quoteName: string) => {
+    setSelectableItems(prev =>
+      prev.map(item =>
+        item.id === itemId
+          ? { ...item, linkedQuoteId: quoteId, linkedQuoteName: quoteName }
+          : item
+      )
+    );
+  };
+
   const handleAddEmail = () => {
     if (!emailInput.trim()) return;
 
@@ -367,6 +402,12 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
     const itemsWithoutVendor = selectedItems.filter(item => !item.selectedVendorId);
     if (itemsWithoutVendor.length > 0) {
       setError(`Please assign a vendor to all selected items (${itemsWithoutVendor.length} items without vendor)`);
+      return;
+    }
+
+    const itemsWithoutQuote = selectedItems.filter(item => !item.linkedQuoteId);
+    if (itemsWithoutQuote.length > 0) {
+      setError(`Please attach a vendor quote to all selected items (${itemsWithoutQuote.length} items without quote)`);
       return;
     }
 
@@ -438,6 +479,8 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
   const selectedCount = selectableItems.filter(item => item.isSelected).length;
   const totalItems = selectableItems.length;
   const itemsWithVendor = selectableItems.filter(item => item.isSelected && item.selectedVendorId).length;
+  const itemsWithQuote = selectableItems.filter(item => item.isSelected && item.linkedQuoteId).length;
+  const itemsMissingQuote = selectableItems.filter(item => item.isSelected && !item.linkedQuoteId);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -481,8 +524,9 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
                     <div
                       key={item.id}
                       className={cn(
-                        "flex items-center gap-3 p-2 border rounded-lg",
-                        item.isSelected ? 'bg-blue-50 border-blue-200' : 'bg-gray-50'
+                        "flex items-center gap-2 p-2 border rounded-lg",
+                        item.isSelected ? 'bg-blue-50 border-blue-200' : 'bg-gray-50',
+                        item.isSelected && !item.linkedQuoteId && 'border-amber-300'
                       )}
                     >
                       <Checkbox
@@ -499,7 +543,7 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
                         </div>
                         <div className="text-xs text-gray-500 truncate">{item.category}</div>
                       </div>
-                      <div className="w-[200px]">
+                      <div className="w-[160px]">
                         <VendorCombobox
                           vendors={activeVendors}
                           value={item.selectedVendorId}
@@ -508,6 +552,80 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
                           hasError={item.isSelected && !item.selectedVendorId}
                         />
                       </div>
+                      <div className="w-[160px]">
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              disabled={!item.isSelected}
+                              className={cn(
+                                "w-full h-8 justify-between text-xs font-normal",
+                                item.isSelected && !item.linkedQuoteId && "border-amber-300 bg-amber-50",
+                                !item.linkedQuoteId && "text-muted-foreground"
+                              )}
+                            >
+                              {item.linkedQuoteId ? (
+                                <span className="flex items-center gap-1 truncate">
+                                  <FileText className="h-3 w-3 shrink-0" />
+                                  <span className="truncate">{item.linkedQuoteName}</span>
+                                </span>
+                              ) : (
+                                <span className="flex items-center gap-1">
+                                  <FileText className="h-3 w-3 shrink-0 text-amber-500" />
+                                  Select quote...
+                                </span>
+                              )}
+                              <Search className="ml-1 h-3 w-3 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-[280px] p-0" align="end">
+                            <Command>
+                              <CommandInput placeholder="Search quotes..." className="h-9" />
+                              <CommandList>
+                                <CommandEmpty>No quotes found. Upload vendor quotes first.</CommandEmpty>
+                                <CommandGroup>
+                                  <CommandItem
+                                    value="__NONE__"
+                                    onSelect={() => handleQuoteChange(item.id, '', '')}
+                                  >
+                                    <span className="text-muted-foreground">No quote</span>
+                                  </CommandItem>
+                                  {vendorQuotes.map((quote) => (
+                                    <CommandItem
+                                      key={quote.id}
+                                      value={quote.id}
+                                      onSelect={() => handleQuoteChange(item.id, quote.id, quote.name)}
+                                    >
+                                      <Check
+                                        className={cn(
+                                          "mr-2 h-4 w-4",
+                                          item.linkedQuoteId === quote.id ? "opacity-100" : "opacity-0"
+                                        )}
+                                      />
+                                      <span className="flex items-center gap-2 truncate">
+                                        <FileText className="h-3 w-3 shrink-0" />
+                                        <span className="truncate">{quote.name}</span>
+                                      </span>
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                      {item.linkedQuoteId && (
+                        <a
+                          href={vendorQuotes.find(q => q.id === item.linkedQuoteId)?.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-1 hover:bg-gray-200 rounded"
+                          title="Open quote"
+                        >
+                          <ExternalLink className="h-4 w-4 text-gray-500" />
+                        </a>
+                      )}
                     </div>
                   ))}
                   {selectableItems.length === 0 && (
@@ -518,6 +636,24 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
                 </div>
               </CardContent>
             </Card>
+
+            {/* Warning for items missing quotes */}
+            {itemsMissingQuote.length > 0 && selectedCount > 0 && (
+              <Alert variant="destructive" className="border-amber-300 bg-amber-50 text-amber-800">
+                <AlertCircle className="h-4 w-4 text-amber-600" />
+                <AlertDescription>
+                  <strong>{itemsMissingQuote.length} item{itemsMissingQuote.length > 1 ? 's' : ''} missing vendor quote:</strong>
+                  <ul className="mt-1 text-xs list-disc list-inside">
+                    {itemsMissingQuote.slice(0, 5).map(item => (
+                      <li key={item.id}>{item.name}</li>
+                    ))}
+                    {itemsMissingQuote.length > 5 && (
+                      <li>...and {itemsMissingQuote.length - 5} more</li>
+                    )}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            )}
 
             {/* Preview - Grouped by Vendor */}
             {groupedItems.length > 0 && (
@@ -650,7 +786,7 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
           </Button>
           <Button
             onClick={handleSend}
-            disabled={loading || recipients.length === 0 || selectedCount === 0 || itemsWithVendor !== selectedCount}
+            disabled={loading || recipients.length === 0 || selectedCount === 0 || itemsWithVendor !== selectedCount || itemsWithQuote !== selectedCount}
           >
             {loading ? (
               <>

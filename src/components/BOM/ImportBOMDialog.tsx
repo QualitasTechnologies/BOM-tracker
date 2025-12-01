@@ -12,7 +12,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { BOMItem } from '@/types/bom';
-import { getBOMSettings, getVendors } from '@/utils/settingsFirestore';
+import { getBOMSettings } from '@/utils/settingsFirestore';
+import { getBrands } from '@/utils/brandFirestore';
 import { analyzeBOMWithAI, ExtractedBOMItem as AIExtractedItem } from '@/utils/aiService';
 
 interface ImportBOMDialogProps {
@@ -56,28 +57,24 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
   React.useEffect(() => {
     const loadData = async () => {
       try {
-        const [settings, vendors] = await Promise.all([
+        const [settings, brands] = await Promise.all([
           getBOMSettings(),
-          getVendors()
+          getBrands()
         ]);
-        
+
         setBomSettings(settings);
         if (settings?.defaultCategories) {
           setExistingCategories(settings.defaultCategories);
         }
-        
-        // Extract unique makes from OEM vendors only
-        const makes = new Set<string>();
-        
-        const oemVendors = vendors.filter(vendor => vendor.type === 'OEM');
-        oemVendors.forEach(vendor => {
-          if (vendor.company && vendor.company.trim()) {
-            makes.add(vendor.company);
-          }
-        });
-        
-        setExistingMakes(Array.from(makes));
-        console.log('Loaded OEM makes (company names):', Array.from(makes));
+
+        // Extract brand names (active brands only) - these are the manufacturers/makes
+        const brandNames = brands
+          .filter(brand => brand.status === 'active')
+          .map(brand => brand.name)
+          .filter(name => name && name.trim() !== '');
+
+        setExistingMakes(brandNames);
+        console.log('Loaded brands for makes:', brandNames);
         
       } catch (err) {
         console.error('Failed to load data:', err);

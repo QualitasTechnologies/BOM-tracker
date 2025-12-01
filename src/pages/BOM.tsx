@@ -827,11 +827,8 @@ const BOM = () => {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__NONE__">None</SelectItem>
-                        {availableMakes.length === 0 && vendors.length === 0 && (
-                          <SelectItem value="__LOADING__" disabled>Loading makes...</SelectItem>
-                        )}
-                        {availableMakes.length === 0 && vendors.length > 0 && (
-                          <SelectItem value="__NO_MAKES__" disabled>No makes found in vendors</SelectItem>
+                        {availableMakes.length === 0 && (
+                          <SelectItem value="__NO_BRANDS__" disabled>No brands found. Add brands in Settings.</SelectItem>
                         )}
                         {availableMakes
                           .filter(make => make && make.trim() !== '') // Filter out empty makes
@@ -993,6 +990,7 @@ const BOM = () => {
           projectDetails={projectDetails}
           categories={categories}
           vendors={vendors}
+          documents={projectDocuments}
         />
       )}
 
