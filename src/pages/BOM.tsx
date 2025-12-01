@@ -829,6 +829,7 @@ const BOM = () => {
                         )}
                         {availableMakes
                           .filter(make => make && make.trim() !== '') // Filter out empty makes
+                          .sort((a, b) => a.localeCompare(b))
                           .map((make) => (
                             <SelectItem key={make} value={make}>
                               {make}

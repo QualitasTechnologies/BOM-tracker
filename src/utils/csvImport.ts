@@ -8,7 +8,7 @@ export interface CSVImportResult {
 // Export all vendors to CSV
 export const exportVendorsToCSV = (vendors: Vendor[]) => {
   const headers = [
-    'Company', 'Type', 'Makes', 'Email', 'Phone', 'Website', 'Logo',
+    'Company', 'Type', 'Makes', 'Email', 'Phone', 'Website', 'GSTNo', 'Logo',
     'PaymentTerms', 'LeadTime', 'Address', 'ContactPerson', 'Categories', 'Notes'
   ];
 
@@ -20,6 +20,7 @@ export const exportVendorsToCSV = (vendors: Vendor[]) => {
     vendor.email || '',
     vendor.phone || '',
     vendor.website || '',
+    vendor.gstNo || '',
     vendor.logo || '',
     vendor.paymentTerms || 'Net 30',
     vendor.leadTime || '2 weeks',
@@ -83,6 +84,9 @@ export const parseVendorCSV = (csvText: string) => {
           break;
         case 'website':
           vendor.website = value;
+          break;
+        case 'gstno':
+          vendor.gstNo = value.toUpperCase();
           break;
         case 'logo':
           vendor.logo = value;

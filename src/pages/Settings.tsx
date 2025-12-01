@@ -280,6 +280,7 @@ const Settings = () => {
             address: vendor.address || '',
             contactPerson: vendor.contactPerson || '',
             website: vendor.website || '',
+            gstNo: vendor.gstNo || '',
             logo: vendor.logo || '',
             logoPath: '',
             paymentTerms: vendor.paymentTerms || 'Net 30',
@@ -307,6 +308,7 @@ const Settings = () => {
             address: vendor.address || existing.address,
             contactPerson: vendor.contactPerson || existing.contactPerson,
             website: vendor.website || existing.website,
+            gstNo: vendor.gstNo || existing.gstNo,
             logo: vendor.logo || existing.logo,
             paymentTerms: vendor.paymentTerms || existing.paymentTerms,
             leadTime: vendor.leadTime || existing.leadTime,
@@ -496,6 +498,7 @@ const Settings = () => {
         website: vendorForm.website || '',
         logo: logoUrl,
         logoPath: logoPath,
+        gstNo: vendorForm.gstNo || '',
         paymentTerms: vendorForm.paymentTerms || 'Net 30',
         leadTime: vendorForm.leadTime || '2 weeks',
         rating: vendorForm.rating || 0,
@@ -814,22 +817,24 @@ const Settings = () => {
     );
   }
 
-  // Filter vendors based on search and category
-  const filteredVendors = vendors.filter(vendor => {
-    // Search filter
-    const searchLower = vendorSearch.toLowerCase();
-    const matchesSearch = !vendorSearch ||
-      vendor.company.toLowerCase().includes(searchLower) ||
-      vendor.email?.toLowerCase().includes(searchLower) ||
-      vendor.contactPerson?.toLowerCase().includes(searchLower) ||
-      vendor.makes?.some(make => make.toLowerCase().includes(searchLower));
+  // Filter and sort vendors based on search and category
+  const filteredVendors = vendors
+    .filter(vendor => {
+      // Search filter
+      const searchLower = vendorSearch.toLowerCase();
+      const matchesSearch = !vendorSearch ||
+        vendor.company.toLowerCase().includes(searchLower) ||
+        vendor.email?.toLowerCase().includes(searchLower) ||
+        vendor.contactPerson?.toLowerCase().includes(searchLower) ||
+        vendor.makes?.some(make => make.toLowerCase().includes(searchLower));
 
-    // Category filter
-    const matchesCategory = vendorCategoryFilter === 'all' ||
-      vendor.categories?.includes(vendorCategoryFilter);
+      // Category filter
+      const matchesCategory = vendorCategoryFilter === 'all' ||
+        vendor.categories?.includes(vendorCategoryFilter);
 
-    return matchesSearch && matchesCategory;
-  });
+      return matchesSearch && matchesCategory;
+    })
+    .sort((a, b) => a.company.localeCompare(b.company));
 
   // Get unique categories from BOM settings for filter dropdown
   const availableCategories = bomSettings?.defaultCategories || [];
@@ -1319,6 +1324,16 @@ const Settings = () => {
                           />
                         </div>
                         <div className="space-y-2">
+                          <Label htmlFor="gstNo">GST No</Label>
+                          <Input
+                            id="gstNo"
+                            value={vendorForm.gstNo || ''}
+                            onChange={(e) => setVendorForm({...vendorForm, gstNo: e.target.value.toUpperCase()})}
+                            placeholder="e.g., 29ABCDE1234F1Z5"
+                            maxLength={15}
+                          />
+                        </div>
+                        <div className="space-y-2">
                           <Label>Company Logo</Label>
                           <div className="flex items-center gap-4">
                             {logoPreview && (
@@ -1407,40 +1422,40 @@ const Settings = () => {
                         </div>
                         {/* Only show Makes/Brands field for Dealers */}
                         {vendorForm.type === 'Dealer' && (
-                          <div className="space-y-2">
-                            <Label>Makes/Brands (OEMs represented)</Label>
-                            <div className="border rounded-md p-3 max-h-32 overflow-y-auto bg-background">
-                              {oemVendors.length === 0 ? (
-                                <p className="text-sm text-muted-foreground">No OEM vendors available. Add some OEM vendors first.</p>
+                          <div className="space-y-2 col-span-2">
+                            <Label>Distributed Brands</Label>
+                            <div className="border rounded-md p-3 max-h-40 overflow-y-auto bg-background">
+                              {brands.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">No brands available. Add brands in the Brands tab first.</p>
                               ) : (
-                                <div className="space-y-2">
-                                  {oemVendors.map((oem) => (
-                                    <div key={oem.id} className="flex items-center space-x-2">
+                                <div className="grid grid-cols-2 @2xl:grid-cols-3 gap-2">
+                                  {[...brands].sort((a, b) => a.name.localeCompare(b.name)).map((brand) => (
+                                    <div key={brand.id} className="flex items-center space-x-2">
                                       <input
                                         type="checkbox"
-                                        id={`oem-${oem.id}`}
-                                        checked={(vendorForm.makes || []).includes(oem.company)}
+                                        id={`brand-${brand.id}`}
+                                        checked={(vendorForm.distributedBrands || []).includes(brand.id)}
                                         onChange={(e) => {
-                                          const currentMakes = vendorForm.makes || [];
+                                          const currentBrands = vendorForm.distributedBrands || [];
                                           if (e.target.checked) {
                                             setVendorForm({
                                               ...vendorForm,
-                                              makes: [...currentMakes, oem.company]
+                                              distributedBrands: [...currentBrands, brand.id]
                                             });
                                           } else {
                                             setVendorForm({
                                               ...vendorForm,
-                                              makes: currentMakes.filter(make => make !== oem.company)
+                                              distributedBrands: currentBrands.filter(id => id !== brand.id)
                                             });
                                           }
                                         }}
                                         className="rounded border-gray-300"
                                       />
-                                      <Label 
-                                        htmlFor={`oem-${oem.id}`} 
+                                      <Label
+                                        htmlFor={`brand-${brand.id}`}
                                         className="text-sm font-normal cursor-pointer"
                                       >
-                                        {oem.company}
+                                        {brand.name}
                                       </Label>
                                     </div>
                                   ))}
@@ -1448,7 +1463,7 @@ const Settings = () => {
                               )}
                             </div>
                             <p className="text-xs text-muted-foreground">
-                              Select the OEM brands this dealer represents
+                              Select the brands this dealer distributes (from Brands tab)
                             </p>
                           </div>
                         )}
@@ -1623,6 +1638,7 @@ const Settings = () => {
                         <TableHead>Vendor</TableHead>
                         <TableHead>Type</TableHead>
                         <TableHead>Contact Info</TableHead>
+                        <TableHead>GST No</TableHead>
                         <TableHead>Categories</TableHead>
                         <TableHead>Terms</TableHead>
                         <TableHead>Actions</TableHead>
@@ -1666,6 +1682,11 @@ const Settings = () => {
                                 </div>
                               )}
                             </div>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-sm font-mono">
+                              {vendor.gstNo || '-'}
+                            </span>
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-wrap gap-1">

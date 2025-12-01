@@ -46,6 +46,7 @@ import {
   Tag,
   Upload,
   Download,
+  Search,
 } from "lucide-react";
 import { toast } from "@/components/ui/use-toast";
 import { Brand, BrandInput } from "@/types/brand";
@@ -71,6 +72,7 @@ const BrandsTab = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingBrand, setEditingBrand] = useState<Brand | null>(null);
   const [formErrors, setFormErrors] = useState<string[]>([]);
+  const [brandSearch, setBrandSearch] = useState('');
 
   // Form state
   const [brandForm, setBrandForm] = useState<Partial<BrandInput>>({
@@ -308,6 +310,19 @@ const BrandsTab = () => {
       fileInputRef.current.value = "";
     }
   };
+
+  // Filter and sort brands based on search query
+  const filteredBrands = brands
+    .filter((brand) => {
+      if (!brandSearch) return true;
+      const searchLower = brandSearch.toLowerCase();
+      return (
+        brand.name.toLowerCase().includes(searchLower) ||
+        (brand.website && brand.website.toLowerCase().includes(searchLower)) ||
+        (brand.description && brand.description.toLowerCase().includes(searchLower))
+      );
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   if (loading) {
     return (
@@ -553,13 +568,40 @@ const BrandsTab = () => {
       </CardHeader>
 
       <CardContent>
-        {brands.length === 0 ? (
+        {/* Search Control */}
+        {brands.length > 0 && (
+          <div className="mb-4">
+            <div className="flex-1 relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <Input
+                placeholder="Search brands by name, website, or description..."
+                value={brandSearch}
+                onChange={(e) => setBrandSearch(e.target.value)}
+                className="pl-10"
+              />
+            </div>
+          </div>
+        )}
+
+        {filteredBrands.length === 0 ? (
           <div className="text-center py-8">
-            <Tag className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-            <p className="text-gray-500">No brands added yet</p>
-            <p className="text-gray-400 text-sm">
-              Add your first brand to get started
-            </p>
+            {brands.length === 0 ? (
+              <>
+                <Tag className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+                <p className="text-gray-500">No brands added yet</p>
+                <p className="text-gray-400 text-sm">
+                  Add your first brand to get started
+                </p>
+              </>
+            ) : (
+              <>
+                <Search className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+                <p className="text-gray-500">No brands match your search</p>
+                <p className="text-gray-400 text-sm">
+                  Try adjusting your search query
+                </p>
+              </>
+            )}
           </div>
         ) : (
           <Table>
@@ -573,7 +615,7 @@ const BrandsTab = () => {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {brands.map((brand) => (
+              {filteredBrands.map((brand) => (
                 <TableRow key={brand.id}>
                   <TableCell>
                     <div className="flex items-center gap-3">
