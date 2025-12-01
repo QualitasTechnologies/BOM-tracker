@@ -24,7 +24,9 @@
       "Bash(git pull:*)",
       "Bash(git show:*)",
       "Bash(dir \"C:\\Software\\BOM-Tracker\\BOM-tracker\\coverage\")",
-      "Bash(ForEach-Object { $_FullName })"
+      "Bash(ForEach-Object { $_FullName })",
+      "Bash(find:*)",
+      "Bash(xargs:*)"
     ],
     "deny": [],
     "ask": []
