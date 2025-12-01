@@ -257,10 +257,18 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
                                 {doc.name}
                               </a>
                               {doc.linkedBOMItems && doc.linkedBOMItems.length > 0 && (
-                                <Badge variant="outline" className="text-xs">
-                                  <LinkIcon size={12} className="mr-1" />
-                                  {doc.linkedBOMItems.length} items
-                                </Badge>
+                                <>
+                                  <Badge variant="outline" className="text-xs">
+                                    <LinkIcon size={12} className="mr-1" />
+                                    {doc.linkedBOMItems.length} items
+                                  </Badge>
+                                  <span className="text-xs text-gray-500 ml-1">
+                                    ({doc.linkedBOMItems
+                                      .map(id => bomItems.find(item => item.id === id)?.name)
+                                      .filter(Boolean)
+                                      .join(', ')})
+                                  </span>
+                                </>
                               )}
                             </div>
                             <div className="text-xs text-gray-500 mt-1">
