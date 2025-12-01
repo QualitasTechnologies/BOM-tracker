@@ -19,15 +19,24 @@ import { Brand, BrandInput } from "@/types/brand";
 const brandsCol = collection(db, "brands");
 
 /**
+ * Remove undefined values from an object to prevent Firestore errors
+ */
+const cleanFirestoreData = <T extends Record<string, any>>(data: T): Partial<T> => {
+  return Object.fromEntries(
+    Object.entries(data).filter(([_, value]) => value !== undefined)
+  ) as Partial<T>;
+};
+
+/**
  * Add a new brand to Firestore
  */
 export const addBrand = async (brand: BrandInput): Promise<string> => {
   const now = new Date();
-  const brandData = {
+  const brandData = cleanFirestoreData({
     ...brand,
     createdAt: now,
     updatedAt: now,
-  };
+  });
   const docRef = await addDoc(brandsCol, brandData);
   return docRef.id;
 };
@@ -95,12 +104,10 @@ export const updateBrand = async (
   const brandRef = doc(brandsCol, brandId);
 
   // Filter out undefined values - Firestore doesn't accept undefined
-  const cleanedUpdates: Record<string, any> = { updatedAt: new Date() };
-  for (const [key, value] of Object.entries(updates)) {
-    if (value !== undefined) {
-      cleanedUpdates[key] = value;
-    }
-  }
+  const cleanedUpdates = cleanFirestoreData({
+    ...updates,
+    updatedAt: new Date(),
+  });
 
   await updateDoc(brandRef, cleanedUpdates);
 };

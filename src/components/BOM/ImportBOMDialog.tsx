@@ -430,6 +430,7 @@ Example:
                                 <SelectItem value="unspecified">None</SelectItem>
                                 {existingMakes
                                   .filter(make => make !== 'unspecified')
+                                  .sort((a, b) => a.localeCompare(b))
                                   .map((make) => (
                                     <SelectItem key={make} value={make}>{make}</SelectItem>
                                   ))}

@@ -1,6 +1,15 @@
 import { db } from '@/firebase';
 import { collection, doc, getDoc, getDocs, setDoc, updateDoc, query, where } from 'firebase/firestore';
 
+/**
+ * Remove undefined values from an object to prevent Firestore errors
+ */
+const cleanFirestoreData = <T extends Record<string, any>>(data: T): Partial<T> => {
+  return Object.fromEntries(
+    Object.entries(data).filter(([_, value]) => value !== undefined)
+  ) as Partial<T>;
+};
+
 export interface TimeEntry {
   hours: number;
   description: string;
@@ -113,7 +122,7 @@ export const addEngineer = async (
   }, {} as Engineer['weeks']);
 
   const engineerWithWeeks: Engineer = {
-    ...engineer,
+    ...cleanFirestoreData(engineer) as Omit<Engineer, 'weeks'>,
     weeks
   };
 
@@ -131,7 +140,8 @@ export const updateEngineer = async (
   updates: Partial<Omit<Engineer, 'weeks'>>
 ) => {
   const engineerRef = doc(db, 'projects', projectId, 'engineers', engineerId);
-  await updateDoc(engineerRef, updates);
+  const cleanedUpdates = cleanFirestoreData(updates);
+  await updateDoc(engineerRef, cleanedUpdates);
 };
 
 // Add a new week

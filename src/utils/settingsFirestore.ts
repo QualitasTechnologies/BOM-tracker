@@ -14,6 +14,15 @@ import {
   getDoc
 } from "firebase/firestore";
 
+/**
+ * Remove undefined values from an object to prevent Firestore errors
+ */
+const cleanFirestoreData = <T extends Record<string, any>>(data: T): Partial<T> => {
+  return Object.fromEntries(
+    Object.entries(data).filter(([_, value]) => value !== undefined)
+  ) as Partial<T>;
+};
+
 // Client types and interfaces
 export interface Client {
   id: string;
@@ -38,6 +47,7 @@ export interface Vendor {
   website?: string;
   logo?: string;
   logoPath?: string;
+  gstNo?: string;                     // GST Number (Indian tax ID)
   paymentTerms: string;
   leadTime: string;
   rating: number;
@@ -84,11 +94,11 @@ const clientsCol = collection(db, "clients");
 
 export const addClient = async (client: Omit<Client, 'id' | 'createdAt' | 'updatedAt'>) => {
   const now = new Date();
-  const clientData = {
+  const clientData = cleanFirestoreData({
     ...client,
     createdAt: now,
     updatedAt: now
-  };
+  });
   const docRef = await addDoc(clientsCol, clientData);
   return docRef.id;
 };
@@ -113,10 +123,11 @@ export const subscribeToClients = (callback: (clients: Client[]) => void): Unsub
 
 export const updateClient = async (clientId: string, updates: Partial<Omit<Client, 'id' | 'createdAt'>>) => {
   const clientRef = doc(clientsCol, clientId);
-  await updateDoc(clientRef, {
+  const cleanedUpdates = cleanFirestoreData({
     ...updates,
     updatedAt: new Date()
   });
+  await updateDoc(clientRef, cleanedUpdates);
 };
 
 export const deleteClient = async (clientId: string) => {
@@ -140,11 +151,11 @@ const vendorsCol = collection(db, "vendors");
 
 export const addVendor = async (vendor: Omit<Vendor, 'id' | 'createdAt' | 'updatedAt'>) => {
   const now = new Date();
-  const vendorData = {
+  const vendorData = cleanFirestoreData({
     ...vendor,
     createdAt: now,
     updatedAt: now
-  };
+  });
   const docRef = await addDoc(vendorsCol, vendorData);
   return docRef.id;
 };
@@ -169,10 +180,11 @@ export const subscribeToVendors = (callback: (vendors: Vendor[]) => void): Unsub
 
 export const updateVendor = async (vendorId: string, updates: Partial<Omit<Vendor, 'id' | 'createdAt'>>) => {
   const vendorRef = doc(vendorsCol, vendorId);
-  await updateDoc(vendorRef, {
+  const cleanedUpdates = cleanFirestoreData({
     ...updates,
     updatedAt: new Date()
   });
+  await updateDoc(vendorRef, cleanedUpdates);
 };
 
 export const deleteVendor = async (vendorId: string) => {

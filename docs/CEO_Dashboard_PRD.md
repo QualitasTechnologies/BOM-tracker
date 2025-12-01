@@ -1,16 +1,16 @@
 # CEO Engineering Dashboard - Product Requirements Document (PRD)
 
 ## Document Version
-- Version: 2.0
-- Date: 2025-10-22
-- Status: Draft - Phase 1 Detailed
+- Version: 3.0
+- Date: 2025-01-XX
+- Status: Draft - Phase 1 Detailed, Phase 3 Planned
 - Owner: CEO
 
 ---
 
 ## Executive Summary
 
-This dashboard provides the CEO with comprehensive visibility into engineering operations, starting with foundational compliance and time tracking, then building toward advanced project health analytics.
+This PRD covers two major systems: the **CEO Engineering Dashboard** for time tracking and project health analytics, and the **BOM Tracker** for Bill of Materials management with procurement compliance. Both systems work together to provide comprehensive visibility into engineering operations and project costs.
 
 **Phased Approach:**
 
@@ -27,6 +27,13 @@ This dashboard provides the CEO with comprehensive visibility into engineering o
 - Root cause visibility for budget/timeline issues
 - Timeline: TBD after Phase 1 completion
 
+**Phase 3: BOM Tracker - PO Creation & AI Compliance**
+- In-app Purchase Order (PO) creation and management
+- AI-powered compliance analysis for BOM items
+- Automatic price verification against quotes/orders
+- Document matching and missing item flagging
+- Timeline: TBD after Phase 1 completion
+
 **Design Philosophy:**
 - Foundation first: Get accurate data before building analytics
 - Compliance before optimization: Team discipline enables insights
@@ -40,7 +47,7 @@ This dashboard provides the CEO with comprehensive visibility into engineering o
 
 ## Problem Statement
 
-### Current State
+### Current State - Time Tracking & Project Management
 - **No systematic time tracking** - Cannot measure true project costs
 - **Team doesn't log time consistently** - Data is incomplete or missing
 - **No visibility into where time is spent** - CEO cannot see task-level costs
@@ -52,6 +59,19 @@ This dashboard provides the CEO with comprehensive visibility into engineering o
 - No systematic way to track which projects are at risk
 - When delays happen, no historical record of why or when issues started
 - Clients and CEO only remember recent events, lose track of delay root causes
+
+### Current State - BOM Tracker & Procurement
+- **No in-app PO creation** - Purchase orders created externally, manually linked
+- **Manual price entry** - Prices entered manually without verification against quotes/orders
+- **Manual document linking** - Documents (quotes, POs, invoices) manually linked to BOM items
+- **No compliance checking** - No systematic way to ensure:
+  - All items have vendor quotes before ordering
+  - All ordered items have vendor POs
+  - All received items have vendor invoices
+- **No document matching** - Cannot automatically match items with documents to flag missing items
+- **Price discrepancies** - Prices in BOM may not match quotes or orders, leading to budget issues
+- **Missing documentation** - Items may be ordered/received without proper documentation
+- **No audit trail** - Difficult to track compliance and identify gaps in procurement process
 
 ### Desired State - Phase 1
 - **100% daily compliance** - Every team member logs time every day
@@ -69,6 +89,18 @@ This dashboard provides the CEO with comprehensive visibility into engineering o
 - Track patterns (which engineers estimate poorly, which project types have issues)
 - Build team discipline around check-ins, planning, and estimation
 - Projects grouped by category (Internal vs Customer projects)
+
+### Desired State - Phase 3 (BOM Tracker)
+- **In-app PO creation** - Generate and manage purchase orders directly in the application
+- **AI compliance analysis** - Automatic checking to ensure:
+  - All items have vendor quotes (before ordering)
+  - All ordered items have vendor POs
+  - All received items have vendor invoices
+- **Automatic price verification** - Prices cross-verified against quotes/orders automatically
+- **Document matching** - AI matches items with documents and flags missing items
+- **Compliance dashboard** - Real-time visibility into BOM compliance status
+- **Audit trail** - Complete history of quotes, POs, and invoices for each item
+- **Price discrepancy alerts** - Automatic alerts when BOM prices don't match quotes/orders
 
 ---
 
@@ -101,6 +133,18 @@ This dashboard provides the CEO with comprehensive visibility into engineering o
 - **Needs**: Understand why their project is delayed
 - **Usage Pattern**: Occasional review when CEO shares project status
 - **Key Question**: "Why is my project late and was it our fault or yours?"
+
+### Phase 3 Primary Users: Procurement Team / Project Managers
+- **Needs**: Create POs, ensure compliance, verify prices
+- **Usage Pattern**: Daily BOM management, weekly compliance review
+- **Technical Skill**: Technical users, comfortable with web interfaces
+- **Key Question**: "Are all items compliant? Do prices match quotes/orders?"
+
+### Phase 3 Secondary User: CEO
+- **Needs**: Visibility into BOM compliance, price accuracy, procurement health
+- **Usage Pattern**: Weekly compliance review (10 minutes), monthly deep dive (30 minutes)
+- **Technical Skill**: Non-technical, needs simple visual interface
+- **Key Question**: "Are we compliant? Are prices accurate? What's missing?"
 
 ---
 
@@ -1566,6 +1610,15 @@ Reason: [Text box: "Client site not ready. Pausing project until site preparatio
 - Projects are budgeted at project level (not milestone level)
 - No formal change approval process exists
 
+### Phase 3 Assumptions
+- **OpenAI API access** - For AI compliance analysis and document matching
+- **PDF generation library** - For creating PO documents
+- **Document types exist** - vendor-quote, outgoing-po, vendor-invoice
+- **Vendor information complete** - Payment terms, addresses available
+- **Single currency** - All prices in ₹ (INR)
+- **BOM items have quotes** - Before creating PO, items must have quotes
+- **Documents are PDF/DOCX** - Text extraction supports these formats
+
 ---
 
 ## Success Metrics
@@ -1601,6 +1654,588 @@ Reason: [Text box: "Client site not ready. Pausing project until site preparatio
 - Improvement in estimation accuracy (target: milestone variance <150%, task variance <100%)
 - Increase in on-time project delivery (target: >80%)
 - Reduction in client disputes over delays (target: qualitative feedback)
+
+### Phase 3 Success Metrics (6 months post-Phase 3 launch)
+
+**Compliance Metrics:**
+- % of items with vendor quotes before ordering (target: 100%)
+- % of ordered items with vendor POs (target: 100%)
+- % of received items with vendor invoices (target: 100%)
+- % of items with price verification (target: >95%)
+
+**Process Efficiency Metrics:**
+- Time to create PO: <5 minutes per PO (vs current manual process)
+- Price discrepancy detection: 100% automatic (vs current manual checking)
+- Document matching accuracy: >90% automatic matching
+- Compliance dashboard usage: Weekly review by CEO
+
+**Business Impact Metrics:**
+- Reduction in procurement errors (target: -50%)
+- Reduction in price discrepancies (target: -80%)
+- Improvement in audit readiness (target: 100% compliance)
+- Time saved on manual compliance checking (target: 10+ hours/week)
+
+---
+
+# PHASE 3: BOM TRACKER - PO CREATION & AI COMPLIANCE
+
+## Phase 3 Overview
+
+**Priority:** HIGH - Critical for procurement compliance and cost accuracy
+
+**Goal:** Enable in-app PO creation, AI-powered compliance analysis, automatic price verification, and document matching to ensure complete procurement compliance and accurate cost tracking.
+
+**Core Problems:**
+- POs created externally, manually linked (error-prone, time-consuming)
+- Prices entered manually without verification (budget discrepancies)
+- No systematic compliance checking (missing quotes, POs, invoices)
+- Manual document linking (missing items not flagged)
+- No audit trail for procurement process
+
+**Scope:**
+- In-app PO creation and management
+- AI compliance analysis (quotes, POs, invoices)
+- Automatic price verification
+- Document matching and missing item flagging
+- Compliance dashboard
+
+**Timeline:** 12 weeks total
+- Weeks 1-3: PO creation feature
+- Weeks 4-6: AI compliance analysis
+- Weeks 7-9: Price verification and document matching
+- Weeks 10-12: Compliance dashboard and testing
+
+**Out of Scope for Phase 3:**
+- Vendor payment processing
+- Multi-currency support (single currency: ₹)
+- Email integration for sending POs to vendors
+- Advanced reporting and analytics
+- Mobile app
+- Historical data migration
+
+---
+
+## Phase 3 Core Principles
+
+1. **Compliance First** - All items must have proper documentation at each stage
+2. **Automation Over Manual** - AI handles matching and verification where possible
+3. **Price Accuracy** - Prices must match quotes/orders, discrepancies flagged automatically
+4. **Audit Trail** - Complete history of quotes, POs, and invoices for each item
+5. **Exception-Based** - Surface compliance issues automatically, don't require manual checking
+6. **User-Friendly** - PO creation should be simple and fast (<5 minutes per PO)
+
+---
+
+## Phase 3 User Workflows
+
+### Workflow 1: Create Purchase Order in-App
+
+**Trigger:** User needs to create a PO for one or more BOM items
+
+**Steps:**
+
+1. **User selects BOM items** to include in PO
+   - Can select multiple items from same or different vendors
+   - System validates: Items must have vendor quotes before creating PO
+
+2. **System shows PO creation dialog:**
+   - **Vendor Selection**: Group items by vendor (if multiple vendors, create separate POs)
+   - **Item List**: Shows selected items with:
+     - Item name, description, quantity
+     - Quote price (from linked quote document)
+     - Final price (editable, defaults to quote price)
+     - SKU/Part number
+   - **PO Details**:
+     - PO Number (auto-generated or manual entry)
+     - PO Date (defaults to today)
+     - Delivery Address
+     - Payment Terms (from vendor settings)
+     - Notes/Comments
+
+3. **System validates:**
+   - ✅ All items have vendor quotes
+   - ✅ Prices match quotes (or user confirms discrepancy)
+   - ✅ Vendor information is complete
+   - ✅ Quantities are valid
+
+4. **User reviews and confirms** PO details
+
+5. **System creates PO:**
+   - Generates PO document (PDF format)
+   - Stores PO in Firebase Storage
+   - Creates ProjectDocument record (type: 'outgoing-po')
+   - Links PO to selected BOM items
+   - Updates BOM item status to 'ordered' (if not already)
+   - Updates BOM item price from PO (if different from current)
+   - Sets orderDate and expectedArrival on BOM items
+
+6. **System displays confirmation:**
+   - "PO created successfully! PO-2025-001"
+   - Shows breakdown: 5 items, Total: ₹50,000
+   - Option to download PO PDF
+   - Option to email PO to vendor (future feature)
+
+---
+
+### Workflow 2: AI Compliance Analysis
+
+**Trigger:** User clicks "Check Compliance" or system runs automatic check
+
+**Steps:**
+
+1. **System analyzes all BOM items** in project
+
+2. **For each item, checks compliance rules:**
+
+   **Rule 1: All Items Must Have Vendor Quotes**
+   - Status: 'not-ordered', 'ordered', or 'received'
+   - Check: Has linked document of type 'vendor-quote'
+   - Result: ✅ Compliant or ❌ Missing Quote
+
+   **Rule 2: All Ordered Items Must Have Vendor POs**
+   - Status: 'ordered' or 'received'
+   - Check: Has linked document of type 'outgoing-po'
+   - Result: ✅ Compliant or ❌ Missing PO
+
+   **Rule 3: All Received Items Must Have Vendor Invoices**
+   - Status: 'received'
+   - Check: Has linked document of type 'vendor-invoice'
+   - Result: ✅ Compliant or ❌ Missing Invoice
+
+3. **System generates compliance report:**
+   ```
+   Compliance Report - Project: ITC Vision System
+   
+   Total Items: 45
+   
+   ✅ Compliant: 38 items (84%)
+   ❌ Non-Compliant: 7 items (16%)
+   
+   Breakdown:
+   - Missing Quotes: 2 items
+     • Motor Controller (not-ordered)
+     • Sensor Array (not-ordered)
+   
+   - Missing POs: 3 items
+     • Camera Module (ordered, no PO)
+     • Lens Assembly (ordered, no PO)
+     • Mounting Bracket (ordered, no PO)
+   
+   - Missing Invoices: 2 items
+     • Control Board (received, no invoice)
+     • Power Supply (received, no invoice)
+   ```
+
+4. **System flags non-compliant items** in BOM view:
+   - Red badge/icon on non-compliant items
+   - Tooltip shows what's missing
+   - Click to see details and fix
+
+5. **User can filter/view** non-compliant items only
+
+---
+
+### Workflow 3: Automatic Price Verification
+
+**Trigger:** User updates BOM item price OR system runs periodic check
+
+**Steps:**
+
+1. **User enters/updates price** for BOM item
+
+2. **System checks for linked documents:**
+   - If item has quote: Compare price with quote price
+   - If item has PO: Compare price with PO price
+   - If item has invoice: Compare price with invoice price
+
+3. **System shows verification result:**
+   - ✅ **Price Matches**: "Price matches quote: ₹5,000"
+   - ⚠️ **Price Mismatch**: "Price differs from quote. Quote: ₹5,000, Entered: ₹5,500"
+     - Show difference: +₹500 (+10%)
+     - Option to use quote price
+     - Option to keep entered price (with reason required)
+
+4. **If price mismatch:**
+   - System prompts: "Price differs from quote. Reason?"
+   - User enters reason (e.g., "Updated quote received", "Bulk discount")
+   - System logs price change with reason and timestamp
+
+5. **System updates price** and stores verification record
+
+6. **Price verification history** stored for audit:
+   - Original price
+   - New price
+   - Source (quote/PO/invoice)
+   - Difference
+   - Reason (if mismatch)
+   - Timestamp
+   - User who made change
+
+---
+
+### Workflow 4: AI Document Matching
+
+**Trigger:** User uploads document OR system runs periodic matching
+
+**Steps:**
+
+1. **User uploads document** (quote, PO, or invoice)
+
+2. **System extracts text** from document (PDF/DOCX)
+
+3. **AI analyzes document:**
+   - Identifies document type (quote/PO/invoice)
+   - Extracts vendor name
+   - Extracts line items (item names, quantities, prices, SKUs)
+   - Extracts dates, PO numbers, invoice numbers
+
+4. **System matches items** with BOM items:
+   - **Fuzzy matching** on item names
+   - **SKU matching** (exact match)
+   - **Price matching** (within tolerance)
+   - **Quantity matching**
+
+5. **System shows matching results:**
+   ```
+   Document Matching Results
+   
+   Document: Quote_VendorABC_2025-01-15.pdf
+   Vendor: ABC Electronics
+   Date: 2025-01-15
+   
+   Matched Items (5):
+   ✅ Motor Controller - ₹5,000 (exact match)
+   ✅ Sensor Array - ₹3,500 (exact match)
+   ✅ Camera Module - ₹12,000 (exact match)
+   ⚠️ Lens Assembly - ₹2,500 (fuzzy match, 85% confidence)
+   ⚠️ Mounting Bracket - ₹1,200 (fuzzy match, 78% confidence)
+   
+   Unmatched Items in Document (2):
+   ❓ Item: "Cable Set" - ₹800 (not found in BOM)
+   ❓ Item: "Connector Kit" - ₹500 (not found in BOM)
+   
+   Missing Items in BOM (1):
+   ❓ BOM Item: "Control Board" - No match in document
+   ```
+
+6. **User reviews matches:**
+   - Confirm correct matches
+   - Fix incorrect matches (select correct BOM item)
+   - Add unmatched document items to BOM (if needed)
+   - Flag missing BOM items for follow-up
+
+7. **System links document** to matched BOM items automatically
+
+8. **System flags missing items:**
+   - Items in BOM but not in document
+   - Items in document but not in BOM
+
+---
+
+### Workflow 5: Compliance Dashboard
+
+**Trigger:** CEO/Manager opens compliance dashboard
+
+**Steps:**
+
+1. **System displays compliance overview:**
+   ```
+   BOM Compliance Dashboard
+   
+   Overall Compliance: 84% (38/45 items)
+   
+   By Project:
+   ✅ ITC Vision System: 90% (27/30 items)
+   ⚠️ Pharma Line Inspection: 75% (15/20 items)
+   ❌ Automotive QC: 60% (9/15 items)
+   
+   By Compliance Type:
+   - Missing Quotes: 2 items
+   - Missing POs: 3 items
+   - Missing Invoices: 2 items
+   - Price Mismatches: 5 items
+   ```
+
+2. **CEO can drill down:**
+   - Click project → See project compliance details
+   - Click compliance type → See all items with that issue
+   - Click item → See item details and fix issues
+
+3. **System shows trends:**
+   - Compliance over time (chart)
+   - Most common issues
+   - Projects with lowest compliance
+
+4. **System provides actions:**
+   - "Fix Missing Quotes" → Shows items needing quotes
+   - "Fix Missing POs" → Shows items needing POs
+   - "Fix Missing Invoices" → Shows items needing invoices
+   - "Review Price Mismatches" → Shows price discrepancies
+
+---
+
+## Phase 3 System Behavior & Automation Rules
+
+### Rule 1: PO Creation Validation
+- **Hard Block**: Cannot create PO for items without vendor quotes
+- **Warning**: Price mismatch between BOM and quote (user must confirm)
+- **Auto-Update**: BOM item status → 'ordered' when PO created
+- **Auto-Update**: BOM item price from PO (if different)
+
+### Rule 2: Compliance Checking
+- **Automatic**: Runs on BOM page load
+- **Manual**: User can trigger "Check Compliance" button
+- **Scheduled**: Daily background check (optional)
+- **Real-time**: Updates when documents are linked/unlinked
+
+### Rule 3: Price Verification
+- **On Price Entry**: Checks against quote (if available)
+- **On Status Change**: Checks against PO (when status → 'ordered')
+- **On Receipt**: Checks against invoice (when status → 'received')
+- **Tolerance**: ±1% considered match (configurable)
+
+### Rule 4: Document Matching
+- **Fuzzy Matching**: Uses string similarity (Levenshtein distance)
+- **Confidence Threshold**: >80% considered match (configurable)
+- **Multiple Matches**: Shows top 3 matches for user selection
+- **SKU Priority**: SKU match overrides fuzzy match
+
+### Rule 5: Missing Item Flagging
+- **Flag Items**: In BOM but not in document (when document uploaded)
+- **Flag Documents**: In document but not in BOM (when document uploaded)
+- **Visual Indicator**: Red badge/icon on flagged items
+- **Tooltip**: Shows what's missing
+
+---
+
+## Phase 3 Data Requirements
+
+### New Document Type
+```typescript
+type DocumentType = 'vendor-quote' | 'outgoing-po' | 'customer-po' | 'vendor-invoice';
+```
+
+### PO Document Structure
+```typescript
+interface PODocument {
+  id: string;
+  poNumber: string;
+  projectId: string;
+  vendorId: string;
+  vendorName: string;
+  poDate: Date;
+  deliveryAddress: string;
+  paymentTerms: string;
+  items: Array<{
+    bomItemId: string;
+    itemName: string;
+    quantity: number;
+    unitPrice: number;
+    totalPrice: number;
+    sku?: string;
+  }>;
+  totalAmount: number;
+  documentUrl: string; // PDF URL
+  status: 'draft' | 'sent' | 'acknowledged' | 'cancelled';
+  createdAt: Date;
+  createdBy: string;
+}
+```
+
+### Compliance Record
+```typescript
+interface ComplianceRecord {
+  id: string;
+  projectId: string;
+  bomItemId: string;
+  checkDate: Date;
+  complianceStatus: {
+    hasQuote: boolean;
+    hasPO: boolean;
+    hasInvoice: boolean;
+    priceVerified: boolean;
+  };
+  issues: string[]; // e.g., ["Missing PO", "Price mismatch"]
+  lastChecked: Date;
+}
+```
+
+### Price Verification Record
+```typescript
+interface PriceVerification {
+  id: string;
+  bomItemId: string;
+  verificationDate: Date;
+  sourceType: 'quote' | 'po' | 'invoice';
+  sourceDocumentId: string;
+  bomPrice: number;
+  sourcePrice: number;
+  difference: number;
+  differencePercent: number;
+  matches: boolean;
+  reason?: string; // If mismatch, reason provided
+  verifiedBy: string;
+}
+```
+
+### Document Match Record
+```typescript
+interface DocumentMatch {
+  id: string;
+  documentId: string;
+  bomItemId: string;
+  matchType: 'exact' | 'fuzzy' | 'sku' | 'manual';
+  confidence: number; // 0-100
+  matchedAt: Date;
+  matchedBy: string;
+}
+```
+
+---
+
+## Phase 3 AI Integration Specifications
+
+### AI Compliance Analysis
+
+**Purpose:** Automatically check BOM items for compliance with procurement rules
+
+**AI Model:** OpenAI GPT-4o-mini (same as BOM import)
+
+**Input:**
+- BOM item data (name, status, linked documents)
+- Document metadata (type, linked items)
+- Compliance rules
+
+**Output:**
+```json
+{
+  "itemId": "item123",
+  "complianceStatus": {
+    "hasQuote": true,
+    "hasPO": false,
+    "hasInvoice": false,
+    "priceVerified": true
+  },
+  "issues": ["Missing PO"],
+  "recommendations": ["Create PO for this item"]
+}
+```
+
+### AI Document Matching
+
+**Purpose:** Match document line items with BOM items
+
+**AI Model:** OpenAI GPT-4o-mini
+
+**Input:**
+- Extracted text from document (PDF/DOCX)
+- BOM items list (names, SKUs, descriptions)
+- Vendor information
+
+**Output:**
+```json
+{
+  "matches": [
+    {
+      "documentItem": "Motor Controller - Model MC-2000",
+      "bomItemId": "bom123",
+      "bomItemName": "Motor Controller",
+      "matchType": "fuzzy",
+      "confidence": 0.92,
+      "priceMatch": true,
+      "quantityMatch": true
+    }
+  ],
+  "unmatchedDocumentItems": [
+    {
+      "item": "Cable Set",
+      "price": 800,
+      "quantity": 1
+    }
+  ],
+  "missingBOMItems": [
+    {
+      "bomItemId": "bom456",
+      "bomItemName": "Control Board",
+      "status": "ordered"
+    }
+  ]
+}
+```
+
+### AI Price Extraction
+
+**Purpose:** Extract prices from quotes, POs, and invoices
+
+**AI Model:** OpenAI GPT-4o-mini
+
+**Input:**
+- Extracted text from document
+- Document type (quote/PO/invoice)
+
+**Output:**
+```json
+{
+  "vendorName": "ABC Electronics",
+  "documentNumber": "PO-2025-001",
+  "date": "2025-01-15",
+  "lineItems": [
+    {
+      "itemName": "Motor Controller",
+      "sku": "MC-2000",
+      "quantity": 2,
+      "unitPrice": 5000,
+      "totalPrice": 10000
+    }
+  ],
+  "totalAmount": 50000,
+  "currency": "INR"
+}
+```
+
+---
+
+## Phase 3 Implementation Priority
+
+### Phase 3A: PO Creation (Week 1-3)
+1. PO creation UI and form
+2. PO document generation (PDF)
+3. PO storage and linking
+4. BOM item status updates
+5. Basic validation
+
+### Phase 3B: AI Compliance Analysis (Week 4-6)
+6. Compliance checking logic
+7. AI compliance analysis integration
+8. Compliance report generation
+9. Non-compliant item flagging
+10. Compliance dashboard (basic)
+
+### Phase 3C: Price Verification & Document Matching (Week 7-9)
+11. Price verification logic
+12. AI document matching
+13. Document text extraction
+14. Fuzzy matching implementation
+15. Missing item flagging
+
+### Phase 3D: Compliance Dashboard & Polish (Week 10-12)
+16. Full compliance dashboard
+17. Trends and analytics
+18. Export compliance reports
+19. Performance optimization
+20. Testing and refinement
+
+---
+
+## Phase 3 Assumptions
+
+- **OpenAI API access** - For AI compliance analysis and document matching
+- **PDF generation library** - For creating PO documents
+- **Document types exist** - vendor-quote, outgoing-po, vendor-invoice
+- **Vendor information complete** - Payment terms, addresses available
+- **Single currency** - All prices in ₹ (INR)
+- **BOM items have quotes** - Before creating PO, items must have quotes
+- **Documents are PDF/DOCX** - Text extraction supports these formats
 
 ---
 
@@ -1665,6 +2300,39 @@ Reason: [Text box: "Client site not ready. Pausing project until site preparatio
 - Real-time refresh (on-demand or 1-minute polling is sufficient)
 - Formal change approval workflows
 
+### Out of Scope for Phase 3 (BOM Tracker - PO Creation & AI Compliance)
+
+**Procurement Features:**
+- Vendor payment processing
+- Multi-currency support (single currency: ₹)
+- Email integration for sending POs to vendors
+- PO approval workflows
+- Vendor portal for quote submission
+- Automated quote request system
+
+**Advanced Features:**
+- Mobile app for PO creation
+- Advanced reporting and analytics
+- Historical data migration
+- Integration with accounting software (QuickBooks, Xero)
+- Integration with ERP systems
+- Barcode/QR code scanning for receipts
+- Inventory management
+- Warehouse management
+
+**Document Features:**
+- OCR for handwritten documents
+- Multi-language document support
+- Document versioning
+- Document approval workflows
+- E-signature integration
+
+**AI Features:**
+- Predictive pricing
+- Vendor recommendation engine
+- Automated vendor selection
+- Risk assessment for vendors
+
 ---
 
 ## Approval Sign-off
@@ -1686,9 +2354,10 @@ Reason: [Text box: "Client site not ready. Pausing project until site preparatio
 
 | Version | Date | Changes | Author |
 |---------|------|---------|--------|
+| 3.0 | 2025-01-XX | Added Phase 3: BOM Tracker - PO Creation & AI Compliance. Included requirements for in-app PO creation, AI compliance analysis, automatic price verification, and document matching. Updated executive summary, problem statement, user personas, and success metrics. | CEO |
 | 2.0 | 2025-10-22 | Added comprehensive Phase 1: Compliance & Time Tracking requirements. Restructured document to show phased approach. Updated assumptions, success metrics, and out-of-scope sections. | CEO |
 | 1.1 | 2025-10-15 | Initial Phase 2+ CEO Dashboard requirements | CEO |
 
 ---
 
-**End of PRD - Version 2.0**
+**End of PRD - Version 3.0**
