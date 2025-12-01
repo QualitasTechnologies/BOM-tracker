@@ -26,6 +26,7 @@ import {
   deleteBOMItem,
 } from '@/utils/projectFirestore';
 import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
+import { getBrands } from '@/utils/brandFirestore';
 import type { Vendor, BOMCategory as SettingsCategory } from '@/utils/settingsFirestore';
 import { BOMItem, BOMCategory, BOMStatus } from '@/types/bom';
 import { doc, getDoc } from 'firebase/firestore';
@@ -165,20 +166,27 @@ const BOM = () => {
     loadProjectDetails();
   }, [projectId]);
 
-  // Load settings data (vendors, makes, categories)
+  // Load settings data (vendors, makes/brands, categories)
   useEffect(() => {
     const loadSettingsData = async () => {
       try {
-        // Load vendors
-        const vendorsData = await getVendors();
+        // Load vendors and brands in parallel
+        const [vendorsData, brandsData] = await Promise.all([
+          getVendors(),
+          getBrands()
+        ]);
         setVendors(vendorsData);
-        
-        // Extract vendor company names as makes/brands
-        const companyNames = vendorsData.map(vendor => vendor.company).filter(company => company.trim() !== '');
-        
-        // Remove duplicates and sort
-        const uniqueMakes = [...new Set(companyNames)].sort();
-        setAvailableMakes(uniqueMakes);
+
+        // Extract brand names (active brands only) - these are the manufacturers/makes
+        // Vendors are who we buy from, brands are who makes the part
+        const brandNames = brandsData
+          .filter(brand => brand.status === 'active')
+          .map(brand => brand.name)
+          .filter(name => name.trim() !== '');
+
+        // Sort alphabetically
+        const sortedBrands = [...new Set(brandNames)].sort();
+        setAvailableMakes(sortedBrands);
 
         // Load settings categories
         const bomSettings = await getBOMSettings();

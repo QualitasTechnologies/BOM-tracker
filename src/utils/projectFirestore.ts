@@ -86,9 +86,28 @@ export const subscribeToBOM = (projectId: string, callback: (categories: BOMCate
   });
 };
 
+/**
+ * Recursively remove undefined values from an object/array to prevent Firestore errors
+ */
+const deepCleanUndefined = <T>(obj: T): T => {
+  if (Array.isArray(obj)) {
+    return obj.map(item => deepCleanUndefined(item)) as T;
+  }
+  if (obj !== null && typeof obj === 'object') {
+    return Object.fromEntries(
+      Object.entries(obj)
+        .filter(([_, value]) => value !== undefined)
+        .map(([key, value]) => [key, deepCleanUndefined(value)])
+    ) as T;
+  }
+  return obj;
+};
+
 export const updateBOMData = async (projectId: string, categories: BOMCategory[]) => {
   const bomRef = doc(db, 'projects', projectId, 'bom', 'data');
-  await setDoc(bomRef, { categories }, { merge: true });
+  // Deep clean to remove any undefined values in nested objects/arrays
+  const cleanedCategories = deepCleanUndefined(categories);
+  await setDoc(bomRef, { categories: cleanedCategories }, { merge: true });
 };
 
 export const updateBOMItem = async (projectId: string, categories: BOMCategory[], itemId: string, updates: Partial<BOMItem>) => {
