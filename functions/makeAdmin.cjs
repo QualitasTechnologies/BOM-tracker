@@ -15,7 +15,7 @@ admin.initializeApp({
 });
 
 async function makeAdmin() {
-  const targetEmail = 'chaitanya@qualitastech.com';
+  const targetEmail = 'rkashyap@gmail.com';
 
   try {
     console.log(`Looking up user: ${targetEmail}...`);

@@ -83,7 +83,7 @@ import { toast } from '@/components/ui/use-toast';
 import BrandsTab from '@/components/settings/BrandsTab';
 import { Brand } from '@/types/brand';
 import { subscribeToBrands } from '@/utils/brandFirestore';
-import { fetchAllUsers, updateUserRole, UserRole } from '@/utils/userService';
+import { fetchAllUsers, updateUserRole, approveUser, rejectUser, UserRole } from '@/utils/userService';
 import { Shield, UserCog } from 'lucide-react';
 
 const Settings = () => {
@@ -872,6 +872,48 @@ const Settings = () => {
       toast({
         title: "Error",
         description: error.message || "Failed to update user role",
+        variant: "destructive",
+      });
+    } finally {
+      setUpdatingUserId(null);
+    }
+  };
+
+  const handleApproveUser = async (targetUid: string) => {
+    setUpdatingUserId(targetUid);
+    try {
+      await approveUser(targetUid, 'user');
+      await loadUsers();
+      toast({
+        title: "Success",
+        description: "User approved successfully",
+      });
+    } catch (error: any) {
+      console.error('Error approving user:', error);
+      toast({
+        title: "Error",
+        description: error.message || "Failed to approve user",
+        variant: "destructive",
+      });
+    } finally {
+      setUpdatingUserId(null);
+    }
+  };
+
+  const handleRejectUser = async (targetUid: string) => {
+    setUpdatingUserId(targetUid);
+    try {
+      await rejectUser(targetUid);
+      await loadUsers();
+      toast({
+        title: "Success",
+        description: "User rejected",
+      });
+    } catch (error: any) {
+      console.error('Error rejecting user:', error);
+      toast({
+        title: "Error",
+        description: error.message || "Failed to reject user",
         variant: "destructive",
       });
     } finally {
@@ -2207,6 +2249,7 @@ const Settings = () => {
                         <TableHead>Status</TableHead>
                         <TableHead>Role</TableHead>
                         <TableHead>Admin</TableHead>
+                        <TableHead>Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -2263,6 +2306,52 @@ const Settings = () => {
                               )}
                               {appUser.uid === user?.uid && (
                                 <span className="text-xs text-gray-400">Can't modify self</span>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              {appUser.status === 'pending' && appUser.uid !== user?.uid && (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2 text-green-600 border-green-600 hover:bg-green-50"
+                                    onClick={() => handleApproveUser(appUser.uid)}
+                                    disabled={updatingUserId === appUser.uid}
+                                  >
+                                    <Check size={14} className="mr-1" />
+                                    Approve
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2 text-red-600 border-red-600 hover:bg-red-50"
+                                    onClick={() => handleRejectUser(appUser.uid)}
+                                    disabled={updatingUserId === appUser.uid}
+                                  >
+                                    <X size={14} className="mr-1" />
+                                    Reject
+                                  </Button>
+                                </>
+                              )}
+                              {appUser.status === 'approved' && (
+                                <span className="text-xs text-gray-400">Active</span>
+                              )}
+                              {appUser.status === 'rejected' && (
+                                <span className="text-xs text-red-400">Rejected</span>
+                              )}
+                              {!appUser.status && appUser.uid !== user?.uid && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-2 text-green-600 border-green-600 hover:bg-green-50"
+                                  onClick={() => handleApproveUser(appUser.uid)}
+                                  disabled={updatingUserId === appUser.uid}
+                                >
+                                  <Check size={14} className="mr-1" />
+                                  Approve
+                                </Button>
                               )}
                             </div>
                           </TableCell>

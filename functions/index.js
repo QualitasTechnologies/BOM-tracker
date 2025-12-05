@@ -419,6 +419,9 @@ exports.manageUserStatus = onCall(async (request) => {
         newClaims = {
           ...targetRecordForRole.customClaims,
           role,
+          // When setting admin role, also ensure status is approved
+          // (can't be admin without being approved)
+          status: role === 'admin' ? 'approved' : (targetRecordForRole.customClaims?.status || 'approved'),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           updatedBy: auth.uid
         };
