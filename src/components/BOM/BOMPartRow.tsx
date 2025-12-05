@@ -399,7 +399,7 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                   </TooltipContent>
                 </Tooltip>
               </div>
-              <div className="grid grid-cols-[1fr] gap-2 @md:gap-3">
+              <div className="grid grid-cols-[1fr_auto] gap-2 @md:gap-3">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <input
@@ -412,6 +412,26 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                   </TooltipTrigger>
                   <TooltipContent>Key specs or application notes</TooltipContent>
                 </Tooltip>
+                {/* Category selector */}
+                {availableCategories.length > 0 && (
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <Select
+                      value={editForm.category}
+                      onValueChange={(value) => setEditForm(prev => ({ ...prev, category: value }))}
+                    >
+                      <SelectTrigger className="h-8 text-xs w-[140px]">
+                        <SelectValue placeholder="Category" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableCategories.map((cat) => (
+                          <SelectItem key={cat} value={cat}>
+                            {cat}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
               </div>
               {/* Vendor Selection for components - use globalVendors */}
               {editForm.itemType === 'component' && globalVendors.length > 0 && (

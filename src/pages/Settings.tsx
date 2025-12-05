@@ -83,6 +83,8 @@ import { toast } from '@/components/ui/use-toast';
 import BrandsTab from '@/components/settings/BrandsTab';
 import { Brand } from '@/types/brand';
 import { subscribeToBrands } from '@/utils/brandFirestore';
+import { fetchAllUsers, updateUserRole, UserRole } from '@/utils/userService';
+import { Shield, UserCog } from 'lucide-react';
 
 const Settings = () => {
   // Auth check
@@ -94,6 +96,19 @@ const Settings = () => {
   const [oemVendors, setOemVendors] = useState<Vendor[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [bomSettings, setBomSettings] = useState<BOMSettings | null>(null);
+
+  // User management state
+  interface AppUser {
+    uid: string;
+    email: string;
+    displayName?: string;
+    role?: UserRole;
+    status?: string;
+    createdAt?: string;
+  }
+  const [appUsers, setAppUsers] = useState<AppUser[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [categoryDraft, setCategoryDraft] = useState("");
   const [prSettings, setPRSettings] = useState<PRSettings | null>(null);
@@ -804,6 +819,66 @@ const Settings = () => {
     }
   };
 
+  // User Management Functions
+  const loadUsers = async () => {
+    setUsersLoading(true);
+    try {
+      const result = await fetchAllUsers();
+      const rawUsers = (result as { users: Array<{
+        uid: string;
+        email: string;
+        displayName?: string;
+        creationTime?: string;
+        customClaims?: { role?: string; status?: string };
+      }> }).users || [];
+      // Map customClaims to top-level properties for easier access
+      const usersData: AppUser[] = rawUsers.map(user => ({
+        uid: user.uid,
+        email: user.email,
+        displayName: user.displayName,
+        role: (user.customClaims?.role as UserRole) || undefined,
+        status: user.customClaims?.status,
+        createdAt: user.creationTime
+      }));
+      setAppUsers(usersData);
+    } catch (error) {
+      console.error('Error loading users:', error);
+      toast({
+        title: "Error",
+        description: "Failed to load users",
+        variant: "destructive",
+      });
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const handleToggleAdmin = async (targetUid: string, currentRole: UserRole | undefined) => {
+    // Default to 'user' if role is undefined
+    const effectiveCurrentRole = currentRole || 'user';
+    const newRole: UserRole = effectiveCurrentRole === 'admin' ? 'user' : 'admin';
+
+    setUpdatingUserId(targetUid);
+    try {
+      await updateUserRole(targetUid, newRole);
+      // Reload users to get fresh data from server
+      await loadUsers();
+      toast({
+        title: "Success",
+        description: `User role updated to ${newRole}`,
+      });
+    } catch (error: any) {
+      console.error('Error updating user role:', error);
+      toast({
+        title: "Error",
+        description: error.message || "Failed to update user role",
+        variant: "destructive",
+      });
+    } finally {
+      setUpdatingUserId(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="container mx-auto py-6 px-4">
@@ -862,7 +937,7 @@ const Settings = () => {
         )}
 
         <Tabs defaultValue="clients" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-6">
+          <TabsList className="grid w-full grid-cols-7">
             <TabsTrigger value="clients" className="flex items-center gap-2">
               <Users size={16} />
               Clients ({clients.length})
@@ -882,6 +957,10 @@ const Settings = () => {
             <TabsTrigger value="purchase-request" className="flex items-center gap-2">
               <Mail size={16} />
               Purchase Request
+            </TabsTrigger>
+            <TabsTrigger value="users" className="flex items-center gap-2" onClick={() => loadUsers()}>
+              <UserCog size={16} />
+              Users
             </TabsTrigger>
             <TabsTrigger value="general" className="flex items-center gap-2">
               <SettingsIcon size={16} />
@@ -2085,6 +2164,123 @@ const Settings = () => {
           {/* Brands Tab */}
           <TabsContent value="brands">
             <BrandsTab />
+          </TabsContent>
+
+          {/* Users Tab */}
+          <TabsContent value="users">
+            <Card>
+              <CardHeader>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <Shield size={20} />
+                      User Administration
+                    </CardTitle>
+                    <CardDescription>Manage user roles and permissions</CardDescription>
+                  </div>
+                  <Button variant="outline" onClick={loadUsers} disabled={usersLoading}>
+                    {usersLoading ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      'Refresh'
+                    )}
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {usersLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="h-8 w-8 animate-spin" />
+                  </div>
+                ) : appUsers.length === 0 ? (
+                  <div className="text-center py-8">
+                    <UserCog className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+                    <p className="text-gray-500">No users found</p>
+                    <p className="text-gray-400 text-sm">Click Refresh to load users</p>
+                  </div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>User</TableHead>
+                        <TableHead>Email</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Role</TableHead>
+                        <TableHead>Admin</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {appUsers.map((appUser) => (
+                        <TableRow key={appUser.uid}>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <User size={16} className="text-gray-400" />
+                              <span className="font-medium">
+                                {appUser.displayName || 'No name'}
+                              </span>
+                              {appUser.uid === user?.uid && (
+                                <Badge variant="outline" className="text-xs">You</Badge>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-sm text-gray-600">{appUser.email}</span>
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={appUser.status === 'approved' ? 'default' : 'secondary'}
+                              className={
+                                appUser.status === 'approved'
+                                  ? 'bg-green-100 text-green-800'
+                                  : appUser.status === 'pending'
+                                  ? 'bg-yellow-100 text-yellow-800'
+                                  : 'bg-gray-100 text-gray-800'
+                              }
+                            >
+                              {appUser.status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={appUser.role === 'admin' ? 'default' : 'outline'}
+                              className={appUser.role === 'admin' ? 'bg-blue-600' : ''}
+                            >
+                              {appUser.role || 'user'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <Switch
+                                checked={appUser.role === 'admin'}
+                                onCheckedChange={() => handleToggleAdmin(appUser.uid, appUser.role)}
+                                disabled={
+                                  updatingUserId === appUser.uid ||
+                                  appUser.uid === user?.uid // Prevent self-demotion
+                                }
+                              />
+                              {updatingUserId === appUser.uid && (
+                                <Loader2 size={14} className="animate-spin" />
+                              )}
+                              {appUser.uid === user?.uid && (
+                                <span className="text-xs text-gray-400">Can't modify self</span>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+
+                <Alert className="mt-4">
+                  <Shield className="h-4 w-4" />
+                  <AlertDescription>
+                    <strong>Admin privileges:</strong> Admins can access Settings, manage users, vendors, clients, and BOM settings.
+                    Regular users can only view and work with projects assigned to them.
+                  </AlertDescription>
+                </Alert>
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* General Settings Tab */}

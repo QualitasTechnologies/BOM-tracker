@@ -4,9 +4,14 @@
 
 ### 🔐 Authentication & User Management
 - Google OAuth Integration
-- Email/Password Authentication  
+- Email/Password Authentication
 - Responsive Header with user profile
 - Protected Routes
+- **User Admin Panel** (Dec 2025)
+  - Users tab in Settings for admin role management
+  - Toggle admin status for existing users
+  - View all registered users with status/role
+  - Self-modification protection (can't demote yourself)
 
 ### ⚙️ Settings Management
 - Client Management (add, edit, delete with validation)
@@ -218,6 +223,32 @@ See CEO_Dashboard_PRD.md for complete specifications
 17. **Approval Workflows** - Multi-stage BOM approval process
 18. **User Management Testing** - Validate RBAC and permission matrix
 19. **Vendor Performance Metrics** - Track vendor reliability, pricing trends, delivery accuracy
+
+#### 🔔 Notification & Stakeholder System
+
+20. **Project Stakeholders**
+    - Assign users as stakeholders to projects
+    - Stakeholder roles: Owner, Contributor, Viewer, Notified-Only
+    - Stakeholder management UI in project settings
+    - Stakeholders visible in project header
+
+21. **User Notification System**
+    - In-app notification center (bell icon in header)
+    - Notification types:
+      - BOM changes (items added/removed/modified)
+      - Status changes (ordered, received)
+      - Document uploads
+      - PR created/sent
+      - Project milestones
+    - Email digest options (immediate, daily, weekly)
+    - Notification preferences per user
+    - Mark as read/unread, bulk actions
+
+22. **Stakeholder Notifications**
+    - Notify project stakeholders on relevant changes
+    - Configurable notification triggers per project
+    - @mention support in comments/notes
+    - Activity feed per project
 
 ### 👥 User Management System Status
 🔧 **NEEDS TESTING**: User management system implemented but requires proper testing
