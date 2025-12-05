@@ -15,6 +15,7 @@ import {
   deleteProjectDocument,
   linkDocumentToBOMItems
 } from '@/utils/projectDocumentFirestore';
+import { validateDocumentDeletion } from '@/utils/bomDocumentLinking';
 import { ProjectDocument, DocumentType, DOCUMENT_SECTIONS } from '@/types/projectDocument';
 import { BOMItem } from '@/types/bom';
 
@@ -89,46 +90,17 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
   };
 
   const handleDelete = async (doc: ProjectDocument) => {
-    // For PO documents, check if any linked items are still marked as 'ordered'
-    if (doc.type === 'outgoing-po') {
-      // Check both: document's linkedBOMItems AND BOM items' linkedPODocumentId
-      const linkedOrderedItems = bomItems.filter(
-        item => (
-          (doc.linkedBOMItems?.includes(item.id) || item.linkedPODocumentId === doc.id) &&
-          item.status === 'ordered'
-        )
-      );
+    // Validate deletion based on document type and linked BOM items
+    const validation = validateDocumentDeletion(doc, bomItems);
 
-      if (linkedOrderedItems.length > 0) {
-        const itemNames = linkedOrderedItems.map(item => item.name).join(', ');
-        toast({
-          title: 'Cannot Delete PO',
-          description: `This PO is linked to ordered items: ${itemNames}. Change item status to "Not Ordered" first before deleting this document.`,
-          variant: 'destructive'
-        });
-        return;
-      }
-    }
-
-    // For vendor invoice documents, check if any linked items are still marked as 'received'
-    if (doc.type === 'vendor-invoice') {
-      // Check both: document's linkedBOMItems AND BOM items' linkedInvoiceDocumentId
-      const linkedReceivedItems = bomItems.filter(
-        item => (
-          (doc.linkedBOMItems?.includes(item.id) || item.linkedInvoiceDocumentId === doc.id) &&
-          item.status === 'received'
-        )
-      );
-
-      if (linkedReceivedItems.length > 0) {
-        const itemNames = linkedReceivedItems.map(item => item.name).join(', ');
-        toast({
-          title: 'Cannot Delete Invoice',
-          description: `This invoice is linked to received items: ${itemNames}. Change item status first before deleting this document.`,
-          variant: 'destructive'
-        });
-        return;
-      }
+    if (!validation.canDelete) {
+      const title = doc.type === 'outgoing-po' ? 'Cannot Delete PO' : 'Cannot Delete Invoice';
+      toast({
+        title,
+        description: validation.reason,
+        variant: 'destructive'
+      });
+      return;
     }
 
     if (!window.confirm(`Delete "${doc.name}"?`)) return;

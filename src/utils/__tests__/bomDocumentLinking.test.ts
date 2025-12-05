@@ -5,8 +5,11 @@ import {
   getOutgoingPODocuments,
   findLinkedDocument,
   findLinkedPODocument,
+  isItemLinkedToDocument,
+  validateDocumentDeletion,
 } from '@/utils/bomDocumentLinking';
 import { ProjectDocument } from '@/types/projectDocument';
+import { BOMItem } from '@/types/bom';
 
 const buildDoc = (overrides: Partial<ProjectDocument>): ProjectDocument => ({
   id: overrides.id ?? 'doc-1',
@@ -18,6 +21,19 @@ const buildDoc = (overrides: Partial<ProjectDocument>): ProjectDocument => ({
   uploadedBy: overrides.uploadedBy ?? 'user-1',
   linkedBOMItems: overrides.linkedBOMItems ?? [],
   fileSize: overrides.fileSize,
+});
+
+const buildItem = (overrides: Partial<BOMItem>): BOMItem => ({
+  id: overrides.id ?? 'item-1',
+  itemType: overrides.itemType ?? 'component',
+  name: overrides.name ?? 'Test Item',
+  description: overrides.description ?? 'Test description',
+  quantity: overrides.quantity ?? 1,
+  category: overrides.category ?? 'Electronics',
+  vendors: overrides.vendors ?? [],
+  status: overrides.status ?? 'not-ordered',
+  linkedPODocumentId: overrides.linkedPODocumentId,
+  linkedInvoiceDocumentId: overrides.linkedInvoiceDocumentId,
 });
 
 /**
@@ -230,6 +246,239 @@ describe('syncPODocumentLinks', () => {
     const newDoc = updated.find((doc) => doc.id === 'doc-new');
     expect(oldDoc?.linkedBOMItems).toEqual(['item-3']);
     expect(newDoc?.linkedBOMItems).toEqual(['item-1']);
+  });
+});
+
+/**
+ * CRITICAL: These tests validate document deletion business rules.
+ * - PO documents cannot be deleted if linked to items with status 'ordered'
+ * - Invoice documents cannot be deleted if linked to items with status 'received'
+ * - Quote and customer-po documents can always be deleted
+ */
+describe('isItemLinkedToDocument', () => {
+  it('returns true when document.linkedBOMItems contains the item ID', () => {
+    const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1', 'item-2'] });
+    const item = buildItem({ id: 'item-1' });
+
+    expect(isItemLinkedToDocument(item, doc)).toBe(true);
+  });
+
+  it('returns true when item.linkedPODocumentId matches PO document ID', () => {
+    const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: [] });
+    const item = buildItem({ id: 'item-1', linkedPODocumentId: 'po-1' });
+
+    expect(isItemLinkedToDocument(item, doc)).toBe(true);
+  });
+
+  it('returns true when item.linkedInvoiceDocumentId matches invoice document ID', () => {
+    const doc = buildDoc({ id: 'inv-1', type: 'vendor-invoice', linkedBOMItems: [] });
+    const item = buildItem({ id: 'item-1', linkedInvoiceDocumentId: 'inv-1' });
+
+    expect(isItemLinkedToDocument(item, doc)).toBe(true);
+  });
+
+  it('returns false when no linkage exists', () => {
+    const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['other-item'] });
+    const item = buildItem({ id: 'item-1', linkedPODocumentId: 'other-po' });
+
+    expect(isItemLinkedToDocument(item, doc)).toBe(false);
+  });
+
+  it('returns false when linkedBOMItems is undefined', () => {
+    const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: undefined });
+    const item = buildItem({ id: 'item-1' });
+
+    expect(isItemLinkedToDocument(item, doc)).toBe(false);
+  });
+
+  it('ignores linkedPODocumentId for non-PO documents', () => {
+    // Item has linkedPODocumentId pointing to a quote (wrong type)
+    const doc = buildDoc({ id: 'quote-1', type: 'vendor-quote', linkedBOMItems: [] });
+    const item = buildItem({ id: 'item-1', linkedPODocumentId: 'quote-1' });
+
+    // Should NOT match because vendor-quote doesn't use linkedPODocumentId
+    expect(isItemLinkedToDocument(item, doc)).toBe(false);
+  });
+
+  it('ignores linkedInvoiceDocumentId for non-invoice documents', () => {
+    const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: [] });
+    const item = buildItem({ id: 'item-1', linkedInvoiceDocumentId: 'po-1' });
+
+    // Should NOT match because outgoing-po doesn't use linkedInvoiceDocumentId
+    expect(isItemLinkedToDocument(item, doc)).toBe(false);
+  });
+});
+
+describe('validateDocumentDeletion', () => {
+  describe('outgoing-po documents', () => {
+    it('blocks deletion when linked item has status "ordered"', () => {
+      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1'] });
+      const items = [buildItem({ id: 'item-1', name: 'Resistor 10k', status: 'ordered' })];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(false);
+      expect(result.blockedByItems).toHaveLength(1);
+      expect(result.blockedByItems[0].id).toBe('item-1');
+      expect(result.reason).toContain('Resistor 10k');
+    });
+
+    it('blocks deletion when item links back via linkedPODocumentId', () => {
+      // Document has no linkedBOMItems, but item points to document
+      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: [] });
+      const items = [buildItem({ id: 'item-1', name: 'Capacitor', status: 'ordered', linkedPODocumentId: 'po-1' })];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(false);
+      expect(result.blockedByItems).toHaveLength(1);
+    });
+
+    it('allows deletion when linked item has status "not-ordered"', () => {
+      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1'] });
+      const items = [buildItem({ id: 'item-1', status: 'not-ordered' })];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(true);
+      expect(result.blockedByItems).toHaveLength(0);
+    });
+
+    it('allows deletion when linked item has status "received"', () => {
+      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1'] });
+      const items = [buildItem({ id: 'item-1', status: 'received' })];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(true);
+      expect(result.blockedByItems).toHaveLength(0);
+    });
+
+    it('allows deletion when no items are linked', () => {
+      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: [] });
+      const items = [buildItem({ id: 'item-1', status: 'ordered' })];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(true);
+    });
+
+    it('blocks only for items that are both linked AND ordered', () => {
+      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1', 'item-2'] });
+      const items = [
+        buildItem({ id: 'item-1', name: 'Blocked Item', status: 'ordered' }),
+        buildItem({ id: 'item-2', name: 'Allowed Item', status: 'received' }),
+        buildItem({ id: 'item-3', name: 'Unlinked Ordered', status: 'ordered' }), // Not linked
+      ];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(false);
+      expect(result.blockedByItems).toHaveLength(1);
+      expect(result.blockedByItems[0].name).toBe('Blocked Item');
+    });
+  });
+
+  describe('vendor-invoice documents', () => {
+    it('blocks deletion when linked item has status "received"', () => {
+      const doc = buildDoc({ id: 'inv-1', type: 'vendor-invoice', linkedBOMItems: ['item-1'] });
+      const items = [buildItem({ id: 'item-1', name: 'Inductor', status: 'received' })];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(false);
+      expect(result.blockedByItems).toHaveLength(1);
+      expect(result.reason).toContain('Inductor');
+    });
+
+    it('blocks deletion when item links back via linkedInvoiceDocumentId', () => {
+      const doc = buildDoc({ id: 'inv-1', type: 'vendor-invoice', linkedBOMItems: [] });
+      const items = [buildItem({ id: 'item-1', status: 'received', linkedInvoiceDocumentId: 'inv-1' })];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(false);
+      expect(result.blockedByItems).toHaveLength(1);
+    });
+
+    it('allows deletion when linked item has status "ordered"', () => {
+      const doc = buildDoc({ id: 'inv-1', type: 'vendor-invoice', linkedBOMItems: ['item-1'] });
+      const items = [buildItem({ id: 'item-1', status: 'ordered' })];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(true);
+    });
+
+    it('allows deletion when linked item has status "not-ordered"', () => {
+      const doc = buildDoc({ id: 'inv-1', type: 'vendor-invoice', linkedBOMItems: ['item-1'] });
+      const items = [buildItem({ id: 'item-1', status: 'not-ordered' })];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(true);
+    });
+  });
+
+  describe('vendor-quote documents', () => {
+    it('can always be deleted regardless of linked items status', () => {
+      const doc = buildDoc({ id: 'quote-1', type: 'vendor-quote', linkedBOMItems: ['item-1', 'item-2'] });
+      const items = [
+        buildItem({ id: 'item-1', status: 'ordered' }),
+        buildItem({ id: 'item-2', status: 'received' }),
+      ];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(true);
+      expect(result.blockedByItems).toHaveLength(0);
+    });
+  });
+
+  describe('customer-po documents', () => {
+    it('can always be deleted regardless of linked items status', () => {
+      const doc = buildDoc({ id: 'cpo-1', type: 'customer-po', linkedBOMItems: ['item-1'] });
+      const items = [buildItem({ id: 'item-1', status: 'received' })];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(true);
+      expect(result.blockedByItems).toHaveLength(0);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('handles empty bomItems array', () => {
+      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1'] });
+
+      const result = validateDocumentDeletion(doc, []);
+
+      expect(result.canDelete).toBe(true);
+    });
+
+    it('handles document with undefined linkedBOMItems', () => {
+      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: undefined });
+      const items = [buildItem({ id: 'item-1', status: 'ordered' })];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(true);
+    });
+
+    it('reports multiple blocked items in reason', () => {
+      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1', 'item-2'] });
+      const items = [
+        buildItem({ id: 'item-1', name: 'First Item', status: 'ordered' }),
+        buildItem({ id: 'item-2', name: 'Second Item', status: 'ordered' }),
+      ];
+
+      const result = validateDocumentDeletion(doc, items);
+
+      expect(result.canDelete).toBe(false);
+      expect(result.blockedByItems).toHaveLength(2);
+      expect(result.reason).toContain('First Item');
+      expect(result.reason).toContain('Second Item');
+    });
   });
 });
 

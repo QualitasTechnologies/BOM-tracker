@@ -1,4 +1,5 @@
 import { ProjectDocument, DocumentType } from '@/types/projectDocument';
+import { BOMItem } from '@/types/bom';
 
 /**
  * Filter documents by type (e.g., 'outgoing-po', 'vendor-quote', 'customer-po')
@@ -96,5 +97,96 @@ export async function syncPODocumentLinks({
   }
 
   return updatedDocs;
+}
+
+/**
+ * Result of document deletion validation
+ */
+export interface DocumentDeletionValidation {
+  canDelete: boolean;
+  blockedByItems: BOMItem[];
+  reason?: string;
+}
+
+/**
+ * Check if a BOM item is linked to a document.
+ * Linkage is bidirectional - checked from both sides:
+ * 1. Document's linkedBOMItems array contains the item ID
+ * 2. Item's linkedPODocumentId or linkedInvoiceDocumentId matches the document ID
+ */
+export function isItemLinkedToDocument(
+  item: BOMItem,
+  document: ProjectDocument
+): boolean {
+  // Check document -> item linkage
+  if (document.linkedBOMItems?.includes(item.id)) {
+    return true;
+  }
+
+  // Check item -> document linkage based on document type
+  if (document.type === 'outgoing-po' && item.linkedPODocumentId === document.id) {
+    return true;
+  }
+
+  if (document.type === 'vendor-invoice' && item.linkedInvoiceDocumentId === document.id) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Validate whether a document can be deleted based on its type and linked BOM items.
+ *
+ * Business rules:
+ * - outgoing-po: Cannot delete if linked to items with status 'ordered'
+ * - vendor-invoice: Cannot delete if linked to items with status 'received'
+ * - vendor-quote, customer-po: Can always be deleted (no status restrictions)
+ */
+export function validateDocumentDeletion(
+  document: ProjectDocument,
+  bomItems: BOMItem[]
+): DocumentDeletionValidation {
+  // vendor-quote and customer-po can always be deleted
+  if (document.type === 'vendor-quote' || document.type === 'customer-po') {
+    return { canDelete: true, blockedByItems: [] };
+  }
+
+  // For outgoing-po: check for linked items with 'ordered' status
+  if (document.type === 'outgoing-po') {
+    const blockedByItems = bomItems.filter(
+      item => isItemLinkedToDocument(item, document) && item.status === 'ordered'
+    );
+
+    if (blockedByItems.length > 0) {
+      return {
+        canDelete: false,
+        blockedByItems,
+        reason: `This PO is linked to ordered items: ${blockedByItems.map(item => item.name).join(', ')}. Change item status to "Not Ordered" first before deleting this document.`
+      };
+    }
+
+    return { canDelete: true, blockedByItems: [] };
+  }
+
+  // For vendor-invoice: check for linked items with 'received' status
+  if (document.type === 'vendor-invoice') {
+    const blockedByItems = bomItems.filter(
+      item => isItemLinkedToDocument(item, document) && item.status === 'received'
+    );
+
+    if (blockedByItems.length > 0) {
+      return {
+        canDelete: false,
+        blockedByItems,
+        reason: `This invoice is linked to received items: ${blockedByItems.map(item => item.name).join(', ')}. Change item status first before deleting this document.`
+      };
+    }
+
+    return { canDelete: true, blockedByItems: [] };
+  }
+
+  // Default: allow deletion for any unrecognized document types
+  return { canDelete: true, blockedByItems: [] };
 }
 

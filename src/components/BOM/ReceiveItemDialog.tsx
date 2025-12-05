@@ -50,13 +50,27 @@ const ReceiveItemDialog = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
 
-  // Reset form when dialog opens
+  // Initialize form when dialog opens - preserve existing linkage if present
   useEffect(() => {
-    if (open) {
+    if (open && item) {
       setActualArrival(new Date().toISOString().split('T')[0]);
-      setLinkedInvoiceDocumentId('');
+
+      // Check for existing invoice linkage - either on the item OR via document's linkedBOMItems
+      let existingInvoiceId = item.linkedInvoiceDocumentId || '';
+
+      // If item doesn't have linkedInvoiceDocumentId, check if any invoice has this item in linkedBOMItems
+      if (!existingInvoiceId) {
+        const linkedInvoice = availableVendorQuotes.find(
+          doc => doc.linkedBOMItems?.includes(item.id)
+        );
+        if (linkedInvoice) {
+          existingInvoiceId = linkedInvoice.id;
+        }
+      }
+
+      setLinkedInvoiceDocumentId(existingInvoiceId);
     }
-  }, [open]);
+  }, [open, item, availableVendorQuotes]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || !e.target.files[0] || !projectId || !item) return;
@@ -227,6 +241,9 @@ const ReceiveItemDialog = ({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__NONE__" disabled>Select a document</SelectItem>
+                  {availableVendorQuotes.length === 0 && (
+                    <div className="px-2 py-1.5 text-sm text-gray-500">No invoices uploaded yet</div>
+                  )}
                   {availableVendorQuotes.map((doc) => (
                     <SelectItem key={doc.id} value={doc.id}>
                       <span className="flex items-center gap-2">

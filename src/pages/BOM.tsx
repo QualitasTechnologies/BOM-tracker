@@ -326,16 +326,50 @@ const BOM = () => {
   };
 
   // Calculate document count for a BOM item
+  // Checks: 1) document's linkedBOMItems array, 2) item's linkedPODocumentId, 3) item's linkedInvoiceDocumentId
   const getDocumentCountForItem = (itemId: string): number => {
-    return projectDocuments.filter(doc =>
-      doc.linkedBOMItems && doc.linkedBOMItems.includes(itemId)
-    ).length;
+    // Find the item to check its linked document IDs
+    let linkedPODocId: string | undefined;
+    let linkedInvoiceDocId: string | undefined;
+    for (const cat of categories) {
+      const item = cat.items.find(i => i.id === itemId);
+      if (item) {
+        linkedPODocId = item.linkedPODocumentId;
+        linkedInvoiceDocId = item.linkedInvoiceDocumentId;
+        break;
+      }
+    }
+
+    return projectDocuments.filter(doc => {
+      const linkedViaDocument = doc.linkedBOMItems && doc.linkedBOMItems.includes(itemId);
+      const linkedViaPO = linkedPODocId && doc.id === linkedPODocId;
+      const linkedViaInvoice = linkedInvoiceDocId && doc.id === linkedInvoiceDocId;
+      return linkedViaDocument || linkedViaPO || linkedViaInvoice;
+    }).length;
   };
 
   // Get linked documents for a BOM item
+  // Checks: 1) document's linkedBOMItems array, 2) item's linkedPODocumentId, 3) item's linkedInvoiceDocumentId
   const getDocumentsForItem = (itemId: string) => {
+    // Find the item to check its linked document IDs
+    let linkedPODocId: string | undefined;
+    let linkedInvoiceDocId: string | undefined;
+    for (const cat of categories) {
+      const item = cat.items.find(i => i.id === itemId);
+      if (item) {
+        linkedPODocId = item.linkedPODocumentId;
+        linkedInvoiceDocId = item.linkedInvoiceDocumentId;
+        break;
+      }
+    }
+
     return projectDocuments
-      .filter(doc => doc.linkedBOMItems && doc.linkedBOMItems.includes(itemId))
+      .filter(doc => {
+        const linkedViaDocument = doc.linkedBOMItems && doc.linkedBOMItems.includes(itemId);
+        const linkedViaPO = linkedPODocId && doc.id === linkedPODocId;
+        const linkedViaInvoice = linkedInvoiceDocId && doc.id === linkedInvoiceDocId;
+        return linkedViaDocument || linkedViaPO || linkedViaInvoice;
+      })
       .map(doc => ({
         id: doc.id,
         name: doc.name,
@@ -345,22 +379,45 @@ const BOM = () => {
   };
 
   // Unlink a document from a BOM item
+  // Handles: 1) removing from document's linkedBOMItems, 2) clearing item's linkedPODocumentId/linkedInvoiceDocumentId
   const handleUnlinkDocument = async (documentId: string, itemId: string) => {
     const doc = projectDocuments.find(d => d.id === documentId);
-    if (!doc || !doc.linkedBOMItems) return;
-
-    const updatedLinkedItems = doc.linkedBOMItems.filter(id => id !== itemId);
+    if (!doc) return;
 
     try {
-      await linkDocumentToBOMItems(documentId, updatedLinkedItems);
-      // Update local state
-      setProjectDocuments(prev =>
-        prev.map(d =>
-          d.id === documentId
-            ? { ...d, linkedBOMItems: updatedLinkedItems }
-            : d
-        )
-      );
+      // Check if document is linked via linkedBOMItems
+      if (doc.linkedBOMItems && doc.linkedBOMItems.includes(itemId)) {
+        const updatedLinkedItems = doc.linkedBOMItems.filter(id => id !== itemId);
+        await linkDocumentToBOMItems(documentId, updatedLinkedItems);
+        // Update local state
+        setProjectDocuments(prev =>
+          prev.map(d =>
+            d.id === documentId
+              ? { ...d, linkedBOMItems: updatedLinkedItems }
+              : d
+          )
+        );
+      }
+
+      // Check if item has this document as linkedPODocumentId or linkedInvoiceDocumentId
+      if (projectId) {
+        for (const cat of categories) {
+          const item = cat.items.find(i => i.id === itemId);
+          if (item) {
+            const updates: Partial<BOMItem> = {};
+            if (item.linkedPODocumentId === documentId) {
+              updates.linkedPODocumentId = '' as any; // Empty string to clear
+            }
+            if (item.linkedInvoiceDocumentId === documentId) {
+              updates.linkedInvoiceDocumentId = '' as any; // Empty string to clear
+            }
+            if (Object.keys(updates).length > 0) {
+              await updateBOMItem(projectId, categories, itemId, updates);
+            }
+            break;
+          }
+        }
+      }
     } catch (error) {
       console.error('Error unlinking document:', error);
     }
