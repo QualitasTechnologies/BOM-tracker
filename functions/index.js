@@ -434,13 +434,23 @@ exports.manageUserStatus = onCall(async (request) => {
     // Update custom claims
     await admin.auth().setCustomUserClaims(targetUid, newClaims);
     
-    // Update user request status if it exists
+    // Update user request status if document exists (use set with merge to avoid NOT_FOUND error)
     if (action === 'approve' || action === 'reject') {
-      await admin.firestore().collection('userRequests').doc(targetUid).update({
-        status: action === 'approve' ? 'approved' : 'rejected',
-        processedAt: admin.firestore.FieldValue.serverTimestamp(),
-        processedBy: auth.uid
-      });
+      try {
+        const docRef = admin.firestore().collection('userRequests').doc(targetUid);
+        const doc = await docRef.get();
+        if (doc.exists) {
+          await docRef.update({
+            status: action === 'approve' ? 'approved' : 'rejected',
+            processedAt: admin.firestore.FieldValue.serverTimestamp(),
+            processedBy: auth.uid
+          });
+        }
+        // If document doesn't exist, that's fine - custom claims are already set
+      } catch (firestoreError) {
+        // Log but don't fail - the important part (custom claims) is already done
+        logger.warn('Could not update userRequests document:', firestoreError.message);
+      }
     }
     
     logger.info('User status updated successfully', {

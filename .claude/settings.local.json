@@ -26,7 +26,8 @@
       "Bash(dir \"C:\\Software\\BOM-Tracker\\BOM-tracker\\coverage\")",
       "Bash(ForEach-Object { $_FullName })",
       "Bash(find:*)",
-      "Bash(xargs:*)"
+      "Bash(xargs:*)",
+      "Bash(firebase functions:log:*)"
     ],
     "deny": [],
     "ask": []
