@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { Search, Plus, Download, Filter, X, Upload } from 'lucide-react';
+import { Search, Plus, Download, Filter, X, Upload, Package, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -8,6 +8,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
 import BOMHeader from '@/components/BOM/BOMHeader';
 import BOMCategoryCard from '@/components/BOM/BOMCategoryCard';
 import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
@@ -61,6 +63,7 @@ const BOM = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [categories, setCategories] = useState<BOMCategory[]>([]);
+  const [activeTab, setActiveTab] = useState('bom-items');
   const { projectId } = useParams<{ projectId: string }>();
   console.log('projectId from URL params:', projectId);
   const [projectDetails, setProjectDetails] = useState<{ projectName: string; projectId: string; clientName: string } | null>(null);
@@ -548,143 +551,191 @@ const BOM = () => {
               {...calculateBOMMetrics()}
             />
 
-            {/* Project Documents - Centralized */}
-            {projectId && (
-              <ProjectDocuments
-                projectId={projectId}
-                bomItems={categories.flatMap(cat => cat.items)}
-                onDocumentsChange={() => {
-                  // Reload documents when they change
-                  getProjectDocuments(projectId).then(setProjectDocuments);
-                }}
-                onBOMItemUpdate={async (itemId: string, updates: Partial<BOMItem>) => {
-                  if (projectId) {
-                    await updateBOMItem(projectId, categories, itemId, updates);
-                  }
-                }}
-              />
-            )}
+            {/* Tab-based Layout */}
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+              <TabsList className="grid w-full grid-cols-3 mb-4">
+                <TabsTrigger value="bom-items" className="flex items-center gap-2">
+                  <Package size={16} />
+                  BOM Items
+                  <Badge variant="secondary" className="ml-1 text-xs">
+                    {categories.flatMap(cat => cat.items).length}
+                  </Badge>
+                </TabsTrigger>
+                <TabsTrigger value="inward-tracking" className="flex items-center gap-2">
+                  <Package size={16} />
+                  Inward Tracking
+                  {(() => {
+                    const orderedCount = categories.flatMap(cat => cat.items)
+                      .filter(item => item.status === 'ordered' || item.status === 'received').length;
+                    return orderedCount > 0 ? (
+                      <Badge variant="secondary" className="ml-1 text-xs">{orderedCount}</Badge>
+                    ) : null;
+                  })()}
+                </TabsTrigger>
+                <TabsTrigger value="documents" className="flex items-center gap-2">
+                  <FileText size={16} />
+                  Documents
+                  <Badge variant="secondary" className="ml-1 text-xs">
+                    {projectDocuments.length}
+                  </Badge>
+                </TabsTrigger>
+              </TabsList>
 
-            {/* Search and Actions Bar */}
-            <div className="flex flex-col sm:flex-row gap-3 mb-4">
-              <div className="relative flex-1 flex items-center gap-2">
-                <div className="flex-1 relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" size={20} />
-                  <Input
-                    type="text"
-                    placeholder="Search parts by name, ID, or description..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-10"
-                  />
+              {/* BOM Items Tab */}
+              <TabsContent value="bom-items" className="mt-0">
+                {/* Search and Actions Bar */}
+                <div className="flex flex-col sm:flex-row gap-3 mb-4">
+                  <div className="relative flex-1 flex items-center gap-2">
+                    <div className="flex-1 relative">
+                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" size={20} />
+                      <Input
+                        type="text"
+                        placeholder="Search parts by name, ID, or description..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="pl-10"
+                      />
+                    </div>
+                    <Button variant="outline" onClick={() => setAddPartOpen(true)}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add Part
+                    </Button>
+                    <Button variant="outline" onClick={() => setImportBOMOpen(true)}>
+                      <Upload className="mr-2 h-4 w-4" />
+                      Import BOM
+                    </Button>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button variant="outline" onClick={() => setFilterOpen(true)}>
+                      <Filter className="mr-2 h-4 w-4" />
+                      Filter
+                    </Button>
+                    <Button variant="outline" onClick={handleExportCSV}>
+                      <Download className="mr-2 h-4 w-4" />
+                      Export
+                    </Button>
+                    <Button variant="outline" onClick={handleCreatePurchaseOrder}>
+                      Create PR
+                    </Button>
+                  </div>
                 </div>
-                <Button variant="outline" onClick={() => setAddPartOpen(true)}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Add Part
-                </Button>
-                <Button variant="outline" onClick={() => setImportBOMOpen(true)}>
-                  <Upload className="mr-2 h-4 w-4" />
-                  Import BOM
-                </Button>
-              </div>
-              
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={() => setFilterOpen(true)}>
-                  <Filter className="mr-2 h-4 w-4" />
-                  Filter
-                </Button>
-                <Button variant="outline" onClick={handleExportCSV}>
-                  <Download className="mr-2 h-4 w-4" />
-                  Export
-                </Button>
-                <Button variant="outline" onClick={handleCreatePurchaseOrder}>
-                  Create PR
-                </Button>
-              </div>
-            </div>
-            {emailStatus && <div className="mt-2 text-sm">{emailStatus}</div>}
-            {importSuccess && (
-              <Alert className="mt-2 border-green-200 bg-green-50">
-                <AlertDescription className="text-green-800">
-                  {importSuccess}
-                </AlertDescription>
-              </Alert>
-            )}
+                {emailStatus && <div className="mt-2 text-sm">{emailStatus}</div>}
+                {importSuccess && (
+                  <Alert className="mt-2 border-green-200 bg-green-50">
+                    <AlertDescription className="text-green-800">
+                      {importSuccess}
+                    </AlertDescription>
+                  </Alert>
+                )}
 
-            {/* Inward Tracking Section */}
-            <InwardTracking
-              categories={categories}
-              documents={projectDocuments}
-              onItemClick={(item) => {
-                console.log('Item clicked:', item.name);
-              }}
-            />
+                {/* BOM Content - Single Column Layout */}
+                <div className="space-y-4">
+                  {filteredCategories.map((category) => (
+                    <BOMCategoryCard
+                      key={category.name}
+                      category={category}
+                      onToggle={() => toggleCategory(category.name)}
+                      onQuantityChange={handleQuantityChange}
+                      onDeletePart={handleDeletePart}
+                      onDeleteCategory={(categoryName) => {
+                        // Handle category deletion - remove the entire category
+                        if (projectId) {
+                          const updatedCategories = categories.filter(cat => cat.name !== categoryName);
+                          updateBOMData(projectId, updatedCategories);
+                        }
+                      }}
+                      onStatusChange={(itemId, newStatus) => {
+                        if (!projectId) return;
 
-            {/* BOM Content - Single Column Layout */}
-            <div className="space-y-4">
-              {filteredCategories.map((category) => (
-                <BOMCategoryCard
-                  key={category.name}
-                  category={category}
-                  onToggle={() => toggleCategory(category.name)}
-                  onQuantityChange={handleQuantityChange}
-                  onDeletePart={handleDeletePart}
-                  onDeleteCategory={(categoryName) => {
-                    // Handle category deletion - remove the entire category
-                    if (projectId) {
-                      const updatedCategories = categories.filter(cat => cat.name !== categoryName);
-                      updateBOMData(projectId, updatedCategories);
-                    }
+                        // Find the item
+                        let targetItem: BOMItem | null = null;
+                        for (const cat of categories) {
+                          const found = cat.items.find(item => item.id === itemId);
+                          if (found) {
+                            targetItem = found;
+                            break;
+                          }
+                        }
+
+                        // If changing to "ordered", refresh documents and show the order dialog
+                        if (newStatus === 'ordered' && targetItem) {
+                          // Refresh documents to get latest linkedBOMItems data
+                          getProjectDocuments(projectId).then(docs => {
+                            setProjectDocuments(docs);
+                            setSelectedItemForOrder(targetItem);
+                            setOrderDialogOpen(true);
+                          });
+                          return;
+                        }
+
+                        // If changing to "received", refresh documents and show the receive dialog
+                        if (newStatus === 'received' && targetItem) {
+                          // Refresh documents to get latest data
+                          getProjectDocuments(projectId).then(docs => {
+                            setProjectDocuments(docs);
+                            setSelectedItemForReceive(targetItem);
+                            setReceiveDialogOpen(true);
+                          });
+                          return;
+                        }
+
+                        // For other status changes, update directly
+                        updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                      }}
+                      onEditPart={handleEditPart}
+                      onPartCategoryChange={handlePartCategoryChange}
+                      availableCategories={canonicalCategoryNames}
+                      onUpdatePart={handleUpdatePart}
+                      getDocumentCount={getDocumentCountForItem}
+                      getDocumentsForItem={getDocumentsForItem}
+                      onUnlinkDocument={handleUnlinkDocument}
+                      vendors={vendors}
+                    />
+                  ))}
+
+                  {filteredCategories.length === 0 && (
+                    <Card>
+                      <CardContent className="p-8 text-center">
+                        <p className="text-muted-foreground">No parts found matching your search criteria.</p>
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
+              </TabsContent>
+
+              {/* Inward Tracking Tab */}
+              <TabsContent value="inward-tracking" className="mt-0">
+                <InwardTracking
+                  categories={categories}
+                  documents={projectDocuments}
+                  onItemClick={(item) => {
+                    console.log('Item clicked:', item.name);
                   }}
-                  onStatusChange={(itemId, newStatus) => {
-                    if (!projectId) return;
-
-                    // Find the item
-                    let targetItem: BOMItem | null = null;
-                    for (const cat of categories) {
-                      const found = cat.items.find(item => item.id === itemId);
-                      if (found) {
-                        targetItem = found;
-                        break;
-                      }
-                    }
-
-                    // If changing to "ordered", show the order dialog
-                    if (newStatus === 'ordered' && targetItem) {
-                      setSelectedItemForOrder(targetItem);
-                      setOrderDialogOpen(true);
-                      return;
-                    }
-
-                    // If changing to "received", show the receive dialog
-                    if (newStatus === 'received' && targetItem) {
-                      setSelectedItemForReceive(targetItem);
-                      setReceiveDialogOpen(true);
-                      return;
-                    }
-
-                    // For other status changes, update directly
-                    updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
-                  }}
-                  onEditPart={handleEditPart}
-                  onPartCategoryChange={handlePartCategoryChange}
-                  availableCategories={canonicalCategoryNames}
-                  onUpdatePart={handleUpdatePart}
-                  getDocumentCount={getDocumentCountForItem}
-                  getDocumentsForItem={getDocumentsForItem}
-                  onUnlinkDocument={handleUnlinkDocument}
-                  vendors={vendors}
+                  fullPage={true}
                 />
-              ))}
+              </TabsContent>
 
-              {filteredCategories.length === 0 && (
-                <Card>
-                  <CardContent className="p-8 text-center">
-                    <p className="text-muted-foreground">No parts found matching your search criteria.</p>
-                  </CardContent>
-                </Card>
-              )}
-            </div>
+              {/* Documents Tab */}
+              <TabsContent value="documents" className="mt-0">
+                {projectId && (
+                  <ProjectDocuments
+                    projectId={projectId}
+                    bomItems={categories.flatMap(cat => cat.items)}
+                    onDocumentsChange={() => {
+                      // Reload documents when they change
+                      getProjectDocuments(projectId).then(setProjectDocuments);
+                    }}
+                    onBOMItemUpdate={async (itemId: string, updates: Partial<BOMItem>) => {
+                      if (projectId) {
+                        await updateBOMItem(projectId, categories, itemId, updates);
+                      }
+                    }}
+                    fullPage={true}
+                  />
+                )}
+              </TabsContent>
+            </Tabs>
           </div>
         </main>
       </div>
@@ -1012,20 +1063,29 @@ const BOM = () => {
       )}
 
       {/* Receive Item Dialog - shown when changing status to "received" */}
-      <ReceiveItemDialog
-        open={receiveDialogOpen}
-        onOpenChange={setReceiveDialogOpen}
-        item={selectedItemForReceive}
-        onConfirm={(data) => {
-          if (selectedItemForReceive && projectId) {
-            updateBOMItem(projectId, categories, selectedItemForReceive.id, {
-              status: 'received',
-              actualArrival: data.actualArrival,
-            });
-          }
-          setSelectedItemForReceive(null);
-        }}
-      />
+      {projectId && (
+        <ReceiveItemDialog
+          open={receiveDialogOpen}
+          onOpenChange={setReceiveDialogOpen}
+          item={selectedItemForReceive}
+          projectId={projectId}
+          availableVendorQuotes={projectDocuments.filter(doc => doc.type === 'vendor-invoice')}
+          onConfirm={(data) => {
+            if (selectedItemForReceive && projectId) {
+              updateBOMItem(projectId, categories, selectedItemForReceive.id, {
+                status: 'received',
+                actualArrival: data.actualArrival,
+                linkedInvoiceDocumentId: data.linkedInvoiceDocumentId,
+              });
+            }
+            setSelectedItemForReceive(null);
+          }}
+          onDocumentUploaded={(newDoc) => {
+            // Add the new invoice document to the list
+            setProjectDocuments(prev => [...prev, newDoc]);
+          }}
+        />
+      )}
     </div>
   );
 };

@@ -23,9 +23,10 @@ interface ProjectDocumentsProps {
   bomItems: BOMItem[]; // All BOM items for linking
   onDocumentsChange?: () => void;
   onBOMItemUpdate?: (itemId: string, updates: Partial<BOMItem>) => Promise<void>; // Callback to update BOM items
+  fullPage?: boolean; // When true, renders without collapsible wrapper for tab view
 }
 
-const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate }: ProjectDocumentsProps) => {
+const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate, fullPage = false }: ProjectDocumentsProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -88,6 +89,48 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
   };
 
   const handleDelete = async (doc: ProjectDocument) => {
+    // For PO documents, check if any linked items are still marked as 'ordered'
+    if (doc.type === 'outgoing-po') {
+      // Check both: document's linkedBOMItems AND BOM items' linkedPODocumentId
+      const linkedOrderedItems = bomItems.filter(
+        item => (
+          (doc.linkedBOMItems?.includes(item.id) || item.linkedPODocumentId === doc.id) &&
+          item.status === 'ordered'
+        )
+      );
+
+      if (linkedOrderedItems.length > 0) {
+        const itemNames = linkedOrderedItems.map(item => item.name).join(', ');
+        toast({
+          title: 'Cannot Delete PO',
+          description: `This PO is linked to ordered items: ${itemNames}. Change item status to "Not Ordered" first before deleting this document.`,
+          variant: 'destructive'
+        });
+        return;
+      }
+    }
+
+    // For vendor invoice documents, check if any linked items are still marked as 'received'
+    if (doc.type === 'vendor-invoice') {
+      // Check both: document's linkedBOMItems AND BOM items' linkedInvoiceDocumentId
+      const linkedReceivedItems = bomItems.filter(
+        item => (
+          (doc.linkedBOMItems?.includes(item.id) || item.linkedInvoiceDocumentId === doc.id) &&
+          item.status === 'received'
+        )
+      );
+
+      if (linkedReceivedItems.length > 0) {
+        const itemNames = linkedReceivedItems.map(item => item.name).join(', ');
+        toast({
+          title: 'Cannot Delete Invoice',
+          description: `This invoice is linked to received items: ${itemNames}. Change item status first before deleting this document.`,
+          variant: 'destructive'
+        });
+        return;
+      }
+    }
+
     if (!window.confirm(`Delete "${doc.name}"?`)) return;
 
     try {
@@ -175,6 +218,248 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
     });
   };
 
+  // Document section component for rendering a single document type section
+  const DocumentSection = ({ section, isFullPage }: { section: typeof DOCUMENT_SECTIONS[0]; isFullPage: boolean }) => {
+    const sectionDocs = getDocumentsByType(section.type);
+
+    return (
+      <div className={isFullPage ? 'mb-8' : ''}>
+        {/* Section Header */}
+        <div className={`flex items-center justify-between ${isFullPage ? 'mb-4 pb-3 border-b' : 'border-b pb-3'}`}>
+          <div>
+            <h3 className={`font-semibold ${isFullPage ? 'text-lg' : 'text-sm'} text-gray-900`}>
+              {section.label}
+              <Badge variant="outline" className="ml-2">{sectionDocs.length}</Badge>
+            </h3>
+            <p className={`${isFullPage ? 'text-sm' : 'text-xs'} text-gray-500 mt-1`}>{section.description}</p>
+          </div>
+          <label className="cursor-pointer">
+            <input
+              type="file"
+              className="hidden"
+              onChange={(e) => handleFileUpload(e, section.type)}
+              disabled={uploading}
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg"
+            />
+            <Button
+              variant="outline"
+              size={isFullPage ? 'default' : 'sm'}
+              disabled={uploading}
+              asChild
+            >
+              <span>
+                <Upload className="mr-2 h-4 w-4" />
+                {uploading ? 'Uploading...' : 'Upload'}
+              </span>
+            </Button>
+          </label>
+        </div>
+
+        {/* Document List */}
+        <div className={`space-y-${isFullPage ? '3' : '2'}`}>
+          {sectionDocs.length === 0 ? (
+            <div className={`text-center py-${isFullPage ? '8' : '6'} text-gray-400 ${isFullPage ? 'text-sm' : 'text-xs'} italic bg-gray-50 rounded border border-dashed`}>
+              No {section.label.toLowerCase()} uploaded yet
+            </div>
+          ) : (
+            sectionDocs.map(doc => (
+              <div
+                key={doc.id}
+                className={`flex items-center gap-3 p-${isFullPage ? '3' : '2'} bg-gray-50 rounded border border-gray-200 hover:bg-gray-100 transition-colors`}
+              >
+                <FileText className="text-blue-600 flex-shrink-0" size={isFullPage ? 20 : 18} />
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <a
+                      href={doc.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={`font-medium text-blue-700 hover:underline truncate ${isFullPage ? '' : 'text-sm'}`}
+                      title={doc.name}
+                    >
+                      {doc.name}
+                    </a>
+                    {doc.linkedBOMItems && doc.linkedBOMItems.length > 0 && (
+                      <Badge variant="outline" className="text-xs">
+                        <LinkIcon size={10} className="mr-1" />
+                        {doc.linkedBOMItems.length} items
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5">
+                    {formatDate(doc.uploadedAt)} • {formatFileSize(doc.fileSize)}
+                    {doc.linkedBOMItems && doc.linkedBOMItems.length > 0 && (
+                      <span className="ml-2 text-gray-400">
+                        → {isFullPage
+                          ? doc.linkedBOMItems
+                              .map(id => bomItems.find(item => item.id === id)?.name)
+                              .filter(Boolean)
+                              .join(', ')
+                          : <>
+                              {doc.linkedBOMItems
+                                .map(id => bomItems.find(item => item.id === id)?.name)
+                                .filter(Boolean)
+                                .slice(0, 2)
+                                .join(', ')}
+                              {doc.linkedBOMItems.length > 2 && ` +${doc.linkedBOMItems.length - 2} more`}
+                            </>
+                        }
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleOpenLinkDialog(doc)}
+                    title="Link to BOM items"
+                  >
+                    <LinkIcon size={16} />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleDelete(doc)}
+                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                    title="Delete document"
+                  >
+                    <Trash2 size={16} />
+                  </Button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // Collapsible mode content (uses tabs)
+  const TabsDocumentView = () => (
+    <Tabs value={selectedType} onValueChange={(value) => setSelectedType(value as DocumentType)}>
+      <TabsList className="grid w-full grid-cols-3">
+        {DOCUMENT_SECTIONS.map(section => (
+          <TabsTrigger key={section.type} value={section.type}>
+            {section.label} ({getDocumentsByType(section.type).length})
+          </TabsTrigger>
+        ))}
+      </TabsList>
+
+      {DOCUMENT_SECTIONS.map(section => (
+        <TabsContent key={section.type} value={section.type} className="space-y-3">
+          <DocumentSection section={section} isFullPage={false} />
+        </TabsContent>
+      ))}
+    </Tabs>
+  );
+
+  // Full page mode - render all sections vertically
+  if (fullPage) {
+    return (
+      <>
+        <div className="space-y-6">
+          {DOCUMENT_SECTIONS.map(section => (
+            <DocumentSection key={section.type} section={section} isFullPage={true} />
+          ))}
+        </div>
+
+        {/* Link to BOM Items Dialog */}
+        <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
+          <DialogContent className="max-w-md max-h-[80vh] flex flex-col">
+            <DialogHeader>
+              <DialogTitle>Link Document to BOM Items</DialogTitle>
+            </DialogHeader>
+
+            <div className="flex-1 overflow-y-auto">
+              <p className="text-sm text-gray-600 mb-3">
+                Select BOM items to link with: <strong>{selectedDocument?.name}</strong>
+              </p>
+
+              {/* For PO documents, show 1-to-1 constraint notice */}
+              {selectedDocument?.type === 'outgoing-po' && (
+                <div className="flex items-start gap-2 p-2 mb-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+                  <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+                  <span>Each item can only be linked to one PO. Items already linked to another PO are disabled.</span>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {bomItems.length === 0 ? (
+                  <p className="text-sm text-gray-400 italic">No BOM items available</p>
+                ) : (
+                  bomItems.map(item => {
+                    // For PO documents: check if item is already linked to ANOTHER PO
+                    const isOutgoingPO = selectedDocument?.type === 'outgoing-po';
+                    const itemLinkedToOtherPO = isOutgoingPO && documents.some(
+                      doc => doc.type === 'outgoing-po' &&
+                             doc.id !== selectedDocument?.id &&
+                             doc.linkedBOMItems?.includes(item.id)
+                    );
+                    const isCurrentlyLinked = selectedItemIds.includes(item.id);
+                    const isDisabled = itemLinkedToOtherPO && !isCurrentlyLinked;
+
+                    // Find which PO it's linked to (for display)
+                    const linkedPOName = itemLinkedToOtherPO
+                      ? documents.find(
+                          doc => doc.type === 'outgoing-po' &&
+                                 doc.id !== selectedDocument?.id &&
+                                 doc.linkedBOMItems?.includes(item.id)
+                        )?.name
+                      : null;
+
+                    return (
+                      <div
+                        key={item.id}
+                        className={`flex items-center space-x-2 p-2 rounded ${isDisabled ? 'bg-gray-100 opacity-60' : 'hover:bg-gray-50'}`}
+                      >
+                        <Checkbox
+                          id={item.id}
+                          checked={isCurrentlyLinked}
+                          disabled={isDisabled}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              setSelectedItemIds([...selectedItemIds, item.id]);
+                            } else {
+                              setSelectedItemIds(selectedItemIds.filter(id => id !== item.id));
+                            }
+                          }}
+                        />
+                        <label htmlFor={item.id} className={`flex-1 text-sm ${isDisabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                          <div className="font-medium">{item.name}</div>
+                          <div className="text-xs text-gray-500">
+                            {item.category} • Qty: {item.quantity}
+                            {linkedPOName && (
+                              <span className="text-amber-600 ml-2">
+                                (linked to: {linkedPOName.length > 20 ? linkedPOName.substring(0, 20) + '...' : linkedPOName})
+                              </span>
+                            )}
+                          </div>
+                        </label>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <DialogFooter className="mt-4">
+              <Button variant="outline" onClick={() => setLinkDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveLinks}>
+                Save Links ({selectedItemIds.length})
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </>
+    );
+  }
+
+  // Collapsible mode (default)
   return (
     <Card className="mb-4">
       <Collapsible open={isOpen} onOpenChange={setIsOpen}>
@@ -195,113 +480,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
 
         <CollapsibleContent>
           <CardContent className="pt-0">
-            <Tabs value={selectedType} onValueChange={(value) => setSelectedType(value as DocumentType)}>
-              <TabsList className="grid w-full grid-cols-3">
-                {DOCUMENT_SECTIONS.map(section => (
-                  <TabsTrigger key={section.type} value={section.type}>
-                    {section.label} ({getDocumentsByType(section.type).length})
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-
-              {DOCUMENT_SECTIONS.map(section => (
-                <TabsContent key={section.type} value={section.type} className="space-y-3">
-                  {/* Upload Button */}
-                  <div className="flex items-center justify-between border-b pb-3">
-                    <p className="text-sm text-gray-600">{section.description}</p>
-                    <label className="cursor-pointer">
-                      <input
-                        type="file"
-                        className="hidden"
-                        onChange={(e) => handleFileUpload(e, section.type)}
-                        disabled={uploading}
-                        accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg"
-                      />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={uploading}
-                        asChild
-                      >
-                        <span>
-                          <Upload className="mr-2 h-4 w-4" />
-                          {uploading ? 'Uploading...' : 'Upload File'}
-                        </span>
-                      </Button>
-                    </label>
-                  </div>
-
-                  {/* Document List */}
-                  <div className="space-y-2">
-                    {getDocumentsByType(section.type).length === 0 ? (
-                      <div className="text-center py-8 text-gray-400 text-sm italic">
-                        No documents uploaded yet
-                      </div>
-                    ) : (
-                      getDocumentsByType(section.type).map(doc => (
-                        <div
-                          key={doc.id}
-                          className="flex items-center gap-3 p-3 bg-gray-50 rounded border border-gray-200 hover:bg-gray-100 transition-colors"
-                        >
-                          <FileText className="text-blue-600 flex-shrink-0" size={20} />
-
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <a
-                                href={doc.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="font-medium text-blue-700 hover:underline truncate"
-                                title={doc.name}
-                              >
-                                {doc.name}
-                              </a>
-                              {doc.linkedBOMItems && doc.linkedBOMItems.length > 0 && (
-                                <>
-                                  <Badge variant="outline" className="text-xs">
-                                    <LinkIcon size={12} className="mr-1" />
-                                    {doc.linkedBOMItems.length} items
-                                  </Badge>
-                                  <span className="text-xs text-gray-500 ml-1">
-                                    ({doc.linkedBOMItems
-                                      .map(id => bomItems.find(item => item.id === id)?.name)
-                                      .filter(Boolean)
-                                      .join(', ')})
-                                  </span>
-                                </>
-                              )}
-                            </div>
-                            <div className="text-xs text-gray-500 mt-1">
-                              {formatDate(doc.uploadedAt)} • {formatFileSize(doc.fileSize)}
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-1">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleOpenLinkDialog(doc)}
-                              title="Link to BOM items"
-                            >
-                              <LinkIcon size={16} />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDelete(doc)}
-                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                              title="Delete document"
-                            >
-                              <Trash2 size={16} />
-                            </Button>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </TabsContent>
-              ))}
-            </Tabs>
+            <TabsDocumentView />
           </CardContent>
         </CollapsibleContent>
       </Collapsible>

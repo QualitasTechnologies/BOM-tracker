@@ -43,6 +43,7 @@ export interface BOMItem {
   expectedArrival?: string; // ISO string - calculated from orderDate + leadTime
   actualArrival?: string; // ISO string - when item was actually received
   linkedPODocumentId?: string; // Reference to outgoing-po document
+  linkedInvoiceDocumentId?: string; // Reference to vendor-invoice document
 
   createdAt?: Date;
   updatedAt?: Date;
@@ -172,6 +173,7 @@ export function sanitizeBOMItemForFirestore(item: Partial<BOMItem>): Record<stri
   if (item.expectedArrival !== undefined) sanitized.expectedArrival = item.expectedArrival;
   if (item.actualArrival !== undefined) sanitized.actualArrival = item.actualArrival;
   if (item.linkedPODocumentId !== undefined) sanitized.linkedPODocumentId = item.linkedPODocumentId;
+  if (item.linkedInvoiceDocumentId !== undefined) sanitized.linkedInvoiceDocumentId = item.linkedInvoiceDocumentId;
   if (item.createdAt !== undefined) sanitized.createdAt = item.createdAt;
   if (item.updatedAt !== undefined) sanitized.updatedAt = item.updatedAt;
 

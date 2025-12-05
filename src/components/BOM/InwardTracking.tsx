@@ -18,6 +18,7 @@ interface InwardTrackingProps {
   categories: BOMCategory[];
   documents: ProjectDocument[];
   onItemClick?: (item: BOMItem) => void;
+  fullPage?: boolean; // When true, renders without collapsible wrapper for tab view
 }
 
 // Helper to format dates
@@ -76,7 +77,7 @@ const StatusBadge = ({ status, days }: { status: InwardStatus; days: number | nu
   );
 };
 
-const InwardTracking = ({ categories, documents, onItemClick }: InwardTrackingProps) => {
+const InwardTracking = ({ categories, documents, onItemClick, fullPage = false }: InwardTrackingProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [filterStatus, setFilterStatus] = useState<string>('all');
 
@@ -166,11 +167,147 @@ const InwardTracking = ({ categories, documents, onItemClick }: InwardTrackingPr
     return documents.find(d => d.id === item.linkedPODocumentId);
   };
 
-  // If no ordered items, don't show the section
+  // If no ordered items, show empty state in full page mode
   if (stats.ordered + stats.received === 0) {
+    if (fullPage) {
+      return (
+        <div className="flex flex-col items-center justify-center py-12 text-gray-500">
+          <Package className="h-12 w-12 mb-4 text-gray-300" />
+          <p className="text-lg font-medium">No items ordered yet</p>
+          <p className="text-sm">Items will appear here once they're marked as ordered</p>
+        </div>
+      );
+    }
     return null;
   }
 
+  // Shared content (summary cards, filter, table)
+  const TrackingContent = () => (
+    <>
+      {/* Summary Cards */}
+      <div className={`grid grid-cols-4 gap-${fullPage ? '4' : '2'} mb-${fullPage ? '6' : '3'}`}>
+        <div className={`bg-gray-50 rounded p-${fullPage ? '4' : '2'} text-center`}>
+          <div className={`${fullPage ? 'text-2xl' : 'text-lg'} font-semibold text-gray-900`}>{stats.ordered}</div>
+          <div className={`${fullPage ? 'text-sm' : 'text-xs'} text-gray-500`}>Ordered</div>
+        </div>
+        <div className={`bg-amber-50 rounded p-${fullPage ? '4' : '2'} text-center`}>
+          <div className={`${fullPage ? 'text-2xl' : 'text-lg'} font-semibold text-amber-700`}>{stats.arrivingSoon}</div>
+          <div className={`${fullPage ? 'text-sm' : 'text-xs'} text-amber-600`}>Soon (7d)</div>
+        </div>
+        <div className={`bg-red-50 rounded p-${fullPage ? '4' : '2'} text-center`}>
+          <div className={`${fullPage ? 'text-2xl' : 'text-lg'} font-semibold text-red-700`}>{stats.overdue}</div>
+          <div className={`${fullPage ? 'text-sm' : 'text-xs'} text-red-600`}>Overdue</div>
+        </div>
+        <div className={`bg-green-50 rounded p-${fullPage ? '4' : '2'} text-center`}>
+          <div className={`${fullPage ? 'text-2xl' : 'text-lg'} font-semibold text-green-700`}>{stats.received}</div>
+          <div className={`${fullPage ? 'text-sm' : 'text-xs'} text-green-600`}>Received</div>
+        </div>
+      </div>
+
+      {/* Filter */}
+      <div className={`flex items-center gap-2 mb-${fullPage ? '4' : '2'}`}>
+        <span className={`${fullPage ? 'text-sm' : 'text-xs'} text-gray-500`}>Filter:</span>
+        <Select value={filterStatus} onValueChange={setFilterStatus}>
+          <SelectTrigger className={`${fullPage ? 'h-9 w-40' : 'h-7 w-32'} text-xs`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All</SelectItem>
+            <SelectItem value="overdue">Overdue</SelectItem>
+            <SelectItem value="arriving-soon">Arriving Soon</SelectItem>
+            <SelectItem value="on-track">On Track</SelectItem>
+            <SelectItem value="received">Received</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Table */}
+      {filteredItems.length > 0 ? (
+        <div className="border rounded overflow-hidden">
+          <table className={`w-full ${fullPage ? 'text-sm' : 'text-xs'}`}>
+            <thead className="bg-gray-50">
+              <tr>
+                <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600`}>Item</th>
+                <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600 hidden sm:table-cell`}>Vendor</th>
+                <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600`}>PO #</th>
+                <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600 hidden md:table-cell`}>Ordered</th>
+                <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600`}>Expected</th>
+                <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600`}>Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredItems.map((item) => {
+                const status = getInwardStatus(item);
+                const days = getDaysFromToday(item.expectedArrival);
+                const linkedDoc = getLinkedDocument(item);
+
+                return (
+                  <tr
+                    key={item.id}
+                    className="hover:bg-gray-50 cursor-pointer"
+                    onClick={() => onItemClick?.(item)}
+                  >
+                    <td className={`p-${fullPage ? '3' : '2'}`}>
+                      <div className={`font-medium text-gray-900 truncate ${fullPage ? 'max-w-[250px]' : 'max-w-[150px]'}`}>
+                        {item.name}
+                      </div>
+                      {linkedDoc && (
+                        <a
+                          href={linkedDoc.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 text-blue-600 hover:underline"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <FileText size={fullPage ? 12 : 10} />
+                          <span className={`truncate ${fullPage ? 'max-w-[150px]' : 'max-w-[100px]'}`}>{linkedDoc.name}</span>
+                        </a>
+                      )}
+                    </td>
+                    <td className={`p-${fullPage ? '3' : '2'} text-gray-600 hidden sm:table-cell`}>
+                      {item.finalizedVendor?.name || item.vendors?.[0]?.name || '-'}
+                    </td>
+                    <td className={`p-${fullPage ? '3' : '2'} text-gray-600`}>
+                      {item.poNumber || '-'}
+                    </td>
+                    <td className={`p-${fullPage ? '3' : '2'} text-gray-600 hidden md:table-cell`}>
+                      {formatDate(item.orderDate)}
+                    </td>
+                    <td className={`p-${fullPage ? '3' : '2'} text-gray-600`}>
+                      {formatDate(item.expectedArrival)}
+                      {item.actualArrival && status === 'received' && (
+                        <div className="text-green-600">
+                          Rcvd: {formatDate(item.actualArrival)}
+                        </div>
+                      )}
+                    </td>
+                    <td className={`p-${fullPage ? '3' : '2'}`}>
+                      <StatusBadge status={status} days={days} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className={`text-center py-${fullPage ? '8' : '4'} text-${fullPage ? 'base' : 'sm'} text-gray-500`}>
+          No items match the selected filter
+        </div>
+      )}
+    </>
+  );
+
+  // Full page mode - render content directly
+  if (fullPage) {
+    return (
+      <div className="space-y-4">
+        <TrackingContent />
+      </div>
+    );
+  }
+
+  // Collapsible mode (default)
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <Card className="border-gray-200">
@@ -212,117 +349,7 @@ const InwardTracking = ({ categories, documents, onItemClick }: InwardTrackingPr
 
         <CollapsibleContent>
           <CardContent className="pt-0 pb-3 px-3">
-            {/* Summary Cards */}
-            <div className="grid grid-cols-4 gap-2 mb-3">
-              <div className="bg-gray-50 rounded p-2 text-center">
-                <div className="text-lg font-semibold text-gray-900">{stats.ordered}</div>
-                <div className="text-xs text-gray-500">Ordered</div>
-              </div>
-              <div className="bg-amber-50 rounded p-2 text-center">
-                <div className="text-lg font-semibold text-amber-700">{stats.arrivingSoon}</div>
-                <div className="text-xs text-amber-600">Soon (7d)</div>
-              </div>
-              <div className="bg-red-50 rounded p-2 text-center">
-                <div className="text-lg font-semibold text-red-700">{stats.overdue}</div>
-                <div className="text-xs text-red-600">Overdue</div>
-              </div>
-              <div className="bg-green-50 rounded p-2 text-center">
-                <div className="text-lg font-semibold text-green-700">{stats.received}</div>
-                <div className="text-xs text-green-600">Received</div>
-              </div>
-            </div>
-
-            {/* Filter */}
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs text-gray-500">Filter:</span>
-              <Select value={filterStatus} onValueChange={setFilterStatus}>
-                <SelectTrigger className="h-7 w-32 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="overdue">Overdue</SelectItem>
-                  <SelectItem value="arriving-soon">Arriving Soon</SelectItem>
-                  <SelectItem value="on-track">On Track</SelectItem>
-                  <SelectItem value="received">Received</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Table */}
-            {filteredItems.length > 0 ? (
-              <div className="border rounded overflow-hidden">
-                <table className="w-full text-xs">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="text-left p-2 font-medium text-gray-600">Item</th>
-                      <th className="text-left p-2 font-medium text-gray-600 hidden sm:table-cell">Vendor</th>
-                      <th className="text-left p-2 font-medium text-gray-600">PO #</th>
-                      <th className="text-left p-2 font-medium text-gray-600 hidden md:table-cell">Ordered</th>
-                      <th className="text-left p-2 font-medium text-gray-600">Expected</th>
-                      <th className="text-left p-2 font-medium text-gray-600">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {filteredItems.map((item) => {
-                      const status = getInwardStatus(item);
-                      const days = getDaysFromToday(item.expectedArrival);
-                      const linkedDoc = getLinkedDocument(item);
-
-                      return (
-                        <tr
-                          key={item.id}
-                          className="hover:bg-gray-50 cursor-pointer"
-                          onClick={() => onItemClick?.(item)}
-                        >
-                          <td className="p-2">
-                            <div className="font-medium text-gray-900 truncate max-w-[150px]">
-                              {item.name}
-                            </div>
-                            {linkedDoc && (
-                              <a
-                                href={linkedDoc.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center gap-1 text-blue-600 hover:underline"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <FileText size={10} />
-                                <span className="truncate max-w-[100px]">{linkedDoc.name}</span>
-                              </a>
-                            )}
-                          </td>
-                          <td className="p-2 text-gray-600 hidden sm:table-cell">
-                            {item.finalizedVendor?.name || item.vendors?.[0]?.name || '-'}
-                          </td>
-                          <td className="p-2 text-gray-600">
-                            {item.poNumber || '-'}
-                          </td>
-                          <td className="p-2 text-gray-600 hidden md:table-cell">
-                            {formatDate(item.orderDate)}
-                          </td>
-                          <td className="p-2 text-gray-600">
-                            {formatDate(item.expectedArrival)}
-                            {item.actualArrival && status === 'received' && (
-                              <div className="text-green-600">
-                                Rcvd: {formatDate(item.actualArrival)}
-                              </div>
-                            )}
-                          </td>
-                          <td className="p-2">
-                            <StatusBadge status={status} days={days} />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="text-center py-4 text-sm text-gray-500">
-                No items match the selected filter
-              </div>
-            )}
+            <TrackingContent />
           </CardContent>
         </CollapsibleContent>
       </Card>

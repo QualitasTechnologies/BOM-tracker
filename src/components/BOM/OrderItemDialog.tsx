@@ -131,17 +131,8 @@ const OrderItemDialog = ({
       setOrderDate(today);
       setPONumber(item.poNumber || '');
 
-      // Check if item is already linked via linkedBOMItems (from ProjectDocuments)
-      // This handles the case where a PO was linked before the item was marked as ordered
+      // Check if item is already linked via item's linkedPODocumentId
       let preSelectedDocId = item.linkedPODocumentId || '';
-      if (!preSelectedDocId && item.id) {
-        const linkedDoc = availablePODocuments.find(doc =>
-          doc.linkedBOMItems && doc.linkedBOMItems.includes(item.id)
-        );
-        if (linkedDoc) {
-          preSelectedDocId = linkedDoc.id;
-        }
-      }
       setLinkedPODocumentId(preSelectedDocId);
 
       // Pre-fill vendor if finalizedVendor exists - find matching vendor by name
@@ -157,7 +148,21 @@ const OrderItemDialog = ({
       setCalculatedArrival('');
       setLeadTimeDays(0);
     }
-  }, [open, item, availablePODocuments, vendors]);
+  }, [open, item, vendors]);
+
+  // Separate effect to detect documents linked to this item via linkedBOMItems
+  // This handles the case where a PO was linked before the item was marked as ordered
+  // Runs when availablePODocuments updates (e.g., after parent state refresh)
+  useEffect(() => {
+    if (open && item && !linkedPODocumentId) {
+      const linkedDoc = availablePODocuments.find(doc =>
+        doc.linkedBOMItems && doc.linkedBOMItems.includes(item.id)
+      );
+      if (linkedDoc) {
+        setLinkedPODocumentId(linkedDoc.id);
+      }
+    }
+  }, [open, item, availablePODocuments, linkedPODocumentId]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || !e.target.files[0] || !projectId || !item) return;

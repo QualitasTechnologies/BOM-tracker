@@ -1,4 +1,4 @@
-export type DocumentType = 'vendor-quote' | 'outgoing-po' | 'customer-po';
+export type DocumentType = 'vendor-quote' | 'outgoing-po' | 'customer-po' | 'vendor-invoice';
 
 export interface ProjectDocument {
   id: string;
@@ -33,5 +33,10 @@ export const DOCUMENT_SECTIONS: DocumentTypeSection[] = [
     type: 'customer-po',
     label: 'Customer PO',
     description: 'Purchase orders received from customer'
+  },
+  {
+    type: 'vendor-invoice',
+    label: 'Vendor Invoices',
+    description: 'Invoices received from vendors upon delivery'
   }
 ];

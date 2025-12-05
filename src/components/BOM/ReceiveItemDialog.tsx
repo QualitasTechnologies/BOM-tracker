@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { CheckCircle, Calendar, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { CheckCircle, Calendar, TrendingUp, TrendingDown, Minus, FileText, Upload, Loader2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -10,34 +10,90 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { useToast } from '@/components/ui/use-toast';
 import { BOMItem } from '@/types/bom';
+import { ProjectDocument } from '@/types/projectDocument';
+import { uploadProjectDocument } from '@/utils/projectDocumentFirestore';
+import { auth } from '@/firebase';
 
 interface ReceiveItemDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   item: BOMItem | null;
-  onConfirm: (data: { actualArrival: string }) => void;
+  projectId: string;
+  availableVendorQuotes: ProjectDocument[]; // Vendor quotes that can serve as invoices
+  onConfirm: (data: { actualArrival: string; linkedInvoiceDocumentId: string }) => void;
+  onDocumentUploaded?: (doc: ProjectDocument) => void;
 }
 
 const ReceiveItemDialog = ({
   open,
   onOpenChange,
   item,
+  projectId,
+  availableVendorQuotes,
   onConfirm,
+  onDocumentUploaded,
 }: ReceiveItemDialogProps) => {
   const [actualArrival, setActualArrival] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
+  const [linkedInvoiceDocumentId, setLinkedInvoiceDocumentId] = useState<string>('');
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
 
   // Reset form when dialog opens
   useEffect(() => {
     if (open) {
       setActualArrival(new Date().toISOString().split('T')[0]);
+      setLinkedInvoiceDocumentId('');
     }
   }, [open]);
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || !e.target.files[0] || !projectId || !item) return;
+
+    const file = e.target.files[0];
+    setUploading(true);
+
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error('User not authenticated');
+
+      // Upload as vendor-invoice type
+      const newDoc = await uploadProjectDocument(file, projectId, 'vendor-invoice', user.uid);
+
+      onDocumentUploaded?.(newDoc);
+      setLinkedInvoiceDocumentId(newDoc.id);
+
+      toast({
+        title: 'Invoice Uploaded',
+        description: `${file.name} uploaded successfully`,
+      });
+    } catch (error) {
+      console.error('Error uploading invoice:', error);
+      toast({
+        title: 'Upload Failed',
+        description: error instanceof Error ? error.message : 'Failed to upload document',
+        variant: 'destructive',
+      });
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  };
+
   const handleConfirm = () => {
-    onConfirm({ actualArrival });
+    if (!canSubmit) return;
+    onConfirm({ actualArrival, linkedInvoiceDocumentId });
     onOpenChange(false);
   };
 
@@ -93,6 +149,8 @@ const ReceiveItemDialog = ({
   };
 
   const deliveryStatus = getDeliveryStatus();
+  const hasInvoice = linkedInvoiceDocumentId && linkedInvoiceDocumentId !== '__NONE__';
+  const canSubmit = actualArrival && hasInvoice;
 
   if (!item) return null;
 
@@ -114,6 +172,11 @@ const ReceiveItemDialog = ({
               <span>Ordered: {formatDate(item.orderDate)}</span>
               <span>Expected: {formatDate(item.expectedArrival)}</span>
             </div>
+            {item.finalizedVendor?.name && (
+              <div className="text-gray-500 text-xs">
+                Vendor: {item.finalizedVendor.name}
+              </div>
+            )}
           </div>
 
           {/* Actual Arrival Date */}
@@ -148,13 +211,65 @@ const ReceiveItemDialog = ({
               </div>
             </div>
           )}
+
+          {/* Vendor Invoice - Required */}
+          <div className="space-y-1.5">
+            <Label className="text-sm font-medium">
+              Vendor Invoice <span className="text-red-500">*</span>
+            </Label>
+            <p className="text-xs text-gray-500 mb-2">
+              Upload the vendor invoice or select an existing document to complete the inward process.
+            </p>
+            <div className="flex gap-2">
+              <Select value={linkedInvoiceDocumentId} onValueChange={setLinkedInvoiceDocumentId}>
+                <SelectTrigger className={`h-9 text-sm flex-1 ${!hasInvoice ? 'border-red-300' : ''}`}>
+                  <SelectValue placeholder="Select or upload invoice" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__NONE__" disabled>Select a document</SelectItem>
+                  {availableVendorQuotes.map((doc) => (
+                    <SelectItem key={doc.id} value={doc.id}>
+                      <span className="flex items-center gap-2">
+                        <FileText className="h-3 w-3" />
+                        {doc.name}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 px-3"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+              >
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              </Button>
+            </div>
+            {!hasInvoice && (
+              <p className="text-xs text-red-500">Vendor invoice is required to complete inwarding</p>
+            )}
+          </div>
         </div>
 
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleConfirm} className="bg-green-600 hover:bg-green-700">
+          <Button
+            onClick={handleConfirm}
+            disabled={!canSubmit}
+            className="bg-green-600 hover:bg-green-700"
+          >
             Mark as Received
           </Button>
         </DialogFooter>
