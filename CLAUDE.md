@@ -46,12 +46,26 @@
   - Real-time total BOM cost calculation
   - Pricing progress tracking (items priced / total items)
   - Color-coded completion badges
-- **Centralized Document Management** (Nov 2025)
-  - Project-level document organization (Vendor Quotes, POs Outgoing, Customer PO)
+- **Centralized Document Management** (Nov-Dec 2025)
+  - Project-level document organization (Vendor Quotes, POs Outgoing, Customer PO, Vendor Invoices)
   - Document linking to multiple BOM items
   - Visual indicators for linked documents on items (📄×3 badges)
   - Firebase Storage integration with metadata tracking
   - Collapsible UI for space optimization
+  - **Tab-based BOM Layout** (Dec 2025)
+    - Three tabs: BOM Items, Inward Tracking, Documents
+    - Full-page view for each tab with more space
+    - Documents tab shows all document types as vertical sections
+    - All linked items displayed (no truncation in full-page mode)
+  - **Vendor Invoice Document Type** (Dec 2025)
+    - New document category for vendor invoices
+    - Required when marking items as "Received"
+    - Upload or select existing invoice in Receive dialog
+    - `linkedInvoiceDocumentId` field on BOM items
+  - **Document Deletion Compliance** (Dec 2025)
+    - Cannot delete PO documents linked to "Ordered" items
+    - Cannot delete Invoice documents linked to "Received" items
+    - Clear error messages guide user to change item status first
 - **Services Tracking Module** (Nov 2025)
   - Unified data model for both components and services
   - Services tracked by duration (days, 0.5 minimum) and rate per day (₹/day)
@@ -218,21 +232,27 @@ See CEO_Dashboard_PRD.md for complete specifications
 
 #### 🔧 BOM & Services System Features
 
-15. **Quotation Parser** - AI-powered PDF quotation parsing and vendor matching (IN PROGRESS)
-16. **Advanced Export** - PDF reports, purchase orders
-17. **Approval Workflows** - Multi-stage BOM approval process
-18. **User Management Testing** - Validate RBAC and permission matrix
-19. **Vendor Performance Metrics** - Track vendor reliability, pricing trends, delivery accuracy
+15. **Document-Vendor Linking** - Link documents to vendors in addition to BOM items
+    - Add vendor selection dropdown in Documents tab
+    - Each document can be associated with a vendor (PO → vendor, Invoice → vendor, Quote → vendor)
+    - Filter documents by vendor in the Documents tab
+    - Show vendor name on document cards
+    - Data model: Add `linkedVendorId` field to ProjectDocument
+16. **Quotation Parser** - AI-powered PDF quotation parsing and vendor matching (IN PROGRESS)
+17. **Advanced Export** - PDF reports, purchase orders
+18. **Approval Workflows** - Multi-stage BOM approval process
+19. **User Management Testing** - Validate RBAC and permission matrix
+20. **Vendor Performance Metrics** - Track vendor reliability, pricing trends, delivery accuracy
 
 #### 🔔 Notification & Stakeholder System
 
-20. **Project Stakeholders**
+21. **Project Stakeholders**
     - Assign users as stakeholders to projects
     - Stakeholder roles: Owner, Contributor, Viewer, Notified-Only
     - Stakeholder management UI in project settings
     - Stakeholders visible in project header
 
-21. **User Notification System**
+22. **User Notification System**
     - In-app notification center (bell icon in header)
     - Notification types:
       - BOM changes (items added/removed/modified)
@@ -244,7 +264,7 @@ See CEO_Dashboard_PRD.md for complete specifications
     - Notification preferences per user
     - Mark as read/unread, bulk actions
 
-22. **Stakeholder Notifications**
+23. **Stakeholder Notifications**
     - Notify project stakeholders on relevant changes
     - Configurable notification triggers per project
     - @mention support in comments/notes
