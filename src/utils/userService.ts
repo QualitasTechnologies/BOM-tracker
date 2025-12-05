@@ -68,6 +68,7 @@ export const hasPermission = (role: UserRole, permission: keyof UserPermissions)
 export const manageUserStatus = httpsCallable(functions, 'manageUserStatus');
 export const getPendingUsers = httpsCallable(functions, 'getPendingUsers');
 export const getAllUsers = httpsCallable(functions, 'getAllUsers');
+export const deleteUserFunction = httpsCallable(functions, 'deleteUser');
 
 // Helper functions for calling Firebase Functions
 export const approveUser = async (targetUid: string, role: UserRole = 'user') => {
@@ -126,6 +127,16 @@ export const fetchAllUsers = async () => {
     return result.data;
   } catch (error) {
     console.error('Error fetching all users:', error);
+    throw error;
+  }
+};
+
+export const deleteUser = async (targetUid: string) => {
+  try {
+    const result = await deleteUserFunction({ targetUid });
+    return result.data;
+  } catch (error) {
+    console.error('Error deleting user:', error);
     throw error;
   }
 };

@@ -491,10 +491,61 @@ exports.getPendingUsers = onCall(async (request) => {
     });
     
     return { users: pendingUsers };
-    
+
   } catch (error) {
     logger.error('Error getting pending users:', error);
     throw new Error('Failed to get pending users');
+  }
+});
+
+// Delete a user (admin only)
+exports.deleteUser = onCall({ cors: true }, async (request) => {
+  const { auth, data } = request;
+
+  if (!auth) {
+    throw new Error('Authentication required');
+  }
+
+  // Verify admin status
+  const callerRecord = await admin.auth().getUser(auth.uid);
+  const callerClaims = callerRecord.customClaims || {};
+
+  if (callerClaims.role !== 'admin' || callerClaims.status !== 'approved') {
+    throw new Error('Admin privileges required');
+  }
+
+  const { targetUid } = data;
+
+  if (!targetUid) {
+    throw new Error('targetUid is required');
+  }
+
+  // Prevent self-deletion
+  if (targetUid === auth.uid) {
+    throw new Error('Cannot delete your own account');
+  }
+
+  try {
+    // Delete user from Firebase Auth
+    await admin.auth().deleteUser(targetUid);
+
+    // Delete user request document if exists
+    try {
+      await admin.firestore().collection('userRequests').doc(targetUid).delete();
+    } catch (e) {
+      // Ignore if document doesn't exist
+    }
+
+    logger.info('User deleted successfully', {
+      targetUid,
+      deletedBy: auth.uid
+    });
+
+    return { success: true, message: 'User deleted successfully' };
+
+  } catch (error) {
+    logger.error('Error deleting user:', error);
+    throw new Error(`Failed to delete user: ${error.message}`);
   }
 });
 

@@ -141,7 +141,8 @@ export const useAuth = () => {
       ...firebaseUser,
       claims,
       isApproved: claims.status === 'approved',
-      isPending: claims.status === 'pending',
+      // User is pending if status is 'pending' OR if no status is set (new user)
+      isPending: claims.status === 'pending' || !claims.status,
       isAdmin: claims.role === 'admin' && claims.status === 'approved'
     } as AuthUser;
   };

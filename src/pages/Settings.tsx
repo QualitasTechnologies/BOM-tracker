@@ -83,7 +83,7 @@ import { toast } from '@/components/ui/use-toast';
 import BrandsTab from '@/components/settings/BrandsTab';
 import { Brand } from '@/types/brand';
 import { subscribeToBrands } from '@/utils/brandFirestore';
-import { fetchAllUsers, updateUserRole, approveUser, rejectUser, UserRole } from '@/utils/userService';
+import { fetchAllUsers, updateUserRole, approveUser, rejectUser, deleteUser, UserRole } from '@/utils/userService';
 import { Shield, UserCog } from 'lucide-react';
 
 const Settings = () => {
@@ -914,6 +914,31 @@ const Settings = () => {
       toast({
         title: "Error",
         description: error.message || "Failed to reject user",
+        variant: "destructive",
+      });
+    } finally {
+      setUpdatingUserId(null);
+    }
+  };
+
+  const handleDeleteUser = async (targetUid: string, email: string) => {
+    if (!confirm(`Are you sure you want to permanently delete user ${email}? This cannot be undone.`)) {
+      return;
+    }
+
+    setUpdatingUserId(targetUid);
+    try {
+      await deleteUser(targetUid);
+      await loadUsers();
+      toast({
+        title: "Success",
+        description: "User deleted permanently",
+      });
+    } catch (error: any) {
+      console.error('Error deleting user:', error);
+      toast({
+        title: "Error",
+        description: error.message || "Failed to delete user",
         variant: "destructive",
       });
     } finally {
@@ -2275,12 +2300,12 @@ const Settings = () => {
                               className={
                                 appUser.status === 'approved'
                                   ? 'bg-green-100 text-green-800'
-                                  : appUser.status === 'pending'
-                                  ? 'bg-yellow-100 text-yellow-800'
-                                  : 'bg-gray-100 text-gray-800'
+                                  : appUser.status === 'rejected'
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-yellow-100 text-yellow-800'
                               }
                             >
-                              {appUser.status}
+                              {appUser.status || 'pending'}
                             </Badge>
                           </TableCell>
                           <TableCell>
@@ -2335,23 +2360,56 @@ const Settings = () => {
                                   </Button>
                                 </>
                               )}
-                              {appUser.status === 'approved' && (
-                                <span className="text-xs text-gray-400">Active</span>
-                              )}
-                              {appUser.status === 'rejected' && (
-                                <span className="text-xs text-red-400">Rejected</span>
-                              )}
-                              {!appUser.status && appUser.uid !== user?.uid && (
+                              {appUser.status === 'approved' && appUser.uid !== user?.uid && (
                                 <Button
                                   size="sm"
-                                  variant="outline"
-                                  className="h-7 px-2 text-green-600 border-green-600 hover:bg-green-50"
-                                  onClick={() => handleApproveUser(appUser.uid)}
+                                  variant="ghost"
+                                  className="h-7 px-2 text-red-600 hover:bg-red-50"
+                                  onClick={() => handleDeleteUser(appUser.uid, appUser.email)}
                                   disabled={updatingUserId === appUser.uid}
                                 >
-                                  <Check size={14} className="mr-1" />
-                                  Approve
+                                  <Trash2 size={14} className="mr-1" />
+                                  Delete
                                 </Button>
+                              )}
+                              {appUser.status === 'rejected' && appUser.uid !== user?.uid && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 px-2 text-red-600 hover:bg-red-50"
+                                  onClick={() => handleDeleteUser(appUser.uid, appUser.email)}
+                                  disabled={updatingUserId === appUser.uid}
+                                >
+                                  <Trash2 size={14} className="mr-1" />
+                                  Delete
+                                </Button>
+                              )}
+                              {!appUser.status && appUser.uid !== user?.uid && (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-2 text-green-600 border-green-600 hover:bg-green-50"
+                                    onClick={() => handleApproveUser(appUser.uid)}
+                                    disabled={updatingUserId === appUser.uid}
+                                  >
+                                    <Check size={14} className="mr-1" />
+                                    Approve
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 px-2 text-red-600 hover:bg-red-50"
+                                    onClick={() => handleDeleteUser(appUser.uid, appUser.email)}
+                                    disabled={updatingUserId === appUser.uid}
+                                  >
+                                    <Trash2 size={14} className="mr-1" />
+                                    Delete
+                                  </Button>
+                                </>
+                              )}
+                              {appUser.uid === user?.uid && (
+                                <span className="text-xs text-gray-400">You</span>
                               )}
                             </div>
                           </TableCell>
