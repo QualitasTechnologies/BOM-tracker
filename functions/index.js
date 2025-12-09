@@ -14,6 +14,7 @@ const logger = require("firebase-functions/logger");
 const {defineSecret} = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const sgMail = require("@sendgrid/mail");
+const pdfParse = require("pdf-parse");
 
 // Use built-in fetch in Node.js 22
 const fetch = globalThis.fetch;
@@ -892,7 +893,7 @@ exports.sendPurchaseRequest = onCall(
 
 // Extract text from PDF quotation
 // This function downloads a PDF from a URL and extracts its text content
-const pdfParse = require('pdf-parse');
+// Note: pdfParse is already imported at the top of the file
 
 exports.extractQuotationText = onCall(
   async (request) => {
@@ -982,16 +983,22 @@ exports.extractQuotationText = onCall(
   }
 );
 
-// ==================== AI COMPLIANCE CHECKER FUNCTIONS ====================
+// ==================== PDF QUOTE PARSING FUNCTIONS ====================
 
 /**
- * Run AI Compliance Check on BOM items
- * Validates item data quality and matches vendor quotes to BOM items
+ * Parse vendor quote PDF and extract structured line items
+ * Uses unpdf for text extraction, falls back to OpenAI Vision for scanned PDFs
+ *
+ * @param {string} documentId - The document ID in Firestore
+ * @param {string} fileUrl - Firebase Storage URL of the PDF
+ * @param {string} projectId - The project ID
+ * @returns {Object} Parsed quote data with line items
  */
-exports.runComplianceCheck = onRequest(
+exports.parseVendorQuotePDF = onRequest(
   {
     secrets: [openaiApiKeySecret],
-    timeoutSeconds: 120 // Allow more time for large BOMs
+    timeoutSeconds: 180, // 3 minutes for large PDFs
+    memory: '1GiB'
   },
   async (request, response) => {
     // Enable CORS
@@ -1012,7 +1019,507 @@ exports.runComplianceCheck = onRequest(
     const startTime = Date.now();
 
     try {
-      const { projectId, bomItems, vendorQuotes, settings } = request.body;
+      const { documentId, fileUrl, projectId, bomItems } = request.body;
+
+      // Validate required fields
+      if (!documentId || !fileUrl) {
+        response.status(400).json({
+          error: 'Missing required fields: documentId and fileUrl'
+        });
+        return;
+      }
+
+      const openaiApiKey = openaiApiKeySecret.value();
+      if (!openaiApiKey) {
+        response.status(500).json({ error: 'AI service not configured' });
+        return;
+      }
+
+      logger.info('Starting PDF quote parsing', {
+        documentId,
+        fileUrl: fileUrl.substring(0, 100) + '...',
+        projectId
+      });
+
+      // Download PDF from Firebase Storage
+      const bucket = admin.storage().bucket();
+      const urlParts = fileUrl.split('/o/')[1];
+      if (!urlParts) {
+        response.status(400).json({ error: 'Invalid file URL format' });
+        return;
+      }
+      const filePath = decodeURIComponent(urlParts.split('?')[0]);
+
+      logger.info('Downloading PDF', { filePath });
+
+      const file = bucket.file(filePath);
+      const [fileBuffer] = await file.download();
+      const fileSize = fileBuffer.length;
+
+      logger.info('PDF downloaded', { fileSize });
+
+      // Step 1: Try to extract text using pdf-parse
+      let extractedText = '';
+      let useVisionAPI = false;
+      let numPages = 1;
+
+      try {
+        const pdfData = await pdfParse(fileBuffer);
+        extractedText = pdfData.text || '';
+        numPages = pdfData.numpages || 1;
+
+        logger.info('PDF loaded', { numPages, textLength: extractedText.length });
+
+        // Check if we got meaningful text (scanned PDFs return very little)
+        const wordCount = extractedText.split(/\s+/).filter(w => w.length > 1).length;
+        logger.info('Text extraction complete', {
+          textLength: extractedText.length,
+          wordCount,
+          numPages
+        });
+
+        // If less than 50 words per page on average, likely a scanned PDF
+        if (wordCount < (numPages * 50)) {
+          logger.info('Minimal text extracted, switching to Vision API');
+          useVisionAPI = true;
+        }
+
+      } catch (extractError) {
+        logger.warn('Text extraction failed, using Vision API', { error: extractError.message });
+        useVisionAPI = true;
+      }
+
+      // Step 2: Parse with OpenAI
+      let parsedQuote;
+
+      const systemPrompt = `You are an expert at parsing vendor quotations and invoices. Extract all line items from the document.
+
+For each line item, extract:
+- partName: The product/part name or description
+- partNumber: Part number, SKU, or model number (if present)
+- make: Manufacturer or brand (if present)
+- quantity: Number of units
+- unitPrice: Price per unit in INR (remove ₹ symbol, handle lakhs notation like 1,50,000)
+- totalPrice: Total price for this line (quantity × unitPrice)
+- hsnCode: HSN/SAC code if present
+
+Also extract document-level information:
+- vendorName: Name of the vendor/supplier
+- vendorGST: GST number if present
+- quoteNumber: Quote/Invoice number
+- quoteDate: Date of the quote
+- validUntil: Quote validity date if present
+- subtotal: Subtotal before tax
+- gstAmount: GST amount
+- grandTotal: Grand total including tax
+- paymentTerms: Payment terms if mentioned
+- deliveryTerms: Delivery terms or lead time if mentioned
+
+IMPORTANT:
+- Handle Indian number formatting (e.g., 1,50,000 = 150000)
+- Extract ALL line items, even if there are many
+- If a field is not present, use null
+- Return ONLY valid JSON
+
+JSON OUTPUT FORMAT:
+{
+  "documentInfo": {
+    "vendorName": "string",
+    "vendorGST": "string or null",
+    "quoteNumber": "string or null",
+    "quoteDate": "string or null",
+    "validUntil": "string or null",
+    "subtotal": number or null,
+    "gstAmount": number or null,
+    "gstPercent": number or null,
+    "grandTotal": number or null,
+    "paymentTerms": "string or null",
+    "deliveryTerms": "string or null"
+  },
+  "lineItems": [
+    {
+      "lineNumber": 1,
+      "partName": "string",
+      "partNumber": "string or null",
+      "make": "string or null",
+      "description": "string or null",
+      "quantity": number,
+      "unit": "string (pcs, nos, etc.)",
+      "unitPrice": number,
+      "totalPrice": number,
+      "hsnCode": "string or null"
+    }
+  ],
+  "totalLineItems": number,
+  "parseConfidence": "high|medium|low",
+  "notes": "any special observations about the document"
+}`;
+
+      if (useVisionAPI) {
+        // Use OpenAI Vision API with PDF directly
+        logger.info('Using OpenAI Vision API for scanned PDF');
+
+        // Convert PDF buffer to base64
+        const base64PDF = fileBuffer.toString('base64');
+
+        const visionResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openaiApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'text',
+                    text: 'Parse this vendor quotation/invoice PDF and extract all line items and document information.'
+                  },
+                  {
+                    type: 'file',
+                    file: {
+                      filename: 'quote.pdf',
+                      file_data: `data:application/pdf;base64,${base64PDF}`
+                    }
+                  }
+                ]
+              }
+            ],
+            temperature: 0.1,
+            max_tokens: 4000,
+            response_format: { type: 'json_object' }
+          })
+        });
+
+        if (!visionResponse.ok) {
+          const errorData = await visionResponse.json().catch(() => ({}));
+          logger.error('OpenAI Vision API error', errorData);
+          throw new Error(`Vision API error: ${errorData.error?.message || 'Unknown error'}`);
+        }
+
+        const visionData = await visionResponse.json();
+        parsedQuote = JSON.parse(visionData.choices[0]?.message?.content || '{}');
+
+      } else {
+        // Use text-based parsing (cheaper and faster)
+        logger.info('Using text-based parsing');
+
+        // Include BOM items context if provided for better matching
+        let userPrompt = `Parse this vendor quotation and extract all line items:\n\n${extractedText}`;
+
+        if (bomItems && bomItems.length > 0) {
+          const bomContext = bomItems.map(item =>
+            `- ${item.name}${item.sku ? ` (SKU: ${item.sku})` : ''}${item.make ? ` [${item.make}]` : ''}`
+          ).join('\n');
+          userPrompt += `\n\n--- BOM Items to match against ---\n${bomContext}`;
+        }
+
+        const textResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openaiApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ],
+            temperature: 0.1,
+            max_tokens: 4000,
+            response_format: { type: 'json_object' }
+          })
+        });
+
+        if (!textResponse.ok) {
+          const errorData = await textResponse.json().catch(() => ({}));
+          logger.error('OpenAI text API error', errorData);
+          throw new Error(`Text API error: ${errorData.error?.message || 'Unknown error'}`);
+        }
+
+        const textData = await textResponse.json();
+        parsedQuote = JSON.parse(textData.choices[0]?.message?.content || '{}');
+      }
+
+      // Validate and clean parsed data
+      if (!parsedQuote.lineItems) {
+        parsedQuote.lineItems = [];
+      }
+
+      // Ensure all prices are numbers
+      parsedQuote.lineItems = parsedQuote.lineItems.map((item, index) => ({
+        ...item,
+        lineNumber: item.lineNumber || index + 1,
+        quantity: parseFloat(item.quantity) || 1,
+        unitPrice: parseFloat(item.unitPrice) || 0,
+        totalPrice: parseFloat(item.totalPrice) || (parseFloat(item.quantity) * parseFloat(item.unitPrice)) || 0
+      }));
+
+      // Calculate totals if not present
+      if (!parsedQuote.documentInfo) {
+        parsedQuote.documentInfo = {};
+      }
+
+      const calculatedSubtotal = parsedQuote.lineItems.reduce((sum, item) => sum + item.totalPrice, 0);
+      if (!parsedQuote.documentInfo.subtotal) {
+        parsedQuote.documentInfo.subtotal = calculatedSubtotal;
+      }
+
+      const processingTime = Date.now() - startTime;
+
+      logger.info('PDF parsing complete', {
+        documentId,
+        lineItemsFound: parsedQuote.lineItems.length,
+        useVisionAPI,
+        processingTimeMs: processingTime
+      });
+
+      // Optionally update Firestore with parsed data
+      if (projectId && documentId) {
+        try {
+          const db = admin.firestore();
+          await db
+            .collection('projects')
+            .doc(projectId)
+            .collection('documents')
+            .doc(documentId)
+            .update({
+              parsedQuoteData: parsedQuote,
+              parsedAt: admin.firestore.FieldValue.serverTimestamp(),
+              parseMethod: useVisionAPI ? 'vision' : 'text'
+            });
+          logger.info('Firestore updated with parsed quote data', { documentId });
+        } catch (firestoreError) {
+          logger.warn('Could not update Firestore', { error: firestoreError.message });
+        }
+      }
+
+      response.status(200).json({
+        success: true,
+        documentId,
+        parsedQuote,
+        metadata: {
+          parseMethod: useVisionAPI ? 'vision' : 'text',
+          fileSize,
+          processingTimeMs: processingTime,
+          lineItemsFound: parsedQuote.lineItems.length
+        }
+      });
+
+    } catch (error) {
+      logger.error('Error parsing PDF quote', { error: error.message, stack: error.stack });
+      response.status(500).json({
+        error: 'Failed to parse PDF quote',
+        details: error.message
+      });
+    }
+  }
+);
+
+/**
+ * Parse an image file (JPG, PNG) using OpenAI Vision API
+ * For vendor quotes that are photos/scans saved as images
+ */
+exports.parseVendorQuoteImage = onRequest(
+  {
+    secrets: [openaiApiKeySecret],
+    timeoutSeconds: 120
+  },
+  async (request, response) => {
+    // Enable CORS
+    response.set('Access-Control-Allow-Origin', '*');
+    response.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    response.set('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (request.method === 'OPTIONS') {
+      response.status(204).send('');
+      return;
+    }
+
+    if (request.method !== 'POST') {
+      response.status(405).json({ error: 'Method not allowed. Use POST.' });
+      return;
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const { documentId, fileUrl, projectId } = request.body;
+
+      if (!documentId || !fileUrl) {
+        response.status(400).json({
+          error: 'Missing required fields: documentId and fileUrl'
+        });
+        return;
+      }
+
+      const openaiApiKey = openaiApiKeySecret.value();
+      if (!openaiApiKey) {
+        response.status(500).json({ error: 'AI service not configured' });
+        return;
+      }
+
+      logger.info('Starting image quote parsing', { documentId });
+
+      // Download image from Firebase Storage
+      const bucket = admin.storage().bucket();
+      const urlParts = fileUrl.split('/o/')[1];
+      if (!urlParts) {
+        response.status(400).json({ error: 'Invalid file URL format' });
+        return;
+      }
+      const filePath = decodeURIComponent(urlParts.split('?')[0]);
+
+      const file = bucket.file(filePath);
+      const [fileBuffer] = await file.download();
+      const [metadata] = await file.getMetadata();
+      const contentType = metadata.contentType || 'image/jpeg';
+
+      // Convert to base64
+      const base64Image = fileBuffer.toString('base64');
+      const dataUrl = `data:${contentType};base64,${base64Image}`;
+
+      const systemPrompt = `You are an expert at parsing vendor quotations and invoices from images. Extract all line items from the document.
+
+For each line item, extract:
+- partName: The product/part name or description
+- partNumber: Part number, SKU, or model number (if present)
+- make: Manufacturer or brand (if present)
+- quantity: Number of units
+- unitPrice: Price per unit in INR
+- totalPrice: Total price for this line
+
+Also extract document-level info: vendorName, quoteNumber, quoteDate, grandTotal, gstAmount.
+
+Handle Indian number formatting (e.g., 1,50,000 = 150000).
+Return ONLY valid JSON in the same format as PDF parsing.`;
+
+      const visionResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${openaiApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: 'Parse this vendor quotation/invoice image and extract all line items.'
+                },
+                {
+                  type: 'image_url',
+                  image_url: { url: dataUrl }
+                }
+              ]
+            }
+          ],
+          temperature: 0.1,
+          max_tokens: 4000,
+          response_format: { type: 'json_object' }
+        })
+      });
+
+      if (!visionResponse.ok) {
+        const errorData = await visionResponse.json().catch(() => ({}));
+        throw new Error(`Vision API error: ${errorData.error?.message || 'Unknown error'}`);
+      }
+
+      const visionData = await visionResponse.json();
+      const parsedQuote = JSON.parse(visionData.choices[0]?.message?.content || '{}');
+
+      // Clean and validate
+      if (!parsedQuote.lineItems) parsedQuote.lineItems = [];
+      parsedQuote.lineItems = parsedQuote.lineItems.map((item, index) => ({
+        ...item,
+        lineNumber: index + 1,
+        quantity: parseFloat(item.quantity) || 1,
+        unitPrice: parseFloat(item.unitPrice) || 0,
+        totalPrice: parseFloat(item.totalPrice) || 0
+      }));
+
+      const processingTime = Date.now() - startTime;
+
+      // Update Firestore
+      if (projectId && documentId) {
+        try {
+          await admin.firestore()
+            .collection('projects')
+            .doc(projectId)
+            .collection('documents')
+            .doc(documentId)
+            .update({
+              parsedQuoteData: parsedQuote,
+              parsedAt: admin.firestore.FieldValue.serverTimestamp(),
+              parseMethod: 'vision-image'
+            });
+        } catch (e) {
+          logger.warn('Could not update Firestore', { error: e.message });
+        }
+      }
+
+      response.status(200).json({
+        success: true,
+        documentId,
+        parsedQuote,
+        metadata: {
+          parseMethod: 'vision-image',
+          processingTimeMs: processingTime,
+          lineItemsFound: parsedQuote.lineItems.length
+        }
+      });
+
+    } catch (error) {
+      logger.error('Error parsing image quote', { error: error.message });
+      response.status(500).json({
+        error: 'Failed to parse image quote',
+        details: error.message
+      });
+    }
+  }
+);
+
+// ==================== AI COMPLIANCE CHECKER FUNCTIONS ====================
+
+/**
+ * Run AI Compliance Check on BOM items
+ * Validates item data quality and matches vendor quotes to BOM items
+ */
+exports.runComplianceCheck = onRequest(
+  {
+    secrets: [openaiApiKeySecret],
+    timeoutSeconds: 300, // 5 minutes for PDF parsing
+    memory: '1GiB'
+  },
+  async (request, response) => {
+    // Enable CORS
+    response.set('Access-Control-Allow-Origin', '*');
+    response.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    response.set('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (request.method === 'OPTIONS') {
+      response.status(204).send('');
+      return;
+    }
+
+    if (request.method !== 'POST') {
+      response.status(405).json({ error: 'Method not allowed. Use POST.' });
+      return;
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const { projectId, bomItems, vendorQuotes, settings, parseDocuments = true } = request.body;
 
       // Validate input
       if (!projectId || !bomItems || !Array.isArray(bomItems)) {
@@ -1368,11 +1875,182 @@ exports.runComplianceCheck = onRequest(
         }
       });
 
-      // Phase 2: AI-powered analysis for quote matching and suggestions
+      // Phase 2: Parse vendor quote PDFs and match to BOM items
       let quoteAnalysis = [];
       let quotesMatched = 0;
+      let documentsParsed = 0;
+      const parsedQuoteData = [];
 
       if (vendorQuotes && vendorQuotes.length > 0 && bomItems.length > 0) {
+        const bucket = admin.storage().bucket();
+
+        // Helper function to parse a single PDF
+        const parsePDFDocument = async (quote) => {
+          try {
+            // Check if already parsed
+            if (quote.parsedQuoteData && quote.parsedQuoteData.lineItems) {
+              logger.info('Using cached parsed data', { documentId: quote.documentId });
+              return quote.parsedQuoteData;
+            }
+
+            // Check if we have a file URL
+            if (!quote.fileUrl) {
+              logger.warn('No file URL for quote', { documentId: quote.documentId });
+              return null;
+            }
+
+            // Download PDF from Firebase Storage
+            const urlParts = quote.fileUrl.split('/o/')[1];
+            if (!urlParts) {
+              logger.warn('Invalid file URL format', { documentId: quote.documentId });
+              return null;
+            }
+            const filePath = decodeURIComponent(urlParts.split('?')[0]);
+
+            logger.info('Downloading PDF for parsing', { documentId: quote.documentId, filePath });
+
+            const file = bucket.file(filePath);
+            const [fileBuffer] = await file.download();
+
+            // Try text extraction first using pdf-parse
+            let extractedText = '';
+            let useVisionAPI = false;
+            let numPages = 1;
+
+            try {
+              const pdfData = await pdfParse(fileBuffer);
+              extractedText = pdfData.text || '';
+              numPages = pdfData.numpages || 1;
+
+              const wordCount = extractedText.split(/\s+/).filter(w => w.length > 1).length;
+
+              // If less than 50 words per page, likely scanned
+              if (wordCount < (numPages * 50)) {
+                useVisionAPI = true;
+              }
+            } catch (extractError) {
+              logger.warn('Text extraction failed', { error: extractError.message });
+              useVisionAPI = true;
+            }
+
+            // Parse with OpenAI
+            const parsePrompt = `You are an expert at parsing vendor quotations. Extract all line items.
+
+For each line item, extract: partName, partNumber (SKU), make, quantity, unitPrice, totalPrice.
+Also extract: vendorName, quoteNumber, quoteDate, grandTotal, gstAmount.
+
+Handle Indian number formatting (1,50,000 = 150000).
+Return ONLY valid JSON:
+{
+  "documentInfo": { "vendorName": "", "quoteNumber": "", "quoteDate": "", "grandTotal": null, "gstAmount": null },
+  "lineItems": [{ "partName": "", "partNumber": null, "make": null, "quantity": 1, "unitPrice": 0, "totalPrice": 0 }]
+}`;
+
+            let parsedResult;
+
+            if (useVisionAPI) {
+              // Use Vision API for scanned PDFs
+              const base64PDF = fileBuffer.toString('base64');
+
+              const visionResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${openaiApiKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  model: 'gpt-4o',
+                  messages: [
+                    { role: 'system', content: parsePrompt },
+                    {
+                      role: 'user',
+                      content: [
+                        { type: 'text', text: 'Parse this vendor quotation PDF and extract all line items.' },
+                        { type: 'file', file: { filename: 'quote.pdf', file_data: `data:application/pdf;base64,${base64PDF}` } }
+                      ]
+                    }
+                  ],
+                  temperature: 0.1,
+                  max_tokens: 4000,
+                  response_format: { type: 'json_object' }
+                })
+              });
+
+              if (visionResponse.ok) {
+                const data = await visionResponse.json();
+                parsedResult = JSON.parse(data.choices[0]?.message?.content || '{}');
+              }
+            } else {
+              // Use text-based parsing
+              const textResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${openaiApiKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  model: 'gpt-4o-mini',
+                  messages: [
+                    { role: 'system', content: parsePrompt },
+                    { role: 'user', content: `Parse this vendor quotation:\n\n${extractedText}` }
+                  ],
+                  temperature: 0.1,
+                  max_tokens: 4000,
+                  response_format: { type: 'json_object' }
+                })
+              });
+
+              if (textResponse.ok) {
+                const data = await textResponse.json();
+                parsedResult = JSON.parse(data.choices[0]?.message?.content || '{}');
+              }
+            }
+
+            // Store parsed data back to Firestore for future use
+            if (parsedResult && parsedResult.lineItems && projectId) {
+              try {
+                await admin.firestore()
+                  .collection('projects')
+                  .doc(projectId)
+                  .collection('documents')
+                  .doc(quote.documentId)
+                  .update({
+                    parsedQuoteData: parsedResult,
+                    parsedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    parseMethod: useVisionAPI ? 'vision' : 'text'
+                  });
+              } catch (e) {
+                logger.warn('Could not cache parsed data', { error: e.message });
+              }
+            }
+
+            return parsedResult;
+
+          } catch (parseError) {
+            logger.error('Error parsing PDF', { documentId: quote.documentId, error: parseError.message });
+            return null;
+          }
+        };
+
+        // Parse all vendor quote PDFs if parseDocuments is enabled
+        if (parseDocuments) {
+          logger.info('Parsing vendor quote PDFs', { count: vendorQuotes.length });
+
+          for (const quote of vendorQuotes) {
+            const parsed = await parsePDFDocument(quote);
+            if (parsed) {
+              parsedQuoteData.push({
+                documentId: quote.documentId,
+                documentName: quote.documentName,
+                ...parsed
+              });
+              documentsParsed++;
+            }
+          }
+
+          logger.info('PDF parsing complete', { documentsParsed });
+        }
+
         // Prepare data for AI analysis
         const bomItemsForAI = bomItems.map(item => ({
           id: item.id,
@@ -1385,16 +2063,29 @@ exports.runComplianceCheck = onRequest(
           category: item.category
         }));
 
+        // Build quote data for AI - use parsed data or fall back to extractedText
+        const quotesForAI = parsedQuoteData.length > 0
+          ? parsedQuoteData.map(q => ({
+              documentId: q.documentId,
+              documentName: q.documentName,
+              vendorName: q.documentInfo?.vendorName || 'Unknown',
+              lineItems: q.lineItems || []
+            }))
+          : vendorQuotes.map(q => ({
+              documentId: q.documentId,
+              documentName: q.documentName,
+              extractedText: q.extractedText || 'No text available'
+            }));
+
         const systemPrompt = `You are a BOM compliance expert. Your task is to match vendor quote line items to BOM items and identify discrepancies.
 
-Given a list of BOM items and extracted text from vendor quotes, you must:
-1. Extract line items from each quote (part name, part number, quantity, unit price)
-2. Match quote line items to BOM items using:
+Given BOM items and parsed vendor quote line items, you must:
+1. Match quote line items to BOM items using:
    - SKU/Part number exact match (highest confidence)
    - Name similarity (medium confidence)
    - Make + partial name match (lower confidence)
-3. Identify mismatches in quantity, price (flag if >15% different), or specifications
-4. Flag BOM items that have no matching quote
+2. Identify mismatches in quantity (flag any difference), price (flag if >15% different)
+3. Flag BOM items that have no matching quote line
 
 STRICT JSON OUTPUT:
 {
@@ -1402,6 +2093,7 @@ STRICT JSON OUTPUT:
     {
       "documentId": "quote document ID",
       "documentName": "quote name",
+      "vendorName": "vendor name",
       "lineMatches": [
         {
           "quoteLineItem": {
@@ -1425,7 +2117,7 @@ STRICT JSON OUTPUT:
   "suggestedFixes": [
     {
       "bomItemId": "item ID",
-      "field": "name|description|sku|make",
+      "field": "name|description|sku|make|price",
       "currentValue": "current",
       "suggestedValue": "suggested based on quote",
       "reason": "why this change is suggested"
@@ -1433,15 +2125,15 @@ STRICT JSON OUTPUT:
   ]
 }
 
-CRITICAL: Return ONLY valid JSON. Analyze carefully.`;
+CRITICAL: Return ONLY valid JSON. Be thorough in matching.`;
 
         const userPrompt = `BOM Items:
 ${JSON.stringify(bomItemsForAI, null, 2)}
 
-Vendor Quotes:
-${vendorQuotes.map(q => `--- ${q.documentName} (ID: ${q.documentId}) ---\n${q.extractedText || 'No text extracted'}`).join('\n\n')}
+Vendor Quotes (Parsed):
+${JSON.stringify(quotesForAI, null, 2)}
 
-Analyze and match these quotes to the BOM items.`;
+Match the quote line items to BOM items. Flag any price or quantity mismatches.`;
 
         try {
           const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -1560,6 +2252,7 @@ Analyze and match these quotes to the BOM items.`;
         issuesByType,
         issuesBySeverity,
         quotesAnalyzed: vendorQuotes?.length || 0,
+        documentsParsed,
         quotesMatched,
         quoteMismatches: issues.filter(i => i.issueType === 'quote-mismatch' ||
                                            i.issueType === 'price-mismatch' ||
@@ -1571,6 +2264,7 @@ Analyze and match these quotes to the BOM items.`;
       logger.info('Compliance check completed', {
         projectId,
         itemsChecked: bomItems.length,
+        documentsParsed,
         issuesFound: issues.length,
         processingTimeMs: report.processingTimeMs
       });
@@ -1578,7 +2272,8 @@ Analyze and match these quotes to the BOM items.`;
       response.status(200).json({
         success: true,
         report,
-        quoteAnalysis
+        quoteAnalysis,
+        parsedQuoteData
       });
 
     } catch (error) {

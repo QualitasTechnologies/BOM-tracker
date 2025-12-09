@@ -265,33 +265,44 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
                     >
                       {doc.name}
                     </a>
-                    {doc.linkedBOMItems && doc.linkedBOMItems.length > 0 && (
-                      <Badge variant="outline" className="text-xs">
-                        <LinkIcon size={10} className="mr-1" />
-                        {doc.linkedBOMItems.length} items
-                      </Badge>
-                    )}
+                    {doc.linkedBOMItems && doc.linkedBOMItems.length > 0 && (() => {
+                      const resolvedCount = doc.linkedBOMItems.filter(id =>
+                        bomItems.some(item => item.id === id)
+                      ).length;
+
+                      if (resolvedCount === 0) return null;
+
+                      return (
+                        <Badge variant="outline" className="text-xs">
+                          <LinkIcon size={10} className="mr-1" />
+                          {resolvedCount} item{resolvedCount !== 1 ? 's' : ''}
+                        </Badge>
+                      );
+                    })()}
                   </div>
                   <div className="text-xs text-gray-500 mt-0.5">
                     {formatDate(doc.uploadedAt)} • {formatFileSize(doc.fileSize)}
-                    {doc.linkedBOMItems && doc.linkedBOMItems.length > 0 && (
-                      <span className="ml-2 text-gray-400">
-                        → {isFullPage
-                          ? doc.linkedBOMItems
-                              .map(id => bomItems.find(item => item.id === id)?.name)
-                              .filter(Boolean)
-                              .join(', ')
-                          : <>
-                              {doc.linkedBOMItems
-                                .map(id => bomItems.find(item => item.id === id)?.name)
-                                .filter(Boolean)
-                                .slice(0, 2)
-                                .join(', ')}
-                              {doc.linkedBOMItems.length > 2 && ` +${doc.linkedBOMItems.length - 2} more`}
-                            </>
-                        }
-                      </span>
-                    )}
+                    {doc.linkedBOMItems && doc.linkedBOMItems.length > 0 && (() => {
+                      const resolvedNames = doc.linkedBOMItems
+                        .map(id => bomItems.find(item => item.id === id)?.name)
+                        .filter(Boolean) as string[];
+
+                      if (resolvedNames.length === 0) {
+                        return null;
+                      }
+
+                      return (
+                        <span className="ml-2 text-gray-400">
+                          → {isFullPage
+                            ? resolvedNames.join(', ')
+                            : <>
+                                {resolvedNames.slice(0, 2).join(', ')}
+                                {resolvedNames.length > 2 && ` +${resolvedNames.length - 2} more`}
+                              </>
+                          }
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
 
