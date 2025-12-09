@@ -326,14 +326,16 @@ const BOM = () => {
   };
 
   // Calculate document count for a BOM item
-  // Checks: 1) document's linkedBOMItems array, 2) item's linkedPODocumentId, 3) item's linkedInvoiceDocumentId
+  // Checks: 1) document's linkedBOMItems array, 2) item's linkedQuoteDocumentId, 3) item's linkedPODocumentId, 4) item's linkedInvoiceDocumentId
   const getDocumentCountForItem = (itemId: string): number => {
     // Find the item to check its linked document IDs
+    let linkedQuoteDocId: string | undefined;
     let linkedPODocId: string | undefined;
     let linkedInvoiceDocId: string | undefined;
     for (const cat of categories) {
       const item = cat.items.find(i => i.id === itemId);
       if (item) {
+        linkedQuoteDocId = item.linkedQuoteDocumentId;
         linkedPODocId = item.linkedPODocumentId;
         linkedInvoiceDocId = item.linkedInvoiceDocumentId;
         break;
@@ -342,21 +344,24 @@ const BOM = () => {
 
     return projectDocuments.filter(doc => {
       const linkedViaDocument = doc.linkedBOMItems && doc.linkedBOMItems.includes(itemId);
+      const linkedViaQuote = linkedQuoteDocId && doc.id === linkedQuoteDocId;
       const linkedViaPO = linkedPODocId && doc.id === linkedPODocId;
       const linkedViaInvoice = linkedInvoiceDocId && doc.id === linkedInvoiceDocId;
-      return linkedViaDocument || linkedViaPO || linkedViaInvoice;
+      return linkedViaDocument || linkedViaQuote || linkedViaPO || linkedViaInvoice;
     }).length;
   };
 
   // Get linked documents for a BOM item
-  // Checks: 1) document's linkedBOMItems array, 2) item's linkedPODocumentId, 3) item's linkedInvoiceDocumentId
+  // Checks: 1) document's linkedBOMItems array, 2) item's linkedQuoteDocumentId, 3) item's linkedPODocumentId, 4) item's linkedInvoiceDocumentId
   const getDocumentsForItem = (itemId: string) => {
     // Find the item to check its linked document IDs
+    let linkedQuoteDocId: string | undefined;
     let linkedPODocId: string | undefined;
     let linkedInvoiceDocId: string | undefined;
     for (const cat of categories) {
       const item = cat.items.find(i => i.id === itemId);
       if (item) {
+        linkedQuoteDocId = item.linkedQuoteDocumentId;
         linkedPODocId = item.linkedPODocumentId;
         linkedInvoiceDocId = item.linkedInvoiceDocumentId;
         break;
@@ -366,9 +371,10 @@ const BOM = () => {
     return projectDocuments
       .filter(doc => {
         const linkedViaDocument = doc.linkedBOMItems && doc.linkedBOMItems.includes(itemId);
+        const linkedViaQuote = linkedQuoteDocId && doc.id === linkedQuoteDocId;
         const linkedViaPO = linkedPODocId && doc.id === linkedPODocId;
         const linkedViaInvoice = linkedInvoiceDocId && doc.id === linkedInvoiceDocId;
-        return linkedViaDocument || linkedViaPO || linkedViaInvoice;
+        return linkedViaDocument || linkedViaQuote || linkedViaPO || linkedViaInvoice;
       })
       .map(doc => ({
         id: doc.id,
@@ -399,12 +405,15 @@ const BOM = () => {
         );
       }
 
-      // Check if item has this document as linkedPODocumentId or linkedInvoiceDocumentId
+      // Check if item has this document as linkedQuoteDocumentId, linkedPODocumentId, or linkedInvoiceDocumentId
       if (projectId) {
         for (const cat of categories) {
           const item = cat.items.find(i => i.id === itemId);
           if (item) {
             const updates: Partial<BOMItem> = {};
+            if (item.linkedQuoteDocumentId === documentId) {
+              updates.linkedQuoteDocumentId = undefined; // Clear the quote link
+            }
             if (item.linkedPODocumentId === documentId) {
               updates.linkedPODocumentId = '' as any; // Empty string to clear
             }

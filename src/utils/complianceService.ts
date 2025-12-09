@@ -31,15 +31,14 @@ export async function runComplianceCheck(
   // Flatten categories to get all items
   const bomItems = categories.flatMap(cat => cat.items);
 
-  // Prepare vendor quotes with extracted text and linked BOM items
-  // Note: In a real implementation, you'd need to have the extracted text
-  // from previously parsed PDFs stored in the document metadata
+  // Prepare vendor quotes with file URLs and linked BOM items
+  // The backend will download and parse PDFs using pdf-parse and OpenAI
   const quotesWithText = vendorQuotes
     .filter(doc => doc.type === 'vendor-quote')
     .map(doc => ({
       documentId: doc.id,
       documentName: doc.name,
-      extractedText: '', // This would come from a PDF extraction step
+      fileUrl: doc.url, // Firebase Storage URL for PDF parsing
       linkedBOMItems: doc.linkedBOMItems || [] // Pass linked BOM items for quote validation
     }));
 

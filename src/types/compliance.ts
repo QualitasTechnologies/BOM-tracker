@@ -111,7 +111,9 @@ export interface ComplianceCheckRequest {
   vendorQuotes: {
     documentId: string;
     documentName: string;
-    extractedText: string;
+    fileUrl?: string;           // Firebase Storage URL for PDF parsing
+    extractedText?: string;     // Pre-extracted text (optional, backend will parse if missing)
+    linkedBOMItems?: string[];  // BOM item IDs linked to this document
   }[];
   settings: {
     validSKUPatterns?: string[];      // Regex patterns for valid SKUs
