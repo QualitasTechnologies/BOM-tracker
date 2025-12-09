@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { CheckCircle, Calendar, TrendingUp, TrendingDown, Minus, FileText, Upload, Loader2 } from 'lucide-react';
+import { CheckCircle, Calendar, TrendingUp, TrendingDown, Minus, FileText, Upload, Loader2, Camera, X, Image } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -21,7 +21,8 @@ import { useToast } from '@/components/ui/use-toast';
 import { BOMItem } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
 import { uploadProjectDocument } from '@/utils/projectDocumentFirestore';
-import { auth } from '@/firebase';
+import { auth, storage } from '@/firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 interface ReceiveItemDialogProps {
   open: boolean;
@@ -29,7 +30,7 @@ interface ReceiveItemDialogProps {
   item: BOMItem | null;
   projectId: string;
   availableVendorQuotes: ProjectDocument[]; // Vendor quotes that can serve as invoices
-  onConfirm: (data: { actualArrival: string; linkedInvoiceDocumentId: string }) => void;
+  onConfirm: (data: { actualArrival: string; linkedInvoiceDocumentId: string; receivedPhotoUrl: string }) => void;
   onDocumentUploaded?: (doc: ProjectDocument) => void;
 }
 
@@ -47,8 +48,57 @@ const ReceiveItemDialog = ({
   );
   const [linkedInvoiceDocumentId, setLinkedInvoiceDocumentId] = useState<string>('');
   const [uploading, setUploading] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoUrl, setPhotoUrl] = useState<string>('');
+  const [photoPreview, setPhotoPreview] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const photoInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+
+  // Compress image to max 800px width and reduce quality
+  const compressImage = async (file: File): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const img = document.createElement('img');
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      img.onload = () => {
+        const maxWidth = 800;
+        const maxHeight = 800;
+        let { width, height } = img;
+
+        // Calculate new dimensions maintaining aspect ratio
+        if (width > maxWidth || height > maxHeight) {
+          const ratio = Math.min(maxWidth / width, maxHeight / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          canvas.toBlob(
+            (blob) => {
+              if (blob) {
+                resolve(blob);
+              } else {
+                reject(new Error('Failed to compress image'));
+              }
+            },
+            'image/jpeg',
+            0.7 // 70% quality
+          );
+        } else {
+          reject(new Error('Canvas context not available'));
+        }
+      };
+
+      img.onerror = () => reject(new Error('Failed to load image'));
+      img.src = URL.createObjectURL(file);
+    });
+  };
 
   // Initialize form when dialog opens - preserve existing linkage if present
   useEffect(() => {
@@ -69,6 +119,10 @@ const ReceiveItemDialog = ({
       }
 
       setLinkedInvoiceDocumentId(existingInvoiceId);
+
+      // Reset photo state
+      setPhotoUrl('');
+      setPhotoPreview('');
     }
   }, [open, item, availableVendorQuotes]);
 
@@ -105,9 +159,75 @@ const ReceiveItemDialog = ({
     }
   };
 
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || !e.target.files[0] || !projectId || !item) return;
+
+    const file = e.target.files[0];
+
+    // Validate file is an image
+    if (!file.type.startsWith('image/')) {
+      toast({
+        title: 'Invalid File',
+        description: 'Please select an image file (JPG, PNG, etc.)',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setUploadingPhoto(true);
+
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error('User not authenticated');
+
+      // Create preview
+      const previewUrl = URL.createObjectURL(file);
+      setPhotoPreview(previewUrl);
+
+      // Compress the image
+      const compressedBlob = await compressImage(file);
+
+      // Generate unique filename
+      const timestamp = Date.now();
+      const fileName = `received-photo-${item.id}-${timestamp}.jpg`;
+      const storagePath = `projects/${projectId}/received-photos/${fileName}`;
+
+      // Upload to Firebase Storage
+      const storageRef = ref(storage, storagePath);
+      await uploadBytes(storageRef, compressedBlob, {
+        contentType: 'image/jpeg',
+      });
+
+      // Get download URL
+      const downloadUrl = await getDownloadURL(storageRef);
+      setPhotoUrl(downloadUrl);
+
+      toast({
+        title: 'Photo Uploaded',
+        description: 'Receipt proof photo uploaded successfully',
+      });
+    } catch (error) {
+      console.error('Error uploading photo:', error);
+      setPhotoPreview('');
+      toast({
+        title: 'Upload Failed',
+        description: error instanceof Error ? error.message : 'Failed to upload photo',
+        variant: 'destructive',
+      });
+    } finally {
+      setUploadingPhoto(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleRemovePhoto = () => {
+    setPhotoUrl('');
+    setPhotoPreview('');
+  };
+
   const handleConfirm = () => {
     if (!canSubmit) return;
-    onConfirm({ actualArrival, linkedInvoiceDocumentId });
+    onConfirm({ actualArrival, linkedInvoiceDocumentId, receivedPhotoUrl: photoUrl });
     onOpenChange(false);
   };
 
@@ -164,7 +284,8 @@ const ReceiveItemDialog = ({
 
   const deliveryStatus = getDeliveryStatus();
   const hasInvoice = linkedInvoiceDocumentId && linkedInvoiceDocumentId !== '__NONE__';
-  const canSubmit = actualArrival && hasInvoice;
+  const hasPhoto = !!photoUrl;
+  const canSubmit = actualArrival && hasInvoice && hasPhoto;
 
   if (!item) return null;
 
@@ -274,6 +395,78 @@ const ReceiveItemDialog = ({
             </div>
             {!hasInvoice && (
               <p className="text-xs text-red-500">Vendor invoice is required to complete inwarding</p>
+            )}
+          </div>
+
+          {/* Receipt Photo - Required */}
+          <div className="space-y-1.5">
+            <Label className="text-sm font-medium">
+              Receipt Photo <span className="text-red-500">*</span>
+            </Label>
+            <p className="text-xs text-gray-500 mb-2">
+              Take or upload a photo of the received items or packaging as proof of delivery.
+            </p>
+
+            {photoPreview ? (
+              <div className="relative">
+                <img
+                  src={photoPreview}
+                  alt="Receipt preview"
+                  className="w-full h-40 object-cover rounded-md border"
+                />
+                {uploadingPhoto && (
+                  <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-md">
+                    <Loader2 className="h-8 w-8 animate-spin text-white" />
+                  </div>
+                )}
+                {!uploadingPhoto && (
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    className="absolute top-2 right-2 h-7 w-7 p-0"
+                    onClick={handleRemovePhoto}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
+                {photoUrl && (
+                  <div className="absolute bottom-2 left-2 bg-green-500 text-white text-xs px-2 py-1 rounded-full flex items-center gap-1">
+                    <CheckCircle className="h-3 w-3" />
+                    Uploaded
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <input
+                  ref={photoInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handlePhotoUpload}
+                  className="hidden"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className={`flex-1 h-20 flex-col gap-2 ${!hasPhoto ? 'border-red-300' : ''}`}
+                  onClick={() => photoInputRef.current?.click()}
+                  disabled={uploadingPhoto}
+                >
+                  {uploadingPhoto ? (
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                  ) : (
+                    <>
+                      <Camera className="h-6 w-6" />
+                      <span className="text-xs">Take Photo / Upload</span>
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
+            {!hasPhoto && (
+              <p className="text-xs text-red-500">Photo is required as proof of receipt</p>
             )}
           </div>
         </div>

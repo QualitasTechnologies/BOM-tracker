@@ -1,5 +1,8 @@
 
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { ArrowLeft } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 interface BOMHeaderProps {
   projectName: string;
@@ -11,6 +14,7 @@ interface BOMHeaderProps {
 }
 
 const BOMHeader = ({ projectName, projectId, clientName, totalCost, itemsPriced, totalItems }: BOMHeaderProps) => {
+  const navigate = useNavigate();
   const pricingPercentage = totalItems > 0 ? Math.round((itemsPriced / totalItems) * 100) : 0;
 
   return (
@@ -18,6 +22,16 @@ const BOMHeader = ({ projectName, projectId, clientName, totalCost, itemsPriced,
       <div className="px-4 py-3">
         {/* Line 1: Project Identity */}
         <div className="flex flex-wrap items-center gap-3 text-sm mb-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate('/projects')}
+            className="h-8 px-2 -ml-2"
+          >
+            <ArrowLeft className="h-4 w-4 mr-1" />
+            Projects
+          </Button>
+          <span className="text-gray-400">|</span>
           <h1 className="text-lg font-bold text-gray-900">{projectName} - BOM</h1>
           <span className="text-gray-400">|</span>
           <span className="text-gray-600">Client: <span className="font-medium">{clientName}</span></span>

@@ -132,6 +132,47 @@ export const uploadBrandLogo = async (
   }
 };
 
+export const uploadClientLogo = async (
+  file: File,
+  clientId?: string
+): Promise<ImageUploadResult> => {
+  // Validate file type
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Please select a valid image file');
+  }
+
+  // Validate file size (max 2MB)
+  const maxSizeInBytes = 2 * 1024 * 1024; // 2MB
+  if (file.size > maxSizeInBytes) {
+    throw new Error('Image size must be less than 2MB');
+  }
+
+  // Resize image if needed
+  const resizedFile = await resizeImage(file, 200, 200);
+
+  // Generate unique filename
+  const timestamp = Date.now();
+  const fileName = `${clientId || 'temp'}_${timestamp}_${file.name}`;
+  const imagePath = `client-logos/${fileName}`;
+
+  try {
+    // Upload to Firebase Storage
+    const imageRef = ref(storage, imagePath);
+    const snapshot = await uploadBytes(imageRef, resizedFile);
+
+    // Get download URL
+    const downloadURL = await getDownloadURL(snapshot.ref);
+
+    return {
+      url: downloadURL,
+      path: imagePath
+    };
+  } catch (error) {
+    console.error('Error uploading client image:', error);
+    throw new Error('Failed to upload image. Please try again.');
+  }
+};
+
 export const deleteVendorLogo = async (logoPath: string): Promise<void> => {
   try {
     const imageRef = ref(storage, logoPath);

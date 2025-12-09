@@ -38,12 +38,20 @@ export interface BOMItem {
     availability: string;
   };
 
+  // Document linking fields (for components)
+  linkedQuoteDocumentId?: string; // Reference to vendor-quote document
+  linkedPODocumentId?: string; // Reference to outgoing-po document
+  linkedInvoiceDocumentId?: string; // Reference to vendor-invoice document
+
   // Inward Tracking fields (for components)
   orderDate?: string; // ISO string - when PO was placed
   expectedArrival?: string; // ISO string - calculated from orderDate + leadTime
   actualArrival?: string; // ISO string - when item was actually received
-  linkedPODocumentId?: string; // Reference to outgoing-po document
-  linkedInvoiceDocumentId?: string; // Reference to vendor-invoice document
+  receivedPhotoUrl?: string; // Photo proof of receipt (box or items)
+
+  // Specification sheet fields (for components)
+  specificationUrl?: string; // Original source URL where spec sheet was found
+  linkedSpecDocumentId?: string; // Reference to downloaded spec-sheet document
 
   createdAt?: Date;
   updatedAt?: Date;
@@ -172,8 +180,12 @@ export function sanitizeBOMItemForFirestore(item: Partial<BOMItem>): Record<stri
   if (item.orderDate !== undefined) sanitized.orderDate = item.orderDate;
   if (item.expectedArrival !== undefined) sanitized.expectedArrival = item.expectedArrival;
   if (item.actualArrival !== undefined) sanitized.actualArrival = item.actualArrival;
+  if (item.linkedQuoteDocumentId !== undefined) sanitized.linkedQuoteDocumentId = item.linkedQuoteDocumentId;
   if (item.linkedPODocumentId !== undefined) sanitized.linkedPODocumentId = item.linkedPODocumentId;
   if (item.linkedInvoiceDocumentId !== undefined) sanitized.linkedInvoiceDocumentId = item.linkedInvoiceDocumentId;
+  if (item.receivedPhotoUrl !== undefined) sanitized.receivedPhotoUrl = item.receivedPhotoUrl;
+  if (item.specificationUrl !== undefined) sanitized.specificationUrl = item.specificationUrl;
+  if (item.linkedSpecDocumentId !== undefined) sanitized.linkedSpecDocumentId = item.linkedSpecDocumentId;
   if (item.createdAt !== undefined) sanitized.createdAt = item.createdAt;
   if (item.updatedAt !== undefined) sanitized.updatedAt = item.updatedAt;
 

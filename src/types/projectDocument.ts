@@ -1,4 +1,4 @@
-export type DocumentType = 'vendor-quote' | 'outgoing-po' | 'customer-po' | 'vendor-invoice';
+export type DocumentType = 'vendor-quote' | 'outgoing-po' | 'customer-po' | 'vendor-invoice' | 'spec-sheet';
 
 export interface ProjectDocument {
   id: string;
@@ -10,6 +10,7 @@ export interface ProjectDocument {
   uploadedBy: string;
   linkedBOMItems?: string[]; // Array of BOM item IDs
   fileSize?: number;
+  sourceUrl?: string; // For spec-sheets: original URL where document was found on the web
 }
 
 export interface DocumentTypeSection {
@@ -38,5 +39,10 @@ export const DOCUMENT_SECTIONS: DocumentTypeSection[] = [
     type: 'vendor-invoice',
     label: 'Vendor Invoices',
     description: 'Invoices received from vendors upon delivery'
+  },
+  {
+    type: 'spec-sheet',
+    label: 'Specification Sheets',
+    description: 'Product datasheets and technical specifications'
   }
 ];

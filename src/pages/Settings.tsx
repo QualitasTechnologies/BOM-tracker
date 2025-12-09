@@ -77,7 +77,7 @@ import {
 } from '@/utils/settingsFirestore';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { exportVendorsToCSV, parseVendorCSV, validateVendorData, CSVImportResult } from '@/utils/csvImport';
-import { uploadVendorLogo, ImageUploadResult } from '@/utils/imageUpload';
+import { uploadVendorLogo, uploadClientLogo, ImageUploadResult } from '@/utils/imageUpload';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from '@/components/ui/use-toast';
 import BrandsTab from '@/components/settings/BrandsTab';
@@ -148,10 +148,15 @@ const Settings = () => {
     }>;
   } | null>(null);
 
-  // Image upload states
+  // Image upload states (vendor)
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [uploadingLogo, setUploadingLogo] = useState(false);
+
+  // Image upload states (client)
+  const [clientLogoFile, setClientLogoFile] = useState<File | null>(null);
+  const [clientLogoPreview, setClientLogoPreview] = useState<string | null>(null);
+  const [uploadingClientLogo, setUploadingClientLogo] = useState(false);
 
   // Purchase Request settings states
   const [prEmailInput, setPREmailInput] = useState('');
@@ -400,21 +405,56 @@ const Settings = () => {
     };
   }, []);
 
+  // Client logo handlers
+  const handleClientImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setClientLogoFile(file);
+      // Create preview
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setClientLogoPreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const clearClientLogo = () => {
+    setClientLogoFile(null);
+    setClientLogoPreview(null);
+    setClientForm({...clientForm, logo: '', logoPath: ''});
+  };
+
   // Client management functions
   const handleAddClient = async () => {
     if (!user) return;
-    
+
     try {
       setLoading(true);
+
+      let logoUrl = '';
+      let logoPath = '';
+
+      // Upload logo if selected
+      if (clientLogoFile) {
+        setUploadingClientLogo(true);
+        const uploadResult = await uploadClientLogo(clientLogoFile);
+        logoUrl = uploadResult.url;
+        logoPath = uploadResult.path;
+        setUploadingClientLogo(false);
+      }
+
       await addClient({
         company: clientForm.company || '',
         email: clientForm.email || '',
         phone: clientForm.phone || '',
         address: clientForm.address || '',
         contactPerson: clientForm.contactPerson || '',
-        notes: clientForm.notes || '' // Fixed: ensure notes is not undefined
+        notes: clientForm.notes || '',
+        logo: logoUrl,
+        logoPath: logoPath,
       });
-      
+
       // Reset form
       setClientForm({
         company: '',
@@ -424,7 +464,9 @@ const Settings = () => {
         contactPerson: '',
         notes: ''
       });
-      
+      setClientLogoFile(null);
+      setClientLogoPreview(null);
+
       setClientDialog(false);
       toast({
         title: "Success",
@@ -432,6 +474,7 @@ const Settings = () => {
       });
     } catch (error) {
       console.error('Error adding client:', error);
+      setUploadingClientLogo(false);
       toast({
         title: "Error",
         description: "Failed to add client",
@@ -446,12 +489,20 @@ const Settings = () => {
     setEditingClient(client);
     setClientForm(client);
     setFormErrors([]);
+    // Set logo preview if client has logo
+    if (client.logo) {
+      setClientLogoPreview(client.logo);
+      setClientLogoFile(null); // Clear file since it's existing image
+    } else {
+      setClientLogoPreview(null);
+      setClientLogoFile(null);
+    }
     setClientDialog(true);
   };
 
   const handleUpdateClient = async () => {
     if (!editingClient) return;
-    
+
     const errors = validateClient(clientForm);
     if (errors.length > 0) {
       setFormErrors(errors);
@@ -460,13 +511,27 @@ const Settings = () => {
 
     setSaving(true);
     try {
-      await updateClient(editingClient.id, clientForm);
-      
+      let updatedClientForm = { ...clientForm };
+
+      // Upload new logo if selected
+      if (clientLogoFile) {
+        setUploadingClientLogo(true);
+        const uploadResult = await uploadClientLogo(clientLogoFile, editingClient.id);
+        updatedClientForm.logo = uploadResult.url;
+        updatedClientForm.logoPath = uploadResult.path;
+        setUploadingClientLogo(false);
+      }
+
+      await updateClient(editingClient.id, updatedClientForm);
+
       setEditingClient(null);
       setClientForm({});
+      setClientLogoFile(null);
+      setClientLogoPreview(null);
       setClientDialog(false);
       setFormErrors([]);
     } catch (err: any) {
+      setUploadingClientLogo(false);
       setError(err.message || 'Failed to update client');
     }
     setSaving(false);
@@ -1134,17 +1199,51 @@ const Settings = () => {
                             placeholder="Additional notes about the client"
                           />
                         </div>
+                        <div className="col-span-2 space-y-2">
+                          <Label>Company Logo</Label>
+                          <div className="flex items-center gap-4">
+                            {clientLogoPreview && (
+                              <div className="relative">
+                                <img
+                                  src={clientLogoPreview}
+                                  alt="Logo preview"
+                                  className="w-16 h-16 object-contain border rounded"
+                                />
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="destructive"
+                                  className="absolute -top-2 -right-2 h-6 w-6 rounded-full p-0"
+                                  onClick={clearClientLogo}
+                                >
+                                  <X size={14} />
+                                </Button>
+                              </div>
+                            )}
+                            <div className="flex-1">
+                              <Input
+                                type="file"
+                                accept="image/*"
+                                onChange={handleClientImageSelect}
+                                className="cursor-pointer"
+                              />
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Upload a company logo (max 2MB, will be resized to 200x200px)
+                              </p>
+                            </div>
+                          </div>
+                        </div>
                         </div>
                       </div>
-                      
+
                       <div className="flex justify-end gap-2 mt-4 pt-4 border-t bg-background">
                         <Button
                           onClick={editingClient ? handleUpdateClient : handleAddClient}
-                          disabled={saving}
+                          disabled={saving || uploadingClientLogo}
                         >
-                          {saving && <Loader2 size={16} className="mr-2 animate-spin" />}
+                          {(saving || uploadingClientLogo) && <Loader2 size={16} className="mr-2 animate-spin" />}
                           <Save size={16} className="mr-2" />
-                          {editingClient ? 'Update' : 'Add'} Client
+                          {uploadingClientLogo ? 'Uploading Logo...' : `${editingClient ? 'Update' : 'Add'} Client`}
                         </Button>
                         <Button variant="outline" onClick={() => setClientDialog(false)}>
                           Cancel
@@ -1174,7 +1273,17 @@ const Settings = () => {
                       {clients.map((client) => (
                         <TableRow key={client.id}>
                           <TableCell>
-                            <div>
+                            <div className="flex items-center space-x-3">
+                              {client.logo && (
+                                <img
+                                  src={client.logo}
+                                  alt={`${client.company} logo`}
+                                  className="w-8 h-8 object-contain rounded"
+                                  onError={(e) => {
+                                    (e.target as HTMLImageElement).style.display = 'none';
+                                  }}
+                                />
+                              )}
                               <div className="font-medium">{client.company}</div>
                             </div>
                           </TableCell>

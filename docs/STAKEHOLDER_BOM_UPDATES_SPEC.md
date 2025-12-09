@@ -125,26 +125,25 @@ Customer permissions:
 projects/{projectId}/stakeholders/{stakeholderId}
 ├── name: string
 ├── email: string
-├── role: 'admin' | 'user' | 'viewer' | 'customer'
 ├── isInternalUser: boolean
-├── userId: string (if internal user)
+├── userId: string (if internal user, null for external)
 ├── notificationsEnabled: boolean
-├── lastNotificationSentAt: timestamp
+├── lastNotificationSentAt: timestamp (null if never sent)
 ├── createdAt: timestamp
-├── createdBy: string
+├── createdBy: string (userId of who added them)
 ```
 
-### Notification Settings (Global)
+**Notes:**
+- External customers (non-system users) are stored here with `isInternalUser: false`
+- No Firebase Auth account needed for external stakeholders
+- `customer` role only exists in this context, not in Firebase Auth claims
 
-```
-settings/notifications
-├── enabled: boolean
-├── dailyDigestTime: string (e.g., "09:00")
-├── timezone: string (e.g., "Asia/Kolkata")
-├── senderEmail: string
-├── senderName: string
-├── companyName: string
-```
+### Notification Settings
+
+**No separate settings collection for v1.** Reuse existing PR Settings:
+- Sender email: from `settings/purchaseRequest.fromEmail`
+- Company name: from `settings/purchaseRequest.companyName`
+- Digest time: Hardcoded to 9:00 AM IST
 
 ---
 
@@ -209,92 +208,63 @@ To stop receiving these updates, contact your project manager.
 
 ---
 
-## Settings UI
+## UI Components
 
-### Global Notification Settings (Settings → Notifications tab)
+### Stakeholders Tab (Project → BOM Page)
 
-- **Enable/Disable** daily notifications globally
-- **Daily digest time**: Time picker (default 9:00 AM)
-- **Timezone**: Dropdown (default Asia/Kolkata)
-- **Sender email**: Must be verified in SendGrid
-- **Sender name**: e.g., "BOM Tracker"
-- **Company name**: For email header
+- List of stakeholders with name, email, type (Internal/External), notification toggle
+- "Add Stakeholder" button opens dialog:
+  - **Add Internal User**: Dropdown to select from system users
+  - **Add External Contact**: Name + Email fields
+- Toggle switch to enable/disable notifications per stakeholder
+- Delete button to remove stakeholder
+- "Send Update Now" button for manual testing
 
-### Per-Project Settings (Project → Stakeholders tab)
+### No Global Settings UI for v1
 
-- List of stakeholders with toggle switches
-- Add/remove stakeholders
-- Manual "Send Update Now" button (for testing)
-
----
-
-## Implementation Plan
-
-### Phase 1: Data Model & Settings
-1. Create stakeholder data model
-2. Add notification settings to settings collection
-3. Add `customer` role to userService.ts
-4. Create Firestore operations for stakeholders
-
-### Phase 2: Stakeholder UI
-1. Add "Stakeholders" tab to project view
-2. Build add/edit/remove stakeholder flows
-3. Toggle notification preferences
-4. Add notification settings to Settings page
-
-### Phase 3: Email Function
-1. Create Firebase scheduled function
-2. Build email template generator
-3. Integrate with existing SendGrid setup
-4. Track last notification sent per stakeholder
-
-### Phase 4: Testing & Polish
-1. Test email delivery
-2. Handle edge cases (no items, no changes)
-3. Add "Send Now" button for manual testing
-4. Add notification history/logs
+Settings reused from PR Settings. No new settings tab needed.
 
 ---
 
-## Configuration
+## Implementation Plan (Simplified for v1)
 
-### Firebase Function Schedule
+### Step 1: Types & Firestore Operations
+- Create `src/types/stakeholder.ts` with Stakeholder interface
+- Create `src/utils/stakeholderFirestore.ts` with CRUD operations
+
+### Step 2: UI Components
+- Create `src/components/Stakeholders/StakeholderList.tsx`
+- Create `src/components/Stakeholders/AddStakeholderDialog.tsx`
+- Add "Stakeholders" tab to BOM.tsx page
+
+### Step 3: Firebase Scheduled Function
+- Add `sendDailyBOMDigest` function to `functions/index.js`
+- Create email HTML template generator
+- Integrate with existing SendGrid setup
+
+### Step 4: Manual Send Function
+- Add `sendBOMDigestNow` callable function for testing
+- Wire up "Send Update Now" button in UI
+
+---
+
+## Firebase Function
 
 ```javascript
-// In functions/index.js
+// Runs daily at 9:00 AM IST
 exports.sendDailyBOMDigest = onSchedule(
   {
     schedule: "every day 09:00",
-    timeZone: "Asia/Kolkata"
+    timeZone: "Asia/Kolkata",
+    secrets: [sendgridApiKey]
   },
   async (event) => {
-    // ... send notifications
-  }
-);
-```
-
-The schedule time should be configurable via the settings document. If admin changes the time in settings, the function would need to be redeployed (or use a more flexible approach like Cloud Tasks).
-
-### Simple Approach for Configurable Time
-
-Run the function every hour and check if current time matches configured time:
-
-```javascript
-exports.sendDailyBOMDigest = onSchedule(
-  {
-    schedule: "every 1 hours",
-    timeZone: "Asia/Kolkata"
-  },
-  async (event) => {
-    const settings = await getNotificationSettings();
-    const currentHour = new Date().getHours();
-    const configuredHour = parseInt(settings.dailyDigestTime.split(':')[0]);
-
-    if (currentHour !== configuredHour) {
-      return; // Not the right time
-    }
-
-    // ... send notifications
+    // 1. Get all projects
+    // 2. For each project, get stakeholders with notificationsEnabled=true
+    // 3. Fetch BOM data
+    // 4. Generate email content
+    // 5. Send via SendGrid
+    // 6. Update lastNotificationSentAt
   }
 );
 ```

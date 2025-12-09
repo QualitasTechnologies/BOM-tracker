@@ -134,19 +134,32 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
 
     try {
       await linkDocumentToBOMItems(selectedDocument.id, selectedItemIds);
-      
-      // For outgoing-po documents, also update BOM items' linkedPODocumentId field
+
+      // Get previous linked items to know which ones to unlink
+      const previousLinkedIds = selectedDocument.linkedBOMItems || [];
+      const unlinkedIds = previousLinkedIds.filter(id => !selectedItemIds.includes(id));
+
+      // For vendor-quote documents, update BOM items' linkedQuoteDocumentId field
+      if (selectedDocument.type === 'vendor-quote' && onBOMItemUpdate) {
+        // Update items that are now linked: set their linkedQuoteDocumentId
+        for (const itemId of selectedItemIds) {
+          await onBOMItemUpdate(itemId, { linkedQuoteDocumentId: selectedDocument.id });
+        }
+
+        // Update items that are no longer linked: clear their linkedQuoteDocumentId
+        for (const itemId of unlinkedIds) {
+          await onBOMItemUpdate(itemId, { linkedQuoteDocumentId: undefined });
+        }
+      }
+
+      // For outgoing-po documents, update BOM items' linkedPODocumentId field
       if (selectedDocument.type === 'outgoing-po' && onBOMItemUpdate) {
-        // Get previous linked items to know which ones to unlink
-        const previousLinkedIds = selectedDocument.linkedBOMItems || [];
-        
         // Update items that are now linked: set their linkedPODocumentId
         for (const itemId of selectedItemIds) {
           await onBOMItemUpdate(itemId, { linkedPODocumentId: selectedDocument.id });
         }
-        
+
         // Update items that are no longer linked: clear their linkedPODocumentId
-        const unlinkedIds = previousLinkedIds.filter(id => !selectedItemIds.includes(id));
         for (const itemId of unlinkedIds) {
           await onBOMItemUpdate(itemId, { linkedPODocumentId: undefined });
         }

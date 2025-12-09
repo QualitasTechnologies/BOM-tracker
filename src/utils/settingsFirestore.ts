@@ -32,6 +32,8 @@ export interface Client {
   address: string;
   contactPerson: string;
   notes?: string;
+  logo?: string;
+  logoPath?: string;
   createdAt: Date;
   updatedAt: Date;
 }

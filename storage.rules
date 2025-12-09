@@ -62,6 +62,23 @@ service firebase.storage {
       allow delete: if isAuthenticated();
     }
 
+    // Client logos
+    match /client-logos/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && isReasonableSize();
+      allow delete: if isAuthenticated();
+    }
+
+    // Received item photos (proof of delivery)
+    match /projects/{projectId}/received-photos/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && request.resource.contentType.matches('image/.*')
+                   && isReasonableSize();
+      allow delete: if isAuthenticated();
+    }
+
     // Default: deny all other access
     match /{allPaths=**} {
       allow read, write: if false;

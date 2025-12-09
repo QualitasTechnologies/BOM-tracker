@@ -1,5 +1,6 @@
 
 import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText, Clock, AlertTriangle, CheckCircle2, Package, Unlink } from 'lucide-react';
+import { SpecSearchButton } from './SpecSearchButton';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -51,6 +52,9 @@ interface BOMItem {
   expectedArrival?: string;
   actualArrival?: string;
   linkedPODocumentId?: string;
+  // Specification sheet fields
+  specificationUrl?: string;
+  linkedSpecDocumentId?: string;
 }
 
 interface GlobalVendor {
@@ -70,6 +74,7 @@ interface LinkedDocument {
 
 interface BOMPartRowProps {
   part: BOMItem;
+  projectId?: string;
   onClick: () => void;
   onQuantityChange?: (itemId: string, newQuantity: number) => void;
   allVendors?: Array<{ name: string; price: number; leadTime: string; availability: string }>;
@@ -175,7 +180,7 @@ const statusStyles: Record<
   },
 };
 
-const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [], linkedDocumentsCount = 0, linkedDocuments = [], onUnlinkDocument, globalVendors = [] }: BOMPartRowProps) => {
+const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [], linkedDocumentsCount = 0, linkedDocuments = [], onUnlinkDocument, globalVendors = [] }: BOMPartRowProps) => {
   // Backward compatibility: default to 'component' if itemType is missing
   const itemType = part.itemType || 'component';
 
@@ -666,6 +671,19 @@ const BOMPartRow = ({ part, onClick, onQuantityChange, allVendors = [], onDelete
                 </DropdownMenu>
               )}
               
+              {/* Spec search button (components only) */}
+              {itemType === 'component' && projectId && (
+                <SpecSearchButton
+                  itemId={part.id}
+                  itemName={part.name}
+                  projectId={projectId}
+                  make={part.make}
+                  sku={part.sku}
+                  specificationUrl={part.specificationUrl}
+                  linkedSpecDocumentId={part.linkedSpecDocumentId}
+                />
+              )}
+
               {/* Actions dropdown */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>

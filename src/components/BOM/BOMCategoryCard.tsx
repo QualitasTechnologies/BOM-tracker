@@ -20,6 +20,7 @@ interface LinkedDocument {
 
 interface BOMItem {
   id: string;
+  itemType?: 'component' | 'service';
   name: string;
   description: string;
   category: string;
@@ -37,6 +38,8 @@ interface BOMItem {
   status: 'not-ordered' | 'ordered' | 'received';
   expectedDelivery?: string;
   poNumber?: string;
+  specificationUrl?: string;
+  linkedSpecDocumentId?: string;
 }
 
 interface BOMCategory {
@@ -55,6 +58,7 @@ interface Vendor {
 
 interface BOMCategoryCardProps {
   category: BOMCategory;
+  projectId?: string;
   onToggle: () => void;
   onQuantityChange?: (itemId: string, newQuantity: number) => void;
   onDeletePart?: (itemId: string) => void;
@@ -74,7 +78,7 @@ const formatCurrency = (value: number) => {
   return `₹${value.toLocaleString('en-IN')}`;
 };
 
-const BOMCategoryCard = ({ category, onToggle, onQuantityChange, onDeletePart, onDeleteCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [], onUpdatePart, getDocumentCount, getDocumentsForItem, onUnlinkDocument, vendors = [] }: BOMCategoryCardProps) => {
+const BOMCategoryCard = ({ category, projectId, onToggle, onQuantityChange, onDeletePart, onDeleteCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [], onUpdatePart, getDocumentCount, getDocumentsForItem, onUnlinkDocument, vendors = [] }: BOMCategoryCardProps) => {
   const [showConfirm, setShowConfirm] = useState<false | 'warning' | 'confirm'>(false);
 
   const getStatusCount = (status: string) => {
@@ -202,6 +206,7 @@ const BOMCategoryCard = ({ category, onToggle, onQuantityChange, onDeletePart, o
                 <BOMPartRow
                   key={item.id}
                   part={item}
+                  projectId={projectId}
                   onClick={() => {}}
                   onQuantityChange={onQuantityChange}
                   onDelete={onDeletePart}

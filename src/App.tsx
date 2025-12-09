@@ -3,7 +3,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
 import UserProfile from "./components/UserProfile";
 import Sidebar from "./components/Sidebar";
@@ -37,18 +37,24 @@ const SidebarProvider: React.FC<{ children: React.ReactNode }> = ({ children }) 
 // App Layout Component
 const AppLayout: React.FC = () => {
   const { collapsed, toggle } = useSidebar();
+  const location = useLocation();
+
+  // Hide sidebar on BOM pages for better mobile experience
+  const isBOMPage = location.pathname.includes('/bom');
+  const showSidebar = !isBOMPage;
+
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Sidebar */}
-      <Sidebar collapsed={collapsed} onToggle={toggle} />
-      
+      {/* Sidebar - hidden on BOM pages */}
+      {showSidebar && <Sidebar collapsed={collapsed} onToggle={toggle} />}
+
       {/* Header */}
-      <header className={`bg-white shadow-sm border-b border-gray-200 px-6 py-4 transition-all duration-300 ${collapsed ? 'ml-16' : 'ml-64'}`}>
+      <header className={`bg-white shadow-sm border-b border-gray-200 px-6 py-4 transition-all duration-300 ${showSidebar ? (collapsed ? 'ml-16' : 'ml-64') : 'ml-0'}`}>
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-6">
-            <img 
-              src="/qualitas-logo.png" 
-              alt="Qualitas Technologies" 
+            <img
+              src="/qualitas-logo.png"
+              alt="Qualitas Technologies"
               className="h-12 w-auto"
               style={{ minWidth: 120 }}
             />
@@ -61,7 +67,7 @@ const AppLayout: React.FC = () => {
       </header>
 
       {/* Main Content */}
-      <main className={`transition-all duration-300 ${collapsed ? 'ml-16' : 'ml-64'} px-4 py-6`}>
+      <main className={`transition-all duration-300 ${showSidebar ? (collapsed ? 'ml-16' : 'ml-64') : 'ml-0'} px-4 py-6`}>
         <ErrorBoundary>
           <Routes>
             <Route path="/" element={<KPI />} />

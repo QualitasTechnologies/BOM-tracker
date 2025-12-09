@@ -27,7 +27,9 @@
       "Bash(ForEach-Object { $_FullName })",
       "Bash(find:*)",
       "Bash(xargs:*)",
-      "Bash(firebase functions:log:*)"
+      "Bash(firebase functions:log:*)",
+      "Bash(git merge:*)",
+      "Bash(npm run deploy:*)"
     ],
     "deny": [],
     "ask": []

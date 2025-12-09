@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { Search, Plus, Download, Filter, X, Upload, Package, FileText } from 'lucide-react';
+import { Search, Plus, Download, Filter, X, Upload, Package, FileText, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -18,7 +18,8 @@ import OrderItemDialog from '@/components/BOM/OrderItemDialog';
 import ReceiveItemDialog from '@/components/BOM/ReceiveItemDialog';
 import InwardTracking from '@/components/BOM/InwardTracking';
 import ProjectDocuments from '@/components/BOM/ProjectDocuments';
-import Sidebar from '@/components/Sidebar';
+import ComplianceChecker from '@/components/BOM/ComplianceChecker';
+import StakeholderList from '@/components/Stakeholders/StakeholderList';
 import { saveAs } from 'file-saver';
 import { 
   getBOMData, 
@@ -60,7 +61,6 @@ interface OrderDialogData {
 }
 
 const BOM = () => {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [categories, setCategories] = useState<BOMCategory[]>([]);
   const [activeTab, setActiveTab] = useState('bom-items');
@@ -591,15 +591,9 @@ const BOM = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background flex">
-      <Sidebar 
-        collapsed={sidebarCollapsed} 
-        onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} 
-      />
-      
-      <div className={`flex-1 ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
-        <main className="p-4">
-          <div className="max-w-full mx-auto px-2">
+    <div className="min-h-screen bg-background">
+      <main className="p-4">
+        <div className="max-w-full mx-auto px-2">
             {/* BOM Header */}
             <BOMHeader
               projectName={projectDetails?.projectName || ''}
@@ -610,7 +604,7 @@ const BOM = () => {
 
             {/* Tab-based Layout */}
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-              <TabsList className="grid w-full grid-cols-3 mb-4">
+              <TabsList className="grid w-full grid-cols-4 mb-4">
                 <TabsTrigger value="bom-items" className="flex items-center gap-2">
                   <Package size={16} />
                   BOM Items
@@ -635,6 +629,10 @@ const BOM = () => {
                   <Badge variant="secondary" className="ml-1 text-xs">
                     {projectDocuments.length}
                   </Badge>
+                </TabsTrigger>
+                <TabsTrigger value="stakeholders" className="flex items-center gap-2">
+                  <Users size={16} />
+                  Stakeholders
                 </TabsTrigger>
               </TabsList>
 
@@ -675,6 +673,17 @@ const BOM = () => {
                     <Button variant="outline" onClick={handleCreatePurchaseOrder}>
                       Create PR
                     </Button>
+                    <ComplianceChecker
+                      projectId={projectId || ''}
+                      categories={categories}
+                      vendorQuotes={projectDocuments.filter(d => d.type === 'vendor-quote')}
+                      existingMakes={availableMakes}
+                      existingCategories={canonicalCategoryNames}
+                      onFixApplied={async (itemId, updates) => {
+                        if (!projectId) return;
+                        await updateBOMItem(projectId, categories, itemId, updates);
+                      }}
+                    />
                   </div>
                 </div>
                 {emailStatus && <div className="mt-2 text-sm">{emailStatus}</div>}
@@ -692,6 +701,7 @@ const BOM = () => {
                     <BOMCategoryCard
                       key={category.name}
                       category={category}
+                      projectId={projectId}
                       onToggle={() => toggleCategory(category.name)}
                       onQuantityChange={handleQuantityChange}
                       onDeletePart={handleDeletePart}
@@ -792,10 +802,19 @@ const BOM = () => {
                   />
                 )}
               </TabsContent>
+
+              {/* Stakeholders Tab */}
+              <TabsContent value="stakeholders" className="mt-0">
+                {projectId && projectDetails && (
+                  <StakeholderList
+                    projectId={projectId}
+                    projectName={projectDetails.projectName}
+                  />
+                )}
+              </TabsContent>
             </Tabs>
           </div>
         </main>
-      </div>
 
       {/* Filter Dialog */}
       <Dialog open={filterOpen} onOpenChange={setFilterOpen}>
@@ -1133,6 +1152,7 @@ const BOM = () => {
                 status: 'received',
                 actualArrival: data.actualArrival,
                 linkedInvoiceDocumentId: data.linkedInvoiceDocumentId,
+                receivedPhotoUrl: data.receivedPhotoUrl,
               });
             }
             setSelectedItemForReceive(null);

@@ -9,6 +9,7 @@
 
 const functions = require("firebase-functions");
 const {onRequest, onCall} = require("firebase-functions/v2/https");
+const {onSchedule} = require("firebase-functions/v2/scheduler");
 const logger = require("firebase-functions/logger");
 const {defineSecret} = require("firebase-functions/params");
 const admin = require("firebase-admin");
@@ -981,3 +982,1297 @@ exports.extractQuotationText = onCall(
   }
 );
 
+// ==================== AI COMPLIANCE CHECKER FUNCTIONS ====================
+
+/**
+ * Run AI Compliance Check on BOM items
+ * Validates item data quality and matches vendor quotes to BOM items
+ */
+exports.runComplianceCheck = onRequest(
+  {
+    secrets: [openaiApiKeySecret],
+    timeoutSeconds: 120 // Allow more time for large BOMs
+  },
+  async (request, response) => {
+    // Enable CORS
+    response.set('Access-Control-Allow-Origin', '*');
+    response.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    response.set('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (request.method === 'OPTIONS') {
+      response.status(204).send('');
+      return;
+    }
+
+    if (request.method !== 'POST') {
+      response.status(405).json({ error: 'Method not allowed. Use POST.' });
+      return;
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const { projectId, bomItems, vendorQuotes, settings } = request.body;
+
+      // Validate input
+      if (!projectId || !bomItems || !Array.isArray(bomItems)) {
+        response.status(400).json({ error: 'projectId and bomItems array are required' });
+        return;
+      }
+
+      const openaiApiKey = openaiApiKeySecret.value();
+      if (!openaiApiKey) {
+        response.status(500).json({ error: 'AI service not configured' });
+        return;
+      }
+
+      const issues = [];
+      const issuesByType = {};
+      const issuesBySeverity = { error: 0, warning: 0, info: 0 };
+
+      // Helper to add issue
+      const addIssue = (issue) => {
+        issues.push({
+          ...issue,
+          id: `issue-${issues.length + 1}`,
+          createdAt: new Date().toISOString()
+        });
+        issuesByType[issue.issueType] = (issuesByType[issue.issueType] || 0) + 1;
+        issuesBySeverity[issue.severity]++;
+      };
+
+      // Build lookup maps for validation
+      const itemsByName = new Map();
+      const itemsBySku = new Map();
+      const linkedDocumentIds = new Set();
+
+      // Collect all linked document IDs from vendor quotes
+      vendorQuotes?.forEach(quote => {
+        if (quote.documentId) {
+          linkedDocumentIds.add(quote.documentId);
+        }
+      });
+
+      // First pass: build lookup maps for duplicate detection
+      bomItems.forEach(item => {
+        const itemType = item.itemType || 'component';
+
+        // Track items by normalized name for duplicate detection
+        const normalizedName = (item.name || '').toLowerCase().trim();
+        if (normalizedName) {
+          if (!itemsByName.has(normalizedName)) {
+            itemsByName.set(normalizedName, []);
+          }
+          itemsByName.get(normalizedName).push(item);
+        }
+
+        // Track items by SKU for duplicate detection
+        if (itemType === 'component' && item.sku) {
+          const normalizedSku = item.sku.toLowerCase().trim();
+          if (!itemsBySku.has(normalizedSku)) {
+            itemsBySku.set(normalizedSku, []);
+          }
+          itemsBySku.get(normalizedSku).push(item);
+        }
+      });
+
+      // Phase 1: Comprehensive validation checks
+      bomItems.forEach(item => {
+        const itemType = item.itemType || 'component';
+        const isComponent = itemType === 'component';
+
+        // ============ CRITICAL ERRORS ============
+
+        // 1. Check for missing required fields - Name
+        if (!item.name || item.name.trim() === '') {
+          addIssue({
+            bomItemId: item.id,
+            bomItemName: item.name || 'Unnamed Item',
+            category: item.category || 'Unknown',
+            issueType: 'missing-field',
+            severity: 'error',
+            message: 'Item name is required',
+            details: 'Every BOM item must have a name.',
+            currentValue: item.name || '',
+            suggestedFix: null
+          });
+        }
+
+        // 2. Check for missing Make/Manufacturer (REQUIRED for components)
+        if (isComponent && (!item.make || item.make.trim() === '')) {
+          addIssue({
+            bomItemId: item.id,
+            bomItemName: item.name || 'Unnamed Item',
+            category: item.category || 'Unknown',
+            issueType: 'missing-field',
+            severity: 'error',
+            message: 'Manufacturer/Make is required',
+            details: 'Every component must have a manufacturer specified for procurement.',
+            currentValue: '',
+            suggestedFix: null
+          });
+        }
+
+        // 3. Check for missing SKU (REQUIRED for components)
+        if (isComponent && (!item.sku || item.sku.trim() === '')) {
+          addIssue({
+            bomItemId: item.id,
+            bomItemName: item.name || 'Unnamed Item',
+            category: item.category || 'Unknown',
+            issueType: 'missing-field',
+            severity: 'error',
+            message: 'SKU/Part Number is required',
+            details: 'Every component must have a SKU or part number for accurate ordering.',
+            currentValue: '',
+            suggestedFix: null
+          });
+        }
+
+        // 4. Check for missing linked vendor quote (REQUIRED for components)
+        if (isComponent) {
+          // Check if this item has a linked quote document
+          // Either via item.linkedQuoteDocumentId OR via document.linkedBOMItems
+          const hasLinkedQuoteOnItem = !!item.linkedQuoteDocumentId;
+          const hasLinkedQuoteOnDocument = vendorQuotes?.some(quote =>
+            quote.linkedBOMItems?.includes(item.id)
+          );
+          const hasLinkedQuote = hasLinkedQuoteOnItem || hasLinkedQuoteOnDocument;
+
+          if (!hasLinkedQuote) {
+            addIssue({
+              bomItemId: item.id,
+              bomItemName: item.name || 'Unnamed Item',
+              category: item.category || 'Unknown',
+              issueType: 'missing-quote',
+              severity: 'error',
+              message: 'No vendor quote linked',
+              details: 'Every component must have a linked vendor quote before ordering.',
+              currentValue: '',
+              suggestedFix: null
+            });
+          }
+        }
+
+        // ============ WARNINGS ============
+
+        // 5. Check for missing description
+        if (!item.description || item.description.trim() === '') {
+          addIssue({
+            bomItemId: item.id,
+            bomItemName: item.name || 'Unnamed Item',
+            category: item.category || 'Unknown',
+            issueType: 'missing-field',
+            severity: 'warning',
+            message: 'Item description is missing',
+            details: 'Adding a description helps with clarity and quote matching.',
+            currentValue: '',
+            suggestedFix: {
+              type: 'update-field',
+              field: 'description',
+              suggestedValue: item.name,
+              description: 'Use item name as description'
+            }
+          });
+        }
+
+        // 6. Check SKU format for components
+        if (isComponent && item.sku) {
+          const skuIssues = [];
+          if (item.sku.length < 3) {
+            skuIssues.push('SKU is too short (minimum 3 characters)');
+          }
+          if (/\s{2,}/.test(item.sku)) {
+            skuIssues.push('SKU contains multiple consecutive spaces');
+          }
+          if (/[<>{}[\]\\|]/.test(item.sku)) {
+            skuIssues.push('SKU contains invalid characters');
+          }
+          if (/^\s|\s$/.test(item.sku)) {
+            skuIssues.push('SKU has leading or trailing spaces');
+          }
+
+          if (skuIssues.length > 0) {
+            addIssue({
+              bomItemId: item.id,
+              bomItemName: item.name,
+              category: item.category || 'Unknown',
+              issueType: 'invalid-sku',
+              severity: 'warning',
+              message: 'SKU format issues detected',
+              details: skuIssues.join('. '),
+              currentValue: item.sku,
+              suggestedFix: {
+                type: 'update-field',
+                field: 'sku',
+                suggestedValue: item.sku.trim().replace(/\s+/g, '-'),
+                description: 'Clean up SKU format'
+              }
+            });
+          }
+        }
+
+        // 7. Check for missing price on ordered/received items
+        if ((item.status === 'ordered' || item.status === 'received') && !item.price) {
+          addIssue({
+            bomItemId: item.id,
+            bomItemName: item.name,
+            category: item.category || 'Unknown',
+            issueType: 'missing-field',
+            severity: 'warning',
+            message: 'Price is missing for ordered item',
+            details: 'Items that are ordered should have a price for accurate cost tracking.',
+            currentValue: '',
+            suggestedFix: null
+          });
+        }
+
+        // 8. Check for zero or negative quantity
+        if (!item.quantity || item.quantity <= 0) {
+          addIssue({
+            bomItemId: item.id,
+            bomItemName: item.name || 'Unnamed Item',
+            category: item.category || 'Unknown',
+            issueType: 'missing-field',
+            severity: 'warning',
+            message: 'Invalid quantity',
+            details: 'Quantity must be greater than zero.',
+            currentValue: String(item.quantity || 0),
+            suggestedFix: {
+              type: 'update-field',
+              field: 'quantity',
+              suggestedValue: 1,
+              description: 'Set quantity to 1'
+            }
+          });
+        }
+
+        // 9. Check for unreasonably high quantity (potential data entry error)
+        if (item.quantity > 10000) {
+          addIssue({
+            bomItemId: item.id,
+            bomItemName: item.name,
+            category: item.category || 'Unknown',
+            issueType: 'quantity-mismatch',
+            severity: 'warning',
+            message: 'Unusually high quantity',
+            details: `Quantity of ${item.quantity} seems unusually high. Please verify this is correct.`,
+            currentValue: String(item.quantity),
+            suggestedFix: null
+          });
+        }
+
+        // 10. Check for missing category
+        if (!item.category || item.category.trim() === '' || item.category === 'Uncategorized') {
+          addIssue({
+            bomItemId: item.id,
+            bomItemName: item.name || 'Unnamed Item',
+            category: item.category || 'Unknown',
+            issueType: 'missing-field',
+            severity: 'warning',
+            message: 'Item is uncategorized',
+            details: 'Assign a category for better organization and reporting.',
+            currentValue: item.category || '',
+            suggestedFix: null
+          });
+        }
+
+        // 11. Check for missing finalized vendor on items ready to order
+        if (isComponent && item.price && !item.finalizedVendor) {
+          addIssue({
+            bomItemId: item.id,
+            bomItemName: item.name,
+            category: item.category || 'Unknown',
+            issueType: 'missing-field',
+            severity: 'warning',
+            message: 'No vendor selected',
+            details: 'Item has a price but no vendor has been selected for ordering.',
+            currentValue: '',
+            suggestedFix: null
+          });
+        }
+
+        // ============ INFO / SUGGESTIONS ============
+
+        // 12. Check for very short item names (might be abbreviations)
+        if (item.name && item.name.trim().length < 5) {
+          addIssue({
+            bomItemId: item.id,
+            bomItemName: item.name,
+            category: item.category || 'Unknown',
+            issueType: 'name-format',
+            severity: 'info',
+            message: 'Item name is very short',
+            details: 'Short names might be unclear. Consider using a more descriptive name.',
+            currentValue: item.name,
+            suggestedFix: null
+          });
+        }
+
+        // 13. Check for items with price but no linked quote
+        // (This is an INFO level duplicate check - the ERROR is already added above for all components)
+        // Skip this to avoid duplicate issues - the main check at #4 covers all components without quotes
+
+        // 14. Check for services without rate
+        if (!isComponent && (!item.price || item.price <= 0)) {
+          addIssue({
+            bomItemId: item.id,
+            bomItemName: item.name || 'Unnamed Service',
+            category: item.category || 'Unknown',
+            issueType: 'missing-field',
+            severity: 'warning',
+            message: 'Service rate is missing',
+            details: 'Services should have a rate per day specified.',
+            currentValue: '',
+            suggestedFix: null
+          });
+        }
+      });
+
+      // ============ CROSS-ITEM CHECKS ============
+
+      // 15. Check for duplicate items by name
+      itemsByName.forEach((items, name) => {
+        if (items.length > 1) {
+          items.forEach(item => {
+            addIssue({
+              bomItemId: item.id,
+              bomItemName: item.name,
+              category: item.category || 'Unknown',
+              issueType: 'duplicate-item',
+              severity: 'warning',
+              message: 'Possible duplicate item',
+              details: `${items.length} items have the same name "${item.name}". Verify these are not duplicates.`,
+              currentValue: item.name,
+              suggestedFix: null
+            });
+          });
+        }
+      });
+
+      // 16. Check for duplicate SKUs
+      itemsBySku.forEach((items, sku) => {
+        if (items.length > 1) {
+          items.forEach(item => {
+            addIssue({
+              bomItemId: item.id,
+              bomItemName: item.name,
+              category: item.category || 'Unknown',
+              issueType: 'duplicate-item',
+              severity: 'error',
+              message: 'Duplicate SKU detected',
+              details: `${items.length} items share SKU "${item.sku}". Each component should have a unique SKU.`,
+              currentValue: item.sku,
+              suggestedFix: null
+            });
+          });
+        }
+      });
+
+      // Phase 2: AI-powered analysis for quote matching and suggestions
+      let quoteAnalysis = [];
+      let quotesMatched = 0;
+
+      if (vendorQuotes && vendorQuotes.length > 0 && bomItems.length > 0) {
+        // Prepare data for AI analysis
+        const bomItemsForAI = bomItems.map(item => ({
+          id: item.id,
+          name: item.name,
+          make: item.make,
+          sku: item.sku,
+          description: item.description,
+          quantity: item.quantity,
+          price: item.price,
+          category: item.category
+        }));
+
+        const systemPrompt = `You are a BOM compliance expert. Your task is to match vendor quote line items to BOM items and identify discrepancies.
+
+Given a list of BOM items and extracted text from vendor quotes, you must:
+1. Extract line items from each quote (part name, part number, quantity, unit price)
+2. Match quote line items to BOM items using:
+   - SKU/Part number exact match (highest confidence)
+   - Name similarity (medium confidence)
+   - Make + partial name match (lower confidence)
+3. Identify mismatches in quantity, price (flag if >15% different), or specifications
+4. Flag BOM items that have no matching quote
+
+STRICT JSON OUTPUT:
+{
+  "quoteAnalysis": [
+    {
+      "documentId": "quote document ID",
+      "documentName": "quote name",
+      "lineMatches": [
+        {
+          "quoteLineItem": {
+            "partName": "name from quote",
+            "partNumber": "part number from quote or null",
+            "make": "manufacturer or null",
+            "quantity": number,
+            "unitPrice": number
+          },
+          "bomItemId": "matched BOM item ID or null",
+          "bomItemName": "matched BOM item name or null",
+          "matchScore": 0-100,
+          "matchReasons": ["reason1", "reason2"],
+          "mismatches": ["mismatch description if any"]
+        }
+      ],
+      "unmatchedQuoteLines": number,
+      "unmatchedBOMItems": ["item IDs not matched"]
+    }
+  ],
+  "suggestedFixes": [
+    {
+      "bomItemId": "item ID",
+      "field": "name|description|sku|make",
+      "currentValue": "current",
+      "suggestedValue": "suggested based on quote",
+      "reason": "why this change is suggested"
+    }
+  ]
+}
+
+CRITICAL: Return ONLY valid JSON. Analyze carefully.`;
+
+        const userPrompt = `BOM Items:
+${JSON.stringify(bomItemsForAI, null, 2)}
+
+Vendor Quotes:
+${vendorQuotes.map(q => `--- ${q.documentName} (ID: ${q.documentId}) ---\n${q.extractedText || 'No text extracted'}`).join('\n\n')}
+
+Analyze and match these quotes to the BOM items.`;
+
+        try {
+          const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${openaiApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: 'gpt-4o-mini',
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+              ],
+              temperature: 0.1,
+              max_tokens: 4000,
+              response_format: { type: 'json_object' }
+            })
+          });
+
+          if (openaiResponse.ok) {
+            const data = await openaiResponse.json();
+            const aiResult = JSON.parse(data.choices[0]?.message?.content || '{}');
+
+            quoteAnalysis = aiResult.quoteAnalysis || [];
+
+            // Process AI results to create issues
+            quoteAnalysis.forEach(qa => {
+              // Count matched items
+              qa.lineMatches?.forEach(match => {
+                if (match.bomItemId && match.matchScore >= 50) {
+                  quotesMatched++;
+
+                  // Add mismatch issues
+                  match.mismatches?.forEach(mismatch => {
+                    const mismatchType = mismatch.toLowerCase().includes('price') ? 'price-mismatch' :
+                                         mismatch.toLowerCase().includes('quantity') ? 'quantity-mismatch' :
+                                         'quote-mismatch';
+                    addIssue({
+                      bomItemId: match.bomItemId,
+                      bomItemName: match.bomItemName || 'Unknown',
+                      category: 'Unknown',
+                      issueType: mismatchType,
+                      severity: mismatchType === 'price-mismatch' ? 'warning' : 'info',
+                      message: `Quote mismatch: ${mismatch}`,
+                      details: `From quote: ${qa.documentName}`,
+                      documentId: qa.documentId,
+                      documentName: qa.documentName,
+                      confidence: match.matchScore
+                    });
+                  });
+                }
+              });
+
+              // Add issues for unmatched BOM items
+              qa.unmatchedBOMItems?.forEach(itemId => {
+                const item = bomItems.find(i => i.id === itemId);
+                if (item) {
+                  addIssue({
+                    bomItemId: itemId,
+                    bomItemName: item.name,
+                    category: item.category || 'Unknown',
+                    issueType: 'missing-quote',
+                    severity: 'info',
+                    message: 'No matching line in vendor quote',
+                    details: `Item not found in quote: ${qa.documentName}`,
+                    documentId: qa.documentId,
+                    documentName: qa.documentName
+                  });
+                }
+              });
+            });
+
+            // Process suggested fixes from AI
+            aiResult.suggestedFixes?.forEach(fix => {
+              const item = bomItems.find(i => i.id === fix.bomItemId);
+              if (item && fix.suggestedValue && fix.suggestedValue !== fix.currentValue) {
+                addIssue({
+                  bomItemId: fix.bomItemId,
+                  bomItemName: item.name,
+                  category: item.category || 'Unknown',
+                  issueType: fix.field === 'name' ? 'name-format' :
+                             fix.field === 'description' ? 'description-mismatch' :
+                             'invalid-sku',
+                  severity: 'info',
+                  message: `Suggested update for ${fix.field}`,
+                  details: fix.reason,
+                  currentValue: fix.currentValue,
+                  suggestedFix: {
+                    type: 'update-field',
+                    field: fix.field,
+                    suggestedValue: fix.suggestedValue,
+                    description: fix.reason
+                  },
+                  confidence: 75
+                });
+              }
+            });
+          }
+        } catch (aiError) {
+          logger.error('AI analysis error:', aiError);
+          // Continue without AI analysis - basic checks are still useful
+        }
+      }
+
+      // Build final report
+      const report = {
+        id: `compliance-${Date.now()}`,
+        projectId,
+        createdAt: new Date().toISOString(),
+        createdBy: 'system',
+        status: 'completed',
+        totalItemsChecked: bomItems.length,
+        itemsWithIssues: new Set(issues.map(i => i.bomItemId)).size,
+        totalIssues: issues.length,
+        issuesByType,
+        issuesBySeverity,
+        quotesAnalyzed: vendorQuotes?.length || 0,
+        quotesMatched,
+        quoteMismatches: issues.filter(i => i.issueType === 'quote-mismatch' ||
+                                           i.issueType === 'price-mismatch' ||
+                                           i.issueType === 'quantity-mismatch').length,
+        issues,
+        processingTimeMs: Date.now() - startTime
+      };
+
+      logger.info('Compliance check completed', {
+        projectId,
+        itemsChecked: bomItems.length,
+        issuesFound: issues.length,
+        processingTimeMs: report.processingTimeMs
+      });
+
+      response.status(200).json({
+        success: true,
+        report,
+        quoteAnalysis
+      });
+
+    } catch (error) {
+      logger.error('Error in compliance check:', error);
+      response.status(500).json({
+        error: 'Internal server error during compliance check',
+        details: error.message
+      });
+    }
+  }
+);
+
+/**
+ * Trigger spec sheet search via n8n workflow
+ * This function sends a request to n8n which will search for spec sheets
+ * and then updates Firestore with the result
+ */
+exports.triggerSpecSearch = onRequest(
+  async (request, response) => {
+    // Enable CORS
+    response.set('Access-Control-Allow-Origin', '*');
+    response.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    response.set('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (request.method === 'OPTIONS') {
+      response.status(204).send('');
+      return;
+    }
+
+    if (request.method !== 'POST') {
+      response.status(405).json({ error: 'Method not allowed. Use POST.' });
+      return;
+    }
+
+    try {
+      const { bomItemId, projectId, itemName, make, sku, userId } = request.body;
+
+      // Validate required fields
+      if (!bomItemId || !projectId || !itemName) {
+        response.status(400).json({
+          error: 'Missing required fields: bomItemId, projectId, itemName'
+        });
+        return;
+      }
+
+      // Production n8n webhook URL (workflow must be activated in n8n for this to work)
+      const n8nWebhookUrl = 'https://n8n.qualitastech.com/webhook/spec-search';
+
+      // Generate a unique search ID
+      const searchId = `spec-search-${bomItemId}-${Date.now()}`;
+
+      // Prepare the payload for n8n
+      const n8nPayload = {
+        searchId,
+        bomItemId,
+        projectId,
+        itemName,
+        make: make || '',
+        sku: sku || '',
+        userId: userId || 'system',
+        timestamp: new Date().toISOString()
+      };
+
+      logger.info('Triggering n8n spec search', {
+        searchId,
+        bomItemId,
+        itemName,
+        make
+      });
+
+      // Call n8n webhook
+      const n8nResponse = await fetch(n8nWebhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(n8nPayload)
+      });
+
+      if (!n8nResponse.ok) {
+        const errorText = await n8nResponse.text();
+        logger.error('n8n webhook error:', { status: n8nResponse.status, error: errorText });
+        response.status(500).json({
+          success: false,
+          error: 'Failed to trigger spec search workflow'
+        });
+        return;
+      }
+
+      // Parse the n8n response which contains the spec URL
+      const n8nResult = await n8nResponse.json();
+      logger.info('n8n response:', n8nResult);
+
+      // If n8n returned a specificationUrl, update the BOM item in Firestore
+      if (n8nResult.success && n8nResult.specificationUrl) {
+        try {
+          // Get the BOM data document
+          const bomDocRef = admin.firestore()
+            .collection('projects')
+            .doc(projectId)
+            .collection('bom')
+            .doc('data');
+
+          const bomDoc = await bomDocRef.get();
+
+          if (bomDoc.exists) {
+            const bomData = bomDoc.data();
+            let updated = false;
+
+            // Find and update the item in categories
+            if (bomData.categories && Array.isArray(bomData.categories)) {
+              for (const category of bomData.categories) {
+                if (category.items && Array.isArray(category.items)) {
+                  const itemIndex = category.items.findIndex(item => item.id === bomItemId);
+                  if (itemIndex !== -1) {
+                    category.items[itemIndex].specificationUrl = n8nResult.specificationUrl;
+                    category.items[itemIndex].updatedAt = new Date().toISOString();
+                    updated = true;
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (updated) {
+              await bomDocRef.update({
+                categories: bomData.categories,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+              });
+              logger.info('Updated BOM item with spec URL', {
+                bomItemId,
+                specificationUrl: n8nResult.specificationUrl
+              });
+            }
+          }
+        } catch (firestoreError) {
+          logger.error('Error updating Firestore:', firestoreError);
+          // Don't fail the whole request, just log the error
+        }
+      }
+
+      // Return success response
+      response.status(200).json({
+        success: true,
+        searchId,
+        status: 'completed',
+        specificationUrl: n8nResult.specificationUrl || null,
+        message: n8nResult.specificationUrl
+          ? 'Spec sheet found and saved!'
+          : 'Search completed but no spec sheet found.'
+      });
+
+    } catch (error) {
+      logger.error('Error triggering spec search:', error);
+      response.status(500).json({
+        error: 'Internal server error',
+        details: error.message
+      });
+    }
+  }
+);
+
+// ==================== BOM STATUS DIGEST FUNCTIONS ====================
+
+/**
+ * Generate HTML email for BOM status digest
+ */
+const generateBOMDigestEmailHTML = ({
+  projectName,
+  clientName,
+  clientLogo,
+  companyName,
+  reportDate,
+  summary,
+  overdueItems,
+  arrivingSoonItems,
+  pendingItems,
+  recentChanges
+}) => {
+  const formatDate = (dateStr) => {
+    if (!dateStr) return 'N/A';
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+
+  const getDaysText = (days) => {
+    if (days === 1) return '1 day';
+    return `${days} days`;
+  };
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BOM Status Update</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f5f5f5;">
+  <div style="max-width: 650px; margin: 0 auto; padding: 20px;">
+    <!-- Header -->
+    <div style="background: #1a365d; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+      <h1 style="margin: 0; font-size: 24px;">${companyName}</h1>
+      <p style="margin: 5px 0 0 0; opacity: 0.9;">BOM Status Update</p>
+    </div>
+
+    <!-- Project Info -->
+    <div style="background: white; padding: 20px; border-bottom: 1px solid #e5e7eb;">
+      <div style="display: flex; align-items: center; gap: 16px;">
+        ${clientLogo ? `
+        <div style="flex-shrink: 0;">
+          <img src="${clientLogo}" alt="${clientName}" style="max-height: 60px; max-width: 120px; object-fit: contain;" />
+        </div>
+        ` : ''}
+        <div style="flex: 1;">
+          <p style="margin: 0;"><strong>Project:</strong> ${projectName}</p>
+          <p style="margin: 5px 0 0 0;"><strong>Client:</strong> ${clientName}</p>
+          <p style="margin: 5px 0 0 0;"><strong>Report Date:</strong> ${reportDate}</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Summary Section -->
+    <div style="background: white; padding: 20px; border-bottom: 1px solid #e5e7eb;">
+      <h2 style="margin: 0 0 15px 0; font-size: 16px; color: #1a365d;">Summary</h2>
+      <div style="display: flex; justify-content: space-around; text-align: center;">
+        <div style="flex: 1; padding: 10px;">
+          <div style="font-size: 28px; font-weight: bold; color: #22c55e;">${summary.received}</div>
+          <div style="font-size: 12px; color: #666;">Received</div>
+        </div>
+        <div style="flex: 1; padding: 10px;">
+          <div style="font-size: 28px; font-weight: bold; color: #3b82f6;">${summary.ordered}</div>
+          <div style="font-size: 12px; color: #666;">Ordered</div>
+        </div>
+        <div style="flex: 1; padding: 10px;">
+          <div style="font-size: 28px; font-weight: bold; color: #ef4444;">${summary.overdue}</div>
+          <div style="font-size: 12px; color: #666;">Overdue</div>
+        </div>
+        <div style="flex: 1; padding: 10px;">
+          <div style="font-size: 28px; font-weight: bold; color: #9ca3af;">${summary.pending}</div>
+          <div style="font-size: 12px; color: #666;">Pending</div>
+        </div>
+      </div>
+      <div style="margin-top: 15px; text-align: center;">
+        <p style="margin: 0; font-size: 14px; color: #666;">
+          Total Items: ${summary.total} | Progress: ${summary.progressPercent}%
+        </p>
+      </div>
+    </div>
+
+    ${overdueItems.length > 0 ? `
+    <!-- Overdue Items -->
+    <div style="background: #fef2f2; padding: 20px; border-bottom: 1px solid #e5e7eb;">
+      <h2 style="margin: 0 0 15px 0; font-size: 16px; color: #991b1b;">Overdue Items (${overdueItems.length})</h2>
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr style="background: #fee2e2;">
+          <th style="padding: 8px; text-align: left; font-size: 12px;">Item</th>
+          <th style="padding: 8px; text-align: left; font-size: 12px;">Expected</th>
+          <th style="padding: 8px; text-align: left; font-size: 12px;">Status</th>
+        </tr>
+        ${overdueItems.map(item => `
+        <tr style="border-bottom: 1px solid #fecaca;">
+          <td style="padding: 8px; font-size: 13px;">${item.name}</td>
+          <td style="padding: 8px; font-size: 13px;">${formatDate(item.expectedArrival)}</td>
+          <td style="padding: 8px; font-size: 13px;">
+            <span style="background: #fee2e2; color: #991b1b; padding: 2px 8px; border-radius: 12px; font-size: 11px;">
+              ${getDaysText(item.daysLate)} late
+            </span>
+          </td>
+        </tr>
+        `).join('')}
+      </table>
+    </div>
+    ` : ''}
+
+    ${arrivingSoonItems.length > 0 ? `
+    <!-- Arriving Soon -->
+    <div style="background: #fffbeb; padding: 20px; border-bottom: 1px solid #e5e7eb;">
+      <h2 style="margin: 0 0 15px 0; font-size: 16px; color: #92400e;">Arriving Soon (${arrivingSoonItems.length})</h2>
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr style="background: #fef3c7;">
+          <th style="padding: 8px; text-align: left; font-size: 12px;">Item</th>
+          <th style="padding: 8px; text-align: left; font-size: 12px;">Expected</th>
+          <th style="padding: 8px; text-align: left; font-size: 12px;">Days Left</th>
+        </tr>
+        ${arrivingSoonItems.map(item => `
+        <tr style="border-bottom: 1px solid #fde68a;">
+          <td style="padding: 8px; font-size: 13px;">${item.name}</td>
+          <td style="padding: 8px; font-size: 13px;">${formatDate(item.expectedArrival)}</td>
+          <td style="padding: 8px; font-size: 13px;">
+            <span style="background: #fef3c7; color: #92400e; padding: 2px 8px; border-radius: 12px; font-size: 11px;">
+              ${getDaysText(item.daysLeft)}
+            </span>
+          </td>
+        </tr>
+        `).join('')}
+      </table>
+    </div>
+    ` : ''}
+
+    ${pendingItems.length > 0 ? `
+    <!-- Pending Items (Not Ordered) -->
+    <div style="background: #f3f4f6; padding: 20px; border-bottom: 1px solid #e5e7eb;">
+      <h2 style="margin: 0 0 15px 0; font-size: 16px; color: #4b5563;">Pending Items - Not Yet Ordered (${pendingItems.length})</h2>
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr style="background: #e5e7eb;">
+          <th style="padding: 8px; text-align: left; font-size: 12px;">Item</th>
+          <th style="padding: 8px; text-align: left; font-size: 12px;">Quantity</th>
+          <th style="padding: 8px; text-align: left; font-size: 12px;">Category</th>
+        </tr>
+        ${pendingItems.map(item => `
+        <tr style="border-bottom: 1px solid #d1d5db;">
+          <td style="padding: 8px; font-size: 13px;">${item.name}${item.make ? ` <span style="color: #6b7280; font-size: 11px;">(${item.make})</span>` : ''}</td>
+          <td style="padding: 8px; font-size: 13px;">${item.quantity}</td>
+          <td style="padding: 8px; font-size: 13px;">
+            <span style="background: #e5e7eb; color: #4b5563; padding: 2px 8px; border-radius: 12px; font-size: 11px;">
+              ${item.category || 'Uncategorized'}
+            </span>
+          </td>
+        </tr>
+        `).join('')}
+      </table>
+    </div>
+    ` : ''}
+
+    ${(recentChanges.ordered.length > 0 || recentChanges.received.length > 0) ? `
+    <!-- Recent Changes -->
+    <div style="background: white; padding: 20px; border-bottom: 1px solid #e5e7eb;">
+      <h2 style="margin: 0 0 15px 0; font-size: 16px; color: #1a365d;">Changes Since Last Update</h2>
+
+      ${recentChanges.received.length > 0 ? `
+      <div style="margin-bottom: 15px;">
+        <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #166534;">Received</h3>
+        <ul style="margin: 0; padding-left: 20px;">
+          ${recentChanges.received.map(item => `
+          <li style="margin-bottom: 5px; font-size: 13px;">${item.name} - Received ${formatDate(item.actualArrival)}</li>
+          `).join('')}
+        </ul>
+      </div>
+      ` : ''}
+
+      ${recentChanges.ordered.length > 0 ? `
+      <div>
+        <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #1d4ed8;">Newly Ordered</h3>
+        <ul style="margin: 0; padding-left: 20px;">
+          ${recentChanges.ordered.map(item => `
+          <li style="margin-bottom: 5px; font-size: 13px;">${item.name} - Expected ${formatDate(item.expectedArrival)}</li>
+          `).join('')}
+        </ul>
+      </div>
+      ` : ''}
+    </div>
+    ` : ''}
+
+    <!-- Footer -->
+    <div style="background: #f3f4f6; padding: 20px; text-align: center; border-radius: 0 0 8px 8px;">
+      <p style="margin: 0; font-size: 12px; color: #666;">
+        This is an automated notification from BOM Tracker.
+      </p>
+      <p style="margin: 5px 0 0 0; font-size: 12px; color: #666;">
+        To stop receiving these updates, contact your project manager.
+      </p>
+    </div>
+  </div>
+</body>
+</html>
+  `;
+};
+
+/**
+ * Helper to calculate BOM digest data from categories
+ */
+const calculateBOMDigestData = (categories, lastNotificationSentAt) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const allItems = categories.flatMap(cat => cat.items || []);
+  const components = allItems.filter(item => item.itemType !== 'service');
+
+  // Summary counts
+  const received = components.filter(item => item.status === 'received').length;
+  const ordered = components.filter(item => item.status === 'ordered').length;
+  const pending = components.filter(item => item.status === 'not-ordered').length;
+  const total = components.length;
+
+  // Calculate overdue and arriving soon
+  const overdueItems = [];
+  const arrivingSoonItems = [];
+
+  components.forEach(item => {
+    if (item.status === 'ordered' && item.expectedArrival) {
+      const expectedDate = new Date(item.expectedArrival);
+      expectedDate.setHours(0, 0, 0, 0);
+      const diffDays = Math.ceil((expectedDate - today) / (1000 * 60 * 60 * 24));
+
+      if (diffDays < 0) {
+        overdueItems.push({
+          ...item,
+          daysLate: Math.abs(diffDays)
+        });
+      } else if (diffDays <= 7) {
+        arrivingSoonItems.push({
+          ...item,
+          daysLeft: diffDays
+        });
+      }
+    }
+  });
+
+  // Sort by urgency
+  overdueItems.sort((a, b) => b.daysLate - a.daysLate);
+  arrivingSoonItems.sort((a, b) => a.daysLeft - b.daysLeft);
+
+  // Calculate recent changes (since last notification)
+  const recentChanges = { ordered: [], received: [] };
+
+  if (lastNotificationSentAt) {
+    const lastSentDate = lastNotificationSentAt instanceof Date
+      ? lastNotificationSentAt
+      : lastNotificationSentAt.toDate();
+
+    components.forEach(item => {
+      // Check for newly ordered items
+      if (item.status === 'ordered' && item.orderDate) {
+        const orderDate = new Date(item.orderDate);
+        if (orderDate > lastSentDate) {
+          recentChanges.ordered.push(item);
+        }
+      }
+
+      // Check for newly received items
+      if (item.status === 'received' && item.actualArrival) {
+        const arrivalDate = new Date(item.actualArrival);
+        if (arrivalDate > lastSentDate) {
+          recentChanges.received.push(item);
+        }
+      }
+    });
+  } else {
+    // First notification - show all ordered/received as recent
+    recentChanges.ordered = components.filter(item => item.status === 'ordered');
+    recentChanges.received = components.filter(item => item.status === 'received');
+  }
+
+  const progressPercent = total > 0 ? Math.round((received / total) * 100) : 0;
+
+  // Get pending items (not ordered yet)
+  const pendingItems = components.filter(item => item.status === 'not-ordered');
+
+  return {
+    summary: {
+      total,
+      received,
+      ordered,
+      overdue: overdueItems.length,
+      pending,
+      progressPercent
+    },
+    overdueItems,
+    arrivingSoonItems,
+    pendingItems,
+    recentChanges
+  };
+};
+
+/**
+ * Send BOM digest for a single project to all enabled stakeholders
+ */
+const sendProjectDigest = async (projectId, projectData, prSettings) => {
+  const db = admin.firestore();
+  const results = { sent: 0, failed: 0, skipped: 0 };
+
+  // Get stakeholders with notifications enabled
+  const stakeholdersSnapshot = await db
+    .collection('projects')
+    .doc(projectId)
+    .collection('stakeholders')
+    .where('notificationsEnabled', '==', true)
+    .get();
+
+  if (stakeholdersSnapshot.empty) {
+    logger.info('No enabled stakeholders for project', { projectId });
+    return results;
+  }
+
+  // Get BOM data
+  const bomDocRef = db.collection('projects').doc(projectId).collection('bom').doc('data');
+  const bomDoc = await bomDocRef.get();
+
+  if (!bomDoc.exists || !bomDoc.data().categories) {
+    logger.info('No BOM data for project', { projectId });
+    return results;
+  }
+
+  const categories = bomDoc.data().categories;
+  const reportDate = new Date().toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
+  });
+
+  // Try to get client logo by looking up client by company name
+  let clientLogo = null;
+  if (projectData.clientName) {
+    try {
+      const clientsSnapshot = await db.collection('clients')
+        .where('company', '==', projectData.clientName)
+        .limit(1)
+        .get();
+      if (!clientsSnapshot.empty) {
+        const clientData = clientsSnapshot.docs[0].data();
+        clientLogo = clientData.logo || null;
+      }
+    } catch (error) {
+      logger.warn('Could not fetch client logo', { clientName: projectData.clientName, error: error.message });
+    }
+  }
+
+  // Send email to each stakeholder
+  for (const stakeholderDoc of stakeholdersSnapshot.docs) {
+    const stakeholder = stakeholderDoc.data();
+
+    try {
+      // Calculate digest data for this stakeholder (uses their lastNotificationSentAt)
+      const digestData = calculateBOMDigestData(
+        categories,
+        stakeholder.lastNotificationSentAt
+      );
+
+      // Generate email HTML
+      const htmlContent = generateBOMDigestEmailHTML({
+        projectName: projectData.projectName,
+        clientName: projectData.clientName,
+        clientLogo: clientLogo,
+        companyName: prSettings.companyName || 'Qualitas Technologies Pvt Ltd',
+        reportDate,
+        ...digestData
+      });
+
+      // Prepare email
+      const msg = {
+        to: stakeholder.email,
+        from: prSettings.fromEmail || 'info@qualitastech.com',
+        subject: `[${projectData.projectName}] - BOM Status Update (${reportDate})`,
+        html: htmlContent,
+        text: stripHtml(htmlContent),
+        trackingSettings: {
+          clickTracking: { enable: false, enableText: false }
+        }
+      };
+
+      // Send email
+      await sgMail.send(msg);
+
+      // Update lastNotificationSentAt
+      await stakeholderDoc.ref.update({
+        lastNotificationSentAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      results.sent++;
+
+      logger.info('Digest sent to stakeholder', {
+        projectId,
+        stakeholderEmail: stakeholder.email,
+        itemsTotal: digestData.summary.total
+      });
+
+    } catch (error) {
+      logger.error('Failed to send digest to stakeholder', {
+        projectId,
+        stakeholderEmail: stakeholder.email,
+        error: error.message
+      });
+      results.failed++;
+    }
+  }
+
+  return results;
+};
+
+/**
+ * Daily scheduled function to send BOM status digests
+ * Runs at 9:00 AM IST every day
+ */
+exports.sendDailyBOMDigest = onSchedule(
+  {
+    schedule: 'every day 09:00',
+    timeZone: 'Asia/Kolkata',
+    secrets: [sendgridApiKey]
+  },
+  async (event) => {
+    logger.info('Starting daily BOM digest job');
+    const startTime = Date.now();
+    const db = admin.firestore();
+
+    try {
+      // Configure SendGrid
+      sgMail.setApiKey(sendgridApiKey.value());
+
+      // Get PR settings for email config
+      const prSettingsDoc = await db.collection('settings').doc('purchaseRequest').get();
+      const prSettings = prSettingsDoc.exists ? prSettingsDoc.data() : {};
+
+      // Get all active projects
+      const projectsSnapshot = await db.collection('projects')
+        .where('status', 'in', ['Planning', 'Ongoing', 'Delayed'])
+        .get();
+
+      if (projectsSnapshot.empty) {
+        logger.info('No active projects found');
+        return;
+      }
+
+      const results = { projectsProcessed: 0, totalSent: 0, totalFailed: 0 };
+
+      // Process each project
+      for (const projectDoc of projectsSnapshot.docs) {
+        const projectData = projectDoc.data();
+        const projectId = projectDoc.id;
+
+        try {
+          const projectResults = await sendProjectDigest(projectId, projectData, prSettings);
+          results.projectsProcessed++;
+          results.totalSent += projectResults.sent;
+          results.totalFailed += projectResults.failed;
+        } catch (error) {
+          logger.error('Error processing project', { projectId, error: error.message });
+        }
+      }
+
+      const duration = Date.now() - startTime;
+      logger.info('Daily BOM digest job completed', {
+        ...results,
+        durationMs: duration
+      });
+
+    } catch (error) {
+      logger.error('Daily BOM digest job failed', { error: error.message });
+      throw error;
+    }
+  }
+);
+
+/**
+ * Manual trigger to send BOM digest immediately for a project
+ * Called from the UI "Send Update Now" button
+ */
+exports.sendBOMDigestNow = onCall(
+  { secrets: [sendgridApiKey] },
+  async (request) => {
+    const { auth, data } = request;
+
+    if (!auth) {
+      throw new Error('Authentication required');
+    }
+
+    const { projectId } = data;
+    if (!projectId) {
+      throw new Error('Project ID is required');
+    }
+
+    logger.info('Manual BOM digest triggered', { projectId, userId: auth.uid });
+
+    const db = admin.firestore();
+
+    try {
+      // Configure SendGrid
+      sgMail.setApiKey(sendgridApiKey.value());
+
+      // Get project data
+      const projectDoc = await db.collection('projects').doc(projectId).get();
+      if (!projectDoc.exists) {
+        throw new Error('Project not found');
+      }
+      const projectData = projectDoc.data();
+
+      // Get PR settings for email config
+      const prSettingsDoc = await db.collection('settings').doc('purchaseRequest').get();
+      const prSettings = prSettingsDoc.exists ? prSettingsDoc.data() : {};
+
+      // Send digest
+      const results = await sendProjectDigest(projectId, projectData, prSettings);
+
+      logger.info('Manual BOM digest completed', { projectId, results });
+
+      return {
+        success: true,
+        message: `Digest sent to ${results.sent} stakeholder(s)`,
+        ...results
+      };
+
+    } catch (error) {
+      logger.error('Manual BOM digest failed', { projectId, error: error.message });
+      throw new Error(`Failed to send digest: ${error.message}`);
+    }
+  }
+);
