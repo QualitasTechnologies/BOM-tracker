@@ -10,6 +10,7 @@
 const functions = require("firebase-functions");
 const {onRequest, onCall} = require("firebase-functions/v2/https");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
+const {onDocumentWritten} = require("firebase-functions/v2/firestore");
 const logger = require("firebase-functions/logger");
 const {defineSecret} = require("firebase-functions/params");
 const admin = require("firebase-admin");
@@ -2968,6 +2969,374 @@ exports.sendBOMDigestNow = onCall(
     } catch (error) {
       logger.error('Manual BOM digest failed', { projectId, error: error.message });
       throw new Error(`Failed to send digest: ${error.message}`);
+    }
+  }
+);
+
+/**
+ * Generate HTML email for BOM update notifications
+ */
+const generateBOMUpdateEmailHTML = ({
+  projectName,
+  clientName,
+  companyName,
+  changeType,
+  changes,
+  updatedAt
+}) => {
+  const formatDate = (dateStr) => {
+    if (!dateStr) return 'N/A';
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+
+  const getChangeIcon = (type) => {
+    switch (type) {
+      case 'added': return '➕';
+      case 'removed': return '➖';
+      case 'status_ordered': return '📦';
+      case 'status_received': return '✅';
+      case 'modified': return '✏️';
+      default: return '🔔';
+    }
+  };
+
+  const getChangeTitle = (type) => {
+    switch (type) {
+      case 'added': return 'Items Added';
+      case 'removed': return 'Items Removed';
+      case 'status_ordered': return 'Items Ordered';
+      case 'status_received': return 'Items Received';
+      case 'modified': return 'Items Modified';
+      default: return 'Changes';
+    }
+  };
+
+  const getChangeColor = (type) => {
+    switch (type) {
+      case 'added': return '#166534';
+      case 'removed': return '#dc2626';
+      case 'status_ordered': return '#1d4ed8';
+      case 'status_received': return '#166534';
+      case 'modified': return '#d97706';
+      default: return '#374151';
+    }
+  };
+
+  // Group changes by type
+  const groupedChanges = {};
+  changes.forEach(change => {
+    const type = change.changeType || 'modified';
+    if (!groupedChanges[type]) {
+      groupedChanges[type] = [];
+    }
+    groupedChanges[type].push(change);
+  });
+
+  const changesSections = Object.entries(groupedChanges).map(([type, items]) => `
+    <div style="margin-bottom: 20px;">
+      <h3 style="margin: 0 0 10px 0; font-size: 14px; color: ${getChangeColor(type)};">
+        ${getChangeIcon(type)} ${getChangeTitle(type)} (${items.length})
+      </h3>
+      <ul style="margin: 0; padding-left: 20px;">
+        ${items.map(item => `
+        <li style="margin-bottom: 8px; font-size: 13px;">
+          <strong>${item.name}</strong>
+          ${item.details ? `<br><span style="color: #666; font-size: 12px;">${item.details}</span>` : ''}
+        </li>
+        `).join('')}
+      </ul>
+    </div>
+  `).join('');
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 20px; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+  <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+
+    <!-- Header -->
+    <div style="background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%); padding: 25px; text-align: center;">
+      <h1 style="margin: 0; color: white; font-size: 20px; font-weight: 600;">${companyName}</h1>
+      <p style="margin: 5px 0 0 0; color: rgba(255,255,255,0.9); font-size: 14px;">BOM Update Notification</p>
+    </div>
+
+    <!-- Project Info -->
+    <div style="background: #f8fafc; padding: 15px 20px; border-bottom: 1px solid #e5e7eb;">
+      <p style="margin: 0; font-size: 14px; color: #374151;">
+        <strong>Project:</strong> ${projectName}
+        ${clientName ? `<br><strong>Client:</strong> ${clientName}` : ''}
+      </p>
+      <p style="margin: 5px 0 0 0; font-size: 12px; color: #6b7280;">
+        Updated: ${formatDate(updatedAt)}
+      </p>
+    </div>
+
+    <!-- Changes -->
+    <div style="padding: 20px;">
+      <h2 style="margin: 0 0 15px 0; font-size: 16px; color: #1a365d;">What Changed</h2>
+      ${changesSections}
+    </div>
+
+    <!-- CTA -->
+    <div style="padding: 0 20px 20px 20px; text-align: center;">
+      <p style="margin: 0 0 15px 0; font-size: 13px; color: #666;">
+        View the full BOM details in the BOM Tracker application.
+      </p>
+    </div>
+
+    <!-- Footer -->
+    <div style="background: #f3f4f6; padding: 20px; text-align: center; border-radius: 0 0 8px 8px;">
+      <p style="margin: 0; font-size: 12px; color: #666;">
+        This is an automated notification from BOM Tracker.
+      </p>
+      <p style="margin: 5px 0 0 0; font-size: 12px; color: #666;">
+        To stop receiving these updates, contact your project manager.
+      </p>
+    </div>
+  </div>
+</body>
+</html>
+  `;
+};
+
+/**
+ * Detect meaningful changes between old and new BOM data
+ */
+const detectBOMChanges = (beforeData, afterData) => {
+  const changes = [];
+
+  const beforeItems = beforeData?.categories?.flatMap(cat => cat.items || []) || [];
+  const afterItems = afterData?.categories?.flatMap(cat => cat.items || []) || [];
+
+  // Create maps for quick lookup
+  const beforeMap = new Map(beforeItems.map(item => [item.id, item]));
+  const afterMap = new Map(afterItems.map(item => [item.id, item]));
+
+  // Check for added items
+  afterItems.forEach(item => {
+    if (!beforeMap.has(item.id)) {
+      changes.push({
+        changeType: 'added',
+        name: item.name,
+        details: `Category: ${item.category}${item.quantity ? `, Qty: ${item.quantity}` : ''}`
+      });
+    }
+  });
+
+  // Check for removed items
+  beforeItems.forEach(item => {
+    if (!afterMap.has(item.id)) {
+      changes.push({
+        changeType: 'removed',
+        name: item.name,
+        details: `Category: ${item.category}`
+      });
+    }
+  });
+
+  // Check for status changes (ordered/received)
+  afterItems.forEach(afterItem => {
+    const beforeItem = beforeMap.get(afterItem.id);
+    if (beforeItem) {
+      // Status changed to ordered
+      if (beforeItem.status !== 'ordered' && afterItem.status === 'ordered') {
+        changes.push({
+          changeType: 'status_ordered',
+          name: afterItem.name,
+          details: afterItem.expectedArrival
+            ? `Expected: ${new Date(afterItem.expectedArrival).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`
+            : (afterItem.finalizedVendor?.name ? `Vendor: ${afterItem.finalizedVendor.name}` : null)
+        });
+      }
+
+      // Status changed to received
+      if (beforeItem.status !== 'received' && afterItem.status === 'received') {
+        changes.push({
+          changeType: 'status_received',
+          name: afterItem.name,
+          details: afterItem.actualArrival
+            ? `Received: ${new Date(afterItem.actualArrival).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`
+            : null
+        });
+      }
+
+      // Price changed (significant)
+      if (beforeItem.price !== afterItem.price && afterItem.price) {
+        const priceDiff = afterItem.price - (beforeItem.price || 0);
+        if (Math.abs(priceDiff) > 0) {
+          changes.push({
+            changeType: 'modified',
+            name: afterItem.name,
+            details: `Price updated: ₹${afterItem.price.toLocaleString('en-IN')}`
+          });
+        }
+      }
+
+      // Quantity changed
+      if (beforeItem.quantity !== afterItem.quantity) {
+        changes.push({
+          changeType: 'modified',
+          name: afterItem.name,
+          details: `Quantity: ${beforeItem.quantity} → ${afterItem.quantity}`
+        });
+      }
+    }
+  });
+
+  return changes;
+};
+
+/**
+ * Firestore trigger: Send notification emails when BOM is updated
+ * Triggers on any write to projects/{projectId}/bom/data
+ */
+exports.onBOMUpdate = onDocumentWritten(
+  {
+    document: 'projects/{projectId}/bom/data',
+    secrets: [sendgridApiKey]
+  },
+  async (event) => {
+    const projectId = event.params.projectId;
+    const beforeData = event.data?.before?.data();
+    const afterData = event.data?.after?.data();
+
+    // Skip if document was deleted
+    if (!afterData) {
+      logger.info('BOM document deleted, skipping notification', { projectId });
+      return;
+    }
+
+    // Skip if document was just created (no before data) - this is initial import
+    if (!beforeData) {
+      logger.info('BOM document created, skipping notification for initial creation', { projectId });
+      return;
+    }
+
+    // Detect meaningful changes
+    const changes = detectBOMChanges(beforeData, afterData);
+
+    if (changes.length === 0) {
+      logger.info('No meaningful BOM changes detected, skipping notification', { projectId });
+      return;
+    }
+
+    logger.info('BOM changes detected', { projectId, changeCount: changes.length, changes: changes.slice(0, 5) });
+
+    const db = admin.firestore();
+
+    try {
+      // Get project data
+      const projectDoc = await db.collection('projects').doc(projectId).get();
+      if (!projectDoc.exists) {
+        logger.error('Project not found', { projectId });
+        return;
+      }
+      const projectData = projectDoc.data();
+
+      // Get stakeholders with notifications enabled
+      const stakeholdersSnapshot = await db
+        .collection('projects')
+        .doc(projectId)
+        .collection('stakeholders')
+        .where('notificationsEnabled', '==', true)
+        .get();
+
+      if (stakeholdersSnapshot.empty) {
+        logger.info('No enabled stakeholders for BOM update notification', { projectId });
+        return;
+      }
+
+      // Get PR settings for email config
+      const prSettingsDoc = await db.collection('settings').doc('purchaseRequest').get();
+      const prSettings = prSettingsDoc.exists ? prSettingsDoc.data() : {};
+
+      // Configure SendGrid
+      sgMail.setApiKey(sendgridApiKey.value());
+
+      const companyName = prSettings.companyName || 'Qualitas Technologies Pvt Ltd';
+      const fromEmail = prSettings.fromEmail || 'info@qualitastech.com';
+      const updatedAt = new Date().toISOString();
+
+      // Determine change type summary for subject
+      const changeTypes = [...new Set(changes.map(c => c.changeType))];
+      let changeTypeSummary = 'Updated';
+      if (changeTypes.length === 1) {
+        switch (changeTypes[0]) {
+          case 'added': changeTypeSummary = 'Items Added'; break;
+          case 'removed': changeTypeSummary = 'Items Removed'; break;
+          case 'status_ordered': changeTypeSummary = 'Items Ordered'; break;
+          case 'status_received': changeTypeSummary = 'Items Received'; break;
+          default: changeTypeSummary = 'Updated';
+        }
+      } else if (changeTypes.includes('status_ordered') || changeTypes.includes('status_received')) {
+        changeTypeSummary = 'Status Updated';
+      }
+
+      // Generate email HTML
+      const htmlContent = generateBOMUpdateEmailHTML({
+        projectName: projectData.projectName,
+        clientName: projectData.clientName,
+        companyName,
+        changeType: changeTypeSummary,
+        changes,
+        updatedAt
+      });
+
+      let sentCount = 0;
+      let failedCount = 0;
+
+      // Send email to each stakeholder
+      for (const stakeholderDoc of stakeholdersSnapshot.docs) {
+        const stakeholder = stakeholderDoc.data();
+
+        try {
+          const msg = {
+            to: stakeholder.email,
+            from: fromEmail,
+            subject: `[${projectData.projectName}] BOM ${changeTypeSummary} - ${changes.length} change(s)`,
+            html: htmlContent,
+            text: stripHtml(htmlContent),
+            trackingSettings: {
+              clickTracking: { enable: false, enableText: false }
+            }
+          };
+
+          await sgMail.send(msg);
+          sentCount++;
+
+          logger.info('BOM update notification sent', {
+            projectId,
+            stakeholderEmail: stakeholder.email,
+            changeCount: changes.length
+          });
+
+        } catch (error) {
+          logger.error('Failed to send BOM update notification', {
+            projectId,
+            stakeholderEmail: stakeholder.email,
+            error: error.message
+          });
+          failedCount++;
+        }
+      }
+
+      logger.info('BOM update notifications completed', {
+        projectId,
+        sentCount,
+        failedCount,
+        totalChanges: changes.length
+      });
+
+    } catch (error) {
+      logger.error('BOM update notification job failed', {
+        projectId,
+        error: error.message
+      });
     }
   }
 );

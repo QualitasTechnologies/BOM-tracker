@@ -319,11 +319,19 @@ See CEO_Dashboard_PRD.md for complete specifications
 - **Storage Integration** → Automatic file storage in Firebase Storage
 - **Update Notifications** → Real-time updates to frontend when data is enriched
 
+### 📱 Mobile-Friendly Layout
+- **Remove Sidebar Navigation** - Current sidebar is not mobile-friendly
+  - Replace with bottom navigation bar or hamburger menu on mobile
+  - Collapsible sidebar on tablet/desktop
+- **Responsive BOM Table** - Card-based layout for mobile viewing
+- **Touch-Friendly Controls** - Larger tap targets for mobile users
+- **Mobile-First Dialogs** - Full-screen dialogs on small screens
+- **Swipe Gestures** - Swipe to edit/delete on mobile
+
 ### 🔧 Technical Improvements
 - Bundle optimization for faster loading
 - Enhanced data validation and security
 - Improved error handling and user feedback
-- Mobile responsiveness enhancements
 
 ---
 

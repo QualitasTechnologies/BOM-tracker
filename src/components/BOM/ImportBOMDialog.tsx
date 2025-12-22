@@ -96,12 +96,16 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
   // Validation function for editable items
   const validateItem = (item: Partial<EditableBOMItem>): { isValid: boolean; errors: string[] } => {
     const errors: string[] = [];
-    
+
     if (!item.name?.trim()) errors.push('Name is required');
     if (!item.quantity || item.quantity <= 0) errors.push('Quantity must be greater than 0');
     if (!item.unit?.trim()) errors.push('Unit is required');
-    if (!item.category?.trim()) errors.push('Category is required');
-    
+    if (!item.category?.trim()) {
+      errors.push('Category is required');
+    } else if (existingCategories.length > 0 && !existingCategories.includes(item.category)) {
+      errors.push(`Category "${item.category}" is not in the canonical list`);
+    }
+
     return {
       isValid: errors.length === 0,
       errors
@@ -113,19 +117,19 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
     return aiItems.map((item, index) => {
       // Smart make matching: only use predefined makes from vendor DB
       let makeName = 'unspecified';
-      
+
       if (item.make && typeof item.make === 'string') {
         // Clean the AI response (remove repeated patterns)
         const cleanedMake = item.make
           .replace(/(.+?)\1+/g, '$1') // Remove "KEYENCEKEYENCE" -> "KEYENCE"
           .trim()
           .substring(0, 50);
-        
+
         // Find exact match in existing makes (case-insensitive)
-        const exactMatch = existingMakes.find(existing => 
+        const exactMatch = existingMakes.find(existing =>
           existing.toLowerCase() === cleanedMake.toLowerCase()
         );
-        
+
         if (exactMatch) {
           makeName = exactMatch;
         } else {
@@ -135,14 +139,47 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
             const cleanedLower = cleanedMake.toLowerCase();
             return existingLower.includes(cleanedLower) || cleanedLower.includes(existingLower);
           });
-          
+
           if (partialMatch) {
             makeName = partialMatch;
           }
           // If no match found, keep as 'unspecified' - don't add to the list
         }
       }
-      
+
+      // Category validation: MUST use canonical categories only
+      let categoryName = 'Uncategorized';
+      if (item.category && typeof item.category === 'string') {
+        // Find exact match in existing categories (case-insensitive)
+        const exactCategoryMatch = existingCategories.find(existing =>
+          existing.toLowerCase() === item.category.toLowerCase()
+        );
+
+        if (exactCategoryMatch) {
+          categoryName = exactCategoryMatch;
+        } else {
+          // Try partial matching for similar categories
+          const partialCategoryMatch = existingCategories.find(existing => {
+            const existingLower = existing.toLowerCase();
+            const aiCategoryLower = item.category.toLowerCase();
+            return existingLower.includes(aiCategoryLower) || aiCategoryLower.includes(existingLower);
+          });
+
+          if (partialCategoryMatch) {
+            categoryName = partialCategoryMatch;
+          }
+          // If no match, defaults to 'Uncategorized' - ensures canonical categories only
+          console.warn(`AI suggested non-canonical category "${item.category}" for item "${item.name}", defaulting to "${categoryName}"`);
+        }
+      }
+
+      // Ensure the category exists in the list, fallback to first available or 'Uncategorized'
+      if (!existingCategories.includes(categoryName)) {
+        categoryName = existingCategories.find(c => c.toLowerCase() === 'uncategorized')
+          || existingCategories[0]
+          || 'Uncategorized';
+      }
+
       const editableItem: Partial<EditableBOMItem> = {
         id: `ai-${Date.now()}-${index}`,
         selected: true,
@@ -152,9 +189,9 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
         description: item.description || item.name || '',
         quantity: item.quantity || 1,
         unit: item.unit || 'pcs',
-        category: item.category || 'Uncategorized'
+        category: categoryName
       };
-      
+
       const validation = validateItem(editableItem);
       return {
         ...editableItem,

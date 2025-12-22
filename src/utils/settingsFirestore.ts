@@ -490,5 +490,121 @@ export const validatePRSettings = (settings: Partial<PRSettings>): string[] => {
   return errors;
 };
 
+// ============================================
+// BOM Templates Management
+// ============================================
+import type { BOMTemplate, BOMTemplateItem } from '@/types/bom';
+
+const templatesCol = collection(db, "bomTemplates");
+
+export const getTemplates = async (): Promise<BOMTemplate[]> => {
+  const snapshot = await getDocs(templatesCol);
+  return snapshot.docs.map(doc => ({
+    id: doc.id,
+    ...doc.data(),
+    createdAt: doc.data().createdAt?.toDate() || new Date(),
+    updatedAt: doc.data().updatedAt?.toDate() || new Date()
+  } as BOMTemplate));
+};
+
+export const subscribeToTemplates = (callback: (templates: BOMTemplate[]) => void): Unsubscribe => {
+  return onSnapshot(templatesCol, (snapshot) => {
+    const templates: BOMTemplate[] = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: doc.data().createdAt?.toDate() || new Date(),
+      updatedAt: doc.data().updatedAt?.toDate() || new Date()
+    } as BOMTemplate));
+    callback(templates);
+  });
+};
+
+export const addTemplate = async (template: Omit<BOMTemplate, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> => {
+  const now = new Date();
+  
+  // Clean items array - remove undefined values from each item
+  const cleanedItems = template.items.map(item => cleanFirestoreData(item));
+  
+  // Clean template data
+  const templateData = cleanFirestoreData({
+    ...template,
+    items: cleanedItems,
+    createdAt: now,
+    updatedAt: now
+  });
+  
+  const docRef = await addDoc(templatesCol, templateData);
+  return docRef.id;
+};
+
+export const updateTemplate = async (
+  templateId: string,
+  updates: Partial<Omit<BOMTemplate, 'id' | 'createdAt'>>
+): Promise<void> => {
+  const templateRef = doc(templatesCol, templateId);
+  
+  // Clean items array if it's being updated
+  const cleanedUpdates = updates.items 
+    ? { ...updates, items: updates.items.map(item => cleanFirestoreData(item)) }
+    : updates;
+  
+  const updateData = cleanFirestoreData({
+    ...cleanedUpdates,
+    updatedAt: new Date()
+  });
+  
+  await updateDoc(templateRef, updateData);
+};
+
+export const deleteTemplate = async (templateId: string): Promise<void> => {
+  await deleteDoc(doc(templatesCol, templateId));
+};
+
+export const getTemplate = async (templateId: string): Promise<BOMTemplate | null> => {
+  const templateRef = doc(templatesCol, templateId);
+  const templateSnap = await getDoc(templateRef);
+  if (templateSnap.exists()) {
+    const data = templateSnap.data();
+    return {
+      id: templateSnap.id,
+      ...data,
+      createdAt: data.createdAt?.toDate() || new Date(),
+      updatedAt: data.updatedAt?.toDate() || new Date()
+    } as BOMTemplate;
+  }
+  return null;
+};
+
+/**
+ * Set a template as the default template for new projects.
+ * This will clear the default flag from all other templates.
+ * @param templateId - The ID of the template to set as default, or null to clear all defaults
+ */
+export const setDefaultTemplate = async (templateId: string | null): Promise<void> => {
+  // Get all templates
+  const snapshot = await getDocs(templatesCol);
+
+  // Update each template
+  const updatePromises = snapshot.docs.map(async (docSnap) => {
+    const templateRef = doc(templatesCol, docSnap.id);
+    const shouldBeDefault = docSnap.id === templateId;
+
+    await updateDoc(templateRef, {
+      isDefault: shouldBeDefault,
+      updatedAt: new Date()
+    });
+  });
+
+  await Promise.all(updatePromises);
+};
+
+/**
+ * Get the default template if one is set
+ */
+export const getDefaultTemplate = async (): Promise<BOMTemplate | null> => {
+  const templates = await getTemplates();
+  return templates.find(t => t.isDefault) || null;
+};
+
 // Export collections for use in other components if needed
-export { clientsCol, vendorsCol, bomSettingsRef, prSettingsRef };
+export { clientsCol, vendorsCol, bomSettingsRef, prSettingsRef, templatesCol };

@@ -11,6 +11,7 @@ export interface NewProjectFormData {
   description: string;
   status: FirestoreProject["status"];
   deadline: string;
+  poValue: number; // Purchase Order value - mandatory
 }
 
 export interface EditableProjectInput {

@@ -131,6 +131,29 @@ export interface ProjectBOM {
   updatedAt: Date;
 }
 
+// BOM Template types - for creating projects with pre-defined items
+export interface BOMTemplateItem {
+  id: string;
+  itemType: BOMItemType;
+  name: string;
+  description: string;
+  category: string;
+  quantity: number;
+  price?: number; // Unit price or rate per day
+  make?: string;
+  sku?: string;
+}
+
+export interface BOMTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  items: BOMTemplateItem[];
+  isDefault?: boolean; // If true, this template will be pre-selected when creating new projects
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 // Vendor types
 export type VendorType = 'OEM' | 'Dealer';
 

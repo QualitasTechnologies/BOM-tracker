@@ -12,8 +12,10 @@ import Sidebar from "@/components/Sidebar";
 import AddProjectDialog from "@/components/Project/AddProjectDialog";
 import EditProjectDialog from "@/components/Project/EditProjectDialog";
 import DeleteProjectDialog from "@/components/Project/DeleteProjectDialog";
-import { addProject, subscribeToProjects, updateProject, archiveProject } from "@/utils/projectFirestore";
+import { addProject, subscribeToProjects, updateProject, archiveProject, updateBOMData } from "@/utils/projectFirestore";
+import { getTemplate, subscribeToClients, Client } from "@/utils/settingsFirestore";
 import type { EditableProjectInput, FirestoreProject, NewProjectFormData, ProjectViewMode } from "@/types/project";
+import type { BOMCategory, BOMItem } from "@/types/bom";
 
 const Projects = () => {
   const [viewMode, setViewMode] = useState<ProjectViewMode>("cards");
@@ -26,14 +28,28 @@ const Projects = () => {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [selectedProject, setSelectedProject] = useState<FirestoreProject | null>(null);
   const [projects, setProjects] = useState<FirestoreProject[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
 
   useEffect(() => {
     // Subscribe to Firestore projects
-    const unsubscribe = subscribeToProjects((fetchedProjects) => {
+    const unsubscribeProjects = subscribeToProjects((fetchedProjects) => {
       setProjects(fetchedProjects);
     });
-    return () => unsubscribe();
+    // Subscribe to clients to get logos
+    const unsubscribeClients = subscribeToClients((fetchedClients) => {
+      setClients(fetchedClients);
+    });
+    return () => {
+      unsubscribeProjects();
+      unsubscribeClients();
+    };
   }, []);
+
+  // Get client logo by company name
+  const getClientLogo = (clientName: string): string | undefined => {
+    const client = clients.find(c => c.company === clientName);
+    return client?.logo;
+  };
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -50,7 +66,7 @@ const Projects = () => {
     }
   };
 
-  const handleAddProject = async (newProject: NewProjectFormData) => {
+  const handleAddProject = async (newProject: NewProjectFormData, templateId?: string) => {
     // Map dialog fields to Firestore schema
     const project: FirestoreProject = {
       projectId: newProject.id,
@@ -59,8 +75,55 @@ const Projects = () => {
       description: newProject.description,
       status: newProject.status,
       deadline: newProject.deadline,
+      poValue: newProject.poValue,
     };
     await addProject(project);
+
+    // If a template is selected, apply it to the BOM
+    if (templateId) {
+      try {
+        const template = await getTemplate(templateId);
+        if (template && template.items.length > 0) {
+          // Group template items by category
+          const categoryMap = new Map<string, BOMItem[]>();
+
+          template.items.forEach((templateItem) => {
+            const bomItem: BOMItem = {
+              id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              itemType: templateItem.itemType,
+              name: templateItem.name,
+              description: templateItem.description,
+              category: templateItem.category,
+              quantity: templateItem.quantity,
+              price: templateItem.price,
+              make: templateItem.make,
+              sku: templateItem.sku,
+              status: 'not-ordered',
+              vendors: [],
+            };
+
+            const existingItems = categoryMap.get(templateItem.category) || [];
+            existingItems.push(bomItem);
+            categoryMap.set(templateItem.category, existingItems);
+          });
+
+          // Convert to BOMCategory array
+          const categories: BOMCategory[] = Array.from(categoryMap.entries()).map(
+            ([name, items]) => ({
+              name,
+              items,
+              isExpanded: true,
+            })
+          );
+
+          // Save to Firestore
+          await updateBOMData(newProject.id, categories);
+        }
+      } catch (error) {
+        console.error('Error applying template:', error);
+        // Project is still created, just without template items
+      }
+    }
   };
 
   const handleUpdateProject = async (updatedProject: EditableProjectInput) => {
@@ -177,7 +240,15 @@ const Projects = () => {
         </div>
         
         <div className="flex items-center gap-2 text-sm">
-          <User className="h-4 w-4 text-muted-foreground" />
+          {getClientLogo(project.clientName) ? (
+            <img
+              src={getClientLogo(project.clientName)}
+              alt={project.clientName}
+              className="h-5 w-5 rounded object-contain"
+            />
+          ) : (
+            <User className="h-4 w-4 text-muted-foreground" />
+          )}
           <span className="font-medium">Client:</span>
           <span className="text-muted-foreground">{project.clientName}</span>
         </div>
@@ -350,7 +421,20 @@ const Projects = () => {
                         </div>
                       </TableCell>
                       <TableCell className="font-mono">{project.projectId}</TableCell>
-                      <TableCell>{project.clientName}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          {getClientLogo(project.clientName) ? (
+                            <img
+                              src={getClientLogo(project.clientName)}
+                              alt={project.clientName}
+                              className="h-6 w-6 rounded object-contain"
+                            />
+                          ) : (
+                            <User className="h-4 w-4 text-muted-foreground" />
+                          )}
+                          {project.clientName}
+                        </div>
+                      </TableCell>
                       <TableCell>{formatDate(project.deadline)}</TableCell>
                       <TableCell>{getStatusBadge(project.status)}</TableCell>
                       <TableCell>

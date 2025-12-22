@@ -7,14 +7,17 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { FileText } from "lucide-react";
 import { subscribeToProjects } from "@/utils/projectFirestore";
-import { subscribeToClients, Client } from "@/utils/settingsFirestore";
+import { subscribeToClients, Client, subscribeToTemplates } from "@/utils/settingsFirestore";
 import type { FirestoreProject, NewProjectFormData } from "@/types/project";
+import type { BOMTemplate } from "@/types/bom";
 
 interface AddProjectDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAddProject: (project: NewProjectFormData) => Promise<void> | void;
+  onAddProject: (project: NewProjectFormData, templateId?: string) => Promise<void> | void;
 }
 
 const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialogProps) => {
@@ -24,8 +27,11 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<FirestoreProject["status"]>("Planning");
   const [deadline, setDeadline] = useState("");
+  const [poValue, setPoValue] = useState<string>("");
   const [error, setError] = useState("");
   const [clients, setClients] = useState<Client[]>([]);
+  const [templates, setTemplates] = useState<BOMTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [loading, setLoading] = useState(false);
 
   // Generate a unique project ID
@@ -53,11 +59,22 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
     return `${prefix}-${counter.toString().padStart(3, '0')}`;
   };
 
-  // Load clients when dialog opens
+  // Load clients and templates when dialog opens
   useEffect(() => {
     if (!open) return;
     const unsubscribeClients = subscribeToClients(setClients);
-    return () => unsubscribeClients();
+    const unsubscribeTemplates = subscribeToTemplates((fetchedTemplates) => {
+      setTemplates(fetchedTemplates);
+      // Pre-select the default template if one is set
+      const defaultTemplate = fetchedTemplates.find(t => t.isDefault);
+      if (defaultTemplate) {
+        setSelectedTemplateId(defaultTemplate.id);
+      }
+    });
+    return () => {
+      unsubscribeClients();
+      unsubscribeTemplates();
+    };
   }, [open]);
 
   // Generate project ID when dialog opens or when projects change
@@ -93,13 +110,16 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
             description,
             status,
             deadline,
-          });
+            poValue: parseFloat(poValue) || 0,
+          }, selectedTemplateId && selectedTemplateId !== 'none' ? selectedTemplateId : undefined);
           setId("");
           setName("");
           setClient("");
           setDescription("");
           setStatus("Planning");
           setDeadline("");
+          setPoValue("");
+          setSelectedTemplateId("");
           onOpenChange(false);
         } catch (mutationError) {
           console.error("AddProjectDialog: Failed to add project", mutationError);
@@ -184,20 +204,6 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="status">Status</Label>
-            <Select value={status} onValueChange={(value) => setStatus(value as FirestoreProject["status"])}>
-              <SelectTrigger className="h-8">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Planning">Planning</SelectItem>
-                <SelectItem value="Ongoing">Ongoing</SelectItem>
-                <SelectItem value="Delayed">Delayed</SelectItem>
-                <SelectItem value="Completed">Completed</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1">
             <Label htmlFor="deadline">Deadline</Label>
             <Input
               id="deadline"
@@ -208,6 +214,55 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
               className="h-8"
             />
           </div>
+          <div className="space-y-1">
+            <Label htmlFor="poValue">PO Value (₹) *</Label>
+            <Input
+              id="poValue"
+              type="number"
+              min="0"
+              step="0.01"
+              value={poValue}
+              onChange={(e) => setPoValue(e.target.value)}
+              placeholder="Enter purchase order value"
+              required
+              className="h-8"
+            />
+            <p className="text-xs text-muted-foreground">Customer purchase order value for this project</p>
+          </div>
+          {templates.length > 0 && (
+            <div className="space-y-1">
+              <Label htmlFor="template">BOM Template (Optional)</Label>
+              <Select value={selectedTemplateId} onValueChange={setSelectedTemplateId}>
+                <SelectTrigger className="h-8">
+                  <SelectValue placeholder="Start with blank BOM" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">
+                    <span className="text-muted-foreground">Start with blank BOM</span>
+                  </SelectItem>
+                  {templates.map((template) => (
+                    <SelectItem key={template.id} value={template.id}>
+                      <div className="flex items-center gap-2">
+                        <FileText className="h-4 w-4" />
+                        {template.name}
+                        {template.isDefault && (
+                          <Badge variant="default" className="ml-1 text-xs bg-yellow-500">
+                            Default
+                          </Badge>
+                        )}
+                        <Badge variant="secondary" className="ml-1 text-xs">
+                          {template.items.length} items
+                        </Badge>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Pre-populate BOM with template items
+              </p>
+            </div>
+          )}
           <div className="flex justify-end gap-2 pt-4 mt-4 border-t bg-background">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} className="h-8">
               Cancel

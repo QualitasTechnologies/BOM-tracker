@@ -1,73 +1,133 @@
-# Welcome to your Lovable project
+# BOM Tracker
 
-## Project info
+A Bill of Materials (BOM) management system for engineering and procurement teams. Track components, services, vendors, costs, and project timelines in one place.
 
-**URL**: https://lovable.dev/projects/9c797951-04f8-4dce-92aa-35337ff9b892
+## What is BOM Tracker?
 
-## How can I edit this code?
+BOM Tracker helps teams manage everything related to building products:
 
-There are several ways of editing your application.
+- **Track what you need to buy** - Components, parts, and services organized by category
+- **Manage your vendors** - Keep a database of suppliers with lead times and payment terms
+- **Monitor deliveries** - See what's ordered, what's arriving soon, and what's overdue
+- **Control costs** - Real-time cost calculations and budget tracking
+- **Store documents** - Upload and link vendor quotes, purchase orders, and invoices
 
-**Use Lovable**
+---
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/9c797951-04f8-4dce-92aa-35337ff9b892) and start prompting.
+## Key Features
 
-Changes made via Lovable will be committed automatically to this repo.
+### BOM Management
 
-**Use your preferred IDE**
+Create and manage your Bill of Materials with two types of items:
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+| Type | Used For | Tracked By |
+|------|----------|------------|
+| **Components** | Physical parts | Quantity, Make, SKU, Unit Price |
+| **Services** | Labor, consulting | Duration (days), Rate per day |
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+**Smart Import**: Upload a PDF, Word doc, or text file and let AI extract the parts list automatically.
 
-Follow these steps:
+### Vendor Database
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+Maintain your supplier database with:
+- Company details and contact info
+- Lead times (e.g., "14 days", "2 weeks")
+- Payment terms
+- Categories (Electrical, Mechanical, etc.)
+- Import/export via CSV
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+### Inward Tracking
 
-# Step 3: Install the necessary dependencies.
-npm i
+Track items from order to delivery:
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+1. **Order an item** - Capture order date, PO number, and link to PO document
+2. **Track arrival** - System calculates expected arrival based on vendor lead time
+3. **Visual status** - See at a glance what's overdue (red), arriving soon (yellow), or on track
+4. **Mark received** - Record actual arrival date and link to invoice
+
+### Document Management
+
+Organize project documents by type:
+- **Vendor Quotes** - Quotations received from suppliers
+- **POs Outgoing** - Purchase orders you've sent
+- **Customer PO** - The customer's purchase order for the project
+- **Vendor Invoices** - Invoices for received items
+
+Documents can be linked to multiple BOM items for easy reference.
+
+### Purchase Requests
+
+Generate internal purchase requests to send to your supply chain team:
+- Select which items to include
+- Assign vendors to each item
+- Email is sent with items grouped by vendor
+- Recipients configured in Settings
+
+### Analytics Dashboard
+
+For admins, a KPI dashboard shows:
+- Project counts (active, completed, overdue)
+- Budget utilization
+- Cost trends over time
+- Project status distribution
+
+---
+
+## Getting Started
+
+### For Users
+
+1. **Sign in** with Google or email/password
+2. **Create a project** - Link it to a client and set the budget
+3. **Add BOM items** - Manually or import from a file
+4. **Assign vendors** - Choose suppliers from your vendor database
+5. **Track orders** - Update status as items are ordered and received
+6. **Upload documents** - Link quotes, POs, and invoices to items
+
+### Settings to Configure
+
+Before you start, set up these in **Settings**:
+
+| Setting | Purpose |
+|---------|---------|
+| Clients | Companies you work with |
+| Vendors | Your supplier database |
+| Default Categories | Standard BOM categories |
+| Brands/Makes | Manufacturer list |
+| Purchase Request | Email recipients for PRs |
+
+---
+
+## Tech Stack
+
+- **Frontend**: React, TypeScript, Tailwind CSS
+- **Backend**: Firebase (Authentication, Database, Storage, Cloud Functions)
+- **AI**: OpenAI GPT-4o-mini for document parsing
+- **Email**: SendGrid for purchase requests
+
+---
+
+## Development
+
+```bash
+# Install dependencies
+npm install
+
+# Start development server
 npm run dev
+
+# Run tests
+npm run test:run
+
+# Build for production
+npm run build
+
+# Deploy
+firebase deploy
 ```
 
-**Edit a file directly in GitHub**
+---
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+## Support
 
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/9c797951-04f8-4dce-92aa-35337ff9b892) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+For issues or questions, check the browser console for error messages or review Firebase Console logs for backend issues.

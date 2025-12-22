@@ -81,6 +81,7 @@ import { uploadVendorLogo, uploadClientLogo, ImageUploadResult } from '@/utils/i
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from '@/components/ui/use-toast';
 import BrandsTab from '@/components/settings/BrandsTab';
+import BOMTemplatesTab from '@/components/settings/BOMTemplatesTab';
 import { Brand } from '@/types/brand';
 import { subscribeToBrands } from '@/utils/brandFirestore';
 import { fetchAllUsers, updateUserRole, approveUser, rejectUser, deleteUser, UserRole } from '@/utils/userService';
@@ -2181,6 +2182,9 @@ const Settings = () => {
                   )}
                 </CardContent>
               </Card>
+
+              {/* BOM Templates Section */}
+              <BOMTemplatesTab bomSettings={bomSettings} />
             </div>
           </TabsContent>
 
