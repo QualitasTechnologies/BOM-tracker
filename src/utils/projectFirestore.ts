@@ -162,8 +162,9 @@ export const getTotalBOMCost = (categories: BOMCategory[]): number => {
     return (
       total +
       category.items.reduce((catSum, item) => {
-        if (item.finalizedVendor && typeof item.finalizedVendor.price === 'number') {
-          return catSum + item.finalizedVendor.price * (item.quantity || 1);
+        // Use item.price (same as BOM page calculation)
+        if (item.price && item.price > 0) {
+          return catSum + item.price * (item.quantity || 1);
         }
         return catSum;
       }, 0)
