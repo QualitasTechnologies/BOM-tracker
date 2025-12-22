@@ -3,19 +3,309 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, TrendingUp, TrendingDown, FileDown, Edit2, DollarSign, Clock, Package, X } from "lucide-react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LineChart, Line, ResponsiveContainer, Legend } from "recharts";
+import { ArrowLeft, TrendingUp, TrendingDown, FileDown, Edit2, DollarSign, Clock, Package, X, ChevronDown, ChevronRight, User } from "lucide-react";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { Progress } from "@/components/ui/progress";
 import Sidebar from "@/components/Sidebar";
-import ProfitLossGauge from "@/components/ProfitLossGauge";
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "@/firebase";
-import { getBOMData, getTotalBOMCost, updateProject } from "@/utils/projectFirestore";
+import { getBOMData, getTotalBOMCost, updateProject, subscribeToProjects } from "@/utils/projectFirestore";
 import { fetchEngineers, getTotalManHours } from "@/utils/timeTrackingFirestore";
+import { subscribeToClients, Client } from "@/utils/settingsFirestore";
 import { useAuth } from "@/hooks/useAuth";
+import type { FirestoreProject } from "@/types/project";
 
-const CostAnalysis = () => {
+// Project with calculated cost data
+interface ProjectCostData {
+  project: FirestoreProject;
+  materialCost: number;
+  engineerCost: number;
+  miscCost: number;
+  totalCost: number;
+  poValue: number;
+  grossProfit: number;
+  profitMargin: number;
+  isProfit: boolean;
+}
+
+// Summary View Component
+const CostAnalysisSummary = ({
+  sidebarCollapsed,
+  setSidebarCollapsed
+}: {
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (collapsed: boolean) => void;
+}) => {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [projects, setProjects] = useState<FirestoreProject[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [projectCosts, setProjectCosts] = useState<Map<string, ProjectCostData>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['Ongoing', 'Delayed', 'Planning', 'Completed']));
+
+  // Subscribe to projects and clients
+  useEffect(() => {
+    const unsubscribeProjects = subscribeToProjects((fetchedProjects) => {
+      // Filter out archived projects
+      setProjects(fetchedProjects.filter(p => p.status !== 'Archived'));
+    });
+    const unsubscribeClients = subscribeToClients(setClients);
+
+    return () => {
+      unsubscribeProjects();
+      unsubscribeClients();
+    };
+  }, []);
+
+  // Fetch cost data for all projects
+  useEffect(() => {
+    const fetchAllCosts = async () => {
+      if (projects.length === 0) {
+        setLoading(false);
+        return;
+      }
+
+      const costsMap = new Map<string, ProjectCostData>();
+
+      await Promise.all(
+        projects.map(async (project) => {
+          try {
+            // Get project details for costPerHour and miscCost
+            const projectRef = doc(db, 'projects', project.projectId);
+            const projectSnap = await getDoc(projectRef);
+            const projectData = projectSnap.exists() ? projectSnap.data() : {};
+
+            const costPerHour = projectData.costPerHour || 0;
+            const miscCost = projectData.miscCost || 0;
+            const poValue = projectData.poValue || project.poValue || 0;
+
+            // Get BOM cost
+            const bomCategories = await getBOMData(project.projectId);
+            const materialCost = getTotalBOMCost(bomCategories);
+
+            // Get engineering cost
+            const engineers = await fetchEngineers(project.projectId);
+            const totalManHours = getTotalManHours(engineers);
+            const engineerCost = totalManHours * costPerHour;
+
+            // Calculate totals
+            const totalCost = materialCost + engineerCost + miscCost;
+            const grossProfit = poValue - totalCost;
+            const profitMargin = poValue ? ((grossProfit / poValue) * 100) : 0;
+
+            costsMap.set(project.projectId, {
+              project,
+              materialCost,
+              engineerCost,
+              miscCost,
+              totalCost,
+              poValue,
+              grossProfit,
+              profitMargin,
+              isProfit: grossProfit >= 0,
+            });
+          } catch (error) {
+            console.error(`Error fetching costs for project ${project.projectId}:`, error);
+          }
+        })
+      );
+
+      setProjectCosts(costsMap);
+      setLoading(false);
+    };
+
+    fetchAllCosts();
+  }, [projects]);
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('en-IN', {
+      style: 'currency',
+      currency: 'INR',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(amount);
+  };
+
+  const getClientLogo = (clientName: string): string | undefined => {
+    const client = clients.find(c => c.company === clientName);
+    return client?.logo;
+  };
+
+  const toggleGroup = (status: string) => {
+    setExpandedGroups(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(status)) {
+        newSet.delete(status);
+      } else {
+        newSet.add(status);
+      }
+      return newSet;
+    });
+  };
+
+  // Group projects by status
+  const statusOrder = ['Ongoing', 'Delayed', 'Planning', 'Completed'];
+  const groupedProjects = statusOrder.map(status => ({
+    status,
+    projects: projects.filter(p => p.status === status),
+  }));
+
+  // Check admin access
+  if (!user || !user.isAdmin) {
+    return (
+      <div className="container mx-auto py-6 px-4">
+        <div className="flex items-center justify-center h-64">
+          <div className="text-center">
+            <X className="h-12 w-12 text-red-500 mx-auto mb-4" />
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
+            <p className="text-gray-600">You need admin privileges to access cost analysis.</p>
+            <Button
+              onClick={() => navigate('/projects')}
+              className="mt-4"
+              variant="outline"
+            >
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back to Projects
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-screen bg-background">
+      <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
+      <div className={`flex-1 transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
+        <div className="border-b bg-card">
+          <div className="container mx-auto px-4 py-4">
+            <h1 className="text-2xl font-bold">Cost Analysis</h1>
+            <p className="text-sm text-muted-foreground mt-1">Financial overview of all projects</p>
+          </div>
+        </div>
+
+        <div className="container mx-auto px-4 py-6 space-y-4">
+          {loading ? (
+            <div className="flex items-center justify-center h-64">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+                <p className="text-muted-foreground">Loading project costs...</p>
+              </div>
+            </div>
+          ) : (
+            groupedProjects.map(({ status, projects: statusProjects }) => (
+              <Card key={status}>
+                <CardHeader
+                  className="cursor-pointer hover:bg-muted/50 transition-colors py-3"
+                  onClick={() => toggleGroup(status)}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {expandedGroups.has(status) ? (
+                        <ChevronDown className="h-5 w-5 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                      )}
+                      <CardTitle className="text-lg">{status}</CardTitle>
+                      <Badge variant="secondary">{statusProjects.length} projects</Badge>
+                    </div>
+                  </div>
+                </CardHeader>
+
+                {expandedGroups.has(status) && (
+                  <CardContent className="pt-0">
+                    {statusProjects.length === 0 ? (
+                      <p className="text-muted-foreground text-sm py-4 text-center">No projects</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="border-b text-sm">
+                              <th className="text-left py-2 px-3 font-medium">Project</th>
+                              <th className="text-left py-2 px-3 font-medium">Client</th>
+                              <th className="text-right py-2 px-3 font-medium">PO Value</th>
+                              <th className="text-right py-2 px-3 font-medium">Total Cost</th>
+                              <th className="text-right py-2 px-3 font-medium">Profit/Loss</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {statusProjects.map((project) => {
+                              const costData = projectCosts.get(project.projectId);
+                              const isPlanning = status === 'Planning';
+
+                              return (
+                                <tr key={project.projectId} className="border-b hover:bg-muted/30">
+                                  <td className="py-3 px-3">
+                                    <Link
+                                      to={`/cost-analysis?project=${project.projectId}`}
+                                      className="text-primary hover:underline font-medium"
+                                    >
+                                      {project.projectName}
+                                    </Link>
+                                    <div className="text-xs text-muted-foreground">{project.projectId}</div>
+                                  </td>
+                                  <td className="py-3 px-3">
+                                    <div className="flex items-center gap-2">
+                                      {getClientLogo(project.clientName) ? (
+                                        <img
+                                          src={getClientLogo(project.clientName)}
+                                          alt={project.clientName}
+                                          className="h-5 w-5 rounded object-contain"
+                                        />
+                                      ) : (
+                                        <User className="h-4 w-4 text-muted-foreground" />
+                                      )}
+                                      <span className="text-sm">{project.clientName}</span>
+                                    </div>
+                                  </td>
+                                  <td className="py-3 px-3 text-right font-medium">
+                                    {costData ? formatCurrency(costData.poValue) : '-'}
+                                  </td>
+                                  <td className="py-3 px-3 text-right">
+                                    {costData ? formatCurrency(costData.totalCost) : '-'}
+                                  </td>
+                                  <td className="py-3 px-3 text-right">
+                                    {isPlanning ? (
+                                      <span className="text-muted-foreground text-sm">⏳ TBD</span>
+                                    ) : costData ? (
+                                      <div className={`font-medium ${costData.isProfit ? 'text-green-600' : 'text-red-600'}`}>
+                                        <span>{costData.isProfit ? '✅' : '❌'} </span>
+                                        {costData.isProfit ? '' : '-'}{formatCurrency(Math.abs(costData.grossProfit))}
+                                        <div className="text-xs font-normal">
+                                          {costData.profitMargin.toFixed(1)}% margin
+                                        </div>
+                                      </div>
+                                    ) : '-'}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </CardContent>
+                )}
+              </Card>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Detailed View Component (existing functionality)
+const CostAnalysisDetail = ({
+  projectIdParam,
+  sidebarCollapsed,
+  setSidebarCollapsed
+}: {
+  projectIdParam: string;
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (collapsed: boolean) => void;
+}) => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [costPerHour, setCostPerHour] = useState(0);
@@ -24,7 +314,6 @@ const CostAnalysis = () => {
   const [isEditingRate, setIsEditingRate] = useState(false);
   const [miscCost, setMiscCost] = useState(0);
   const [isEditingMisc, setIsEditingMisc] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [poValue, setPoValue] = useState(0);
   const [isEditingPO, setIsEditingPO] = useState(false);
 
@@ -32,8 +321,6 @@ const CostAnalysis = () => {
   const [totalManHours, setTotalManHours] = useState(0);
   const [currentBOM, setCurrentBOM] = useState<any[]>([]);
 
-  const [searchParams] = useSearchParams();
-  const projectIdParam = searchParams.get('project');
   const [projectDetails, setProjectDetails] = useState<{ projectName: string; projectId: string; clientName: string; deadline: string; status: string; bomSnapshot?: any[]; bomSnapshotDate?: string } | null>(null);
 
   useEffect(() => {
@@ -124,13 +411,6 @@ const CostAnalysis = () => {
     }).format(amount);
   };
 
-  // Chart data
-  const costCompositionData = [
-    { name: "Material Cost", value: materialCost, color: "#8B5CF6" },
-    { name: "Engineering Cost", value: engineerCost, color: "#06B6D4" },
-    { name: "Miscellaneous Cost", value: miscCost, color: "#F59E42" },
-  ];
-
   // Editable descriptions for cost items
   const [costDescriptions, setCostDescriptions] = useState([
     "Material and component costs",
@@ -172,8 +452,8 @@ const CostAnalysis = () => {
             <X className="h-12 w-12 text-red-500 mx-auto mb-4" />
             <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
             <p className="text-gray-600">You need admin privileges to access cost analysis.</p>
-            <Button 
-              onClick={() => navigate('/projects')} 
+            <Button
+              onClick={() => navigate('/projects')}
               className="mt-4"
               variant="outline"
             >
@@ -193,9 +473,15 @@ const CostAnalysis = () => {
         <div className="border-b bg-card">
           <div className="container mx-auto px-4 py-4">
             <div className="flex items-center gap-4">
-              {/* Removed Back to Dashboard button */}
+              <Button variant="ghost" size="sm" onClick={() => navigate('/cost-analysis')}>
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                All Projects
+              </Button>
               <div className="flex items-center gap-2">
                 <h1 className="text-2xl font-bold">Cost Analysis</h1>
+                {projectDetails && (
+                  <Badge variant="outline">{projectDetails.projectName}</Badge>
+                )}
               </div>
             </div>
           </div>
@@ -532,7 +818,7 @@ const CostAnalysis = () => {
                       {/* Added Items */}
                       {addedItems.length > 0 && (
                         <div>
-                          <h4 className="font-medium text-green-700 mb-2">✅ Added Items ({addedItems.length})</h4>
+                          <h4 className="font-medium text-green-700 mb-2">Added Items ({addedItems.length})</h4>
                           <div className="space-y-1">
                             {addedItems.map(item => (
                               <div key={item.id} className="text-sm bg-green-50 p-2 rounded flex justify-between">
@@ -547,7 +833,7 @@ const CostAnalysis = () => {
                       {/* Removed Items */}
                       {removedItems.length > 0 && (
                         <div>
-                          <h4 className="font-medium text-red-700 mb-2">❌ Removed Items ({removedItems.length})</h4>
+                          <h4 className="font-medium text-red-700 mb-2">Removed Items ({removedItems.length})</h4>
                           <div className="space-y-1">
                             {removedItems.map(item => (
                               <div key={item.id} className="text-sm bg-red-50 p-2 rounded flex justify-between line-through">
@@ -562,7 +848,7 @@ const CostAnalysis = () => {
                       {/* Changed Items */}
                       {changedItems.length > 0 && (
                         <div>
-                          <h4 className="font-medium text-blue-700 mb-2">🔄 Modified Items ({changedItems.length})</h4>
+                          <h4 className="font-medium text-blue-700 mb-2">Modified Items ({changedItems.length})</h4>
                           <div className="space-y-2">
                             {changedItems.map(item => (
                               <div key={item.id} className="text-sm bg-blue-50 p-2 rounded">
@@ -608,6 +894,30 @@ const CostAnalysis = () => {
         </div>
       </div>
     </div>
+  );
+};
+
+// Main Component - decides which view to show
+const CostAnalysis = () => {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [searchParams] = useSearchParams();
+  const projectIdParam = searchParams.get('project');
+
+  if (projectIdParam) {
+    return (
+      <CostAnalysisDetail
+        projectIdParam={projectIdParam}
+        sidebarCollapsed={sidebarCollapsed}
+        setSidebarCollapsed={setSidebarCollapsed}
+      />
+    );
+  }
+
+  return (
+    <CostAnalysisSummary
+      sidebarCollapsed={sidebarCollapsed}
+      setSidebarCollapsed={setSidebarCollapsed}
+    />
   );
 };
 

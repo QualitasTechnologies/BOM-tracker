@@ -37,16 +37,60 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
     return () => unsubscribeClients();
   }, [open]);
 
+  // Reset form when dialog closes
   useEffect(() => {
-    if (!project) return;
+    if (!open) {
+      setProjectId("");
+      setProjectName("");
+      setClientName("");
+      setDescription("");
+      setStatus("Ongoing");
+      setDeadline("");
+      setPoValue("");
+      setError("");
+    }
+  }, [open]);
+
+  // Set form values when project changes
+  useEffect(() => {
+    if (!project || !open) return;
+    
     setProjectId(project.projectId);
     setProjectName(project.projectName);
-    setClientName(project.clientName);
     setDescription(project.description);
     setStatus(project.status);
     setDeadline(project.deadline);
     setPoValue(project.poValue?.toString() || "");
-  }, [project]);
+  }, [project, open]);
+
+  // Set clientName after clients are loaded to ensure exact match
+  useEffect(() => {
+    if (!project || !open || clients.length === 0) return;
+    
+    if (project.clientName) {
+      // Find exact match (case and whitespace sensitive)
+      const matchingClient = clients.find(
+        (client) => client.company === project.clientName
+      );
+      
+      if (matchingClient) {
+        // Use the exact value from the client list to ensure Select can match it
+        setClientName(matchingClient.company);
+      } else {
+        // Try case-insensitive match with trimmed values
+        const caseInsensitiveMatch = clients.find(
+          (client) => client.company?.trim().toLowerCase() === project.clientName?.trim().toLowerCase()
+        );
+        
+        if (caseInsensitiveMatch) {
+          setClientName(caseInsensitiveMatch.company);
+        } else {
+          // Client might have been deleted or renamed - set empty to force user to select
+          setClientName("");
+        }
+      }
+    }
+  }, [project, clients, open]);
 
   const selectableClients = useMemo(
     () => clients.filter((clientItem) => clientItem.company?.trim()),
