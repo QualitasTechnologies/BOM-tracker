@@ -454,6 +454,24 @@ const Projects = () => {
                               <DollarSign className="h-4 w-4 text-orange-600" />
                             </Link>
                           </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleEditClick(project)}
+                            title="Edit"
+                            className="text-blue-600 hover:text-blue-700"
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleArchiveClick(project)}
+                            title="Archive"
+                            className="text-amber-600 hover:text-amber-700"
+                          >
+                            <Archive className="h-4 w-4" />
+                          </Button>
                         </div>
                       </TableCell>
                     </TableRow>
