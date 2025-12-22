@@ -21,5 +21,6 @@ export interface EditableProjectInput {
   description: string;
   status: FirestoreProject["status"];
   deadline: string;
+  poValue?: number; // Purchase Order value - optional for backward compatibility
 }
 

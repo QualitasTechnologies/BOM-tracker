@@ -26,6 +26,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<FirestoreProject["status"]>("Ongoing");
   const [deadline, setDeadline] = useState("");
+  const [poValue, setPoValue] = useState<string>("");
   const [error, setError] = useState("");
   const [clients, setClients] = useState<Client[]>([]);
 
@@ -44,6 +45,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
     setDescription(project.description);
     setStatus(project.status);
     setDeadline(project.deadline);
+    setPoValue(project.poValue?.toString() || "");
   }, [project]);
 
   const selectableClients = useMemo(
@@ -92,6 +94,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
             description,
             status,
             deadline,
+            poValue: parseFloat(poValue) || undefined,
           });
         } else {
           // Normal update without snapshot
@@ -102,6 +105,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
             description,
             status,
             deadline,
+            poValue: parseFloat(poValue) || undefined,
           });
         }
 
@@ -215,6 +219,20 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
               required
               className="h-8"
             />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="poValue">PO Value (₹)</Label>
+            <Input
+              id="poValue"
+              type="number"
+              min="0"
+              step="0.01"
+              value={poValue}
+              onChange={(e) => setPoValue(e.target.value)}
+              placeholder="Enter purchase order value"
+              className="h-8"
+            />
+            <p className="text-xs text-muted-foreground">Customer purchase order value for this project</p>
           </div>
           <div className="flex justify-end gap-2 pt-4 mt-4 border-t bg-background">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} className="h-8">

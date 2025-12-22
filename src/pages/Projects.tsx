@@ -127,8 +127,10 @@ const Projects = () => {
   };
 
   const handleUpdateProject = async (updatedProject: EditableProjectInput) => {
-    const { projectId, ...updates } = updatedProject;
-    await updateProject(projectId, updates);
+    const { projectId, poValue, ...updates } = updatedProject;
+    // Only include poValue if it's defined
+    const projectUpdates = poValue !== undefined ? { ...updates, poValue } : updates;
+    await updateProject(projectId, projectUpdates);
   };
 
   const handleArchiveProject = async () => {
