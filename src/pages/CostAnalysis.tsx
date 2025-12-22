@@ -232,7 +232,6 @@ const CostAnalysisSummary = ({
                           <tbody>
                             {statusProjects.map((project) => {
                               const costData = projectCosts.get(project.projectId);
-                              const isPlanning = status === 'Planning';
 
                               return (
                                 <tr key={project.projectId} className="border-b hover:bg-muted/30">
@@ -266,9 +265,7 @@ const CostAnalysisSummary = ({
                                     {costData ? formatCurrency(costData.totalCost) : '-'}
                                   </td>
                                   <td className="py-3 px-3 text-right">
-                                    {isPlanning ? (
-                                      <span className="text-muted-foreground text-sm">⏳ TBD</span>
-                                    ) : costData ? (
+                                    {costData && costData.poValue > 0 ? (
                                       <div className={`font-medium ${costData.isProfit ? 'text-green-600' : 'text-red-600'}`}>
                                         <span>{costData.isProfit ? '✅' : '❌'} </span>
                                         {costData.isProfit ? '' : '-'}{formatCurrency(Math.abs(costData.grossProfit))}
@@ -276,7 +273,9 @@ const CostAnalysisSummary = ({
                                           {costData.profitMargin.toFixed(1)}% margin
                                         </div>
                                       </div>
-                                    ) : '-'}
+                                    ) : (
+                                      <span className="text-muted-foreground text-sm">⏳ TBD</span>
+                                    )}
                                   </td>
                                 </tr>
                               );
