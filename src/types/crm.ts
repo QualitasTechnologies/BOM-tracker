@@ -341,18 +341,40 @@ export function calculateWeightedValue(value: number, probability: number): numb
   return value * (probability / 100);
 }
 
+// Convert Firestore Timestamp or Date to JS Date
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function toJsDate(date: any): Date {
+  if (!date) return new Date();
+  // Firestore Timestamp has toDate() method
+  if (date?.toDate && typeof date.toDate === 'function') {
+    return date.toDate();
+  }
+  // Already a Date
+  if (date instanceof Date) {
+    return date;
+  }
+  // ISO string or timestamp number
+  return new Date(date);
+}
+
 // Check if deal is stale (no activity in 7+ days)
-export function isDealStale(lastActivityAt: Date, thresholdDays: number = 7): boolean {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isDealStale(lastActivityAt: any, thresholdDays: number = 7): boolean {
   const now = new Date();
-  const diffMs = now.getTime() - new Date(lastActivityAt).getTime();
+  const activityDate = toJsDate(lastActivityAt);
+  if (isNaN(activityDate.getTime())) return false;
+  const diffMs = now.getTime() - activityDate.getTime();
   const diffDays = diffMs / (1000 * 60 * 60 * 24);
   return diffDays >= thresholdDays;
 }
 
 // Get days since last activity
-export function getDaysSinceActivity(lastActivityAt: Date): number {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getDaysSinceActivity(lastActivityAt: any): number {
   const now = new Date();
-  const diffMs = now.getTime() - new Date(lastActivityAt).getTime();
+  const activityDate = toJsDate(lastActivityAt);
+  if (isNaN(activityDate.getTime())) return 0;
+  const diffMs = now.getTime() - activityDate.getTime();
   return Math.floor(diffMs / (1000 * 60 * 60 * 24));
 }
 

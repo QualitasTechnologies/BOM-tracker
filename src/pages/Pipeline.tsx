@@ -55,6 +55,7 @@ import {
   isDealStale,
   getDaysSinceActivity,
   calculateWeightedValue,
+  toJsDate,
 } from "@/types/crm";
 import {
   subscribeToDeals,
@@ -284,7 +285,7 @@ const Pipeline = () => {
             {deal.expectedCloseDate && (
               <span className="text-muted-foreground flex items-center gap-1">
                 <Calendar className="h-3 w-3" />
-                {new Date(deal.expectedCloseDate).toLocaleDateString("en-IN", { month: "short", day: "numeric" })}
+                {toJsDate(deal.expectedCloseDate).toLocaleDateString("en-IN", { month: "short", day: "numeric" })}
               </span>
             )}
           </div>
@@ -479,7 +480,7 @@ const Pipeline = () => {
                     </TableCell>
                     <TableCell>
                       {deal.expectedCloseDate
-                        ? new Date(deal.expectedCloseDate).toLocaleDateString("en-IN")
+                        ? toJsDate(deal.expectedCloseDate).toLocaleDateString("en-IN")
                         : "-"}
                     </TableCell>
                     <TableCell>

@@ -31,7 +31,8 @@
       "Bash(git merge:*)",
       "Bash(npm run deploy:*)",
       "Bash(dir \"C:\\Software\\BOM-Tracker\\BOM-tracker\\src\\components\\BOM\")",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "mcp__n8n-mcp__n8n_list_workflows"
     ],
     "deny": [],
     "ask": []

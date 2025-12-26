@@ -699,6 +699,129 @@ Option B: **Service Account (Alternative)**
 7. **Pipeline Dashboard** - Kanban/table view with stage filters
 8. **Navigation** - Add CRM to sidebar
 
+### Phase 1.1: n8n Sales Automation Integration
+
+**Goal:** When n8n's "Sales Automation - Agentic" workflow processes a new sales lead email, automatically create a Deal in BOM Tracker Firestore (in addition to ClickUp).
+
+**Current n8n Workflow:**
+```
+Gmail Trigger → Intent Classification → Duplicate Check → AI Sales Orchestrator → ClickUp Task
+```
+
+**Data Available from AI Orchestrator:**
+| Field | Example | Maps to Deal Field |
+|-------|---------|-------------------|
+| `SENDER_EMAIL` | john@acme.com | Used for contact lookup |
+| `CONTACT_NAME` | John Smith | Used for contact creation |
+| `COMPANY_NAME` | Acme Industries | Used for client lookup/creation |
+| `PROJECT_NAME` | Acme - Defect Detection | `deal.name` |
+| `EMAIL_SUBJECT` | Inquiry about vision system | `deal.description` |
+| `INQUIRY_SUMMARY` | Looking for defect detection... | `deal.description` (appended) |
+
+**Implementation Steps:**
+
+1. **Add Firestore Node to n8n Workflow**
+   - Add after "Create a task" node (parallel execution)
+   - Use n8n's Firebase/Firestore node or HTTP Request to Firebase REST API
+
+2. **Client Lookup/Creation Logic (in n8n Code node)**
+   ```javascript
+   // Pseudo-code for n8n Code node
+   const companyName = $json.output.COMPANY_NAME;
+
+   // 1. Search existing clients by company name (fuzzy match)
+   // 2. If found → use existing clientId
+   // 3. If not found → create new client with:
+   //    - company: COMPANY_NAME
+   //    - contactPerson: CONTACT_NAME
+   //    - email: SENDER_EMAIL
+   //    - crmStatus: 'prospect'
+   ```
+
+3. **Deal Creation Payload**
+   ```javascript
+   const dealData = {
+     name: $json.output.PROJECT_NAME,
+     description: `${$json.output.EMAIL_SUBJECT}\n\n${$json.output.INQUIRY_SUMMARY}`,
+     clientId: clientId, // from lookup/creation
+     assignedContactIds: [],
+     stage: 'new',
+     probability: 20, // Default for new inbound leads
+     expectedValue: 0, // To be filled manually
+     currency: 'INR',
+     expectedCloseDate: new Date(Date.now() + 30*24*60*60*1000), // +30 days
+     source: 'organic', // Inbound email
+     assigneeId: 'default-sales-user-uid', // Configure in n8n
+     hasDraftBOM: false,
+     draftBOMTotalCost: 0,
+     nextStep: {
+       action: 'Qualify lead - review email and respond',
+       dueDate: new Date(Date.now() + 2*24*60*60*1000), // +2 days
+       assigneeId: 'default-sales-user-uid'
+     },
+     createdAt: new Date(),
+     createdBy: 'n8n-automation',
+     updatedAt: new Date(),
+     lastActivityAt: new Date(),
+     isArchived: false
+   };
+   ```
+
+4. **Log Initial Activity**
+   ```javascript
+   const activityLog = {
+     action: 'Deal auto-created from inbound email',
+     type: 'note',
+     completedAt: new Date(),
+     completedBy: 'n8n-automation',
+     stageAtTime: 'new',
+     notes: `Source email: ${$json.output.SENDER_EMAIL}\nSubject: ${$json.output.EMAIL_SUBJECT}`
+   };
+   ```
+
+5. **Firebase Authentication for n8n**
+   - Option A: Use Firebase Admin SDK service account in n8n
+   - Option B: Create a dedicated "automation" user in Firebase Auth
+   - Option C: Use Firebase REST API with API key (less secure, not recommended)
+
+**n8n Workflow Modification:**
+
+```
+                                    ┌─────────────────┐
+                                    │  Create ClickUp │
+Gmail → Intent → Duplicate → AI → If│     Task        │
+                                    └────────┬────────┘
+                                             │
+                                    ┌────────▼────────┐
+                                    │ Lookup/Create   │ (NEW)
+                                    │    Client       │
+                                    └────────┬────────┘
+                                             │
+                                    ┌────────▼────────┐
+                                    │ Create Firestore│ (NEW)
+                                    │     Deal        │
+                                    └────────┬────────┘
+                                             │
+                                    ┌────────▼────────┐
+                                    │  Log Activity   │ (NEW)
+                                    └─────────────────┘
+```
+
+**Configuration Required:**
+- Firebase service account JSON (store in n8n credentials)
+- Default assignee UID for auto-created deals
+- Firestore project ID: `visionbomtracker`
+
+**Duplicate Prevention:**
+- Before creating deal, check if deal with same `SENDER_EMAIL` exists in last 7 days
+- Use ClickUp's existing duplicate check as primary (already in workflow)
+- Add secondary Firestore check for safety
+
+**Error Handling:**
+- If Firestore creation fails, still allow ClickUp task creation
+- Log error to existing error notification flow
+- Add flag to ClickUp task indicating Firestore sync failed
+
 ### Phase 2: Draft BOM & Proposals (Week 3)
 1. **Draft BOM Builder** - Add/edit items for cost estimation
 2. **Draft BOM Categories** - Hardware, Software, Services, Integration
