@@ -29,7 +29,9 @@
       "Bash(xargs:*)",
       "Bash(firebase functions:log:*)",
       "Bash(git merge:*)",
-      "Bash(npm run deploy:*)"
+      "Bash(npm run deploy:*)",
+      "Bash(dir \"C:\\Software\\BOM-Tracker\\BOM-tracker\\src\\components\\BOM\")",
+      "Bash(findstr:*)"
     ],
     "deny": [],
     "ask": []
