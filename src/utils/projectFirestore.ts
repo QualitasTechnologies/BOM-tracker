@@ -23,12 +23,16 @@ export interface Project {
   projectName: string;
   clientName: string;
   description: string;
-  status: "Planning" | "Ongoing" | "Delayed" | "Completed" | "Archived";
+  status: "Planning" | "Procurement" | "Ongoing" | "Delayed" | "Completed" | "Archived";
   deadline: string; // ISO string
   poValue?: number; // Purchase Order value from customer
   bomSnapshot?: any[]; // Snapshot of BOM when status changed to 'Ongoing' (order won)
   bomSnapshotDate?: string; // ISO string - when snapshot was taken
   archivedAt?: string; // ISO string - when project was archived
+
+  // CRM Integration Fields
+  sourceDealId?: string;           // Link back to originating deal (if converted from CRM)
+  driveFolderUrl?: string;         // Google Drive folder (inherited from deal)
 }
 
 const projectsCol = collection(db, "projects");

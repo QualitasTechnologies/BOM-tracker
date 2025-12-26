@@ -24,18 +24,39 @@ const cleanFirestoreData = <T extends Record<string, any>>(data: T): Partial<T> 
 };
 
 // Client types and interfaces
+export type ClientSegment = 'enterprise' | 'mid-market' | 'smb';
+export type ClientCRMStatus = 'prospect' | 'active' | 'inactive';
+
 export interface Client {
   id: string;
   company: string;
   email: string;
   phone: string;
   address: string;
-  contactPerson: string;
+  contactPerson: string;  // Legacy - single contact (preserved for backward compatibility)
   notes?: string;
   logo?: string;
   logoPath?: string;
   createdAt: Date;
   updatedAt: Date;
+
+  // CRM Fields (optional - added progressively)
+  industry?: string;               // "Automotive", "FMCG", etc.
+  website?: string;
+  segment?: ClientSegment;
+  crmStatus?: ClientCRMStatus;
+
+  // Google Drive Integration
+  driveFolderId?: string;          // Client-level folder in Drive
+  driveFolderUrl?: string;
+
+  // External Links
+  hubspotCompanyId?: string;       // For reference only
+
+  // Computed/cached for quick display
+  totalDeals?: number;
+  wonDeals?: number;
+  totalRevenue?: number;
 }
 
 // Vendor types and interfaces

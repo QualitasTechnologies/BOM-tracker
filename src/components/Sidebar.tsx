@@ -11,13 +11,15 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
-  Activity
+  Activity,
+  Target,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/hooks/useAuth';
 
 const baseMenuItems = [
   { icon: LayoutDashboard, label: 'KPI Dashboard', path: '/kpi' },
+  { icon: Target, label: 'Sales Pipeline', path: '/pipeline' },
   { icon: FolderOpen, label: 'Projects', path: '/projects' },
   { icon: Clock, label: 'Time Tracking', path: '/time-tracking' },
 ];

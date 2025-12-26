@@ -15,6 +15,7 @@ import TimeTracking from "./pages/TimeTracking";
 import CostAnalysis from "./pages/CostAnalysis";
 import NotFound from "./pages/NotFound";
 import Settings from "./pages/Settings";
+import Pipeline from "./pages/Pipeline";
 import KPI from "./pages/Index"; // Using Index as KPI dashboard
 import React, { createContext, useContext, useState } from 'react';
 
@@ -76,6 +77,7 @@ const AppLayout: React.FC = () => {
             <Route path="/project/:projectId/bom" element={<BOM />} />
             <Route path="/time-tracking" element={<TimeTracking />} />
             <Route path="/cost-analysis" element={<CostAnalysis />} />
+            <Route path="/pipeline" element={<Pipeline />} />
             <Route path="/settings" element={<Settings />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
