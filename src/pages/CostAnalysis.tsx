@@ -3,17 +3,20 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, TrendingUp, TrendingDown, FileDown, Edit2, DollarSign, Clock, Package, X, ChevronDown, ChevronRight, User } from "lucide-react";
+import { ArrowLeft, TrendingUp, TrendingDown, FileDown, Edit2, DollarSign, Clock, Package, X, ChevronDown, ChevronRight, User, ExternalLink, Upload, FileText, Trash2 } from "lucide-react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { Progress } from "@/components/ui/progress";
 import Sidebar from "@/components/Sidebar";
 import { doc, getDoc } from "firebase/firestore";
-import { db } from "@/firebase";
+import { db, auth } from "@/firebase";
 import { getBOMData, getTotalBOMCost, updateProject, subscribeToProjects } from "@/utils/projectFirestore";
 import { fetchEngineers, getTotalManHours } from "@/utils/timeTrackingFirestore";
 import { subscribeToClients, Client } from "@/utils/settingsFirestore";
+import { uploadProjectDocument, getProjectDocuments, deleteProjectDocument } from "@/utils/projectDocumentFirestore";
 import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/components/ui/use-toast";
 import type { FirestoreProject } from "@/types/project";
+import type { ProjectDocument } from "@/types/projectDocument";
 
 // Project with calculated cost data
 interface ProjectCostData {
@@ -227,6 +230,7 @@ const CostAnalysisSummary = ({
                               <th className="text-right py-2 px-3 font-medium">PO Value</th>
                               <th className="text-right py-2 px-3 font-medium">Total Cost</th>
                               <th className="text-right py-2 px-3 font-medium">Profit/Loss</th>
+                              <th className="text-center py-2 px-3 font-medium w-16">BOM</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -277,6 +281,15 @@ const CostAnalysisSummary = ({
                                       <span className="text-muted-foreground text-sm">⏳ TBD</span>
                                     )}
                                   </td>
+                                  <td className="py-3 px-3 text-center">
+                                    <Link
+                                      to={`/project/${project.projectId}/bom`}
+                                      className="inline-flex items-center justify-center h-8 w-8 rounded-md hover:bg-muted transition-colors"
+                                      title="View BOM"
+                                    >
+                                      <Package className="h-4 w-4 text-muted-foreground hover:text-primary" />
+                                    </Link>
+                                  </td>
                                 </tr>
                               );
                             })}
@@ -322,6 +335,74 @@ const CostAnalysisDetail = ({
 
   const [projectDetails, setProjectDetails] = useState<{ projectName: string; projectId: string; clientName: string; deadline: string; status: string; bomSnapshot?: any[]; bomSnapshotDate?: string } | null>(null);
 
+  // Customer PO document state
+  const [customerPODocs, setCustomerPODocs] = useState<ProjectDocument[]>([]);
+  const [uploadingPO, setUploadingPO] = useState(false);
+  const { toast } = useToast();
+
+  // Load Customer PO documents
+  const loadCustomerPODocs = async () => {
+    try {
+      const docs = await getProjectDocuments(projectIdParam);
+      setCustomerPODocs(docs.filter(doc => doc.type === 'customer-po'));
+    } catch (error) {
+      console.error('Error loading Customer PO documents:', error);
+    }
+  };
+
+  // Handle Customer PO upload
+  const handleCustomerPOUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || !e.target.files[0]) return;
+
+    const file = e.target.files[0];
+    setUploadingPO(true);
+
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error('User not authenticated');
+
+      await uploadProjectDocument(file, projectIdParam, 'customer-po', user.uid);
+      await loadCustomerPODocs();
+
+      toast({
+        title: 'Success',
+        description: 'Customer PO uploaded successfully'
+      });
+    } catch (error) {
+      console.error('Error uploading Customer PO:', error);
+      toast({
+        title: 'Upload Failed',
+        description: error instanceof Error ? error.message : 'Failed to upload document',
+        variant: 'destructive'
+      });
+    } finally {
+      setUploadingPO(false);
+      e.target.value = '';
+    }
+  };
+
+  // Handle Customer PO delete
+  const handleDeleteCustomerPO = async (doc: ProjectDocument) => {
+    if (!window.confirm(`Delete "${doc.name}"?`)) return;
+
+    try {
+      await deleteProjectDocument(doc.id, doc.url);
+      await loadCustomerPODocs();
+
+      toast({
+        title: 'Success',
+        description: 'Customer PO deleted successfully'
+      });
+    } catch (error) {
+      console.error('Error deleting Customer PO:', error);
+      toast({
+        title: 'Delete Failed',
+        description: 'Failed to delete document',
+        variant: 'destructive'
+      });
+    }
+  };
+
   useEffect(() => {
     const fetchAllData = async () => {
       if (!projectIdParam) return;
@@ -356,6 +437,10 @@ const CostAnalysisDetail = ({
       // Fetch engineers and calculate total man hours
       const engineers = await fetchEngineers(projectIdParam);
       setTotalManHours(getTotalManHours(engineers));
+
+      // Fetch Customer PO documents
+      const docs = await getProjectDocuments(projectIdParam);
+      setCustomerPODocs(docs.filter(d => d.type === 'customer-po'));
     };
     fetchAllData();
   }, [projectIdParam]);
@@ -678,6 +763,76 @@ const CostAnalysisDetail = ({
             </CardContent>
           </Card>
 
+          {/* Customer PO Document */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-5 w-5 text-blue-500" />
+                  <CardTitle>Customer PO</CardTitle>
+                  <Badge variant="outline">{customerPODocs.length} file{customerPODocs.length !== 1 ? 's' : ''}</Badge>
+                </div>
+                <label className="cursor-pointer">
+                  <input
+                    type="file"
+                    className="hidden"
+                    onChange={handleCustomerPOUpload}
+                    disabled={uploadingPO}
+                    accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                  />
+                  <Button variant="outline" size="sm" disabled={uploadingPO} asChild>
+                    <span>
+                      <Upload className="mr-2 h-4 w-4" />
+                      {uploadingPO ? 'Uploading...' : 'Upload PO'}
+                    </span>
+                  </Button>
+                </label>
+              </div>
+              <p className="text-sm text-muted-foreground mt-1">Purchase orders received from customer (required before changing status to Ongoing)</p>
+            </CardHeader>
+            <CardContent>
+              {customerPODocs.length === 0 ? (
+                <div className="text-center py-8 text-gray-400 text-sm italic bg-gray-50 rounded border border-dashed">
+                  No Customer PO uploaded yet
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {customerPODocs.map(doc => (
+                    <div
+                      key={doc.id}
+                      className="flex items-center gap-3 p-3 bg-gray-50 rounded border border-gray-200 hover:bg-gray-100 transition-colors"
+                    >
+                      <FileText className="text-blue-600 flex-shrink-0" size={20} />
+                      <div className="flex-1 min-w-0">
+                        <a
+                          href={doc.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-medium text-blue-700 hover:underline truncate block"
+                          title={doc.name}
+                        >
+                          {doc.name}
+                        </a>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {new Date(doc.uploadedAt).toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' })}
+                          {doc.fileSize && ` • ${(doc.fileSize / (1024 * 1024)).toFixed(2)} MB`}
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeleteCustomerPO(doc)}
+                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                        title="Delete document"
+                      >
+                        <Trash2 size={16} />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Cost Items Table */}
           <Card>
@@ -697,8 +852,21 @@ const CostAnalysisDetail = ({
                   </thead>
                   <tbody>
                     {costItemsData.map((item, index) => (
-                      <tr key={index} className="border-b">
-                        <td className="py-3 px-4 font-medium">{item.category}</td>
+                      <tr
+                        key={index}
+                        className={`border-b ${index === 0 ? 'cursor-pointer hover:bg-muted/50 transition-colors' : ''}`}
+                        onClick={index === 0 ? () => navigate(`/project/${projectIdParam}/bom`) : undefined}
+                      >
+                        <td className="py-3 px-4 font-medium">
+                          {index === 0 ? (
+                            <span className="flex items-center gap-2 text-primary">
+                              {item.category}
+                              <ExternalLink className="h-3 w-3" />
+                            </span>
+                          ) : (
+                            item.category
+                          )}
+                        </td>
                         <td className="py-3 px-4">
                           {index === 2 ? (
                             editingDescIdx === index ? (

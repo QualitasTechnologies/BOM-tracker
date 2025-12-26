@@ -26,7 +26,6 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<FirestoreProject["status"]>("Ongoing");
   const [deadline, setDeadline] = useState("");
-  const [poValue, setPoValue] = useState<string>("");
   const [error, setError] = useState("");
   const [clients, setClients] = useState<Client[]>([]);
 
@@ -46,7 +45,6 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
       setDescription("");
       setStatus("Ongoing");
       setDeadline("");
-      setPoValue("");
       setError("");
     }
   }, [open]);
@@ -54,13 +52,12 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
   // Set form values when project changes
   useEffect(() => {
     if (!project || !open) return;
-    
+
     setProjectId(project.projectId);
     setProjectName(project.projectName);
     setDescription(project.description);
     setStatus(project.status);
     setDeadline(project.deadline);
-    setPoValue(project.poValue?.toString() || "");
   }, [project, open]);
 
   // Set clientName after clients are loaded to ensure exact match
@@ -115,7 +112,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
           const hasCustomerPO = projectDocuments.some(doc => doc.type === 'customer-po');
 
           if (!hasCustomerPO) {
-            setError("Customer PO document is required before changing status to Ongoing. Please upload the Customer PO in the BOM page under Project Documents.");
+            setError("Customer PO document is required before changing status to Ongoing. Please upload the Customer PO in the Cost Analysis page.");
             return;
           }
 
@@ -138,7 +135,6 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
             description,
             status,
             deadline,
-            poValue: parseFloat(poValue) || undefined,
           });
         } else {
           // Normal update without snapshot
@@ -149,7 +145,6 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
             description,
             status,
             deadline,
-            poValue: parseFloat(poValue) || undefined,
           });
         }
 
@@ -263,20 +258,6 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
               required
               className="h-8"
             />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="poValue">PO Value (₹)</Label>
-            <Input
-              id="poValue"
-              type="number"
-              min="0"
-              step="0.01"
-              value={poValue}
-              onChange={(e) => setPoValue(e.target.value)}
-              placeholder="Enter purchase order value"
-              className="h-8"
-            />
-            <p className="text-xs text-muted-foreground">Customer purchase order value for this project</p>
           </div>
           <div className="flex justify-end gap-2 pt-4 mt-4 border-t bg-background">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} className="h-8">

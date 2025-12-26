@@ -46,3 +46,13 @@ export const DOCUMENT_SECTIONS: DocumentTypeSection[] = [
     description: 'Product datasheets and technical specifications'
   }
 ];
+
+// Document sections for BOM page (excludes customer-po which is on Cost Analysis page)
+export const BOM_DOCUMENT_SECTIONS: DocumentTypeSection[] = DOCUMENT_SECTIONS.filter(
+  section => section.type !== 'customer-po'
+);
+
+// Document sections for Cost Analysis page (admin-only)
+export const COST_DOCUMENT_SECTIONS: DocumentTypeSection[] = DOCUMENT_SECTIONS.filter(
+  section => section.type === 'customer-po'
+);

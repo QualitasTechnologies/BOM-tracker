@@ -16,7 +16,7 @@ import {
   linkDocumentToBOMItems
 } from '@/utils/projectDocumentFirestore';
 import { validateDocumentDeletion } from '@/utils/bomDocumentLinking';
-import { ProjectDocument, DocumentType, DOCUMENT_SECTIONS } from '@/types/projectDocument';
+import { ProjectDocument, DocumentType, DocumentTypeSection, BOM_DOCUMENT_SECTIONS } from '@/types/projectDocument';
 import { BOMItem } from '@/types/bom';
 
 interface ProjectDocumentsProps {
@@ -25,9 +25,10 @@ interface ProjectDocumentsProps {
   onDocumentsChange?: () => void;
   onBOMItemUpdate?: (itemId: string, updates: Partial<BOMItem>) => Promise<void>; // Callback to update BOM items
   fullPage?: boolean; // When true, renders without collapsible wrapper for tab view
+  sections?: DocumentTypeSection[]; // Document sections to show (defaults to BOM_DOCUMENT_SECTIONS)
 }
 
-const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate, fullPage = false }: ProjectDocumentsProps) => {
+const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate, fullPage = false, sections = BOM_DOCUMENT_SECTIONS }: ProjectDocumentsProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -204,7 +205,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
   };
 
   // Document section component for rendering a single document type section
-  const DocumentSection = ({ section, isFullPage }: { section: typeof DOCUMENT_SECTIONS[0]; isFullPage: boolean }) => {
+  const DocumentSection = ({ section, isFullPage }: { section: DocumentTypeSection; isFullPage: boolean }) => {
     const sectionDocs = getDocumentsByType(section.type);
 
     return (
@@ -336,15 +337,15 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
   // Collapsible mode content (uses tabs)
   const TabsDocumentView = () => (
     <Tabs value={selectedType} onValueChange={(value) => setSelectedType(value as DocumentType)}>
-      <TabsList className="grid w-full grid-cols-3">
-        {DOCUMENT_SECTIONS.map(section => (
+      <TabsList className="grid w-full" style={{ gridTemplateColumns: `repeat(${sections.length}, minmax(0, 1fr))` }}>
+        {sections.map(section => (
           <TabsTrigger key={section.type} value={section.type}>
             {section.label} ({getDocumentsByType(section.type).length})
           </TabsTrigger>
         ))}
       </TabsList>
 
-      {DOCUMENT_SECTIONS.map(section => (
+      {sections.map(section => (
         <TabsContent key={section.type} value={section.type} className="space-y-3">
           <DocumentSection section={section} isFullPage={false} />
         </TabsContent>
@@ -357,7 +358,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
     return (
       <>
         <div className="space-y-6">
-          {DOCUMENT_SECTIONS.map(section => (
+          {sections.map(section => (
             <DocumentSection key={section.type} section={section} isFullPage={true} />
           ))}
         </div>

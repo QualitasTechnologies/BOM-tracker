@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, Archive, Wrench, Clock, DollarSign } from "lucide-react";
+import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, Archive, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -264,37 +264,15 @@ const Projects = () => {
       
       <CardFooter className="pt-0 px-4 pb-4 overflow-hidden">
         <div className="flex gap-1.5 sm:gap-2 w-full min-w-0">
-          <Button 
-            asChild 
-            variant="outline" 
-            size="sm" 
+          <Button
+            asChild
+            variant="outline"
+            size="sm"
             className="flex-1 min-w-0 px-2 sm:px-3 overflow-hidden"
           >
             <Link to={`/project/${project.projectId}/bom`} className="flex items-center justify-center gap-1.5 sm:gap-2 min-w-0">
               <Wrench className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0 text-purple-600" />
               <span className="hidden sm:inline text-xs sm:text-sm">BOM</span>
-            </Link>
-          </Button>
-          <Button 
-            asChild 
-            variant="outline" 
-            size="sm" 
-            className="flex-1 min-w-0 px-2 sm:px-3 overflow-hidden"
-          >
-            <Link to={`/time-tracking?project=${project.projectId}`} className="flex items-center justify-center gap-1.5 sm:gap-2 min-w-0">
-              <Clock className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0 text-purple-600" />
-              <span className="hidden sm:inline text-xs sm:text-sm">Time</span>
-            </Link>
-          </Button>
-          <Button 
-            asChild 
-            variant="outline" 
-            size="sm" 
-            className="flex-1 min-w-0 px-2 sm:px-3 overflow-hidden"
-          >
-            <Link to={`/cost-analysis?project=${project.projectId}`} className="flex items-center justify-center gap-1.5 sm:gap-2 min-w-0">
-              <DollarSign className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0 text-orange-600" />
-              <span className="hidden sm:inline text-xs sm:text-sm">Cost</span>
             </Link>
           </Button>
         </div>
@@ -444,16 +422,6 @@ const Projects = () => {
                           <Button asChild variant="outline" size="sm" title="BOM">
                             <Link to={`/project/${project.projectId}/bom`}>
                               <Wrench className="h-4 w-4 text-purple-600" />
-                            </Link>
-                          </Button>
-                          <Button asChild variant="outline" size="sm" title="Time">
-                            <Link to={`/time-tracking?project=${project.projectId}`}>
-                              <Clock className="h-4 w-4 text-purple-600" />
-                            </Link>
-                          </Button>
-                          <Button asChild variant="outline" size="sm" title="Cost">
-                            <Link to={`/cost-analysis?project=${project.projectId}`}>
-                              <DollarSign className="h-4 w-4 text-orange-600" />
                             </Link>
                           </Button>
                           <Button

@@ -134,6 +134,17 @@
 - Project cost tracking and visualization
 - Profit/Loss analysis gauges
 
+### 🔍 AI Compliance Checker (Dec 2025)
+- Manual compliance check via "Compliance Check" button in BOM toolbar
+- AI-powered validation of BOM data quality
+- Checks for missing required fields (Make, SKU, Price)
+- Vendor quote linking validation
+- Grouped issue display by type with affected items as badges
+- Severity-based categorization (Error/Warning/Info)
+- Score calculation and summary statistics
+- Click-through to affected items for quick fixes
+- See `docs/AI_Compliance_Checker_PRD.md` for original spec (IMPLEMENTED)
+
 ## 🚧 PENDING FEATURES
 
 ### 🎯 Immediate Next - PRIORITY
@@ -232,27 +243,33 @@ See CEO_Dashboard_PRD.md for complete specifications
 
 #### 🔧 BOM & Services System Features
 
-15. **Document-Vendor Linking** - Link documents to vendors in addition to BOM items
+15. **BOM Spreadsheet View** - Compact spreadsheet-like view for BOM items
+    - Toggle between Card View and Spreadsheet View
+    - Click-to-edit cells (like Google Sheets)
+    - Grouped rows with collapsible category headers
+    - Compact columns: Name, Make, SKU, Qty, Price, Total, Status
+    - See `docs/BOM_Spreadsheet_View_SPEC.md` for full specification
+16. **Document-Vendor Linking** - Link documents to vendors in addition to BOM items
     - Add vendor selection dropdown in Documents tab
     - Each document can be associated with a vendor (PO → vendor, Invoice → vendor, Quote → vendor)
     - Filter documents by vendor in the Documents tab
     - Show vendor name on document cards
     - Data model: Add `linkedVendorId` field to ProjectDocument
-16. **Quotation Parser** - AI-powered PDF quotation parsing and vendor matching (IN PROGRESS)
-17. **Advanced Export** - PDF reports, purchase orders
-18. **Approval Workflows** - Multi-stage BOM approval process
-19. **User Management Testing** - Validate RBAC and permission matrix
-20. **Vendor Performance Metrics** - Track vendor reliability, pricing trends, delivery accuracy
+17. **Quotation Parser** - AI-powered PDF quotation parsing and vendor matching (IN PROGRESS)
+18. **Advanced Export** - PDF reports, purchase orders
+19. **Approval Workflows** - Multi-stage BOM approval process
+20. **User Management Testing** - Validate RBAC and permission matrix
+21. **Vendor Performance Metrics** - Track vendor reliability, pricing trends, delivery accuracy
 
 #### 🔔 Notification & Stakeholder System
 
-21. **Project Stakeholders**
+22. **Project Stakeholders**
     - Assign users as stakeholders to projects
     - Stakeholder roles: Owner, Contributor, Viewer, Notified-Only
     - Stakeholder management UI in project settings
     - Stakeholders visible in project header
 
-22. **User Notification System**
+23. **User Notification System**
     - In-app notification center (bell icon in header)
     - Notification types:
       - BOM changes (items added/removed/modified)
@@ -264,7 +281,7 @@ See CEO_Dashboard_PRD.md for complete specifications
     - Notification preferences per user
     - Mark as read/unread, bulk actions
 
-23. **Stakeholder Notifications**
+24. **Stakeholder Notifications**
     - Notify project stakeholders on relevant changes
     - Configurable notification triggers per project
     - @mention support in comments/notes
