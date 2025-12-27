@@ -54,12 +54,16 @@ import { subscribeToClients, Client } from "@/utils/settingsFirestore";
 import LogActivityDialog from "@/components/CRM/LogActivityDialog";
 import NextStepDialog from "@/components/CRM/NextStepDialog";
 import MarkAsLostDialog from "@/components/CRM/MarkAsLostDialog";
+import EditDealDialog from "@/components/CRM/EditDealDialog";
+import { useCRMAccess } from "@/hooks/useCRMAccess";
+import { Loader2, Lock } from "lucide-react";
 
 const DealDetail = () => {
   const { dealId } = useParams<{ dealId: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
   const { user } = useAuth();
+  const { hasCRMAccess, loading: crmLoading } = useCRMAccess();
 
   // State
   const [deal, setDeal] = useState<Deal | null>(null);
@@ -73,6 +77,7 @@ const DealDetail = () => {
   const [logActivityOpen, setLogActivityOpen] = useState(false);
   const [nextStepOpen, setNextStepOpen] = useState(false);
   const [markAsLostOpen, setMarkAsLostOpen] = useState(false);
+  const [editDealOpen, setEditDealOpen] = useState(false);
 
   // Fetch deal
   useEffect(() => {
@@ -257,6 +262,33 @@ const DealDetail = () => {
     ? activities
     : activities.slice(0, 5);
 
+  // CRM access loading
+  if (crmLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Access denied
+  if (!hasCRMAccess) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <Lock className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+          <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
+          <p className="text-muted-foreground">
+            You don't have access to the CRM module.
+          </p>
+          <p className="text-muted-foreground text-sm mt-1">
+            Contact an administrator to request access.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -301,6 +333,16 @@ const DealDetail = () => {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Edit Button */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setEditDealOpen(true)}
+          >
+            <Edit2 className="h-4 w-4 mr-1" />
+            Edit
+          </Button>
+
           {/* Stage Selector */}
           <Select value={deal.stage} onValueChange={handleStageChange}>
             <SelectTrigger className="w-[140px]">
@@ -680,6 +722,20 @@ const DealDetail = () => {
         dealName={deal.name}
         onDealLost={() => {
           navigate("/pipeline");
+        }}
+      />
+
+      <EditDealDialog
+        open={editDealOpen}
+        onOpenChange={setEditDealOpen}
+        deal={deal}
+        clients={clients}
+        onDealUpdated={(updates) => {
+          setDeal({ ...deal, ...updates });
+          // Refetch contacts if client changed
+          if (updates.clientId && updates.clientId !== deal.clientId) {
+            getContactsByClient(updates.clientId).then(setContacts);
+          }
         }}
       />
     </div>

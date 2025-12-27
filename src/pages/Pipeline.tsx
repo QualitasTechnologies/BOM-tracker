@@ -44,6 +44,8 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useCRMAccess } from "@/hooks/useCRMAccess";
+import { Loader2, Lock } from "lucide-react";
 import {
   Deal,
   DealStage,
@@ -70,6 +72,7 @@ import AddDealDialog from "@/components/CRM/AddDealDialog";
 const Pipeline = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { hasCRMAccess, loading: crmLoading } = useCRMAccess();
 
   // State
   const [deals, setDeals] = useState<Deal[]>([]);
@@ -327,6 +330,33 @@ const Pipeline = () => {
       </div>
     );
   };
+
+  // Loading state
+  if (crmLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Access denied
+  if (!hasCRMAccess) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <Lock className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+          <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
+          <p className="text-muted-foreground">
+            You don't have access to the CRM module.
+          </p>
+          <p className="text-muted-foreground text-sm mt-1">
+            Contact an administrator to request access.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="container mx-auto p-6">

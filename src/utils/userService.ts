@@ -1,5 +1,6 @@
 import { httpsCallable } from 'firebase/functions';
-import { functions } from '../firebase';
+import { functions, db } from '../firebase';
+import { doc, getDoc, setDoc, onSnapshot, Unsubscribe } from 'firebase/firestore';
 
 export type UserRole = 'admin' | 'user' | 'viewer';
 export type UserStatus = 'approved' | 'pending' | 'rejected' | 'suspended';
@@ -139,4 +140,74 @@ export const deleteUser = async (targetUid: string) => {
     console.error('Error deleting user:', error);
     throw error;
   }
+};
+
+// ============================================
+// CRM Access Control (Firestore-based)
+// ============================================
+
+export interface UserCRMPermissions {
+  crmAccess: boolean;
+  updatedAt: Date;
+  updatedBy: string;
+}
+
+/**
+ * Get CRM access status for a user
+ * Admins always have access, others need explicit permission
+ */
+export const getUserCRMAccess = async (uid: string): Promise<boolean> => {
+  try {
+    const docRef = doc(db, 'userPermissions', uid);
+    const docSnap = await getDoc(docRef);
+
+    if (docSnap.exists()) {
+      return docSnap.data()?.crmAccess === true;
+    }
+    return false;
+  } catch (error) {
+    console.error('Error getting CRM access:', error);
+    return false;
+  }
+};
+
+/**
+ * Set CRM access for a user
+ */
+export const setUserCRMAccess = async (
+  targetUid: string,
+  crmAccess: boolean,
+  updatedBy: string
+): Promise<void> => {
+  try {
+    const docRef = doc(db, 'userPermissions', targetUid);
+    await setDoc(docRef, {
+      crmAccess,
+      updatedAt: new Date(),
+      updatedBy,
+    }, { merge: true });
+  } catch (error) {
+    console.error('Error setting CRM access:', error);
+    throw error;
+  }
+};
+
+/**
+ * Subscribe to CRM permissions changes for a user
+ */
+export const subscribeToUserCRMAccess = (
+  uid: string,
+  callback: (hasCRMAccess: boolean) => void
+): Unsubscribe => {
+  const docRef = doc(db, 'userPermissions', uid);
+  return onSnapshot(docRef, (docSnap) => {
+    if (docSnap.exists()) {
+      callback(docSnap.data()?.crmAccess === true);
+    } else {
+      callback(false);
+    }
+  }, (error) => {
+    console.error('Error subscribing to CRM access:', error);
+    callback(false);
+  });
 };

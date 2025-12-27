@@ -995,6 +995,69 @@ Sidebar:
 
 ---
 
-*Document Version: 1.3*
+---
+
+## Implementation Status
+
+### Completed (December 2024)
+
+**Phase 1 - Core Pipeline:**
+- [x] Pipeline Dashboard (Kanban + Table views)
+- [x] Deal CRUD (Create, Read, Update, Delete)
+- [x] Deal Detail Page with all sections
+- [x] Activity Logging with type badges
+- [x] Next Step management (Set, Edit, Complete, Clear)
+- [x] Stage and Probability selectors
+- [x] Stale deal warnings (7+ days no activity)
+- [x] Mark as Lost with reason categories
+- [x] Archive/Restore deals
+- [x] Deal duplication
+- [x] Edit Deal functionality
+- [x] CRM Access Control (admin auto-access, user toggle in Settings)
+- [x] Sidebar navigation with CRM access check
+- [x] Client logo display in Deal Detail
+
+### Next Phase - Priority Features
+
+**Priority 1: Contact Management (Phase 1 completion)**
+- [ ] Create `contacts` collection in Firestore
+- [ ] Contact CRUD in client management
+- [ ] Assign contacts to deals
+- [ ] Display assigned contacts in Deal Detail
+- [ ] Primary contact indicator
+
+**Priority 2: Google Drive Integration**
+- [ ] Drive OAuth setup (Settings configuration)
+- [ ] Auto-create client folders
+- [ ] Auto-create deal subfolders
+- [ ] Display Drive files in Deal Detail
+- [ ] Upload files to Drive from deal page
+- [ ] Manual folder linking fallback
+
+**Priority 3: Draft BOM Builder (Phase 2)**
+- [ ] Create `draftBOM` subcollection under deals
+- [ ] Draft BOM items CRUD
+- [ ] Category-based organization
+- [ ] Cost estimation calculations
+- [ ] Proposal pricing (with margins)
+- [ ] "Include in Proposal" toggle per item
+
+**Priority 4: Deal → Project Conversion (Phase 4)**
+- [ ] "Mark as Won" conversion dialog
+- [ ] Project creation with status "Procurement"
+- [ ] Draft BOM → Project BOM conversion
+- [ ] Bidirectional linking (deal ↔ project)
+- [ ] Drive folder inheritance
+
+### Future Considerations
+- Email notifications (SendGrid)
+- Full-text search
+- Analytics and reports
+- Field change audit trail
+- Proposal approval workflow
+
+---
+
+*Document Version: 1.4*
 *Created: December 26, 2024*
-*Updated: December 26, 2024 - Gap analysis fixes: storage paths, field mappings, Drive OAuth, weighted pipeline*
+*Updated: December 27, 2024 - Added implementation status and priority roadmap*
