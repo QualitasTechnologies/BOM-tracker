@@ -10,7 +10,9 @@ import {
   CheckCircle,
   Clock,
   XCircle,
-  Loader2
+  Loader2,
+  Download,
+  Mail
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -46,8 +48,11 @@ import {
   subscribeToPurchaseOrders,
   deletePurchaseOrder,
   sendPurchaseOrder,
+  generatePOPDF,
+  sendPOEmail,
   PurchaseOrder
 } from '@/utils/poFirestore';
+import { getCompanySettings } from '@/utils/settingsFirestore';
 import { auth } from '@/firebase';
 import { useAuth } from '@/hooks/useAuth';
 
@@ -66,8 +71,11 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
   const [poToDelete, setPOToDelete] = useState<PurchaseOrder | null>(null);
   const [poToSend, setPOToSend] = useState<PurchaseOrder | null>(null);
   const [sendToEmail, setSendToEmail] = useState('');
+  const [sendMode, setSendMode] = useState<'email' | 'mark'>('email'); // 'email' = send email, 'mark' = just mark as sent
   const [sending, setSending] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [generatingPDF, setGeneratingPDF] = useState<string | null>(null);
+  const [sendingEmail, setSendingEmail] = useState(false);
   const { toast } = useToast();
   const { isAdmin } = useAuth();
 
@@ -182,9 +190,10 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
     }
   };
 
-  const handleSendClick = (po: PurchaseOrder) => {
+  const handleSendClick = (po: PurchaseOrder, mode: 'email' | 'mark' = 'email') => {
     setPOToSend(po);
     setSendToEmail(po.vendorEmail || '');
+    setSendMode(mode);
     setSendDialogOpen(true);
   };
 
@@ -233,6 +242,106 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
       });
     } finally {
       setSending(false);
+    }
+  };
+
+  // Generate PDF and download
+  const handleGeneratePDF = async (po: PurchaseOrder) => {
+    setGeneratingPDF(po.id);
+    try {
+      const companySettings = await getCompanySettings();
+      if (!companySettings) {
+        throw new Error('Company settings not configured');
+      }
+
+      const result = await generatePOPDF({
+        purchaseOrder: po,
+        companySettings: {
+          companyName: companySettings.companyName,
+          companyAddress: companySettings.companyAddress,
+          gstin: companySettings.gstin,
+          stateCode: companySettings.stateCode,
+          stateName: companySettings.stateName,
+          pan: companySettings.pan,
+          phone: companySettings.phone,
+          email: companySettings.email,
+          website: companySettings.website,
+        },
+      });
+
+      // Open PDF in new tab
+      window.open(result.pdfUrl, '_blank');
+
+      toast({
+        title: 'PDF Generated',
+        description: `PO ${po.poNumber} PDF is ready for download.`,
+      });
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to generate PDF.',
+        variant: 'destructive',
+      });
+    } finally {
+      setGeneratingPDF(null);
+    }
+  };
+
+  // Send PO via email with PDF
+  const handleSendPOEmail = async () => {
+    if (!poToSend || !sendToEmail.trim()) return;
+
+    setSendingEmail(true);
+    try {
+      const companySettings = await getCompanySettings();
+      if (!companySettings) {
+        throw new Error('Company settings not configured');
+      }
+
+      const user = auth.currentUser;
+      if (!user) throw new Error('Not authenticated');
+
+      // Send email with PDF
+      await sendPOEmail({
+        purchaseOrder: poToSend,
+        companySettings: {
+          companyName: companySettings.companyName,
+          companyAddress: companySettings.companyAddress,
+          gstin: companySettings.gstin,
+          stateCode: companySettings.stateCode,
+          stateName: companySettings.stateName,
+          pan: companySettings.pan,
+          phone: companySettings.phone,
+          email: companySettings.email,
+          website: companySettings.website,
+        },
+        recipientEmail: sendToEmail.trim(),
+        ccEmails: user.email ? [user.email] : [],
+      });
+
+      // Also update local status
+      if (onPOSent) {
+        const bomItemIds = poToSend.items.map(item => item.bomItemId);
+        await onPOSent(poToSend.id, bomItemIds);
+      }
+
+      toast({
+        title: 'PO Sent',
+        description: `Purchase Order ${poToSend.poNumber} has been emailed to ${sendToEmail}.`,
+      });
+      setSendDialogOpen(false);
+      setPOToSend(null);
+      setSendToEmail('');
+    } catch (error) {
+      console.error('Error sending PO email:', error);
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to send PO email.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSendingEmail(false);
     }
   };
 
@@ -313,10 +422,29 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                       View Details
                     </DropdownMenuItem>
 
+                    <DropdownMenuItem
+                      onClick={() => handleGeneratePDF(po)}
+                      disabled={generatingPDF === po.id}
+                    >
+                      {generatingPDF === po.id ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="mr-2 h-4 w-4" />
+                      )}
+                      Download PDF
+                    </DropdownMenuItem>
+
                     {po.status === 'draft' && isAdmin && (
-                      <DropdownMenuItem onClick={() => handleSendClick(po)}>
+                      <DropdownMenuItem onClick={() => handleSendClick(po, 'email')}>
+                        <Mail className="mr-2 h-4 w-4" />
+                        Email to Vendor
+                      </DropdownMenuItem>
+                    )}
+
+                    {po.status === 'draft' && isAdmin && (
+                      <DropdownMenuItem onClick={() => handleSendClick(po, 'mark')}>
                         <Send className="mr-2 h-4 w-4" />
-                        Send PO
+                        Mark as Sent
                       </DropdownMenuItem>
                     )}
 
@@ -396,13 +524,13 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                           <td className="p-2">{item.slNo}</td>
                           <td className="p-2">
                             <div className="font-medium">{item.description}</div>
-                            {item.hsnSac && (
-                              <div className="text-xs text-gray-500">HSN: {item.hsnSac}</div>
+                            {item.hsn && (
+                              <div className="text-xs text-gray-500">HSN: {item.hsn}</div>
                             )}
                           </td>
-                          <td className="text-right p-2">{item.quantity} {item.unit}</td>
-                          <td className="text-right p-2">{formatCurrency(item.unitPrice)}</td>
-                          <td className="text-right p-2">{formatCurrency(item.totalPrice)}</td>
+                          <td className="text-right p-2">{item.quantity} {item.uom}</td>
+                          <td className="text-right p-2">{formatCurrency(item.rate)}</td>
+                          <td className="text-right p-2">{formatCurrency(item.amount)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -512,9 +640,14 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
       <Dialog open={sendDialogOpen} onOpenChange={setSendDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Send Purchase Order</DialogTitle>
+            <DialogTitle>
+              {sendMode === 'email' ? 'Email Purchase Order' : 'Mark as Sent'}
+            </DialogTitle>
             <DialogDescription>
-              Mark PO {poToSend?.poNumber} as sent and record the vendor email.
+              {sendMode === 'email'
+                ? `Generate PDF and email PO ${poToSend?.poNumber} to the vendor.`
+                : `Mark PO ${poToSend?.poNumber} as sent and record the vendor email.`
+              }
             </DialogDescription>
           </DialogHeader>
 
@@ -522,8 +655,10 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
             <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800">
               <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
               <span>
-                This will mark the PO as "Sent" and update all linked BOM items to "Ordered" status.
-                Make sure you've sent the actual PO document to the vendor.
+                {sendMode === 'email'
+                  ? 'This will generate a PDF and email it to the vendor. The PO will be marked as "Sent" and all linked BOM items updated to "Ordered" status.'
+                  : 'This will mark the PO as "Sent" and update all linked BOM items to "Ordered" status. Make sure you\'ve sent the actual PO document to the vendor.'
+                }
               </span>
             </div>
 
@@ -537,28 +672,47 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                 placeholder="vendor@example.com"
               />
               <p className="text-xs text-gray-500">
-                Enter the email address where the PO was sent.
+                {sendMode === 'email'
+                  ? 'The PO PDF will be sent to this email address.'
+                  : 'Enter the email address where the PO was sent.'
+                }
               </p>
             </div>
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setSendDialogOpen(false)} disabled={sending}>
+            <Button variant="outline" onClick={() => setSendDialogOpen(false)} disabled={sending || sendingEmail}>
               Cancel
             </Button>
-            <Button onClick={handleConfirmSend} disabled={sending}>
-              {sending ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Sending...
-                </>
-              ) : (
-                <>
-                  <Send className="mr-2 h-4 w-4" />
-                  Mark as Sent
-                </>
-              )}
-            </Button>
+            {sendMode === 'email' ? (
+              <Button onClick={handleSendPOEmail} disabled={sendingEmail || !sendToEmail.trim()}>
+                {sendingEmail ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Sending Email...
+                  </>
+                ) : (
+                  <>
+                    <Mail className="mr-2 h-4 w-4" />
+                    Send Email
+                  </>
+                )}
+              </Button>
+            ) : (
+              <Button onClick={handleConfirmSend} disabled={sending}>
+                {sending ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Updating...
+                  </>
+                ) : (
+                  <>
+                    <Send className="mr-2 h-4 w-4" />
+                    Mark as Sent
+                  </>
+                )}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

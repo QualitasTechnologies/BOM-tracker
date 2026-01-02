@@ -84,6 +84,8 @@ import BrandsTab from '@/components/settings/BrandsTab';
 import BOMTemplatesTab from '@/components/settings/BOMTemplatesTab';
 import CompanySettingsTab from '@/components/settings/CompanySettingsTab';
 import { Brand } from '@/types/brand';
+import { verifyGSTIN, isValidGSTINFormat } from '@/utils/gstVerification';
+import { INDIAN_STATE_CODES } from '@/types/purchaseOrder';
 import { subscribeToBrands } from '@/utils/brandFirestore';
 import { fetchAllUsers, updateUserRole, approveUser, rejectUser, deleteUser, UserRole, getUserCRMAccess, setUserCRMAccess } from '@/utils/userService';
 import { Shield, UserCog } from 'lucide-react';
@@ -156,6 +158,9 @@ const Settings = () => {
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [uploadingLogo, setUploadingLogo] = useState(false);
+
+  // GST verification state
+  const [verifyingGST, setVerifyingGST] = useState(false);
 
   // Image upload states (client)
   const [clientLogoFile, setClientLogoFile] = useState<File | null>(null);
@@ -583,6 +588,8 @@ const Settings = () => {
         logo: logoUrl,
         logoPath: logoPath,
         gstNo: vendorForm.gstNo || '',
+        stateCode: vendorForm.stateCode || '',
+        stateName: vendorForm.stateName || '',
         paymentTerms: vendorForm.paymentTerms || 'Net 30',
         leadTime: vendorForm.leadTime || '2 weeks',
         rating: vendorForm.rating || 0,
@@ -626,6 +633,64 @@ const Settings = () => {
     setLogoFile(null);
     setLogoPreview(null);
     setVendorForm({...vendorForm, logo: '', logoPath: ''});
+  };
+
+  // Handle GST verification
+  const handleVerifyGST = async () => {
+    const gstNo = vendorForm.gstNo?.trim();
+    if (!gstNo) {
+      toast({
+        title: 'GST Number Required',
+        description: 'Please enter a GSTIN to verify.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!isValidGSTINFormat(gstNo)) {
+      toast({
+        title: 'Invalid Format',
+        description: 'GSTIN should be 15 characters in the correct format.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setVerifyingGST(true);
+    try {
+      const result = await verifyGSTIN(gstNo);
+
+      if (result.success && result.data) {
+        // Auto-fill vendor details from GST data
+        setVendorForm(prev => ({
+          ...prev,
+          company: prev.company || result.data!.tradeName || result.data!.legalName,
+          address: prev.address || result.data!.formattedAddress,
+          stateCode: result.data!.stateCode,
+          stateName: result.data!.stateName,
+        }));
+
+        toast({
+          title: 'GSTIN Verified',
+          description: `Business: ${result.data.tradeName || result.data.legalName} (${result.data.status})`,
+        });
+      } else {
+        toast({
+          title: 'Verification Failed',
+          description: result.error || 'Could not verify GSTIN',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      console.error('GST verification error:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to verify GSTIN. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setVerifyingGST(false);
+    }
   };
 
   const handleEditVendor = (vendor: Vendor) => {
@@ -1624,13 +1689,49 @@ const Settings = () => {
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="gstNo">GST No</Label>
-                          <Input
-                            id="gstNo"
-                            value={vendorForm.gstNo || ''}
-                            onChange={(e) => setVendorForm({...vendorForm, gstNo: e.target.value.toUpperCase()})}
-                            placeholder="e.g., 29ABCDE1234F1Z5"
-                            maxLength={15}
-                          />
+                          <div className="flex gap-2">
+                            <Input
+                              id="gstNo"
+                              value={vendorForm.gstNo || ''}
+                              onChange={(e) => {
+                                const gstNo = e.target.value.toUpperCase();
+                                setVendorForm({...vendorForm, gstNo});
+                                // Auto-extract state code from GSTIN
+                                if (gstNo.length >= 2) {
+                                  const code = gstNo.substring(0, 2);
+                                  if (INDIAN_STATE_CODES[code]) {
+                                    setVendorForm(prev => ({
+                                      ...prev,
+                                      gstNo,
+                                      stateCode: code,
+                                      stateName: INDIAN_STATE_CODES[code]
+                                    }));
+                                  }
+                                }
+                              }}
+                              placeholder="e.g., 29ABCDE1234F1Z5"
+                              maxLength={15}
+                              className="flex-1"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={handleVerifyGST}
+                              disabled={verifyingGST || !vendorForm.gstNo}
+                            >
+                              {verifyingGST ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                'Verify'
+                              )}
+                            </Button>
+                          </div>
+                          {vendorForm.stateCode && (
+                            <p className="text-xs text-muted-foreground">
+                              State: {vendorForm.stateCode} - {vendorForm.stateName || INDIAN_STATE_CODES[vendorForm.stateCode]}
+                            </p>
+                          )}
                         </div>
                         <div className="space-y-2">
                           <Label>Company Logo</Label>

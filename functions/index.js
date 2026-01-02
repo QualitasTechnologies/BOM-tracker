@@ -16,6 +16,7 @@ const {defineSecret} = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const sgMail = require("@sendgrid/mail");
 const pdfParse = require("pdf-parse");
+const PDFDocument = require("pdfkit");
 
 // Use built-in fetch in Node.js 22
 const fetch = globalThis.fetch;
@@ -3337,6 +3338,703 @@ exports.onBOMUpdate = onDocumentWritten(
         projectId,
         error: error.message
       });
+    }
+  }
+);
+
+// ============================================
+// Purchase Order PDF Generation
+// ============================================
+
+/**
+ * Safely format a date value (handles Firestore Timestamps, Date objects, ISO strings, and null)
+ */
+function formatDateSafe(dateValue) {
+  // Handle null, undefined, or falsy values
+  if (dateValue === null || dateValue === undefined) return '-';
+  
+  // Use try-catch to handle any unexpected date formats or null property access
+  try {
+    let date;
+    
+    // Handle Firestore Timestamp (has _seconds property when serialized)
+    // Check if dateValue is an object and has _seconds property that is not null
+    if (typeof dateValue === 'object' && dateValue !== null && 
+        '_seconds' in dateValue && dateValue._seconds !== null && dateValue._seconds !== undefined) {
+      date = new Date(dateValue._seconds * 1000);
+    }
+    // Handle Firestore Timestamp (has seconds property)
+    else if (typeof dateValue === 'object' && dateValue !== null && 
+             'seconds' in dateValue && dateValue.seconds !== null && dateValue.seconds !== undefined) {
+      date = new Date(dateValue.seconds * 1000);
+    }
+    // Handle ISO string or timestamp number
+    else if (typeof dateValue === 'string' || typeof dateValue === 'number') {
+      date = new Date(dateValue);
+    }
+    // Handle Date object
+    else if (dateValue instanceof Date) {
+      date = dateValue;
+    }
+    else {
+      return '-';
+    }
+
+    // Check if valid date
+    if (!date || isNaN(date.getTime())) return '-';
+
+    return date.toLocaleDateString('en-IN', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  } catch (error) {
+    // If any error occurs during date formatting, return '-'
+    logger.warn('Error formatting date', { error: error.message, dateValue });
+    return '-';
+  }
+}
+
+/**
+ * Format currency in Indian format (₹1,23,456.00)
+ */
+function formatIndianCurrency(amount) {
+  if (amount === undefined || amount === null || isNaN(amount)) return '₹0.00';
+  const num = parseFloat(amount);
+  const formatted = num.toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+  return `₹${formatted}`;
+}
+
+/**
+ * Convert number to words (Indian numbering system)
+ */
+function numberToWords(num) {
+  if (num === 0) return 'Zero Rupees Only';
+
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+    'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+  const crore = Math.floor(num / 10000000);
+  const lakh = Math.floor((num % 10000000) / 100000);
+  const thousand = Math.floor((num % 100000) / 1000);
+  const hundred = Math.floor((num % 1000) / 100);
+  const remainder = Math.floor(num % 100);
+  const paise = Math.round((num % 1) * 100);
+
+  let words = '';
+
+  if (crore > 0) {
+    if (crore < 20) words += ones[crore];
+    else words += tens[Math.floor(crore / 10)] + (crore % 10 ? ' ' + ones[crore % 10] : '');
+    words += ' Crore ';
+  }
+
+  if (lakh > 0) {
+    if (lakh < 20) words += ones[lakh];
+    else words += tens[Math.floor(lakh / 10)] + (lakh % 10 ? ' ' + ones[lakh % 10] : '');
+    words += ' Lakh ';
+  }
+
+  if (thousand > 0) {
+    if (thousand < 20) words += ones[thousand];
+    else words += tens[Math.floor(thousand / 10)] + (thousand % 10 ? ' ' + ones[thousand % 10] : '');
+    words += ' Thousand ';
+  }
+
+  if (hundred > 0) {
+    words += ones[hundred] + ' Hundred ';
+  }
+
+  if (remainder > 0) {
+    if (remainder < 20) words += ones[remainder];
+    else words += tens[Math.floor(remainder / 10)] + (remainder % 10 ? ' ' + ones[remainder % 10] : '');
+  }
+
+  words = words.trim() + ' Rupees';
+
+  if (paise > 0) {
+    words += ' and ';
+    if (paise < 20) words += ones[paise];
+    else words += tens[Math.floor(paise / 10)] + (paise % 10 ? ' ' + ones[paise % 10] : '');
+    words += ' Paise';
+  }
+
+  return words + ' Only';
+}
+
+/**
+ * Generate Purchase Order PDF
+ * Creates a professional PO document and stores it in Firebase Storage
+ */
+exports.generatePOPDF = onCall(async (request) => {
+  const { purchaseOrder, companySettings, companyLogo } = request.data;
+
+  if (!purchaseOrder || !companySettings) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'purchaseOrder and companySettings are required'
+    );
+  }
+
+  try {
+    logger.info('Generating PO PDF', { poNumber: purchaseOrder.poNumber });
+
+    // Create PDF document
+    const doc = new PDFDocument({
+      size: 'A4',
+      margins: { top: 40, bottom: 40, left: 40, right: 40 },
+      info: {
+        Title: `Purchase Order - ${purchaseOrder.poNumber}`,
+        Author: companySettings.companyName,
+        Subject: 'Purchase Order',
+        Creator: 'BOM Tracker'
+      }
+    });
+
+    // Collect PDF chunks
+    const chunks = [];
+    doc.on('data', chunk => chunks.push(chunk));
+
+    // Document dimensions
+    const pageWidth = doc.page.width - 80; // 40 margin on each side
+    const startX = 40;
+    let y = 40;
+
+    // Colors
+    const primaryColor = '#1e40af'; // Blue
+    const borderColor = '#d1d5db'; // Gray-300
+    const headerBgColor = '#f3f4f6'; // Gray-100
+
+    // ========== HEADER WITH LOGO ==========
+    // Company Logo (if provided)
+    if (companyLogo) {
+      try {
+        const logoBuffer = Buffer.from(companyLogo, 'base64');
+        doc.image(logoBuffer, startX, y, { width: 100 });
+      } catch (e) {
+        logger.warn('Failed to add logo to PDF', { error: e.message });
+      }
+    }
+
+    // Company Name and Address (right side)
+    doc.font('Helvetica-Bold')
+       .fontSize(16)
+       .fillColor(primaryColor)
+       .text(companySettings.companyName, startX + (companyLogo ? 120 : 0), y, {
+         width: pageWidth - (companyLogo ? 120 : 0),
+         align: companyLogo ? 'left' : 'center'
+       });
+    y += 20;
+
+    doc.font('Helvetica')
+       .fontSize(9)
+       .fillColor('#374151')
+       .text(companySettings.companyAddress, startX + (companyLogo ? 120 : 0), y, {
+         width: pageWidth - (companyLogo ? 120 : 0),
+         align: companyLogo ? 'left' : 'center'
+       });
+    y += 35;
+
+    // PO Title Bar
+    doc.rect(startX, y, pageWidth, 25)
+       .fillAndStroke(primaryColor, primaryColor);
+    doc.font('Helvetica-Bold')
+       .fontSize(14)
+       .fillColor('white')
+       .text('PURCHASE ORDER', startX, y + 6, { width: pageWidth, align: 'center' });
+    y += 35;
+
+    // ========== PO DETAILS & VENDOR INFO (Two columns) ==========
+    const colWidth = pageWidth / 2 - 10;
+    const leftColX = startX;
+    const rightColX = startX + colWidth + 20;
+    const detailsStartY = y;
+
+    // Left Column: PO Details
+    doc.rect(leftColX, y, colWidth, 20)
+       .fillAndStroke(headerBgColor, borderColor);
+    doc.font('Helvetica-Bold')
+       .fontSize(10)
+       .fillColor('#1f2937')
+       .text('PO Details', leftColX + 5, y + 5);
+    y += 20;
+
+    const poDetails = [
+      ['PO Number:', purchaseOrder.poNumber || '-'],
+      ['PO Date:', formatDateSafe(purchaseOrder.poDate)],
+      ['Reference:', purchaseOrder.projectReference || '-'],
+      ['Customer PO:', purchaseOrder.customerPoReference || '-']
+    ];
+
+    poDetails.forEach(([label, value]) => {
+      doc.rect(leftColX, y, colWidth, 18)
+         .stroke(borderColor);
+      doc.font('Helvetica')
+         .fontSize(9)
+         .fillColor('#4b5563')
+         .text(label, leftColX + 5, y + 4, { width: 80 });
+      doc.font('Helvetica-Bold')
+         .fillColor('#1f2937')
+         .text(value, leftColX + 85, y + 4, { width: colWidth - 90 });
+      y += 18;
+    });
+
+    // Right Column: Vendor Details
+    let rightY = detailsStartY;
+    doc.rect(rightColX, rightY, colWidth, 20)
+       .fillAndStroke(headerBgColor, borderColor);
+    doc.font('Helvetica-Bold')
+       .fontSize(10)
+       .fillColor('#1f2937')
+       .text('Vendor Details', rightColX + 5, rightY + 5);
+    rightY += 20;
+
+    doc.rect(rightColX, rightY, colWidth, 72)
+       .stroke(borderColor);
+    doc.font('Helvetica-Bold')
+       .fontSize(10)
+       .fillColor('#1f2937')
+       .text(purchaseOrder.vendorName, rightColX + 5, rightY + 4);
+    doc.font('Helvetica')
+       .fontSize(9)
+       .fillColor('#4b5563')
+       .text(purchaseOrder.vendorAddress, rightColX + 5, rightY + 18, {
+         width: colWidth - 10,
+         height: 30
+       });
+    doc.text(`GSTIN: ${purchaseOrder.vendorGstin}`, rightColX + 5, rightY + 50);
+    doc.text(`State: ${purchaseOrder.vendorStateName} (${purchaseOrder.vendorStateCode})`, rightColX + 5, rightY + 62);
+
+    y = Math.max(y, rightY + 72) + 15;
+
+    // ========== INVOICE TO / SHIP TO ==========
+    const addressColWidth = pageWidth / 2 - 10;
+    const addressStartY = y;
+
+    // Invoice To
+    doc.rect(leftColX, y, addressColWidth, 20)
+       .fillAndStroke(headerBgColor, borderColor);
+    doc.font('Helvetica-Bold')
+       .fontSize(10)
+       .fillColor('#1f2937')
+       .text('Invoice To', leftColX + 5, y + 5);
+    y += 20;
+
+    doc.rect(leftColX, y, addressColWidth, 55)
+       .stroke(borderColor);
+    doc.font('Helvetica-Bold')
+       .fontSize(9)
+       .fillColor('#1f2937')
+       .text(purchaseOrder.invoiceToCompany, leftColX + 5, y + 4);
+    doc.font('Helvetica')
+       .fillColor('#4b5563')
+       .text(purchaseOrder.invoiceToAddress, leftColX + 5, y + 16, {
+         width: addressColWidth - 10,
+         height: 25
+       });
+    doc.text(`GSTIN: ${purchaseOrder.invoiceToGstin}`, leftColX + 5, y + 42);
+
+    // Ship To
+    rightY = addressStartY;
+    doc.rect(rightColX, rightY, addressColWidth, 20)
+       .fillAndStroke(headerBgColor, borderColor);
+    doc.font('Helvetica-Bold')
+       .fontSize(10)
+       .fillColor('#1f2937')
+       .text('Ship To', rightColX + 5, rightY + 5);
+    rightY += 20;
+
+    doc.rect(rightColX, rightY, addressColWidth, 55)
+       .stroke(borderColor);
+    doc.font('Helvetica')
+       .fontSize(9)
+       .fillColor('#4b5563')
+       .text(purchaseOrder.shipToAddress, rightColX + 5, rightY + 4, {
+         width: addressColWidth - 10,
+         height: 50
+       });
+
+    y = Math.max(y + 55, rightY + 55) + 15;
+
+    // ========== ITEMS TABLE ==========
+    // Table header
+    const colWidths = [30, 180, 60, 45, 60, 50, 90]; // S.No, Description, HSN, UOM, Qty, Rate, Amount
+    const tableX = startX;
+
+    doc.rect(tableX, y, pageWidth, 22)
+       .fillAndStroke(primaryColor, primaryColor);
+
+    const headers = ['S.No', 'Description', 'HSN', 'UOM', 'Qty', 'Rate', 'Amount'];
+    let headerX = tableX;
+    headers.forEach((header, i) => {
+      doc.font('Helvetica-Bold')
+         .fontSize(9)
+         .fillColor('white')
+         .text(header, headerX + 3, y + 6, { width: colWidths[i] - 6, align: i > 3 ? 'right' : 'left' });
+      headerX += colWidths[i];
+    });
+    y += 22;
+
+    // Table rows
+    const items = purchaseOrder.items || [];
+    items.forEach((item, idx) => {
+      // Calculate row height based on description length
+      const descHeight = doc.heightOfString(item.description, { width: colWidths[1] - 10 });
+      const rowHeight = Math.max(20, descHeight + 8);
+
+      // Check for page break
+      if (y + rowHeight > doc.page.height - 150) {
+        doc.addPage();
+        y = 40;
+      }
+
+      // Alternate row background
+      if (idx % 2 === 0) {
+        doc.rect(tableX, y, pageWidth, rowHeight)
+           .fill('#f9fafb');
+      }
+
+      // Row border
+      doc.rect(tableX, y, pageWidth, rowHeight)
+         .stroke(borderColor);
+
+      // Cell borders and content
+      let cellX = tableX;
+      const rowData = [
+        item.slNo.toString(),
+        `${item.description}${item.make ? `\nMake: ${item.make}` : ''}${item.itemCode ? `\nCode: ${item.itemCode}` : ''}`,
+        item.hsn || '-',
+        item.uom,
+        item.quantity.toString(),
+        formatIndianCurrency(item.rate).replace('₹', ''),
+        formatIndianCurrency(item.amount)
+      ];
+
+      rowData.forEach((data, i) => {
+        doc.rect(cellX, y, colWidths[i], rowHeight)
+           .stroke(borderColor);
+        doc.font(i === 1 ? 'Helvetica' : 'Helvetica')
+           .fontSize(8)
+           .fillColor('#374151')
+           .text(data, cellX + 3, y + 4, {
+             width: colWidths[i] - 6,
+             height: rowHeight - 6,
+             align: i > 3 ? 'right' : 'left'
+           });
+        cellX += colWidths[i];
+      });
+
+      y += rowHeight;
+    });
+
+    // ========== TOTALS SECTION ==========
+    y += 10;
+    const totalsX = startX + pageWidth - 200;
+    const totalsWidth = 200;
+
+    // Subtotal
+    doc.rect(totalsX, y, totalsWidth, 18)
+       .stroke(borderColor);
+    doc.font('Helvetica')
+       .fontSize(9)
+       .fillColor('#4b5563')
+       .text('Subtotal:', totalsX + 5, y + 4, { width: 90 });
+    doc.font('Helvetica-Bold')
+       .fillColor('#1f2937')
+       .text(formatIndianCurrency(purchaseOrder.subtotal), totalsX + 95, y + 4, { width: 100, align: 'right' });
+    y += 18;
+
+    // Tax
+    if (purchaseOrder.taxType === 'igst') {
+      doc.rect(totalsX, y, totalsWidth, 18)
+         .stroke(borderColor);
+      doc.font('Helvetica')
+         .fontSize(9)
+         .fillColor('#4b5563')
+         .text(`IGST (${purchaseOrder.taxPercentage}%):`, totalsX + 5, y + 4, { width: 90 });
+      doc.font('Helvetica')
+         .fillColor('#1f2937')
+         .text(formatIndianCurrency(purchaseOrder.igstAmount), totalsX + 95, y + 4, { width: 100, align: 'right' });
+      y += 18;
+    } else {
+      // CGST
+      doc.rect(totalsX, y, totalsWidth, 18)
+         .stroke(borderColor);
+      doc.font('Helvetica')
+         .fontSize(9)
+         .fillColor('#4b5563')
+         .text(`CGST (${purchaseOrder.taxPercentage / 2}%):`, totalsX + 5, y + 4, { width: 90 });
+      doc.font('Helvetica')
+         .fillColor('#1f2937')
+         .text(formatIndianCurrency(purchaseOrder.cgstAmount), totalsX + 95, y + 4, { width: 100, align: 'right' });
+      y += 18;
+
+      // SGST
+      doc.rect(totalsX, y, totalsWidth, 18)
+         .stroke(borderColor);
+      doc.font('Helvetica')
+         .fontSize(9)
+         .fillColor('#4b5563')
+         .text(`SGST (${purchaseOrder.taxPercentage / 2}%):`, totalsX + 5, y + 4, { width: 90 });
+      doc.font('Helvetica')
+         .fillColor('#1f2937')
+         .text(formatIndianCurrency(purchaseOrder.sgstAmount), totalsX + 95, y + 4, { width: 100, align: 'right' });
+      y += 18;
+    }
+
+    // Total
+    doc.rect(totalsX, y, totalsWidth, 22)
+       .fillAndStroke(primaryColor, primaryColor);
+    doc.font('Helvetica-Bold')
+       .fontSize(10)
+       .fillColor('white')
+       .text('TOTAL:', totalsX + 5, y + 5, { width: 90 });
+    doc.text(formatIndianCurrency(purchaseOrder.totalAmount), totalsX + 95, y + 5, { width: 100, align: 'right' });
+    y += 30;
+
+    // Amount in words
+    doc.font('Helvetica-Bold')
+       .fontSize(9)
+       .fillColor('#1f2937')
+       .text('Amount in Words:', startX, y);
+    doc.font('Helvetica')
+       .text(purchaseOrder.amountInWords || numberToWords(purchaseOrder.totalAmount), startX + 90, y, {
+         width: pageWidth - 90
+       });
+    y += 25;
+
+    // ========== TERMS ==========
+    if (purchaseOrder.paymentTerms || purchaseOrder.deliveryTerms) {
+      doc.rect(startX, y, pageWidth, 20)
+         .fillAndStroke(headerBgColor, borderColor);
+      doc.font('Helvetica-Bold')
+         .fontSize(10)
+         .fillColor('#1f2937')
+         .text('Terms & Conditions', startX + 5, y + 5);
+      y += 20;
+
+      doc.rect(startX, y, pageWidth, 50)
+         .stroke(borderColor);
+
+      if (purchaseOrder.paymentTerms) {
+        doc.font('Helvetica-Bold')
+           .fontSize(8)
+           .fillColor('#4b5563')
+           .text('Payment Terms:', startX + 5, y + 4);
+        doc.font('Helvetica')
+           .text(purchaseOrder.paymentTerms, startX + 80, y + 4, { width: pageWidth - 90 });
+      }
+
+      if (purchaseOrder.deliveryTerms) {
+        doc.font('Helvetica-Bold')
+           .text('Delivery Terms:', startX + 5, y + 18);
+        doc.font('Helvetica')
+           .text(purchaseOrder.deliveryTerms, startX + 80, y + 18, { width: pageWidth - 90 });
+      }
+
+      y += 55;
+    }
+
+    // ========== SIGNATURE ==========
+    // Check for page break
+    if (y > doc.page.height - 100) {
+      doc.addPage();
+      y = 40;
+    }
+
+    y += 30;
+    doc.font('Helvetica')
+       .fontSize(9)
+       .fillColor('#4b5563')
+       .text(`For ${companySettings.companyName}`, startX + pageWidth - 150, y, { width: 150, align: 'right' });
+    y += 40;
+    doc.text('Authorized Signatory', startX + pageWidth - 150, y, { width: 150, align: 'right' });
+
+    // Finalize PDF
+    doc.end();
+
+    // Wait for PDF to be complete
+    const pdfBuffer = await new Promise((resolve, reject) => {
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+    });
+
+    // Upload to Firebase Storage
+    const bucket = admin.storage().bucket();
+    const filename = `purchase-orders/${purchaseOrder.projectId}/${purchaseOrder.poNumber.replace(/[^a-zA-Z0-9-]/g, '_')}.pdf`;
+    const file = bucket.file(filename);
+
+    await file.save(pdfBuffer, {
+      metadata: {
+        contentType: 'application/pdf',
+        metadata: {
+          poNumber: purchaseOrder.poNumber,
+          projectId: purchaseOrder.projectId,
+          vendorId: purchaseOrder.vendorId,
+          generatedAt: new Date().toISOString()
+        }
+      }
+    });
+
+    // Get signed URL (valid for 7 days)
+    const [signedUrl] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
+    // Also get the public download URL
+    const downloadUrl = `https://storage.googleapis.com/${bucket.name}/${filename}`;
+
+    logger.info('PO PDF generated successfully', {
+      poNumber: purchaseOrder.poNumber,
+      filename,
+      size: pdfBuffer.length
+    });
+
+    return {
+      success: true,
+      pdfUrl: signedUrl,
+      storagePath: filename,
+      downloadUrl,
+      size: pdfBuffer.length
+    };
+
+  } catch (error) {
+    logger.error('Failed to generate PO PDF', {
+      poNumber: purchaseOrder?.poNumber,
+      error: error.message,
+      stack: error.stack
+    });
+    throw new functions.https.HttpsError(
+      'internal',
+      `Failed to generate PO PDF: ${error.message}`
+    );
+  }
+});
+
+/**
+ * Send Purchase Order via Email
+ * Generates PDF and sends to vendor with the PO attached
+ */
+exports.sendPurchaseOrder = onCall(
+  { secrets: [sendgridApiKey] },
+  async (request) => {
+    const { purchaseOrder, companySettings, companyLogo, recipientEmail, ccEmails } = request.data;
+
+    if (!purchaseOrder || !companySettings || !recipientEmail) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'purchaseOrder, companySettings, and recipientEmail are required'
+      );
+    }
+
+    try {
+      logger.info('Sending PO via email', {
+        poNumber: purchaseOrder.poNumber,
+        to: recipientEmail
+      });
+
+      // First generate the PDF
+      const pdfResult = await exports.generatePOPDF.run({
+        data: { purchaseOrder, companySettings, companyLogo }
+      }, { auth: request.auth });
+
+      // Download the PDF from storage
+      const bucket = admin.storage().bucket();
+      const file = bucket.file(pdfResult.storagePath);
+      const [pdfBuffer] = await file.download();
+
+      // Setup SendGrid
+      sgMail.setApiKey(sendgridApiKey.value());
+
+      // Build email
+      const msg = {
+        to: recipientEmail,
+        cc: ccEmails || [],
+        from: companySettings.email || 'noreply@bomtracker.com',
+        subject: `Purchase Order ${purchaseOrder.poNumber} - ${companySettings.companyName}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #1e40af;">Purchase Order ${purchaseOrder.poNumber}</h2>
+            <p>Dear ${purchaseOrder.vendorName},</p>
+            <p>Please find attached our Purchase Order for your reference.</p>
+
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+              <tr>
+                <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Number:</strong></td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${purchaseOrder.poNumber}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Date:</strong></td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${formatDateSafe(purchaseOrder.poDate)}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Total Amount:</strong></td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${formatIndianCurrency(purchaseOrder.totalAmount)}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Items:</strong></td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${purchaseOrder.items?.length || 0} item(s)</td>
+              </tr>
+            </table>
+
+            <p>Please acknowledge receipt of this Purchase Order.</p>
+
+            <p>
+              Best regards,<br/>
+              <strong>${companySettings.companyName}</strong><br/>
+              ${companySettings.phone ? `Phone: ${companySettings.phone}<br/>` : ''}
+              ${companySettings.email ? `Email: ${companySettings.email}` : ''}
+            </p>
+          </div>
+        `,
+        attachments: [
+          {
+            content: pdfBuffer.toString('base64'),
+            filename: `${purchaseOrder.poNumber}.pdf`,
+            type: 'application/pdf',
+            disposition: 'attachment'
+          }
+        ]
+      };
+
+      await sgMail.send(msg);
+
+      // Update PO status to 'sent' in Firestore
+      const db = admin.firestore();
+      await db.collection('purchaseOrders').doc(purchaseOrder.id).update({
+        status: 'sent',
+        sentAt: admin.firestore.FieldValue.serverTimestamp(),
+        sentBy: request.auth?.uid || 'system',
+        sentToEmail: recipientEmail,
+        pdfUrl: pdfResult.pdfUrl
+      });
+
+      logger.info('PO email sent successfully', {
+        poNumber: purchaseOrder.poNumber,
+        to: recipientEmail
+      });
+
+      return {
+        success: true,
+        message: `Purchase Order ${purchaseOrder.poNumber} sent to ${recipientEmail}`,
+        pdfUrl: pdfResult.pdfUrl
+      };
+
+    } catch (error) {
+      logger.error('Failed to send PO email', {
+        poNumber: purchaseOrder?.poNumber,
+        error: error.message,
+        stack: error.stack
+      });
+      throw new functions.https.HttpsError(
+        'internal',
+        `Failed to send PO: ${error.message}`
+      );
     }
   }
 );

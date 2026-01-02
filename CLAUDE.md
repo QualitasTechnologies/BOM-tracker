@@ -145,6 +145,48 @@
 - Click-through to affected items for quick fixes
 - See `docs/AI_Compliance_Checker_PRD.md` for original spec (IMPLEMENTED)
 
+### 📋 Purchase Order System (Jan 2026)
+- **PO Creation from BOM Items**
+  - Create PO dialog with vendor selection (searchable dropdown)
+  - Auto-populate from BOM item data (description, quantity, price)
+  - Multi-item selection for batch PO creation
+  - GST calculation: IGST for inter-state, CGST+SGST for intra-state
+  - Automatic PO number generation with configurable prefix/format
+  - Terms: Payment terms, delivery terms, T&C annexure
+- **Searchable Vendor Select** (Jan 2026)
+  - Command + Popover pattern with type-ahead search
+  - OEM/Dealer grouping with visual badges
+  - Lead time display in dropdown
+  - Reusable component: `SearchableVendorSelect`
+- **GST Verification Integration** (Jan 2026)
+  - AppyFlow API integration for GSTIN validation
+  - "Verify" button on vendor GST field in Settings
+  - Auto-extract state code from first 2 digits of GSTIN
+  - Auto-fill vendor details (company name, address, state)
+  - State code validation for accurate tax type determination
+- **PO PDF Generation** (Jan 2026)
+  - Firebase Function: `generatePOPDF` using PDFKit
+  - Professional A4 format with company branding
+  - Sections: Header, PO Details, Vendor Info, Invoice To, Ship To, Items Table, Totals, Terms, Signature
+  - Indian currency formatting (₹1,23,456.00)
+  - Amount in words (Indian numbering: Lakhs, Crores)
+  - PDF stored in Firebase Storage with signed URLs
+- **PO Email Sending** (Jan 2026)
+  - Firebase Function: `sendPurchaseOrder` with SendGrid
+  - PDF attachment to email
+  - Professional email template with PO summary
+  - Auto-update PO status to "sent" on successful send
+  - CC to logged-in user
+- **PO Management UI** (`POListSection` component)
+  - View all POs for a project
+  - Status badges: Draft, Sent, Acknowledged, Completed, Cancelled
+  - Actions: View details, Download PDF, Email to vendor, Mark as sent, Delete
+  - Vendor and total amount display
+- **Data Model** (Firestore subcollection: `projects/{projectId}/purchaseOrders`)
+  - PO fields: poNumber, vendor details, items, financials, terms, dates, status
+  - POItem fields: bomItemId, slNo, description, uom, quantity, rate, amount, hsn
+  - Automatic totals calculation with tax breakdown
+
 ## 🚧 PENDING FEATURES
 
 ### 🎯 Immediate Next - PRIORITY

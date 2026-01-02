@@ -19,6 +19,7 @@ import {
   DialogClose
 } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { SearchableVendorSelect } from '@/components/ui/searchable-vendor-select';
 import { useState, useEffect } from 'react';
 import { getVendors, Vendor } from '@/utils/settingsFirestore';
 import { getActiveBrands } from '@/utils/brandFirestore';
@@ -438,14 +439,15 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                   </div>
                 )}
               </div>
-              {/* Vendor Selection for components - use globalVendors */}
+              {/* Vendor Selection for components - use globalVendors with search */}
               {editForm.itemType === 'component' && globalVendors.length > 0 && (
                 <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                   <span className="text-xs text-gray-500">Vendor:</span>
-                  <Select
-                    value={editForm.finalizedVendor?.name || '__NONE__'}
+                  <SearchableVendorSelect
+                    vendors={globalVendors}
+                    value={editForm.finalizedVendor?.name}
                     onValueChange={(value) => {
-                      if (value === '__NONE__') {
+                      if (!value) {
                         setEditForm(prev => ({ ...prev, finalizedVendor: undefined }));
                       } else {
                         const selected = globalVendors.find(v => v.company === value);
@@ -462,31 +464,10 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                         }
                       }
                     }}
-                  >
-                    <SelectTrigger className="h-7 text-xs flex-1 min-w-[150px]">
-                      <SelectValue placeholder="Select vendor" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__NONE__">No vendor selected</SelectItem>
-                      {globalVendors
-                        .filter(v => v.status === 'active')
-                        .sort((a, b) => {
-                          if (a.type !== b.type) return a.type === 'OEM' ? -1 : 1;
-                          return a.company.localeCompare(b.company);
-                        })
-                        .map((v) => (
-                          <SelectItem key={v.id} value={v.company}>
-                            <span className="flex items-center gap-2">
-                              <span className={`px-1 py-0.5 rounded text-[10px] ${v.type === 'OEM' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}`}>
-                                {v.type}
-                              </span>
-                              {v.company}
-                              {v.leadTime && <span className="text-gray-500">({v.leadTime})</span>}
-                            </span>
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
+                    placeholder="Select vendor"
+                    triggerClassName="h-7 text-xs flex-1 min-w-[150px]"
+                    className="w-[300px]"
+                  />
                 </div>
               )}
               {/* Linked Documents Section - shown in edit mode */}

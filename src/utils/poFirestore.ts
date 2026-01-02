@@ -1,4 +1,4 @@
-import { db } from "@/firebase";
+import { db, functions } from "@/firebase";
 import {
   collection,
   addDoc,
@@ -16,6 +16,7 @@ import {
   runTransaction,
   writeBatch,
 } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
 import {
   PurchaseOrder,
   POStatus,
@@ -34,11 +35,35 @@ export type { PurchaseOrder, POStatus, POItem, POWarning, TaxType };
 
 /**
  * Remove undefined values from an object to prevent Firestore errors
+ * Recursively cleans nested objects and arrays
  */
 const cleanFirestoreData = <T extends Record<string, unknown>>(data: T): Partial<T> => {
-  return Object.fromEntries(
-    Object.entries(data).filter(([_, value]) => value !== undefined)
-  ) as Partial<T>;
+  const cleanValue = (value: unknown): unknown => {
+    if (value === undefined) return null; // Convert undefined to null for Firestore
+    if (value === null) return null;
+    if (Array.isArray(value)) {
+      return value.map(cleanValue);
+    }
+    if (value instanceof Date) return value;
+    if (typeof value === 'object' && value !== null) {
+      const cleaned: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value)) {
+        if (v !== undefined) {
+          cleaned[k] = cleanValue(v);
+        }
+      }
+      return cleaned;
+    }
+    return value;
+  };
+
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== undefined) {
+      result[key] = cleanValue(value);
+    }
+  }
+  return result as Partial<T>;
 };
 
 /**
@@ -519,4 +544,92 @@ export const recalculatePOTotals = async (
     ...totals,
     updatedAt: Timestamp.fromDate(new Date()),
   });
+};
+
+// ============================================
+// PDF Generation
+// ============================================
+
+export interface GeneratePOPDFInput {
+  purchaseOrder: PurchaseOrder;
+  companySettings: {
+    companyName: string;
+    companyAddress: string;
+    gstin: string;
+    stateCode: string;
+    stateName: string;
+    pan?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
+  };
+  companyLogo?: string; // Base64 encoded logo
+}
+
+export interface GeneratePOPDFResult {
+  success: boolean;
+  pdfUrl: string;
+  storagePath: string;
+  downloadUrl: string;
+  size: number;
+}
+
+/**
+ * Generate a PDF for a Purchase Order
+ * Calls Firebase Function to create PDF and store in Firebase Storage
+ */
+export const generatePOPDF = async (
+  input: GeneratePOPDFInput
+): Promise<GeneratePOPDFResult> => {
+  const generatePOPDFFunction = httpsCallable<GeneratePOPDFInput, GeneratePOPDFResult>(
+    functions,
+    'generatePOPDF'
+  );
+
+  const result = await generatePOPDFFunction(input);
+  return result.data;
+};
+
+// ============================================
+// Send PO via Email
+// ============================================
+
+export interface SendPOEmailInput {
+  purchaseOrder: PurchaseOrder;
+  companySettings: {
+    companyName: string;
+    companyAddress: string;
+    gstin: string;
+    stateCode: string;
+    stateName: string;
+    pan?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
+  };
+  companyLogo?: string;
+  recipientEmail: string;
+  ccEmails?: string[];
+}
+
+export interface SendPOEmailResult {
+  success: boolean;
+  message: string;
+  pdfUrl: string;
+}
+
+/**
+ * Generate PDF and send PO via email to vendor
+ * Uses Firebase Function with SendGrid
+ */
+export const sendPOEmail = async (
+  input: SendPOEmailInput
+): Promise<SendPOEmailResult> => {
+  const sendPurchaseOrderFunction = httpsCallable<SendPOEmailInput, SendPOEmailResult>(
+    functions,
+    'sendPurchaseOrder'
+  );
+
+  const result = await sendPurchaseOrderFunction(input);
+  return result.data;
 };
