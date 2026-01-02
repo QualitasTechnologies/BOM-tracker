@@ -70,7 +70,9 @@ export interface Vendor {
   website?: string;
   logo?: string;
   logoPath?: string;
-  gstNo?: string;                     // GST Number (Indian tax ID)
+  gstNo?: string;                     // GST Number (Indian tax ID) - GSTIN
+  stateCode?: string;                 // State code for GST (e.g., "29" for Karnataka)
+  stateName?: string;                 // State name (e.g., "Karnataka")
   paymentTerms: string;
   leadTime: string;
   rating: number;
@@ -627,5 +629,141 @@ export const getDefaultTemplate = async (): Promise<BOMTemplate | null> => {
   return templates.find(t => t.isDefault) || null;
 };
 
+// ============================================
+// Company Settings Management (for PO Generation)
+// ============================================
+
+export interface CompanySettings {
+  id: string;
+
+  // Company Details
+  companyName: string;
+  companyAddress: string;
+  gstin: string;
+  stateCode: string;             // "29" for Karnataka
+  stateName: string;             // "Karnataka"
+  pan: string;
+
+  // Contact
+  phone?: string;
+  email?: string;
+  website?: string;
+
+  // PO Settings
+  poNumberPrefix: string;        // "PO-QT" or "PO/QT"
+  poNumberFormat: 'simple' | 'financial-year';
+  nextPoNumber: number;          // Auto-increment counter
+
+  // Default Terms (can be overridden per PO)
+  defaultPaymentTerms?: string;
+  defaultDeliveryTerms?: string;
+  defaultTermsAndConditions?: string;
+
+  // Logo
+  logo?: string;
+  logoPath?: string;
+
+  // Tracking
+  updatedAt: Date;
+}
+
+const companySettingsRef = doc(db, "settings", "company");
+
+export const getCompanySettings = async (): Promise<CompanySettings | null> => {
+  try {
+    const docSnap = await getDoc(companySettingsRef);
+    if (docSnap.exists()) {
+      return { id: docSnap.id, ...docSnap.data() } as CompanySettings;
+    }
+    // Return default settings if not found
+    return {
+      id: 'company',
+      companyName: 'Qualitas Technologies Pvt Ltd',
+      companyAddress: '#53, Kempegowda Double Road, BEML Layout 5th Stage, Rajarajeshwari Nagar, Bengaluru-560098',
+      gstin: '29AAACQ1872F1ZE',
+      stateCode: '29',
+      stateName: 'Karnataka',
+      pan: 'AAACQ1872F',
+      phone: '',
+      email: '',
+      website: '',
+      poNumberPrefix: 'PO-QT',
+      poNumberFormat: 'simple',
+      nextPoNumber: 1,
+      defaultPaymentTerms: '',
+      defaultDeliveryTerms: '',
+      defaultTermsAndConditions: '',
+      updatedAt: new Date()
+    };
+  } catch (error) {
+    console.error("Error fetching company settings:", error);
+    return null;
+  }
+};
+
+export const updateCompanySettings = async (settings: Partial<Omit<CompanySettings, 'id' | 'updatedAt'>>) => {
+  try {
+    await setDoc(companySettingsRef, {
+      ...settings,
+      updatedAt: new Date()
+    }, { merge: true });
+  } catch (error) {
+    console.error("Error updating company settings:", error);
+    throw error;
+  }
+};
+
+export const subscribeToCompanySettings = (callback: (settings: CompanySettings | null) => void): Unsubscribe => {
+  return onSnapshot(companySettingsRef, (docSnap) => {
+    if (docSnap.exists()) {
+      callback({ id: docSnap.id, ...docSnap.data() } as CompanySettings);
+    } else {
+      // Return defaults if not set
+      callback({
+        id: 'company',
+        companyName: 'Qualitas Technologies Pvt Ltd',
+        companyAddress: '#53, Kempegowda Double Road, BEML Layout 5th Stage, Rajarajeshwari Nagar, Bengaluru-560098',
+        gstin: '29AAACQ1872F1ZE',
+        stateCode: '29',
+        stateName: 'Karnataka',
+        pan: 'AAACQ1872F',
+        poNumberPrefix: 'PO-QT',
+        poNumberFormat: 'simple',
+        nextPoNumber: 1,
+        updatedAt: new Date()
+      });
+    }
+  });
+};
+
+// Get and increment PO number atomically
+export const getNextPONumber = async (): Promise<{ poNumber: string; nextNumber: number }> => {
+  const settings = await getCompanySettings();
+  if (!settings) throw new Error('Company settings not found');
+
+  const { poNumberPrefix, poNumberFormat, nextPoNumber } = settings;
+
+  // Generate PO number
+  const now = new Date();
+  const year = now.getFullYear();
+  const paddedNumber = String(nextPoNumber).padStart(3, '0');
+
+  let poNumber: string;
+  if (poNumberFormat === 'financial-year') {
+    const month = now.getMonth();
+    const fyStart = month < 3 ? year - 1 : year;
+    const fyEnd = fyStart + 1;
+    const fyShort = `${String(fyStart).slice(-2)}-${String(fyEnd).slice(-2)}`;
+    poNumber = `${poNumberPrefix}/${fyShort}/${paddedNumber}`;
+  } else {
+    poNumber = `${poNumberPrefix}-${year}-${paddedNumber}`;
+  }
+
+  // Increment counter
+  await updateCompanySettings({ nextPoNumber: nextPoNumber + 1 });
+
+  return { poNumber, nextNumber: nextPoNumber + 1 };
+};
+
 // Export collections for use in other components if needed
-export { clientsCol, vendorsCol, bomSettingsRef, prSettingsRef, templatesCol };
+export { clientsCol, vendorsCol, bomSettingsRef, prSettingsRef, templatesCol, companySettingsRef };

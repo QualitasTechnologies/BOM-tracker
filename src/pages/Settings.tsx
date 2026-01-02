@@ -82,6 +82,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { toast } from '@/components/ui/use-toast';
 import BrandsTab from '@/components/settings/BrandsTab';
 import BOMTemplatesTab from '@/components/settings/BOMTemplatesTab';
+import CompanySettingsTab from '@/components/settings/CompanySettingsTab';
 import { Brand } from '@/types/brand';
 import { subscribeToBrands } from '@/utils/brandFirestore';
 import { fetchAllUsers, updateUserRole, approveUser, rejectUser, deleteUser, UserRole, getUserCRMAccess, setUserCRMAccess } from '@/utils/userService';
@@ -1103,7 +1104,11 @@ const Settings = () => {
         )}
 
         <Tabs defaultValue="clients" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-7">
+          <TabsList className="grid w-full grid-cols-8">
+            <TabsTrigger value="company" className="flex items-center gap-2">
+              <Building size={16} />
+              Company
+            </TabsTrigger>
             <TabsTrigger value="clients" className="flex items-center gap-2">
               <Users size={16} />
               Clients ({clients.length})
@@ -1133,6 +1138,11 @@ const Settings = () => {
               General
             </TabsTrigger>
           </TabsList>
+
+          {/* Company Tab */}
+          <TabsContent value="company">
+            <CompanySettingsTab />
+          </TabsContent>
 
           {/* Clients Tab */}
           <TabsContent value="clients">

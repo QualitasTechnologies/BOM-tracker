@@ -14,6 +14,7 @@ import BOMHeader from '@/components/BOM/BOMHeader';
 import BOMCategoryCard from '@/components/BOM/BOMCategoryCard';
 import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
 import PurchaseRequestDialog from '@/components/BOM/PurchaseRequestDialog';
+import CreatePODialog from '@/components/BOM/CreatePODialog';
 import OrderItemDialog from '@/components/BOM/OrderItemDialog';
 import ReceiveItemDialog from '@/components/BOM/ReceiveItemDialog';
 import InwardTracking from '@/components/BOM/InwardTracking';
@@ -73,6 +74,7 @@ const BOM = () => {
   const [addPartOpen, setAddPartOpen] = useState(false);
   const [importBOMOpen, setImportBOMOpen] = useState(false);
   const [prDialogOpen, setPRDialogOpen] = useState(false);
+  const [poDialogOpen, setPODialogOpen] = useState(false);
   const [orderDialogOpen, setOrderDialogOpen] = useState(false);
   const [receiveDialogOpen, setReceiveDialogOpen] = useState(false);
   const [selectedItemForOrder, setSelectedItemForOrder] = useState<BOMItem | null>(null);
@@ -682,6 +684,10 @@ const BOM = () => {
                     <Button variant="outline" onClick={handleCreatePurchaseOrder}>
                       Create PR
                     </Button>
+                    <Button variant="outline" onClick={() => setPODialogOpen(true)}>
+                      <FileText className="mr-2 h-4 w-4" />
+                      Create PO
+                    </Button>
                     <ComplianceChecker
                       projectId={projectId || ''}
                       categories={categories}
@@ -1127,6 +1133,18 @@ const BOM = () => {
           categories={categories}
           vendors={vendors}
           documents={projectDocuments}
+        />
+      )}
+
+      {/* Create PO Dialog */}
+      {projectDetails && (
+        <CreatePODialog
+          open={poDialogOpen}
+          onOpenChange={setPODialogOpen}
+          projectId={projectId!}
+          projectName={projectDetails.projectName}
+          categories={categories}
+          vendors={vendors}
         />
       )}
 
