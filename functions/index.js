@@ -3481,20 +3481,16 @@ exports.generatePOPDF = onCall(async (request) => {
   }
 
   try {
-    // Log the poDate to help debug serialization issues
-    logger.info('Generating PO PDF', { 
-      poNumber: purchaseOrder.poNumber,
-      poDateType: typeof purchaseOrder.poDate,
-      poDateValue: purchaseOrder.poDate
-    });
+    logger.info('Generating PO PDF', { poNumber: purchaseOrder.poNumber });
 
     // Create PDF document
+    // IMPORTANT: All info fields must have non-null values or PDFKit crashes with 'valueOf' error
     const doc = new PDFDocument({
       size: 'A4',
       margins: { top: 40, bottom: 40, left: 40, right: 40 },
       info: {
-        Title: `Purchase Order - ${purchaseOrder.poNumber}`,
-        Author: companySettings.companyName,
+        Title: `Purchase Order - ${purchaseOrder.poNumber || 'Draft'}`,
+        Author: companySettings.companyName || 'Company',
         Subject: 'Purchase Order',
         Creator: 'BOM Tracker'
       }
