@@ -29,6 +29,9 @@ import {
 } from "@/types/purchaseOrder";
 import { getCompanySettings, updateCompanySettings } from "./settingsFirestore";
 
+// Re-export types for convenience
+export type { PurchaseOrder, POStatus, POItem, POWarning, TaxType };
+
 /**
  * Remove undefined values from an object to prevent Firestore errors
  */

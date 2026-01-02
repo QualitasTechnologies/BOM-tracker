@@ -19,6 +19,7 @@ import OrderItemDialog from '@/components/BOM/OrderItemDialog';
 import ReceiveItemDialog from '@/components/BOM/ReceiveItemDialog';
 import InwardTracking from '@/components/BOM/InwardTracking';
 import ProjectDocuments from '@/components/BOM/ProjectDocuments';
+import POListSection from '@/components/BOM/POListSection';
 import ComplianceChecker from '@/components/BOM/ComplianceChecker';
 import StakeholderList from '@/components/Stakeholders/StakeholderList';
 import { saveAs } from 'file-saver';
@@ -801,20 +802,36 @@ const BOM = () => {
               {/* Documents Tab */}
               <TabsContent value="documents" className="mt-0">
                 {projectId && (
-                  <ProjectDocuments
-                    projectId={projectId}
-                    bomItems={categories.flatMap(cat => cat.items)}
-                    onDocumentsChange={() => {
-                      // Reload documents when they change
-                      getProjectDocuments(projectId).then(setProjectDocuments);
-                    }}
-                    onBOMItemUpdate={async (itemId: string, updates: Partial<BOMItem>) => {
-                      if (projectId) {
-                        await updateBOMItem(projectId, categories, itemId, updates);
-                      }
-                    }}
-                    fullPage={true}
-                  />
+                  <div className="space-y-8">
+                    {/* Purchase Orders Section */}
+                    <POListSection
+                      projectId={projectId}
+                      onPOSent={async (poId, bomItemIds) => {
+                        // Update BOM items to "Ordered" status when PO is sent
+                        for (const itemId of bomItemIds) {
+                          await updateBOMItem(projectId, categories, itemId, {
+                            status: 'ordered',
+                          });
+                        }
+                      }}
+                    />
+
+                    {/* Project Documents Section */}
+                    <ProjectDocuments
+                      projectId={projectId}
+                      bomItems={categories.flatMap(cat => cat.items)}
+                      onDocumentsChange={() => {
+                        // Reload documents when they change
+                        getProjectDocuments(projectId).then(setProjectDocuments);
+                      }}
+                      onBOMItemUpdate={async (itemId: string, updates: Partial<BOMItem>) => {
+                        if (projectId) {
+                          await updateBOMItem(projectId, categories, itemId, updates);
+                        }
+                      }}
+                      fullPage={true}
+                    />
+                  </div>
                 )}
               </TabsContent>
 
