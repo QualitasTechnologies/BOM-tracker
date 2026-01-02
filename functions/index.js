@@ -3481,7 +3481,12 @@ exports.generatePOPDF = onCall(async (request) => {
   }
 
   try {
-    logger.info('Generating PO PDF', { poNumber: purchaseOrder.poNumber });
+    // Log the poDate to help debug serialization issues
+    logger.info('Generating PO PDF', { 
+      poNumber: purchaseOrder.poNumber,
+      poDateType: typeof purchaseOrder.poDate,
+      poDateValue: purchaseOrder.poDate
+    });
 
     // Create PDF document
     const doc = new PDFDocument({

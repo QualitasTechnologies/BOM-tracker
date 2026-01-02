@@ -575,6 +575,35 @@ export interface GeneratePOPDFResult {
 }
 
 /**
+ * Serialize Date objects to ISO strings for Firebase callable functions
+ * This prevents serialization errors when Date objects are null or invalid
+ */
+const serializeDates = (obj: any): any => {
+  if (obj === null || obj === undefined) {
+    return null;
+  }
+  
+  if (obj instanceof Date) {
+    // Return ISO string, or null if date is invalid
+    return isNaN(obj.getTime()) ? null : obj.toISOString();
+  }
+  
+  if (Array.isArray(obj)) {
+    return obj.map(serializeDates);
+  }
+  
+  if (typeof obj === 'object') {
+    const serialized: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      serialized[key] = serializeDates(value);
+    }
+    return serialized;
+  }
+  
+  return obj;
+};
+
+/**
  * Generate a PDF for a Purchase Order
  * Calls Firebase Function to create PDF and store in Firebase Storage
  */
@@ -586,7 +615,10 @@ export const generatePOPDF = async (
     'generatePOPDF'
   );
 
-  const result = await generatePOPDFFunction(input);
+  // Serialize Date objects to ISO strings to prevent serialization errors
+  const serializedInput = serializeDates(input);
+
+  const result = await generatePOPDFFunction(serializedInput);
   return result.data;
 };
 
