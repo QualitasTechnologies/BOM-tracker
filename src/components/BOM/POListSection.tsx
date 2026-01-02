@@ -267,6 +267,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
           email: companySettings.email,
           website: companySettings.website,
         },
+        companyLogo: companySettings.logo, // Pass logo if configured in settings
       });
 
       // Open PDF in new tab

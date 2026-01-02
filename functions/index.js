@@ -3399,13 +3399,14 @@ function formatDateSafe(dateValue) {
  * Format currency in Indian format (₹1,23,456.00)
  */
 function formatIndianCurrency(amount) {
-  if (amount === undefined || amount === null || isNaN(amount)) return '₹0.00';
+  // Use "Rs." instead of "₹" because PDFKit's Helvetica font doesn't support the Rupee symbol
+  if (amount === undefined || amount === null || isNaN(amount)) return 'Rs. 0.00';
   const num = parseFloat(amount);
   const formatted = num.toLocaleString('en-IN', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   });
-  return `₹${formatted}`;
+  return `Rs. ${formatted}`;
 }
 
 /**
@@ -3711,7 +3712,7 @@ exports.generatePOPDF = onCall(async (request) => {
         item.hsn || '-',
         item.uom,
         item.quantity.toString(),
-        formatIndianCurrency(item.rate).replace('₹', ''),
+        formatIndianCurrency(item.rate).replace('Rs. ', ''),
         formatIndianCurrency(item.amount)
       ];
 
@@ -3851,7 +3852,7 @@ exports.generatePOPDF = onCall(async (request) => {
     doc.font('Helvetica')
        .fontSize(9)
        .fillColor('#4b5563')
-       .text(`For ${companySettings.companyName}`, startX + pageWidth - 150, y, { width: 150, align: 'right' });
+       .text(`For ${companySettings.companyName || 'Company'}`, startX + pageWidth - 150, y, { width: 150, align: 'right' });
     y += 40;
     doc.text('Authorized Signatory', startX + pageWidth - 150, y, { width: 150, align: 'right' });
 
@@ -3881,14 +3882,18 @@ exports.generatePOPDF = onCall(async (request) => {
       }
     });
 
-    // Get signed URL (valid for 7 days)
-    const [signedUrl] = await file.getSignedUrl({
-      action: 'read',
-      expires: Date.now() + 7 * 24 * 60 * 60 * 1000 // 7 days
+    // Generate a download token for Firebase Storage
+    const downloadToken = require('crypto').randomUUID();
+
+    // Update file metadata with download token
+    await file.setMetadata({
+      metadata: {
+        firebaseStorageDownloadTokens: downloadToken
+      }
     });
 
-    // Also get the public download URL
-    const downloadUrl = `https://storage.googleapis.com/${bucket.name}/${filename}`;
+    // Firebase Storage download URL format
+    const downloadUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(filename)}?alt=media&token=${downloadToken}`;
 
     logger.info('PO PDF generated successfully', {
       poNumber: purchaseOrder.poNumber,
@@ -3898,7 +3903,7 @@ exports.generatePOPDF = onCall(async (request) => {
 
     return {
       success: true,
-      pdfUrl: signedUrl,
+      pdfUrl: downloadUrl,
       storagePath: filename,
       downloadUrl,
       size: pdfBuffer.length
