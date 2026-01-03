@@ -56,6 +56,28 @@ import { getCompanySettings } from '@/utils/settingsFirestore';
 import { auth } from '@/firebase';
 import { useAuth } from '@/hooks/useAuth';
 
+// Helper to convert image URL to base64
+const fetchImageAsBase64 = async (url: string): Promise<string | null> => {
+  try {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64 = reader.result as string;
+        // Remove the data URL prefix (e.g., "data:image/png;base64,")
+        const base64Data = base64.split(',')[1];
+        resolve(base64Data);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch (error) {
+    console.warn('Failed to fetch logo:', error);
+    return null;
+  }
+};
+
 interface POListSectionProps {
   projectId: string;
   onPOSent?: (poId: string, bomItemIds: string[]) => Promise<void>;
@@ -267,7 +289,8 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
           email: companySettings.email,
           website: companySettings.website,
         },
-        companyLogo: companySettings.logo, // Pass logo if configured in settings
+        // Pass logo path - Cloud Function will fetch from Storage (avoids CORS)
+        companyLogoPath: companySettings.logoPath,
       });
 
       // Open PDF in new tab
@@ -317,6 +340,8 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
           email: companySettings.email,
           website: companySettings.website,
         },
+        // Pass logo path - Cloud Function will fetch from Storage (avoids CORS)
+        companyLogoPath: companySettings.logoPath,
         recipientEmail: sendToEmail.trim(),
         ccEmails: user.email ? [user.email] : [],
       });

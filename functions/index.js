@@ -3472,7 +3472,7 @@ function numberToWords(num) {
  * Creates a professional PO document and stores it in Firebase Storage
  */
 exports.generatePOPDF = onCall(async (request) => {
-  const { purchaseOrder, companySettings, companyLogo } = request.data;
+  const { purchaseOrder, companySettings, companyLogo, companyLogoUrl, companyLogoPath } = request.data;
 
   if (!purchaseOrder || !companySettings) {
     throw new functions.https.HttpsError(
@@ -3482,6 +3482,43 @@ exports.generatePOPDF = onCall(async (request) => {
   }
 
   try {
+    // Resolve company logo - can be base64, URL, or storage path
+    let resolvedLogo = companyLogo;
+
+    // If logo URL provided, try to fetch it
+    if (!resolvedLogo && companyLogoUrl) {
+      try {
+        const https = require('https');
+        const http = require('http');
+        const protocol = companyLogoUrl.startsWith('https') ? https : http;
+
+        resolvedLogo = await new Promise((resolve) => {
+          protocol.get(companyLogoUrl, (response) => {
+            const chunks = [];
+            response.on('data', chunk => chunks.push(chunk));
+            response.on('end', () => {
+              const buffer = Buffer.concat(chunks);
+              resolve(buffer.toString('base64'));
+            });
+            response.on('error', () => resolve(null));
+          }).on('error', () => resolve(null));
+        });
+      } catch (e) {
+        logger.warn('Failed to fetch logo from URL', { error: e.message });
+      }
+    }
+
+    // If storage path provided, download from Firebase Storage
+    if (!resolvedLogo && companyLogoPath) {
+      try {
+        const bucket = admin.storage().bucket();
+        const file = bucket.file(companyLogoPath);
+        const [buffer] = await file.download();
+        resolvedLogo = buffer.toString('base64');
+      } catch (e) {
+        logger.warn('Failed to download logo from storage', { error: e.message, path: companyLogoPath });
+      }
+    }
     logger.info('Generating PO PDF', { poNumber: purchaseOrder.poNumber });
 
     // Create PDF document
@@ -3512,34 +3549,46 @@ exports.generatePOPDF = onCall(async (request) => {
     const headerBgColor = '#f3f4f6'; // Gray-100
 
     // ========== HEADER WITH LOGO ==========
-    // Company Logo (if provided)
-    if (companyLogo) {
+    // Company Logo (if provided) - rectangular logo support
+    const logoMaxWidth = 120; // Max width for rectangular logos
+    const logoMaxHeight = 40; // Max height to keep it subtle
+    let logoOffset = 0;
+
+    if (resolvedLogo) {
       try {
-        const logoBuffer = Buffer.from(companyLogo, 'base64');
-        doc.image(logoBuffer, startX, y, { width: 100 });
+        const logoBuffer = Buffer.from(resolvedLogo, 'base64');
+        // Use fit to maintain aspect ratio within bounds
+        doc.image(logoBuffer, startX, y, {
+          fit: [logoMaxWidth, logoMaxHeight],
+          align: 'left',
+          valign: 'top'
+        });
+        logoOffset = logoMaxWidth + 15;
       } catch (e) {
         logger.warn('Failed to add logo to PDF', { error: e.message });
       }
     }
 
-    // Company Name and Address (right side)
+    // Company Name and Address (beside logo or centered)
+    const textStartY = resolvedLogo ? y + 5 : y; // Slight offset when logo present
     doc.font('Helvetica-Bold')
-       .fontSize(16)
+       .fontSize(14)
        .fillColor(primaryColor)
-       .text(companySettings.companyName, startX + (companyLogo ? 120 : 0), y, {
-         width: pageWidth - (companyLogo ? 120 : 0),
-         align: companyLogo ? 'left' : 'center'
+       .text(companySettings.companyName || 'Company', startX + logoOffset, textStartY, {
+         width: pageWidth - logoOffset,
+         align: resolvedLogo ? 'left' : 'center'
        });
-    y += 20;
 
     doc.font('Helvetica')
-       .fontSize(9)
+       .fontSize(8)
        .fillColor('#374151')
-       .text(companySettings.companyAddress, startX + (companyLogo ? 120 : 0), y, {
-         width: pageWidth - (companyLogo ? 120 : 0),
-         align: companyLogo ? 'left' : 'center'
+       .text(companySettings.companyAddress || '-', startX + logoOffset, textStartY + 18, {
+         width: pageWidth - logoOffset,
+         align: resolvedLogo ? 'left' : 'center'
        });
-    y += 35;
+
+    // Move y past the header (logo height or text height, whichever is larger)
+    y += Math.max(logoMaxHeight, 35) + 10;
 
     // PO Title Bar
     doc.rect(startX, y, pageWidth, 25)
@@ -3600,16 +3649,16 @@ exports.generatePOPDF = onCall(async (request) => {
     doc.font('Helvetica-Bold')
        .fontSize(10)
        .fillColor('#1f2937')
-       .text(purchaseOrder.vendorName, rightColX + 5, rightY + 4);
+       .text(purchaseOrder.vendorName || '-', rightColX + 5, rightY + 4);
     doc.font('Helvetica')
        .fontSize(9)
        .fillColor('#4b5563')
-       .text(purchaseOrder.vendorAddress, rightColX + 5, rightY + 18, {
+       .text(purchaseOrder.vendorAddress || '-', rightColX + 5, rightY + 18, {
          width: colWidth - 10,
          height: 30
        });
-    doc.text(`GSTIN: ${purchaseOrder.vendorGstin}`, rightColX + 5, rightY + 50);
-    doc.text(`State: ${purchaseOrder.vendorStateName} (${purchaseOrder.vendorStateCode})`, rightColX + 5, rightY + 62);
+    doc.text(`GSTIN: ${purchaseOrder.vendorGstin || '-'}`, rightColX + 5, rightY + 50);
+    doc.text(`State: ${purchaseOrder.vendorStateName || '-'} (${purchaseOrder.vendorStateCode || '-'})`, rightColX + 5, rightY + 62);
 
     y = Math.max(y, rightY + 72) + 15;
 
@@ -3631,14 +3680,14 @@ exports.generatePOPDF = onCall(async (request) => {
     doc.font('Helvetica-Bold')
        .fontSize(9)
        .fillColor('#1f2937')
-       .text(purchaseOrder.invoiceToCompany, leftColX + 5, y + 4);
+       .text(purchaseOrder.invoiceToCompany || '-', leftColX + 5, y + 4);
     doc.font('Helvetica')
        .fillColor('#4b5563')
-       .text(purchaseOrder.invoiceToAddress, leftColX + 5, y + 16, {
+       .text(purchaseOrder.invoiceToAddress || '-', leftColX + 5, y + 16, {
          width: addressColWidth - 10,
          height: 25
        });
-    doc.text(`GSTIN: ${purchaseOrder.invoiceToGstin}`, leftColX + 5, y + 42);
+    doc.text(`GSTIN: ${purchaseOrder.invoiceToGstin || '-'}`, leftColX + 5, y + 42);
 
     // Ship To
     rightY = addressStartY;
@@ -3655,7 +3704,7 @@ exports.generatePOPDF = onCall(async (request) => {
     doc.font('Helvetica')
        .fontSize(9)
        .fillColor('#4b5563')
-       .text(purchaseOrder.shipToAddress, rightColX + 5, rightY + 4, {
+       .text(purchaseOrder.shipToAddress || '-', rightColX + 5, rightY + 4, {
          width: addressColWidth - 10,
          height: 50
        });
@@ -3685,7 +3734,8 @@ exports.generatePOPDF = onCall(async (request) => {
     const items = purchaseOrder.items || [];
     items.forEach((item, idx) => {
       // Calculate row height based on description length
-      const descHeight = doc.heightOfString(item.description, { width: colWidths[1] - 10 });
+      const descText = item.description || '-';
+      const descHeight = doc.heightOfString(descText, { width: colWidths[1] - 10 });
       const rowHeight = Math.max(20, descHeight + 8);
 
       // Check for page break
@@ -3707,11 +3757,11 @@ exports.generatePOPDF = onCall(async (request) => {
       // Cell borders and content
       let cellX = tableX;
       const rowData = [
-        item.slNo.toString(),
-        `${item.description}${item.make ? `\nMake: ${item.make}` : ''}${item.itemCode ? `\nCode: ${item.itemCode}` : ''}`,
+        (item.slNo ?? idx + 1).toString(),
+        `${item.description || '-'}${item.make ? `\nMake: ${item.make}` : ''}${item.itemCode ? `\nCode: ${item.itemCode}` : ''}`,
         item.hsn || '-',
-        item.uom,
-        item.quantity.toString(),
+        item.uom || '-',
+        (item.quantity ?? 0).toString(),
         formatIndianCurrency(item.rate).replace('Rs. ', ''),
         formatIndianCurrency(item.amount)
       ];
@@ -3867,16 +3917,17 @@ exports.generatePOPDF = onCall(async (request) => {
 
     // Upload to Firebase Storage
     const bucket = admin.storage().bucket();
-    const filename = `purchase-orders/${purchaseOrder.projectId}/${purchaseOrder.poNumber.replace(/[^a-zA-Z0-9-]/g, '_')}.pdf`;
+    const poNumberSafe = (purchaseOrder.poNumber || 'DRAFT').replace(/[^a-zA-Z0-9-]/g, '_');
+    const filename = `purchase-orders/${purchaseOrder.projectId || 'unknown'}/${poNumberSafe}.pdf`;
     const file = bucket.file(filename);
 
     await file.save(pdfBuffer, {
       metadata: {
         contentType: 'application/pdf',
         metadata: {
-          poNumber: purchaseOrder.poNumber,
-          projectId: purchaseOrder.projectId,
-          vendorId: purchaseOrder.vendorId,
+          poNumber: purchaseOrder.poNumber || 'DRAFT',
+          projectId: purchaseOrder.projectId || 'unknown',
+          vendorId: purchaseOrder.vendorId || '',
           generatedAt: new Date().toISOString()
         }
       }
@@ -3929,7 +3980,7 @@ exports.generatePOPDF = onCall(async (request) => {
 exports.sendPurchaseOrder = onCall(
   { secrets: [sendgridApiKey] },
   async (request) => {
-    const { purchaseOrder, companySettings, companyLogo, recipientEmail, ccEmails } = request.data;
+    const { purchaseOrder, companySettings, companyLogo, companyLogoPath, recipientEmail, ccEmails } = request.data;
 
     if (!purchaseOrder || !companySettings || !recipientEmail) {
       throw new functions.https.HttpsError(
@@ -3946,7 +3997,7 @@ exports.sendPurchaseOrder = onCall(
 
       // First generate the PDF
       const pdfResult = await exports.generatePOPDF.run({
-        data: { purchaseOrder, companySettings, companyLogo }
+        data: { purchaseOrder, companySettings, companyLogo, companyLogoPath }
       }, { auth: request.auth });
 
       // Download the PDF from storage
@@ -3958,21 +4009,22 @@ exports.sendPurchaseOrder = onCall(
       sgMail.setApiKey(sendgridApiKey.value());
 
       // Build email
+      const poNum = purchaseOrder.poNumber || 'DRAFT';
       const msg = {
         to: recipientEmail,
         cc: ccEmails || [],
         from: companySettings.email || 'noreply@bomtracker.com',
-        subject: `Purchase Order ${purchaseOrder.poNumber} - ${companySettings.companyName}`,
+        subject: `Purchase Order ${poNum} - ${companySettings.companyName || 'Company'}`,
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #1e40af;">Purchase Order ${purchaseOrder.poNumber}</h2>
-            <p>Dear ${purchaseOrder.vendorName},</p>
+            <h2 style="color: #1e40af;">Purchase Order ${poNum}</h2>
+            <p>Dear ${purchaseOrder.vendorName || 'Vendor'},</p>
             <p>Please find attached our Purchase Order for your reference.</p>
 
             <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
               <tr>
                 <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Number:</strong></td>
-                <td style="padding: 8px; border: 1px solid #ddd;">${purchaseOrder.poNumber}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${poNum}</td>
               </tr>
               <tr>
                 <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Date:</strong></td>
@@ -3992,7 +4044,7 @@ exports.sendPurchaseOrder = onCall(
 
             <p>
               Best regards,<br/>
-              <strong>${companySettings.companyName}</strong><br/>
+              <strong>${companySettings.companyName || 'Company'}</strong><br/>
               ${companySettings.phone ? `Phone: ${companySettings.phone}<br/>` : ''}
               ${companySettings.email ? `Email: ${companySettings.email}` : ''}
             </p>
@@ -4001,7 +4053,7 @@ exports.sendPurchaseOrder = onCall(
         attachments: [
           {
             content: pdfBuffer.toString('base64'),
-            filename: `${purchaseOrder.poNumber}.pdf`,
+            filename: `${poNum}.pdf`,
             type: 'application/pdf',
             disposition: 'attachment'
           }

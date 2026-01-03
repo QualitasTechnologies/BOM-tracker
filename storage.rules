@@ -70,6 +70,14 @@ service firebase.storage {
       allow delete: if isAuthenticated();
     }
 
+    // Company logos (for PO generation)
+    match /company-logos/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && isReasonableSize();
+      allow delete: if isAuthenticated();
+    }
+
     // Received item photos (proof of delivery)
     match /projects/{projectId}/received-photos/{fileName} {
       allow read: if isAuthenticated();

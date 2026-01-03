@@ -563,7 +563,8 @@ export interface GeneratePOPDFInput {
     email?: string;
     website?: string;
   };
-  companyLogo?: string; // Base64 encoded logo
+  companyLogo?: string;       // Base64 encoded logo (optional)
+  companyLogoPath?: string;   // Firebase Storage path (preferred - avoids CORS)
 }
 
 export interface GeneratePOPDFResult {
@@ -639,7 +640,8 @@ export interface SendPOEmailInput {
     email?: string;
     website?: string;
   };
-  companyLogo?: string;
+  companyLogo?: string;       // Base64 encoded logo (optional)
+  companyLogoPath?: string;   // Firebase Storage path (preferred - avoids CORS)
   recipientEmail: string;
   ccEmails?: string[];
 }
