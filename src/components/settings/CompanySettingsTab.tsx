@@ -14,7 +14,9 @@ import {
   MapPin,
   FileText,
   AlertCircle,
-  CheckCircle2
+  CheckCircle2,
+  X,
+  Image as ImageIcon
 } from 'lucide-react';
 import { toast } from '@/components/ui/use-toast';
 import {
@@ -24,6 +26,7 @@ import {
   CompanySettings
 } from '@/utils/settingsFirestore';
 import { INDIAN_STATE_CODES } from '@/types/purchaseOrder';
+import { uploadCompanyLogo } from '@/utils/imageUpload';
 
 const CompanySettingsTab: React.FC = () => {
   const [settings, setSettings] = useState<CompanySettings | null>(null);
@@ -51,6 +54,13 @@ const CompanySettingsTab: React.FC = () => {
   const [defaultDeliveryTerms, setDefaultDeliveryTerms] = useState('');
   const [defaultTermsAndConditions, setDefaultTermsAndConditions] = useState('');
 
+  // Logo
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [logoUrl, setLogoUrl] = useState<string>('');
+  const [logoPath, setLogoPath] = useState<string>('');
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+
   // Load settings
   useEffect(() => {
     const unsubscribe = subscribeToCompanySettings((data) => {
@@ -70,6 +80,9 @@ const CompanySettingsTab: React.FC = () => {
         setDefaultPaymentTerms(data.defaultPaymentTerms || '');
         setDefaultDeliveryTerms(data.defaultDeliveryTerms || '');
         setDefaultTermsAndConditions(data.defaultTermsAndConditions || '');
+        setLogoUrl(data.logo || '');
+        setLogoPath(data.logoPath || '');
+        setLogoPreview(data.logo || null);
       }
       setLoading(false);
     });
@@ -98,7 +111,10 @@ const CompanySettingsTab: React.FC = () => {
       nextPoNumber !== (settings.nextPoNumber || 1) ||
       defaultPaymentTerms !== (settings.defaultPaymentTerms || '') ||
       defaultDeliveryTerms !== (settings.defaultDeliveryTerms || '') ||
-      defaultTermsAndConditions !== (settings.defaultTermsAndConditions || '');
+      defaultTermsAndConditions !== (settings.defaultTermsAndConditions || '') ||
+      logoUrl !== (settings.logo || '') ||
+      logoPath !== (settings.logoPath || '') ||
+      logoFile !== null;
 
     setHasChanges(changed);
   }, [
@@ -114,10 +130,34 @@ const CompanySettingsTab: React.FC = () => {
     poNumberPrefix,
     poNumberFormat,
     nextPoNumber,
-    defaultPaymentTerms,
-    defaultDeliveryTerms,
-    defaultTermsAndConditions,
-  ]);
+      defaultPaymentTerms,
+      defaultDeliveryTerms,
+      defaultTermsAndConditions,
+      logoUrl,
+      logoPath,
+      logoFile,
+    ]);
+
+  // Logo handlers
+  const handleLogoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setLogoFile(file);
+      // Create preview
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setLogoPreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const clearLogo = () => {
+    setLogoFile(null);
+    setLogoPreview(null);
+    setLogoUrl('');
+    setLogoPath('');
+  };
 
   // Validate GSTIN format
   const validateGSTIN = (value: string): boolean => {
@@ -174,6 +214,28 @@ const CompanySettingsTab: React.FC = () => {
     setSaving(true);
 
     try {
+      let finalLogoUrl = logoUrl;
+      let finalLogoPath = logoPath;
+
+      // Upload logo if a new file was selected
+      if (logoFile) {
+        setUploadingLogo(true);
+        try {
+          const uploadResult = await uploadCompanyLogo(logoFile);
+          finalLogoUrl = uploadResult.url;
+          finalLogoPath = uploadResult.path;
+          setUploadingLogo(false);
+        } catch (uploadError) {
+          setUploadingLogo(false);
+          toast({
+            title: 'Upload Error',
+            description: uploadError instanceof Error ? uploadError.message : 'Failed to upload logo',
+            variant: 'destructive',
+          });
+          return;
+        }
+      }
+
       await updateCompanySettings({
         companyName: companyName.trim(),
         companyAddress: companyAddress.trim(),
@@ -190,7 +252,17 @@ const CompanySettingsTab: React.FC = () => {
         defaultPaymentTerms: defaultPaymentTerms.trim(),
         defaultDeliveryTerms: defaultDeliveryTerms.trim(),
         defaultTermsAndConditions: defaultTermsAndConditions.trim(),
+        logo: finalLogoUrl || undefined,
+        logoPath: finalLogoPath || undefined,
       });
+
+      // Update local state
+      setLogoUrl(finalLogoUrl);
+      setLogoPath(finalLogoPath);
+      if (finalLogoUrl) {
+        setLogoPreview(finalLogoUrl);
+      }
+      setLogoFile(null);
 
       toast({
         title: 'Settings Saved',
@@ -277,6 +349,49 @@ const CompanySettingsTab: React.FC = () => {
               {gstin && !validateGSTIN(gstin) && (
                 <p className="text-xs text-red-500">Invalid GSTIN format</p>
               )}
+            </div>
+          </div>
+
+          {/* Company Logo */}
+          <div className="space-y-2">
+            <Label>Company Logo</Label>
+            <div className="flex items-center gap-4">
+              {logoPreview && (
+                <div className="relative">
+                  <img
+                    src={logoPreview}
+                    alt="Company logo preview"
+                    className="w-24 h-24 object-contain border rounded bg-white p-2"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    className="absolute -top-2 -right-2 h-6 w-6 rounded-full p-0"
+                    onClick={clearLogo}
+                  >
+                    <X size={14} />
+                  </Button>
+                </div>
+              )}
+              <div className="flex-1">
+                <Input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleLogoSelect}
+                  className="cursor-pointer"
+                  disabled={uploadingLogo}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Upload company logo for PO generation and documents (max 2MB, recommended: 300x300px)
+                </p>
+                {uploadingLogo && (
+                  <p className="text-xs text-blue-600 mt-1 flex items-center gap-1">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Uploading logo...
+                  </p>
+                )}
+              </div>
             </div>
           </div>
 
@@ -388,10 +503,24 @@ const CompanySettingsTab: React.FC = () => {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="simple">
-                    Simple (PO-QT-2025-001)
+                    {(() => {
+                      const year = new Date().getFullYear();
+                      const example = `${poNumberPrefix || 'PO-QT'}-${year}-001`;
+                      return `Simple (${example})`;
+                    })()}
                   </SelectItem>
                   <SelectItem value="financial-year">
-                    Financial Year (PO/QT/24-25/001)
+                    {(() => {
+                      const now = new Date();
+                      const year = now.getFullYear();
+                      const month = now.getMonth();
+                      const fyStart = month < 3 ? year - 1 : year;
+                      const fyEnd = fyStart + 1;
+                      const fyShort = `${String(fyStart).slice(-2)}-${String(fyEnd).slice(-2)}`;
+                      const prefix = poNumberPrefix || 'PO/QT';
+                      const example = `${prefix}/${fyShort}/001`;
+                      return `Financial Year (${example})`;
+                    })()}
                   </SelectItem>
                 </SelectContent>
               </Select>
