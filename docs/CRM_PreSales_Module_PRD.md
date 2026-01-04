@@ -1019,12 +1019,12 @@ Sidebar:
 
 ### Next Phase - Priority Features
 
-**Priority 1: Contact Management (Phase 1 completion)**
-- [ ] Create `contacts` collection in Firestore
-- [ ] Contact CRUD in client management
-- [ ] Assign contacts to deals
-- [ ] Display assigned contacts in Deal Detail
-- [ ] Primary contact indicator
+**Priority 1: Contact Management (Phase 1 completion)** ✅ COMPLETED
+- [x] Create `contacts` collection in Firestore
+- [x] Contact CRUD in client management (Settings → Clients → Contacts button)
+- [x] Assign contacts to deals (AssignContactsDialog)
+- [x] Display assigned contacts in Deal Detail (Customer card)
+- [x] Primary contact indicator (badge with star icon)
 
 **Priority 2: Google Drive Integration**
 - [ ] Drive OAuth setup (Settings configuration)

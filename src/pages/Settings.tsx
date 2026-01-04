@@ -88,7 +88,8 @@ import { verifyGSTIN, isValidGSTINFormat } from '@/utils/gstVerification';
 import { INDIAN_STATE_CODES } from '@/types/purchaseOrder';
 import { subscribeToBrands } from '@/utils/brandFirestore';
 import { fetchAllUsers, updateUserRole, approveUser, rejectUser, deleteUser, UserRole, getUserCRMAccess, setUserCRMAccess } from '@/utils/userService';
-import { Shield, UserCog } from 'lucide-react';
+import { Shield, UserCog, UserPlus } from 'lucide-react';
+import ContactsDialog from '@/components/CRM/ContactsDialog';
 
 const Settings = () => {
   // Auth check
@@ -130,6 +131,7 @@ const Settings = () => {
   const [vendorDialog, setVendorDialog] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [editingVendor, setEditingVendor] = useState<Vendor | null>(null);
+  const [contactsDialogClient, setContactsDialogClient] = useState<Client | null>(null);
 
   // Form states
   const [clientForm, setClientForm] = useState<Partial<Client>>({});
@@ -1417,6 +1419,14 @@ const Settings = () => {
                               <Button
                                 size="sm"
                                 variant="outline"
+                                onClick={() => setContactsDialogClient(client)}
+                                title="Manage Contacts"
+                              >
+                                <UserPlus size={14} />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
                                 onClick={() => handleEditClient(client)}
                               >
                                 <Edit size={14} />
@@ -1437,6 +1447,15 @@ const Settings = () => {
                 )}
               </CardContent>
             </Card>
+
+            {/* Contacts Dialog */}
+            {contactsDialogClient && (
+              <ContactsDialog
+                open={!!contactsDialogClient}
+                onOpenChange={(open) => !open && setContactsDialogClient(null)}
+                client={contactsDialogClient}
+              />
+            )}
           </TabsContent>
 
           {/* Vendors Tab */}

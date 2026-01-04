@@ -55,8 +55,9 @@ import LogActivityDialog from "@/components/CRM/LogActivityDialog";
 import NextStepDialog from "@/components/CRM/NextStepDialog";
 import MarkAsLostDialog from "@/components/CRM/MarkAsLostDialog";
 import EditDealDialog from "@/components/CRM/EditDealDialog";
+import AssignContactsDialog from "@/components/CRM/AssignContactsDialog";
 import { useCRMAccess } from "@/hooks/useCRMAccess";
-import { Loader2, Lock } from "lucide-react";
+import { Loader2, Lock, UserPlus } from "lucide-react";
 
 const DealDetail = () => {
   const { dealId } = useParams<{ dealId: string }>();
@@ -78,6 +79,7 @@ const DealDetail = () => {
   const [nextStepOpen, setNextStepOpen] = useState(false);
   const [markAsLostOpen, setMarkAsLostOpen] = useState(false);
   const [editDealOpen, setEditDealOpen] = useState(false);
+  const [assignContactsOpen, setAssignContactsOpen] = useState(false);
 
   // Fetch deal
   useEffect(() => {
@@ -133,6 +135,12 @@ const DealDetail = () => {
     if (!deal) return null;
     return clients.find((c) => c.id === deal.clientId) || null;
   }, [deal, clients]);
+
+  // Get assigned contacts for this deal
+  const assignedContacts = useMemo(() => {
+    if (!deal?.assignedContactIds?.length) return [];
+    return contacts.filter((c) => deal.assignedContactIds.includes(c.id));
+  }, [deal?.assignedContactIds, contacts]);
 
   // Handle stage change
   const handleStageChange = async (newStage: DealStage) => {
@@ -438,10 +446,21 @@ const DealDetail = () => {
         {/* Customer Card */}
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Building2 className="h-4 w-4" />
-              Customer
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Building2 className="h-4 w-4" />
+                Customer
+              </CardTitle>
+              {client && contacts.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setAssignContactsOpen(true)}
+                >
+                  <UserPlus className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             {client ? (
@@ -475,13 +494,25 @@ const DealDetail = () => {
                     <span>{client.email}</span>
                   </div>
                 )}
-                {/* Show additional contacts if any */}
-                {contacts.length > 0 && (
-                  <div className="pt-2 border-t">
-                    <p className="text-xs text-muted-foreground mb-2">
-                      Contacts
+                {/* Show assigned contacts */}
+                <div className="pt-2 border-t">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs text-muted-foreground">
+                      Assigned Contacts ({assignedContacts.length})
                     </p>
-                    {contacts.slice(0, 2).map((contact) => (
+                    {contacts.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-xs"
+                        onClick={() => setAssignContactsOpen(true)}
+                      >
+                        Manage
+                      </Button>
+                    )}
+                  </div>
+                  {assignedContacts.length > 0 ? (
+                    assignedContacts.map((contact) => (
                       <div
                         key={contact.id}
                         className="flex items-center gap-2 text-xs py-1"
@@ -491,10 +522,17 @@ const DealDetail = () => {
                           {contact.name}
                           {contact.designation && ` (${contact.designation})`}
                         </span>
+                        {contact.isPrimary && (
+                          <span className="text-yellow-600 text-[10px]">Primary</span>
+                        )}
                       </div>
-                    ))}
-                  </div>
-                )}
+                    ))
+                  ) : (
+                    <p className="text-xs text-muted-foreground italic">
+                      No contacts assigned to this deal
+                    </p>
+                  )}
+                </div>
               </>
             ) : (
               <p className="text-muted-foreground">No client assigned</p>
@@ -736,6 +774,17 @@ const DealDetail = () => {
           if (updates.clientId && updates.clientId !== deal.clientId) {
             getContactsByClient(updates.clientId).then(setContacts);
           }
+        }}
+      />
+
+      <AssignContactsDialog
+        open={assignContactsOpen}
+        onOpenChange={setAssignContactsOpen}
+        dealId={dealId!}
+        clientId={deal.clientId}
+        assignedContactIds={deal.assignedContactIds || []}
+        onContactsUpdated={(contactIds) => {
+          setDeal({ ...deal, assignedContactIds: contactIds });
         }}
       />
     </div>
