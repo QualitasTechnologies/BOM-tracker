@@ -473,7 +473,7 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
       setPaymentTerms(companySettings?.defaultPaymentTerms || '');
       setDeliveryTerms(companySettings?.defaultDeliveryTerms || '');
       setExpectedDeliveryDate('');
-      setCustomerPoReference('');
+      setVendorQuoteReference('');
 
       onOpenChange(false);
     } catch (err: any) {
