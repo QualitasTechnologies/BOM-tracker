@@ -511,6 +511,20 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                 </span>
               </div>
 
+              {/* Sent Info - show when PO was sent */}
+              {selectedPO.status === 'sent' && selectedPO.sentAt && (
+                <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm">
+                  <div className="flex items-center gap-2 text-blue-800">
+                    <Mail className="h-4 w-4" />
+                    <span className="font-medium">Sent to:</span>
+                    <span>{selectedPO.sentToEmail || 'N/A'}</span>
+                  </div>
+                  <div className="text-blue-600 mt-1 ml-6">
+                    {formatDate(selectedPO.sentAt)}
+                  </div>
+                </div>
+              )}
+
               {/* Vendor Info */}
               <div className="bg-gray-50 rounded p-4">
                 <h4 className="font-medium mb-2">Vendor Details</h4>

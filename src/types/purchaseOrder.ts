@@ -64,7 +64,7 @@ export interface PurchaseOrder {
 
   // Reference
   projectReference: string;      // Project ID/Name for "Reference No." field
-  customerPoReference?: string;  // Customer's PO number if any
+  vendorQuoteReference?: string;  // Vendor's quote number/reference
 
   // Addresses (from Company Settings)
   invoiceToCompany: string;

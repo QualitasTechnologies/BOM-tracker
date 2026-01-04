@@ -3640,7 +3640,7 @@ exports.generatePOPDF = onCall(async (request) => {
       ['PO Number:', purchaseOrder.poNumber || '-'],
       ['PO Date:', formatDateSafe(purchaseOrder.poDate)],
       ['Reference:', purchaseOrder.projectReference || '-'],
-      ['Vendor Quote:', purchaseOrder.customerPoReference || '-']
+      ['Vendor Quote:', purchaseOrder.vendorQuoteReference || '-']
     ];
 
     const valueWidth = colWidth - 90;
@@ -4041,7 +4041,7 @@ exports.sendPurchaseOrder = onCall(
       const msg = {
         to: recipientEmail,
         cc: ccEmails || [],
-        from: companySettings.email || 'noreply@bomtracker.com',
+        from: 'info@qualitastech.com', // Must be verified in SendGrid
         subject: `Purchase Order ${poNum} - ${companySettings.companyName || 'Company'}`,
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -4092,7 +4092,7 @@ exports.sendPurchaseOrder = onCall(
 
       // Update PO status to 'sent' in Firestore
       const db = admin.firestore();
-      await db.collection('purchaseOrders').doc(purchaseOrder.id).update({
+      await db.collection('projects').doc(purchaseOrder.projectId).collection('purchaseOrders').doc(purchaseOrder.id).update({
         status: 'sent',
         sentAt: admin.firestore.FieldValue.serverTimestamp(),
         sentBy: request.auth?.uid || 'system',

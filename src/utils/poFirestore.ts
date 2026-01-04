@@ -126,7 +126,7 @@ export interface CreatePOInput {
   expectedDeliveryDate?: Date;
 
   // Reference
-  customerPoReference?: string;
+  vendorQuoteReference?: string;
 
   // User
   createdBy: string;
@@ -183,7 +183,7 @@ export const createPurchaseOrder = async (input: CreatePOInput): Promise<string>
 
     // Reference
     projectReference: input.projectReference,
-    customerPoReference: input.customerPoReference,
+    vendorQuoteReference: input.vendorQuoteReference,
 
     // Invoice To (from company settings)
     invoiceToCompany: companySettings.companyName,
@@ -354,7 +354,7 @@ export interface UpdatePOInput {
   status?: POStatus;
 
   // Reference
-  customerPoReference?: string;
+  vendorQuoteReference?: string;
 
   // Warnings
   warnings?: POWarning[];

@@ -231,7 +231,7 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
   const [termsAndConditions, setTermsAndConditions] = useState(DEFAULT_TERMS_AND_CONDITIONS);
   const [includeAnnexure, setIncludeAnnexure] = useState(true);
   const [showTerms, setShowTerms] = useState(false);
-  const [customerPoReference, setCustomerPoReference] = useState('');
+  const [vendorQuoteReference, setVendorQuoteReference] = useState('');
 
   const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
   const [loading, setLoading] = useState(false);
@@ -455,7 +455,7 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
         expectedDeliveryDate: expectedDeliveryDate
           ? new Date(expectedDeliveryDate)
           : undefined,
-        customerPoReference: customerPoReference || undefined,
+        vendorQuoteReference: vendorQuoteReference || undefined,
 
         createdBy: auth.currentUser?.uid || 'unknown',
       };
@@ -751,12 +751,12 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="customerPo">Customer PO Reference</Label>
+                      <Label htmlFor="vendorQuote">Vendor Quote</Label>
                       <Input
-                        id="customerPo"
-                        value={customerPoReference}
-                        onChange={(e) => setCustomerPoReference(e.target.value)}
-                        placeholder="Customer's PO number (if any)"
+                        id="vendorQuote"
+                        value={vendorQuoteReference}
+                        onChange={(e) => setVendorQuoteReference(e.target.value)}
+                        placeholder="Vendor's quote number/reference (if any)"
                       />
                     </div>
                   </div>
