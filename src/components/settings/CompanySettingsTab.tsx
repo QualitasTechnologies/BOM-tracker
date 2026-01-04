@@ -28,6 +28,37 @@ import {
 import { INDIAN_STATE_CODES } from '@/types/purchaseOrder';
 import { uploadCompanyLogo } from '@/utils/imageUpload';
 
+/**
+ * Calculate financial year string (e.g., "24-25")
+ */
+const getFinancialYearString = (): string => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const fyStart = month < 3 ? year - 1 : year;
+  const fyEnd = fyStart + 1;
+  return `${String(fyStart).slice(-2)}-${String(fyEnd).slice(-2)}`;
+};
+
+/**
+ * Generate PO number format example
+ */
+const getPOFormatExample = (
+  format: 'simple' | 'financial-year',
+  prefix: string
+): string => {
+  const defaultPrefix = format === 'simple' ? 'PO-QT' : 'PO/QT';
+  const actualPrefix = prefix || defaultPrefix;
+  
+  if (format === 'financial-year') {
+    const fyShort = getFinancialYearString();
+    return `${actualPrefix}/${fyShort}/001`;
+  } else {
+    const year = new Date().getFullYear();
+    return `${actualPrefix}-${year}-001`;
+  }
+};
+
 const CompanySettingsTab: React.FC = () => {
   const [settings, setSettings] = useState<CompanySettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -146,7 +177,17 @@ const CompanySettingsTab: React.FC = () => {
       // Create preview
       const reader = new FileReader();
       reader.onloadend = () => {
-        setLogoPreview(reader.result as string);
+        if (reader.result) {
+          setLogoPreview(reader.result as string);
+        }
+      };
+      reader.onerror = () => {
+        toast({
+          title: 'Error',
+          description: 'Failed to read image file',
+          variant: 'destructive',
+        });
+        setLogoFile(null);
       };
       reader.readAsDataURL(file);
     }
@@ -503,24 +544,10 @@ const CompanySettingsTab: React.FC = () => {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="simple">
-                    {(() => {
-                      const year = new Date().getFullYear();
-                      const example = `${poNumberPrefix || 'PO-QT'}-${year}-001`;
-                      return `Simple (${example})`;
-                    })()}
+                    Simple ({getPOFormatExample('simple', poNumberPrefix)})
                   </SelectItem>
                   <SelectItem value="financial-year">
-                    {(() => {
-                      const now = new Date();
-                      const year = now.getFullYear();
-                      const month = now.getMonth();
-                      const fyStart = month < 3 ? year - 1 : year;
-                      const fyEnd = fyStart + 1;
-                      const fyShort = `${String(fyStart).slice(-2)}-${String(fyEnd).slice(-2)}`;
-                      const prefix = poNumberPrefix || 'PO/QT';
-                      const example = `${prefix}/${fyShort}/001`;
-                      return `Financial Year (${example})`;
-                    })()}
+                    Financial Year ({getPOFormatExample('financial-year', poNumberPrefix)})
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -532,7 +559,10 @@ const CompanySettingsTab: React.FC = () => {
                 type="number"
                 min="1"
                 value={nextPoNumber}
-                onChange={(e) => setNextPoNumber(parseInt(e.target.value) || 1)}
+                onChange={(e) => {
+                  const value = parseInt(e.target.value, 10);
+                  setNextPoNumber(isNaN(value) || value < 1 ? 1 : value);
+                }}
               />
             </div>
           </div>

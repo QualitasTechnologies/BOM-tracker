@@ -51,20 +51,12 @@ import {
   BOMSettings
 } from '@/utils/settingsFirestore';
 import { getBrands } from '@/utils/brandFirestore';
+import { cleanFirestoreData } from '@/utils/firestoreHelpers';
 import { toast } from '@/components/ui/use-toast';
 
 interface BOMTemplatesTabProps {
   bomSettings: BOMSettings | null;
 }
-
-/**
- * Remove undefined values from an object to prevent Firestore errors
- */
-const cleanUndefinedValues = <T extends Record<string, any>>(obj: T): Partial<T> => {
-  return Object.fromEntries(
-    Object.entries(obj).filter(([_, value]) => value !== undefined)
-  ) as Partial<T>;
-};
 
 const BOMTemplatesTab = ({ bomSettings }: BOMTemplatesTabProps) => {
   const [templates, setTemplates] = useState<BOMTemplate[]>([]);
@@ -196,7 +188,7 @@ const BOMTemplatesTab = ({ bomSettings }: BOMTemplatesTabProps) => {
       return;
     }
 
-    const newItem = cleanUndefinedValues({
+    const newItem = cleanFirestoreData({
       id: editingItem?.id || `item-${Date.now()}`,
       itemType: itemType,
       name: itemName.trim(),
@@ -247,7 +239,7 @@ const BOMTemplatesTab = ({ bomSettings }: BOMTemplatesTabProps) => {
         templateDataObj.description = trimmedDescription;
       }
       
-      const templateData = cleanUndefinedValues(templateDataObj);
+      const templateData = cleanFirestoreData(templateDataObj);
 
       if (editingTemplate) {
         await updateTemplate(editingTemplate.id, templateData);

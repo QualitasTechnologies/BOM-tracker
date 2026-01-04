@@ -3570,25 +3570,47 @@ exports.generatePOPDF = onCall(async (request) => {
     }
 
     // Company Name and Address (beside logo or centered)
-    const textStartY = resolvedLogo ? y + 5 : y; // Slight offset when logo present
+    const textStartY = resolvedLogo ? y : y;
+    const headerTextWidth = pageWidth - logoOffset;
+
+    // Company name
     doc.font('Helvetica-Bold')
        .fontSize(14)
        .fillColor(primaryColor)
        .text(companySettings.companyName || 'Company', startX + logoOffset, textStartY, {
-         width: pageWidth - logoOffset,
+         width: headerTextWidth,
          align: resolvedLogo ? 'left' : 'center'
        });
 
-    doc.font('Helvetica')
-       .fontSize(8)
-       .fillColor('#374151')
-       .text(companySettings.companyAddress || '-', startX + logoOffset, textStartY + 18, {
-         width: pageWidth - logoOffset,
+    // Address - calculate actual height needed
+    const addressText = companySettings.companyAddress || '-';
+    doc.font('Helvetica').fontSize(8);
+    const addressHeight = doc.heightOfString(addressText, { width: headerTextWidth });
+
+    doc.fillColor('#374151')
+       .text(addressText, startX + logoOffset, textStartY + 18, {
+         width: headerTextWidth,
          align: resolvedLogo ? 'left' : 'center'
        });
 
-    // Move y past the header (logo height or text height, whichever is larger)
-    y += Math.max(logoMaxHeight, 35) + 10;
+    // Add GSTIN and PAN below address (with proper spacing)
+    const gstPanY = textStartY + 18 + addressHeight + 4;
+    const gstPanLine = [];
+    if (companySettings.gstin) gstPanLine.push(`GSTIN: ${companySettings.gstin}`);
+    if (companySettings.pan) gstPanLine.push(`PAN: ${companySettings.pan}`);
+    if (gstPanLine.length > 0) {
+      doc.font('Helvetica')
+         .fontSize(8)
+         .fillColor('#374151')
+         .text(gstPanLine.join('  |  '), startX + logoOffset, gstPanY, {
+           width: headerTextWidth,
+           align: resolvedLogo ? 'left' : 'center'
+         });
+    }
+
+    // Move y past the header (calculate actual height used)
+    const headerHeight = Math.max(logoMaxHeight, 18 + addressHeight + 4 + 12);
+    y += headerHeight + 10;
 
     // PO Title Bar
     doc.rect(startX, y, pageWidth, 25)
@@ -3618,11 +3640,17 @@ exports.generatePOPDF = onCall(async (request) => {
       ['PO Number:', purchaseOrder.poNumber || '-'],
       ['PO Date:', formatDateSafe(purchaseOrder.poDate)],
       ['Reference:', purchaseOrder.projectReference || '-'],
-      ['Customer PO:', purchaseOrder.customerPoReference || '-']
+      ['Vendor Quote:', purchaseOrder.customerPoReference || '-']
     ];
 
+    const valueWidth = colWidth - 90;
     poDetails.forEach(([label, value]) => {
-      doc.rect(leftColX, y, colWidth, 18)
+      // Calculate height needed for this row based on value text
+      doc.font('Helvetica-Bold').fontSize(9);
+      const textHeight = doc.heightOfString(value, { width: valueWidth });
+      const rowHeight = Math.max(18, textHeight + 8);
+
+      doc.rect(leftColX, y, colWidth, rowHeight)
          .stroke(borderColor);
       doc.font('Helvetica')
          .fontSize(9)
@@ -3630,8 +3658,8 @@ exports.generatePOPDF = onCall(async (request) => {
          .text(label, leftColX + 5, y + 4, { width: 80 });
       doc.font('Helvetica-Bold')
          .fillColor('#1f2937')
-         .text(value, leftColX + 85, y + 4, { width: colWidth - 90 });
-      y += 18;
+         .text(value, leftColX + 85, y + 4, { width: valueWidth });
+      y += rowHeight;
     });
 
     // Right Column: Vendor Details

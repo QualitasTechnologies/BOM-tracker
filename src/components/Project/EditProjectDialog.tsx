@@ -76,7 +76,8 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
       } else {
         // Try case-insensitive match with trimmed values
         const caseInsensitiveMatch = clients.find(
-          (client) => client.company?.trim().toLowerCase() === project.clientName?.trim().toLowerCase()
+          (client) => client.company && project.clientName && 
+            client.company.trim().toLowerCase() === project.clientName.trim().toLowerCase()
         );
         
         if (caseInsensitiveMatch) {
