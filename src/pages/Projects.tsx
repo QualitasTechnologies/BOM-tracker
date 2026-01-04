@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, Archive, Wrench } from "lucide-react";
+import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, Archive, Wrench, ClipboardList } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +16,7 @@ import { addProject, subscribeToProjects, updateProject, archiveProject, updateB
 import { getTemplate, subscribeToClients, Client } from "@/utils/settingsFirestore";
 import type { EditableProjectInput, FirestoreProject, NewProjectFormData, ProjectViewMode } from "@/types/project";
 import type { BOMCategory, BOMItem } from "@/types/bom";
+import { TranscriptPasteDialog } from "@/components/Transcripts";
 
 const Projects = () => {
   const [viewMode, setViewMode] = useState<ProjectViewMode>("cards");
@@ -26,6 +27,7 @@ const Projects = () => {
   const [isAddProjectDialogOpen, setIsAddProjectDialogOpen] = useState(false);
   const [isEditProjectDialogOpen, setIsEditProjectDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [transcriptPasteOpen, setTranscriptPasteOpen] = useState(false);
   const [selectedProject, setSelectedProject] = useState<FirestoreProject | null>(null);
   const [projects, setProjects] = useState<FirestoreProject[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -313,6 +315,10 @@ const Projects = () => {
                   <Plus className="h-4 w-4 mr-2" />
                   Add New Project
                 </Button>
+                <Button variant="outline" onClick={() => setTranscriptPasteOpen(true)}>
+                  <ClipboardList className="h-4 w-4 mr-2" />
+                  Paste Transcript
+                </Button>
                 <Select value={clientFilter} onValueChange={setClientFilter}>
                   <SelectTrigger className="w-40">
                     <Filter className="h-4 w-4 mr-2" />
@@ -478,6 +484,13 @@ const Projects = () => {
         onOpenChange={setIsDeleteDialogOpen}
         onConfirm={handleArchiveProject}
         projectName={selectedProject?.projectName || ""}
+      />
+      <TranscriptPasteDialog
+        open={transcriptPasteOpen}
+        onOpenChange={setTranscriptPasteOpen}
+        onSuccess={() => {
+          console.log('Transcript activities saved successfully');
+        }}
       />
     </div>
   );

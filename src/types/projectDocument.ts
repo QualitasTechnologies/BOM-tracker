@@ -1,4 +1,4 @@
-export type DocumentType = 'vendor-quote' | 'outgoing-po' | 'customer-po' | 'vendor-invoice' | 'spec-sheet';
+export type DocumentType = 'vendor-quote' | 'vendor-po' | 'customer-po' | 'vendor-invoice' | 'spec-sheet';
 
 export interface ProjectDocument {
   id: string;
@@ -26,14 +26,14 @@ export const DOCUMENT_SECTIONS: DocumentTypeSection[] = [
     description: 'Quotation PDFs and documents from vendors'
   },
   {
-    type: 'outgoing-po',
-    label: 'POs (Outgoing)',
-    description: 'Purchase orders sent to vendors'
+    type: 'vendor-po',
+    label: 'Legacy Vendor POs',
+    description: 'Manually uploaded PO documents (pre-system)'
   },
   {
     type: 'customer-po',
     label: 'Customer PO',
-    description: 'Purchase orders received from customer'
+    description: 'Purchase order received from customer'
   },
   {
     type: 'vendor-invoice',
@@ -42,12 +42,12 @@ export const DOCUMENT_SECTIONS: DocumentTypeSection[] = [
   },
   {
     type: 'spec-sheet',
-    label: 'Specification Sheets',
+    label: 'Spec Sheets',
     description: 'Product datasheets and technical specifications'
   }
 ];
 
-// Document sections for BOM page (excludes customer-po which is on Cost Analysis page)
+// Document sections for BOM page (excludes customer-po which is admin-only)
 export const BOM_DOCUMENT_SECTIONS: DocumentTypeSection[] = DOCUMENT_SECTIONS.filter(
   section => section.type !== 'customer-po'
 );

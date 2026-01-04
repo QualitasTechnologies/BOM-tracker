@@ -16,7 +16,7 @@ const buildDoc = (overrides: Partial<ProjectDocument>): ProjectDocument => ({
   projectId: overrides.projectId ?? 'project-1',
   name: overrides.name ?? 'Test Doc',
   url: overrides.url ?? 'https://example.com/doc.pdf',
-  type: overrides.type ?? 'outgoing-po',
+  type: overrides.type ?? 'vendor-po',
   uploadedAt: overrides.uploadedAt ?? new Date(),
   uploadedBy: overrides.uploadedBy ?? 'user-1',
   linkedBOMItems: overrides.linkedBOMItems ?? [],
@@ -43,13 +43,13 @@ const buildItem = (overrides: Partial<BOMItem>): BOMItem => ({
 describe('filterDocumentsByType', () => {
   it('filters documents by type field (NOT category)', () => {
     const documents = [
-      buildDoc({ id: 'po-1', type: 'outgoing-po', name: 'PO 001' }),
+      buildDoc({ id: 'po-1', type: 'vendor-po', name: 'PO 001' }),
       buildDoc({ id: 'quote-1', type: 'vendor-quote', name: 'Quote 001' }),
-      buildDoc({ id: 'po-2', type: 'outgoing-po', name: 'PO 002' }),
+      buildDoc({ id: 'po-2', type: 'vendor-po', name: 'PO 002' }),
       buildDoc({ id: 'customer-1', type: 'customer-po', name: 'Customer PO' }),
     ];
 
-    const result = filterDocumentsByType(documents, 'outgoing-po');
+    const result = filterDocumentsByType(documents, 'vendor-po');
 
     expect(result).toHaveLength(2);
     expect(result.map((d) => d.id)).toEqual(['po-1', 'po-2']);
@@ -61,20 +61,20 @@ describe('filterDocumentsByType', () => {
       buildDoc({ id: 'quote-2', type: 'vendor-quote' }),
     ];
 
-    const result = filterDocumentsByType(documents, 'outgoing-po');
+    const result = filterDocumentsByType(documents, 'vendor-po');
 
     expect(result).toHaveLength(0);
   });
 
   it('returns empty array for empty documents array', () => {
-    const result = filterDocumentsByType([], 'outgoing-po');
+    const result = filterDocumentsByType([], 'vendor-po');
 
     expect(result).toHaveLength(0);
   });
 
   it('filters vendor-quote documents correctly', () => {
     const documents = [
-      buildDoc({ id: 'po-1', type: 'outgoing-po' }),
+      buildDoc({ id: 'po-1', type: 'vendor-po' }),
       buildDoc({ id: 'quote-1', type: 'vendor-quote' }),
     ];
 
@@ -86,7 +86,7 @@ describe('filterDocumentsByType', () => {
 
   it('filters customer-po documents correctly', () => {
     const documents = [
-      buildDoc({ id: 'po-1', type: 'outgoing-po' }),
+      buildDoc({ id: 'po-1', type: 'vendor-po' }),
       buildDoc({ id: 'customer-1', type: 'customer-po' }),
     ];
 
@@ -98,17 +98,17 @@ describe('filterDocumentsByType', () => {
 });
 
 describe('getOutgoingPODocuments', () => {
-  it('returns only outgoing-po documents', () => {
+  it('returns only vendor-po documents', () => {
     const documents = [
-      buildDoc({ id: 'po-1', type: 'outgoing-po' }),
+      buildDoc({ id: 'po-1', type: 'vendor-po' }),
       buildDoc({ id: 'quote-1', type: 'vendor-quote' }),
-      buildDoc({ id: 'po-2', type: 'outgoing-po' }),
+      buildDoc({ id: 'po-2', type: 'vendor-po' }),
     ];
 
     const result = getOutgoingPODocuments(documents);
 
     expect(result).toHaveLength(2);
-    expect(result.every((d) => d.type === 'outgoing-po')).toBe(true);
+    expect(result.every((d) => d.type === 'vendor-po')).toBe(true);
   });
 });
 
@@ -150,8 +150,8 @@ describe('findLinkedDocument', () => {
 describe('findLinkedPODocument', () => {
   it('finds PO document by direct linkedPODocumentId', () => {
     const documents = [
-      buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: [] }),
-      buildDoc({ id: 'po-2', type: 'outgoing-po', linkedBOMItems: [] }),
+      buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: [] }),
+      buildDoc({ id: 'po-2', type: 'vendor-po', linkedBOMItems: [] }),
     ];
 
     const result = findLinkedPODocument(documents, 'item-1', 'po-2');
@@ -161,8 +161,8 @@ describe('findLinkedPODocument', () => {
 
   it('finds PO document via linkedBOMItems when no direct link', () => {
     const documents = [
-      buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1'] }),
-      buildDoc({ id: 'po-2', type: 'outgoing-po', linkedBOMItems: [] }),
+      buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: ['item-1'] }),
+      buildDoc({ id: 'po-2', type: 'vendor-po', linkedBOMItems: [] }),
     ];
 
     const result = findLinkedPODocument(documents, 'item-1');
@@ -173,7 +173,7 @@ describe('findLinkedPODocument', () => {
   it('ignores non-PO documents when searching', () => {
     const documents = [
       buildDoc({ id: 'quote-1', type: 'vendor-quote', linkedBOMItems: ['item-1'] }),
-      buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: [] }),
+      buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: [] }),
     ];
 
     const result = findLinkedPODocument(documents, 'item-1');
@@ -184,8 +184,8 @@ describe('findLinkedPODocument', () => {
 
   it('prioritizes direct link over linkedBOMItems', () => {
     const documents = [
-      buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1'] }),
-      buildDoc({ id: 'po-2', type: 'outgoing-po', linkedBOMItems: [] }),
+      buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: ['item-1'] }),
+      buildDoc({ id: 'po-2', type: 'vendor-po', linkedBOMItems: [] }),
     ];
 
     // Direct link points to po-2, but po-1 has item-1 in linkedBOMItems
@@ -196,7 +196,7 @@ describe('findLinkedPODocument', () => {
 
   it('falls back to linkedBOMItems when direct link document not found', () => {
     const documents = [
-      buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1'] }),
+      buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: ['item-1'] }),
     ];
 
     // Direct link points to non-existent document
@@ -257,14 +257,14 @@ describe('syncPODocumentLinks', () => {
  */
 describe('isItemLinkedToDocument', () => {
   it('returns true when document.linkedBOMItems contains the item ID', () => {
-    const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1', 'item-2'] });
+    const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: ['item-1', 'item-2'] });
     const item = buildItem({ id: 'item-1' });
 
     expect(isItemLinkedToDocument(item, doc)).toBe(true);
   });
 
   it('returns true when item.linkedPODocumentId matches PO document ID', () => {
-    const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: [] });
+    const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: [] });
     const item = buildItem({ id: 'item-1', linkedPODocumentId: 'po-1' });
 
     expect(isItemLinkedToDocument(item, doc)).toBe(true);
@@ -278,14 +278,14 @@ describe('isItemLinkedToDocument', () => {
   });
 
   it('returns false when no linkage exists', () => {
-    const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['other-item'] });
+    const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: ['other-item'] });
     const item = buildItem({ id: 'item-1', linkedPODocumentId: 'other-po' });
 
     expect(isItemLinkedToDocument(item, doc)).toBe(false);
   });
 
   it('returns false when linkedBOMItems is undefined', () => {
-    const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: undefined });
+    const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: undefined });
     const item = buildItem({ id: 'item-1' });
 
     expect(isItemLinkedToDocument(item, doc)).toBe(false);
@@ -301,18 +301,18 @@ describe('isItemLinkedToDocument', () => {
   });
 
   it('ignores linkedInvoiceDocumentId for non-invoice documents', () => {
-    const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: [] });
+    const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: [] });
     const item = buildItem({ id: 'item-1', linkedInvoiceDocumentId: 'po-1' });
 
-    // Should NOT match because outgoing-po doesn't use linkedInvoiceDocumentId
+    // Should NOT match because vendor-po doesn't use linkedInvoiceDocumentId
     expect(isItemLinkedToDocument(item, doc)).toBe(false);
   });
 });
 
 describe('validateDocumentDeletion', () => {
-  describe('outgoing-po documents', () => {
+  describe('vendor-po documents', () => {
     it('blocks deletion when linked item has status "ordered"', () => {
-      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1'] });
+      const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: ['item-1'] });
       const items = [buildItem({ id: 'item-1', name: 'Resistor 10k', status: 'ordered' })];
 
       const result = validateDocumentDeletion(doc, items);
@@ -325,7 +325,7 @@ describe('validateDocumentDeletion', () => {
 
     it('blocks deletion when item links back via linkedPODocumentId', () => {
       // Document has no linkedBOMItems, but item points to document
-      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: [] });
+      const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: [] });
       const items = [buildItem({ id: 'item-1', name: 'Capacitor', status: 'ordered', linkedPODocumentId: 'po-1' })];
 
       const result = validateDocumentDeletion(doc, items);
@@ -335,7 +335,7 @@ describe('validateDocumentDeletion', () => {
     });
 
     it('allows deletion when linked item has status "not-ordered"', () => {
-      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1'] });
+      const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: ['item-1'] });
       const items = [buildItem({ id: 'item-1', status: 'not-ordered' })];
 
       const result = validateDocumentDeletion(doc, items);
@@ -345,7 +345,7 @@ describe('validateDocumentDeletion', () => {
     });
 
     it('allows deletion when linked item has status "received"', () => {
-      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1'] });
+      const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: ['item-1'] });
       const items = [buildItem({ id: 'item-1', status: 'received' })];
 
       const result = validateDocumentDeletion(doc, items);
@@ -355,7 +355,7 @@ describe('validateDocumentDeletion', () => {
     });
 
     it('allows deletion when no items are linked', () => {
-      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: [] });
+      const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: [] });
       const items = [buildItem({ id: 'item-1', status: 'ordered' })];
 
       const result = validateDocumentDeletion(doc, items);
@@ -364,7 +364,7 @@ describe('validateDocumentDeletion', () => {
     });
 
     it('blocks only for items that are both linked AND ordered', () => {
-      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1', 'item-2'] });
+      const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: ['item-1', 'item-2'] });
       const items = [
         buildItem({ id: 'item-1', name: 'Blocked Item', status: 'ordered' }),
         buildItem({ id: 'item-2', name: 'Allowed Item', status: 'received' }),
@@ -449,7 +449,7 @@ describe('validateDocumentDeletion', () => {
 
   describe('edge cases', () => {
     it('handles empty bomItems array', () => {
-      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1'] });
+      const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: ['item-1'] });
 
       const result = validateDocumentDeletion(doc, []);
 
@@ -457,7 +457,7 @@ describe('validateDocumentDeletion', () => {
     });
 
     it('handles document with undefined linkedBOMItems', () => {
-      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: undefined });
+      const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: undefined });
       const items = [buildItem({ id: 'item-1', status: 'ordered' })];
 
       const result = validateDocumentDeletion(doc, items);
@@ -466,7 +466,7 @@ describe('validateDocumentDeletion', () => {
     });
 
     it('reports multiple blocked items in reason', () => {
-      const doc = buildDoc({ id: 'po-1', type: 'outgoing-po', linkedBOMItems: ['item-1', 'item-2'] });
+      const doc = buildDoc({ id: 'po-1', type: 'vendor-po', linkedBOMItems: ['item-1', 'item-2'] });
       const items = [
         buildItem({ id: 'item-1', name: 'First Item', status: 'ordered' }),
         buildItem({ id: 'item-2', name: 'Second Item', status: 'ordered' }),

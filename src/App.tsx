@@ -18,7 +18,8 @@ import Settings from "./pages/Settings";
 import Pipeline from "./pages/Pipeline";
 import DealDetail from "./pages/DealDetail";
 import KPI from "./pages/Index"; // Using Index as KPI dashboard
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { subscribeToCompanySettings, CompanySettings } from '@/utils/settingsFirestore';
 
 const queryClient = new QueryClient();
 
@@ -40,10 +41,32 @@ const SidebarProvider: React.FC<{ children: React.ReactNode }> = ({ children }) 
 const AppLayout: React.FC = () => {
   const { collapsed, toggle } = useSidebar();
   const location = useLocation();
+  const [companyLogo, setCompanyLogo] = useState<string>('/qualitas-logo.png');
+  const [companyName, setCompanyName] = useState<string>('Qualitas Technologies');
 
   // Hide sidebar on BOM pages for better mobile experience
   const isBOMPage = location.pathname.includes('/bom');
   const showSidebar = !isBOMPage;
+
+  // Subscribe to company settings to get logo
+  useEffect(() => {
+    const unsubscribe = subscribeToCompanySettings((settings: CompanySettings | null) => {
+      if (settings) {
+        // Use logo from settings if available, otherwise fallback to default
+        if (settings.logo) {
+          setCompanyLogo(settings.logo);
+        } else {
+          setCompanyLogo('/qualitas-logo.png');
+        }
+        // Update company name for alt text
+        if (settings.companyName) {
+          setCompanyName(settings.companyName);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -55,10 +78,17 @@ const AppLayout: React.FC = () => {
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-6">
             <img
-              src="/qualitas-logo.png"
-              alt="Qualitas Technologies"
+              src={companyLogo}
+              alt={companyName}
               className="h-12 w-auto"
               style={{ minWidth: 120 }}
+              onError={(e) => {
+                // Fallback to default logo if company logo fails to load
+                const target = e.target as HTMLImageElement;
+                if (target.src !== '/qualitas-logo.png') {
+                  target.src = '/qualitas-logo.png';
+                }
+              }}
             />
             <h1 className="text-2xl font-semibold text-gray-900">
               Industrial AI Dashboard

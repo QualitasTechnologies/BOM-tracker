@@ -174,7 +174,7 @@ const OrderItemDialog = ({
       const user = auth.currentUser;
       if (!user) throw new Error('User not authenticated');
 
-      const newDoc = await uploadProjectDocument(file, projectId, 'outgoing-po', user.uid);
+      const newDoc = await uploadProjectDocument(file, projectId, 'vendor-po', user.uid);
       
       // Link the document to this BOM item
       await linkDocumentToBOMItems(newDoc.id, [item.id]);

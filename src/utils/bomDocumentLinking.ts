@@ -2,7 +2,7 @@ import { ProjectDocument, DocumentType } from '@/types/projectDocument';
 import { BOMItem } from '@/types/bom';
 
 /**
- * Filter documents by type (e.g., 'outgoing-po', 'vendor-quote', 'customer-po')
+ * Filter documents by type (e.g., 'vendor-po', 'vendor-quote', 'customer-po')
  * IMPORTANT: Use this function instead of inline filtering to ensure correct field is used.
  * The field is `type` NOT `category` - this has caused regressions before.
  */
@@ -14,11 +14,11 @@ export function filterDocumentsByType(
 }
 
 /**
- * Get outgoing PO documents only
+ * Get vendor PO documents only
  * Convenience wrapper for the most common use case
  */
 export function getOutgoingPODocuments(documents: ProjectDocument[]): ProjectDocument[] {
-  return filterDocumentsByType(documents, 'outgoing-po');
+  return filterDocumentsByType(documents, 'vendor-po');
 }
 
 /**
@@ -124,7 +124,7 @@ export function isItemLinkedToDocument(
   }
 
   // Check item -> document linkage based on document type
-  if (document.type === 'outgoing-po' && item.linkedPODocumentId === document.id) {
+  if (document.type === 'vendor-po' && item.linkedPODocumentId === document.id) {
     return true;
   }
 
@@ -139,7 +139,7 @@ export function isItemLinkedToDocument(
  * Validate whether a document can be deleted based on its type and linked BOM items.
  *
  * Business rules:
- * - outgoing-po: Cannot delete if linked to items with status 'ordered'
+ * - vendor-po: Cannot delete if linked to items with status 'ordered'
  * - vendor-invoice: Cannot delete if linked to items with status 'received'
  * - vendor-quote, customer-po: Can always be deleted (no status restrictions)
  */
@@ -152,8 +152,8 @@ export function validateDocumentDeletion(
     return { canDelete: true, blockedByItems: [] };
   }
 
-  // For outgoing-po: check for linked items with 'ordered' status
-  if (document.type === 'outgoing-po') {
+  // For vendor-po: check for linked items with 'ordered' status
+  if (document.type === 'vendor-po') {
     const blockedByItems = bomItems.filter(
       item => isItemLinkedToDocument(item, document) && item.status === 'ordered'
     );

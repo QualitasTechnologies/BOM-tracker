@@ -14,7 +14,7 @@ interface DocumentInfo {
 interface LinkedDocument {
   id: string;
   name: string;
-  type: 'vendor-quote' | 'outgoing-po' | 'customer-po';
+  type: 'vendor-quote' | 'vendor-po' | 'customer-po';
   url: string;
 }
 

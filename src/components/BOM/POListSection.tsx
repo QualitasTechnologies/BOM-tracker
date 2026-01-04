@@ -385,11 +385,11 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
       <div className="flex items-center justify-between mb-4 pb-3 border-b">
         <div>
           <h3 className="font-semibold text-lg text-gray-900">
-            Purchase Orders
+            Vendor POs
             <Badge variant="outline" className="ml-2">{purchaseOrders.length}</Badge>
           </h3>
           <p className="text-sm text-gray-500 mt-1">
-            Generated POs from BOM items. Admin users can send draft POs to vendors.
+            Purchase orders sent to vendors. Admin users can send draft POs.
           </p>
         </div>
       </div>

@@ -4100,6 +4100,24 @@ exports.sendPurchaseOrder = onCall(
         pdfUrl: pdfResult.pdfUrl
       });
 
+      // Create ProjectDocument entry for the generated PO PDF
+      // This makes the PO appear in the "Vendor POs" documents section
+      const projectDocRef = await db.collection('projectDocuments').add({
+        projectId: purchaseOrder.projectId,
+        name: (purchaseOrder.poNumber || 'PO') + '.pdf',
+        url: pdfResult.pdfUrl,
+        type: 'vendor-po',
+        uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+        uploadedBy: request.auth?.uid || 'system',
+        linkedBOMItems: purchaseOrder.items.map(item => item.bomItemId),
+        fileSize: pdfResult.size || 0
+      });
+
+      logger.info('ProjectDocument created for PO', {
+        documentId: projectDocRef.id,
+        poNumber: purchaseOrder.poNumber
+      });
+
       logger.info('PO email sent successfully', {
         poNumber: purchaseOrder.poNumber,
         to: recipientEmail
@@ -4121,6 +4139,316 @@ exports.sendPurchaseOrder = onCall(
         'internal',
         `Failed to send PO: ${error.message}`
       );
+    }
+  }
+);
+
+// ==================== TRANSCRIPT EXTRACTION FUNCTIONS ====================
+
+/**
+ * Extract activities from standup transcript
+ * Groups by project, identifies activity types, extracts key information
+ */
+exports.extractTranscriptActivities = onRequest(
+  {
+    secrets: [openaiApiKeySecret],
+    timeoutSeconds: 120  // Transcripts can be long
+  },
+  async (request, response) => {
+    // Enable CORS
+    response.set('Access-Control-Allow-Origin', '*');
+    response.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    response.set('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (request.method === 'OPTIONS') {
+      response.status(204).send('');
+      return;
+    }
+
+    if (request.method !== 'POST') {
+      response.status(405).json({ error: 'Method not allowed. Use POST.' });
+      return;
+    }
+
+    try {
+      const { transcript, knownProjects, meetingDate } = request.body;
+
+      if (!transcript || typeof transcript !== 'string') {
+        response.status(400).json({ error: 'Transcript text is required' });
+        return;
+      }
+
+      const openaiApiKey = openaiApiKeySecret.value();
+      if (!openaiApiKey) {
+        logger.error('OpenAI API key not configured');
+        response.status(500).json({ error: 'AI service not configured' });
+        return;
+      }
+
+      // Build list of known projects for the prompt
+      const projectsList = knownProjects && knownProjects.length > 0
+        ? knownProjects.join(', ')
+        : 'APIT, Tweezerman, Bosch, Eagle Eye, Hindalco, JK Tires';
+
+      const systemPrompt = `You are an expert at extracting structured information from meeting transcripts.
+
+CONTEXT: This is a transcript from a daily engineering standup meeting. Multiple projects are discussed.
+
+KNOWN PROJECTS: ${projectsList}
+
+YOUR TASK: Extract activities from the transcript and group them by project.
+
+ACTIVITY TYPES:
+- progress: Work completed, milestones achieved, tasks done
+- blocker: Issues preventing progress, problems encountered
+- decision: Technical or process decisions made
+- action: Action items, commitments, next steps agreed upon
+- note: General updates, context, information shared
+
+RULES:
+1. ONLY extract activities related to known projects (${projectsList})
+2. IGNORE sales leads, casual conversation, administrative talk
+3. Each activity should have a clean, client-readable summary (1-2 sentences max)
+4. Identify the speaker when possible (look for patterns like "Speaker Name (company)")
+5. Include the timestamp if available (format: "00:00:00")
+6. Be concise - summarize, don't copy verbatim
+7. Skip any internal-only discussions that shouldn't be shared with clients
+
+OUTPUT FORMAT (strict JSON):
+{
+  "activities": [
+    {
+      "projectName": "APIT",
+      "type": "progress",
+      "summary": "Machine 1 and Machine 2 are now running. First machine is ready to ship for pilot.",
+      "speaker": "Anandha",
+      "timestamp": "00:02:30",
+      "rawExcerpt": "Original text from transcript for reference",
+      "confidence": 0.9
+    }
+  ],
+  "unrecognizedProjects": ["Any project names mentioned but not in known list"],
+  "warnings": ["Any extraction issues or notes"]
+}
+
+CRITICAL: Return ONLY valid JSON. No explanation text.`;
+
+      const userPrompt = `Extract activities from this transcript:
+
+${transcript}`;
+
+      const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${openaiApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.2,
+          max_tokens: 4000,
+          response_format: { type: 'json_object' }
+        })
+      });
+
+      if (!openaiResponse.ok) {
+        const errorData = await openaiResponse.json().catch(() => ({}));
+        logger.error('OpenAI API error:', errorData);
+        response.status(openaiResponse.status).json({
+          error: `AI service error: ${errorData.error?.message || 'Unknown error'}`
+        });
+        return;
+      }
+
+      const data = await openaiResponse.json();
+      const aiResponse = data.choices[0]?.message?.content;
+
+      if (!aiResponse) {
+        response.status(500).json({ error: 'No response from AI service' });
+        return;
+      }
+
+      let parsedResponse;
+      try {
+        parsedResponse = JSON.parse(aiResponse);
+      } catch (parseError) {
+        logger.error('Failed to parse AI response:', aiResponse);
+        response.status(500).json({ error: 'Invalid response from AI service' });
+        return;
+      }
+
+      // Validate and clean up activities
+      const activities = (parsedResponse.activities || []).map((activity, index) => ({
+        projectName: activity.projectName || 'Unknown',
+        type: ['progress', 'blocker', 'decision', 'action', 'note'].includes(activity.type)
+          ? activity.type
+          : 'note',
+        summary: activity.summary || 'No summary',
+        speaker: activity.speaker || undefined,
+        timestamp: activity.timestamp || undefined,
+        rawExcerpt: activity.rawExcerpt || undefined,
+        confidence: typeof activity.confidence === 'number' ? activity.confidence : 0.5
+      }));
+
+      const result = {
+        activities,
+        unrecognizedProjects: parsedResponse.unrecognizedProjects || [],
+        warnings: parsedResponse.warnings || [],
+        totalActivities: activities.length,
+        projectsFound: [...new Set(activities.map(a => a.projectName))]
+      };
+
+      logger.info('Transcript extraction completed', {
+        transcriptLength: transcript.length,
+        activitiesCount: activities.length,
+        projectsCount: result.projectsFound.length
+      });
+
+      response.status(200).json(result);
+
+    } catch (error) {
+      logger.error('Error extracting transcript activities:', error);
+      response.status(500).json({
+        error: 'Internal server error during transcript extraction'
+      });
+    }
+  }
+);
+
+/**
+ * Generate a client-ready status update from activities
+ */
+exports.generateStatusUpdate = onRequest(
+  {
+    secrets: [openaiApiKeySecret]
+  },
+  async (request, response) => {
+    // Enable CORS
+    response.set('Access-Control-Allow-Origin', '*');
+    response.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    response.set('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (request.method === 'OPTIONS') {
+      response.status(204).send('');
+      return;
+    }
+
+    if (request.method !== 'POST') {
+      response.status(405).json({ error: 'Method not allowed. Use POST.' });
+      return;
+    }
+
+    try {
+      const { projectName, activities, dateRange } = request.body;
+
+      if (!projectName || !activities || !Array.isArray(activities)) {
+        response.status(400).json({ error: 'projectName and activities array are required' });
+        return;
+      }
+
+      const openaiApiKey = openaiApiKeySecret.value();
+      if (!openaiApiKey) {
+        response.status(500).json({ error: 'AI service not configured' });
+        return;
+      }
+
+      // Group activities by type for context
+      const byType = {
+        progress: activities.filter(a => a.type === 'progress'),
+        blocker: activities.filter(a => a.type === 'blocker'),
+        decision: activities.filter(a => a.type === 'decision'),
+        action: activities.filter(a => a.type === 'action'),
+        note: activities.filter(a => a.type === 'note')
+      };
+
+      let context = `Project: ${projectName}\n`;
+      if (dateRange) {
+        context += `Period: ${dateRange.start} to ${dateRange.end}\n`;
+      }
+      context += '\n';
+
+      if (byType.progress.length > 0) {
+        context += `Progress:\n${byType.progress.map(a => `- ${a.summary}`).join('\n')}\n\n`;
+      }
+      if (byType.blocker.length > 0) {
+        context += `Blockers:\n${byType.blocker.map(a => `- ${a.summary}`).join('\n')}\n\n`;
+      }
+      if (byType.decision.length > 0) {
+        context += `Decisions:\n${byType.decision.map(a => `- ${a.summary}`).join('\n')}\n\n`;
+      }
+      if (byType.action.length > 0) {
+        context += `Next Steps:\n${byType.action.map(a => `- ${a.summary}`).join('\n')}\n\n`;
+      }
+
+      const systemPrompt = `You are a professional project manager writing client status updates.
+
+Write a concise, professional status update email body based on the provided activities.
+
+RULES:
+1. Be professional and client-appropriate
+2. Start with a brief summary (1-2 sentences)
+3. Use bullet points for clarity
+4. Group by: Progress, Current Status, Blockers (if any), Next Steps
+5. Keep it concise - 200 words max
+6. Don't include internal details or team names unless relevant
+7. End with a forward-looking statement
+
+OUTPUT: Return ONLY the status update text (no JSON, no formatting instructions).`;
+
+      const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${openaiApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: context }
+          ],
+          temperature: 0.3,
+          max_tokens: 1000
+        })
+      });
+
+      if (!openaiResponse.ok) {
+        const errorData = await openaiResponse.json().catch(() => ({}));
+        response.status(openaiResponse.status).json({
+          error: `AI service error: ${errorData.error?.message || 'Unknown error'}`
+        });
+        return;
+      }
+
+      const data = await openaiResponse.json();
+      const statusUpdate = data.choices[0]?.message?.content;
+
+      if (!statusUpdate) {
+        response.status(500).json({ error: 'No response from AI service' });
+        return;
+      }
+
+      logger.info('Status update generated', {
+        projectName,
+        activitiesCount: activities.length,
+        updateLength: statusUpdate.length
+      });
+
+      response.status(200).json({
+        statusUpdate: statusUpdate.trim(),
+        projectName,
+        activitiesIncluded: activities.length
+      });
+
+    } catch (error) {
+      logger.error('Error generating status update:', error);
+      response.status(500).json({
+        error: 'Internal server error during status update generation'
+      });
     }
   }
 );

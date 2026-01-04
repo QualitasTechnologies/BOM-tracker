@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { Search, Plus, Download, Filter, X, Upload, Package, FileText, Users } from 'lucide-react';
+import { Search, Plus, Download, Filter, X, Upload, Package, FileText, Users, ChevronDown, ChevronUp, Milestone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -12,6 +12,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import BOMHeader from '@/components/BOM/BOMHeader';
 import BOMCategoryCard from '@/components/BOM/BOMCategoryCard';
+import BOMPartRow from '@/components/BOM/BOMPartRow';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import ImportBOMDialog from '@/components/BOM/ImportBOMDialog';
 import PurchaseRequestDialog from '@/components/BOM/PurchaseRequestDialog';
 import CreatePODialog from '@/components/BOM/CreatePODialog';
@@ -22,6 +24,8 @@ import ProjectDocuments from '@/components/BOM/ProjectDocuments';
 import POListSection from '@/components/BOM/POListSection';
 import ComplianceChecker from '@/components/BOM/ComplianceChecker';
 import StakeholderList from '@/components/Stakeholders/StakeholderList';
+import { MilestoneList } from '@/components/Milestones';
+import { ProjectActivityTimeline } from '@/components/Transcripts';
 import { saveAs } from 'file-saver';
 import { 
   getBOMData, 
@@ -66,6 +70,20 @@ const BOM = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [categories, setCategories] = useState<BOMCategory[]>([]);
   const [activeTab, setActiveTab] = useState('bom-items');
+  const [groupBy, setGroupBy] = useState<'category' | 'vendor'>('category');
+  const [expandedVendors, setExpandedVendors] = useState<Set<string>>(new Set());
+  
+  const toggleVendor = (vendorName: string) => {
+    setExpandedVendors(prev => {
+      const next = new Set(prev);
+      if (next.has(vendorName)) {
+        next.delete(vendorName);
+      } else {
+        next.add(vendorName);
+      }
+      return next;
+    });
+  };
   const { projectId } = useParams<{ projectId: string }>();
   console.log('projectId from URL params:', projectId);
   const [projectDetails, setProjectDetails] = useState<{ projectName: string; projectId: string; clientName: string } | null>(null);
@@ -487,6 +505,35 @@ const BOM = () => {
     }))
     .filter(category => category.items.length > 0);
 
+  // Group items by vendor for vendor view
+  const itemsByVendor = useMemo(() => {
+    const allFilteredItems = filteredCategories.flatMap(cat => 
+      cat.items.map(item => ({ ...item, categoryName: cat.name }))
+    );
+    
+    const grouped: Record<string, typeof allFilteredItems> = {};
+    
+    allFilteredItems.forEach(item => {
+      const vendorName = item.finalizedVendor?.name || 'No Vendor Assigned';
+      if (!grouped[vendorName]) {
+        grouped[vendorName] = [];
+      }
+      grouped[vendorName].push(item);
+    });
+    
+    // Sort: "No Vendor Assigned" first, then alphabetically
+    const sortedKeys = Object.keys(grouped).sort((a, b) => {
+      if (a === 'No Vendor Assigned') return -1;
+      if (b === 'No Vendor Assigned') return 1;
+      return a.localeCompare(b);
+    });
+    
+    return sortedKeys.map(vendorName => ({
+      vendorName,
+      items: grouped[vendorName]
+    }));
+  }, [filteredCategories]);
+
   // CSV Export Handler
   const handleExportCSV = () => {
     const headers = [
@@ -616,7 +663,7 @@ const BOM = () => {
 
             {/* Tab-based Layout */}
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-              <TabsList className="grid w-full grid-cols-4 mb-4">
+              <TabsList className="grid w-full grid-cols-5 mb-4">
                 <TabsTrigger value="bom-items" className="flex items-center gap-2">
                   <Package size={16} />
                   BOM Items
@@ -634,6 +681,10 @@ const BOM = () => {
                       <Badge variant="secondary" className="ml-1 text-xs">{orderedCount}</Badge>
                     ) : null;
                   })()}
+                </TabsTrigger>
+                <TabsTrigger value="milestones" className="flex items-center gap-2">
+                  <Milestone size={16} />
+                  Milestones
                 </TabsTrigger>
                 <TabsTrigger value="documents" className="flex items-center gap-2">
                   <FileText size={16} />
@@ -711,10 +762,36 @@ const BOM = () => {
                   </Alert>
                 )}
 
+                {/* Group By Toggle */}
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="text-sm text-gray-500">Group by:</span>
+                  <div className="flex rounded-md border">
+                    <Button
+                      variant={groupBy === 'category' ? 'default' : 'ghost'}
+                      size="sm"
+                      onClick={() => setGroupBy('category')}
+                      className="rounded-r-none"
+                    >
+                      Category
+                    </Button>
+                    <Button
+                      variant={groupBy === 'vendor' ? 'default' : 'ghost'}
+                      size="sm"
+                      onClick={() => setGroupBy('vendor')}
+                      className="rounded-l-none"
+                    >
+                      Vendor
+                    </Button>
+                  </div>
+                </div>
+
                 {/* BOM Content - Single Column Layout */}
                 <div className="space-y-4">
-                  {filteredCategories.map((category) => (
-                    <BOMCategoryCard
+                  {groupBy === 'category' ? (
+                    /* Category View */
+                    <>
+                      {filteredCategories.map((category) => (
+                        <BOMCategoryCard
                       key={category.name}
                       category={category}
                       projectId={projectId}
@@ -777,12 +854,109 @@ const BOM = () => {
                     />
                   ))}
 
-                  {filteredCategories.length === 0 && (
-                    <Card>
-                      <CardContent className="p-8 text-center">
-                        <p className="text-muted-foreground">No parts found matching your search criteria.</p>
-                      </CardContent>
-                    </Card>
+                      {filteredCategories.length === 0 && (
+                        <Card>
+                          <CardContent className="p-8 text-center">
+                            <p className="text-muted-foreground">No parts found matching your search criteria.</p>
+                          </CardContent>
+                        </Card>
+                      )}
+                    </>
+                  ) : (
+                    /* Vendor View */
+                    <>
+                      {itemsByVendor.map(({ vendorName, items }) => (
+                        <Collapsible
+                          key={vendorName}
+                          open={expandedVendors.has(vendorName)}
+                          onOpenChange={() => toggleVendor(vendorName)}
+                        >
+                          <Card className="overflow-hidden">
+                            <CollapsibleTrigger asChild>
+                              <div className="p-4 bg-gray-50 border-b flex items-center justify-between cursor-pointer hover:bg-gray-100">
+                                <div className="flex items-center gap-2">
+                                  {expandedVendors.has(vendorName) ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                                  <span className={vendorName === 'No Vendor Assigned' ? 'text-orange-600 font-medium' : 'font-medium'}>
+                                    {vendorName}
+                                  </span>
+                                  <Badge variant="outline">{items.length} item{items.length !== 1 ? 's' : ''}</Badge>
+                                </div>
+                              </div>
+                            </CollapsibleTrigger>
+                            <CollapsibleContent>
+                              <CardContent className="p-0">
+                                {items.map(item => (
+                                  <BOMPartRow
+                                    key={item.id}
+                                    part={item}
+                                    projectId={projectId}
+                                    onClick={() => {}}
+                                    onQuantityChange={handleQuantityChange}
+                                    onDelete={handleDeletePart}
+                                    onStatusChange={(itemId, newStatus) => {
+                                      if (!projectId) return;
+
+                                      // Find the item
+                                      let targetItem: BOMItem | null = null;
+                                      for (const cat of categories) {
+                                        const found = cat.items.find(i => i.id === itemId);
+                                        if (found) {
+                                          targetItem = found;
+                                          break;
+                                        }
+                                      }
+
+                                      // If changing to "ordered", show the order dialog
+                                      if (newStatus === 'ordered' && targetItem) {
+                                        getProjectDocuments(projectId).then(docs => {
+                                          setProjectDocuments(docs);
+                                          setSelectedItemForOrder(targetItem);
+                                          setOrderDialogOpen(true);
+                                        });
+                                        return;
+                                      }
+
+                                      // If changing to "received", show the receive dialog
+                                      if (newStatus === 'received' && targetItem) {
+                                        getProjectDocuments(projectId).then(docs => {
+                                          setProjectDocuments(docs);
+                                          setSelectedItemForReceive(targetItem);
+                                          setReceiveDialogOpen(true);
+                                        });
+                                        return;
+                                      }
+
+                                      // For other status changes, update directly
+                                      updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                                    }}
+                                    onEdit={handleEditPart}
+                                    onCategoryChange={handlePartCategoryChange}
+                                    availableCategories={canonicalCategoryNames}
+                                    linkedDocumentsCount={getDocumentCountForItem(item.id)}
+                                    linkedDocuments={getDocumentsForItem(item.id)}
+                                    onUnlinkDocument={handleUnlinkDocument}
+                                    globalVendors={vendors.map(v => ({
+                                      id: v.id,
+                                      company: v.company,
+                                      leadTime: v.leadTime,
+                                      type: v.type,
+                                      status: v.status
+                                    }))}
+                                  />
+                                ))}
+                              </CardContent>
+                            </CollapsibleContent>
+                          </Card>
+                        </Collapsible>
+                      ))}
+                      {itemsByVendor.length === 0 && (
+                        <Card>
+                          <CardContent className="p-8 text-center">
+                            <p className="text-muted-foreground">No parts found matching your search criteria.</p>
+                          </CardContent>
+                        </Card>
+                      )}
+                    </>
                   )}
                 </div>
               </TabsContent>
@@ -799,39 +973,53 @@ const BOM = () => {
                 />
               </TabsContent>
 
+              {/* Milestones Tab */}
+              <TabsContent value="milestones" className="mt-0 space-y-4">
+                {/* Activity Timeline - shows activities extracted from transcripts */}
+                {projectId && projectDetails && (
+                  <ProjectActivityTimeline
+                    projectId={projectId}
+                    projectName={projectDetails.projectName}
+                  />
+                )}
+
+                {/* Milestones List */}
+                {projectId && <MilestoneList projectId={projectId} />}
+              </TabsContent>
+
               {/* Documents Tab */}
               <TabsContent value="documents" className="mt-0">
                 {projectId && (
-                  <div className="space-y-8">
-                    {/* Purchase Orders Section */}
-                    <POListSection
-                      projectId={projectId}
-                      onPOSent={async (poId, bomItemIds) => {
-                        // Update BOM items to "Ordered" status when PO is sent
-                        for (const itemId of bomItemIds) {
-                          await updateBOMItem(projectId, categories, itemId, {
-                            status: 'ordered',
-                          });
-                        }
-                      }}
-                    />
-
-                    {/* Project Documents Section */}
-                    <ProjectDocuments
-                      projectId={projectId}
-                      bomItems={categories.flatMap(cat => cat.items)}
-                      onDocumentsChange={() => {
-                        // Reload documents when they change
-                        getProjectDocuments(projectId).then(setProjectDocuments);
-                      }}
-                      onBOMItemUpdate={async (itemId: string, updates: Partial<BOMItem>) => {
-                        if (projectId) {
-                          await updateBOMItem(projectId, categories, itemId, updates);
-                        }
-                      }}
-                      fullPage={true}
-                    />
-                  </div>
+                  <ProjectDocuments
+                    projectId={projectId}
+                    bomItems={categories.flatMap(cat => cat.items)}
+                    onDocumentsChange={() => {
+                      // Reload documents when they change
+                      getProjectDocuments(projectId).then(setProjectDocuments);
+                    }}
+                    onBOMItemUpdate={async (itemId: string, updates: Partial<BOMItem>) => {
+                      if (projectId) {
+                        await updateBOMItem(projectId, categories, itemId, updates);
+                      }
+                    }}
+                    fullPage={true}
+                    renderAfterSection={{
+                      sectionType: 'vendor-quote',
+                      content: (
+                        <POListSection
+                          projectId={projectId}
+                          onPOSent={async (poId, bomItemIds) => {
+                            // Update BOM items to "Ordered" status when PO is sent
+                            for (const itemId of bomItemIds) {
+                              await updateBOMItem(projectId, categories, itemId, {
+                                status: 'ordered',
+                              });
+                            }
+                          }}
+                        />
+                      )
+                    }}
+                  />
                 )}
               </TabsContent>
 
@@ -1207,6 +1395,7 @@ const BOM = () => {
           }}
         />
       )}
+
     </div>
   );
 };

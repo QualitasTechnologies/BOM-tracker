@@ -1,10 +1,12 @@
 # CEO Engineering Dashboard - Product Requirements Document (PRD)
 
 ## Document Version
-- Version: 3.0
-- Date: 2025-01-XX
-- Status: Draft - Phase 1 Detailed, Phase 3 Planned
+- Version: 4.0
+- Date: 2025-01-04
+- Status: Draft - Phase 2 Refined (Milestone & Delay Tracking)
 - Owner: CEO
+
+> **IMPORTANT UPDATE (v4.0):** ClickUp integration has been removed from scope. The BOM Tracker application will serve as the unified project management system. Phase 1 (Time Tracking) requirements need revision to remove ClickUp dependencies. Phase 2 (Milestone & Delay Tracking) has been refined with detailed specifications based on product discovery sessions.
 
 ---
 
@@ -20,12 +22,13 @@ This PRD covers two major systems: the **CEO Engineering Dashboard** for time tr
 - Build foundation for all future analytics
 - Timeline: 8 weeks
 
-**Phase 2+: Advanced Project Health Analytics**
-- Project health monitoring with early warning signals
-- Delay history and attribution tracking
-- Estimation accuracy analysis
-- Root cause visibility for budget/timeline issues
-- Timeline: TBD after Phase 1 completion
+**Phase 2 (REFINED): Milestone & Delay Tracking**
+- Milestone-based project progress tracking
+- Manual baseline locking for variance tracking
+- Delay logging with mandatory attribution (client/vendor/internal)
+- Weekly stakeholder updates (hybrid auto-generated + owner context)
+- Raw transparency to clients - no sanitized versions
+- Timeline: ~2-3 weeks for core functionality
 
 **Phase 3: BOM Tracker - PO Creation & AI Compliance**
 - In-app Purchase Order (PO) creation and management
@@ -81,13 +84,13 @@ This PRD covers two major systems: the **CEO Engineering Dashboard** for time tr
 - **CEO compliance monitoring** - Instant visibility into who has/hasn't logged time
 - **Immutable audit trail** - Once logged, time entries cannot be changed
 
-### Desired State - Phase 2+
-- CEO can see all project health in 1-minute scan
-- Early warning system flags problems before they become critical
-- Clear visibility into why projects go over budget or miss deadlines
-- Complete delay history with reasons - shareable with clients
-- Track patterns (which engineers estimate poorly, which project types have issues)
-- Build team discipline around check-ins, planning, and estimation
+### Desired State - Phase 2 (Milestone & Delay Tracking)
+- **Milestone-based progress visibility** - Break projects into phases, track each independently
+- **Manual baseline locking** - Owner explicitly locks plan when ready to track against
+- **Delay attribution** - Every delay logged with reason and attribution (client/vendor/internal)
+- **Weekly stakeholder updates** - Auto-generated status + owner context, sent to clients and CEO
+- **Raw transparency** - Clients see actual delay attributions (no sanitized versions)
+- **Variance tracking** - Original baseline vs current plan, cumulative delay calculation
 - Projects grouped by category (Internal vs Customer projects)
 
 ### Desired State - Phase 3 (BOM Tracker)
@@ -912,15 +915,560 @@ interface TaskCost {
 
 ---
 
-# PHASE 2+: CEO PROJECT HEALTH DASHBOARD
+# PHASE 2: MILESTONE & DELAY TRACKING (REFINED)
 
-**Note:** The following requirements are for Phase 2 and beyond. They depend on Phase 1 time tracking data being available and accurate.
+> **Status:** REFINED (v4.0) - Based on product discovery sessions. This section supersedes previous Phase 2+ requirements.
 
 ---
 
-## Phase 2+ Dashboard Requirements
+## Phase 2 Overview
 
-## Section 1: Summary View
+**Priority:** HIGH - Foundation for project health visibility
+
+**Goal:** Enable milestone-based project tracking with delay attribution, providing CEO and clients with transparent visibility into project progress and delay causes.
+
+**Core Value:**
+- Clients and CEO see exactly where delays occur and who/what caused them
+- Weekly updates keep stakeholders informed without manual report writing
+- Baseline tracking shows variance from original plan
+- Attribution data supports difficult client conversations with facts
+
+**Scope:**
+- Extend existing BOM Tracker projects with milestone tracking
+- Manual baseline locking (owner controls when plan is "official")
+- Delay logging with mandatory reason and attribution
+- Weekly stakeholder updates (auto-generated + owner context)
+- Integration with existing Stakeholder infrastructure
+
+**Timeline:** ~2-3 weeks for core functionality
+
+**Out of Scope for Phase 2:**
+- Automatic dependency cascading (milestones are independent)
+- Task-level tracking (outcome-based progress, not task management)
+- Percentage-based progress (status + notes only)
+- Time tracking integration (Phase 1 dependency removed)
+- Sanitized client views (raw transparency only)
+
+---
+
+## Phase 2 Core Principles
+
+1. **Extend, don't replace** - Build on existing BOM Tracker Project model
+2. **Manual baselining** - Owner explicitly locks plan when ready to track
+3. **Outcome-based progress** - Status + notes, not task completion %
+4. **Raw transparency** - Clients see actual delay attributions
+5. **Mandatory attribution** - No delay saved without reason + category
+6. **Never re-baseline** - Original plan is immutable; scope changes are delays
+
+---
+
+## Phase 2 Data Model
+
+### Extended Project Fields
+
+Add to existing `Project` interface in `src/utils/projectFirestore.ts`:
+
+```typescript
+interface Project {
+  // EXISTING FIELDS - No changes
+  projectId: string;
+  projectName: string;
+  clientName: string;
+  description: string;
+  status: "Planning" | "Procurement" | "Ongoing" | "Delayed" | "Completed" | "Archived";
+  deadline: string;           // Treat as CURRENT deadline
+  poValue?: number;
+  bomSnapshot?: any[];
+  bomSnapshotDate?: string;
+  archivedAt?: string;
+  sourceDealId?: string;
+  driveFolderUrl?: string;
+
+  // NEW FIELDS - CEO Dashboard
+  originalDeadline?: string;     // Immutable once baselined
+  category?: 'internal' | 'customer';
+  projectOwnerId?: string;       // User ID of owner
+  kickoffDate?: string;          // When project actually started
+
+  // Baselining
+  isBaselined?: boolean;         // false until owner locks it
+  baselinedAt?: string;          // When baseline was locked
+  baselinedBy?: string;          // Who locked it
+}
+```
+
+**Migration Note:** Existing projects will have `isBaselined: undefined` (treated as false). New fields are all optional for backward compatibility.
+
+---
+
+### New Collection: Milestones
+
+`projects/{projectId}/milestones/{milestoneId}`
+
+```typescript
+interface Milestone {
+  id: string;
+  name: string;
+  description?: string;
+  order: number;                    // For display ordering (1, 2, 3...)
+
+  // Dates
+  originalPlannedEndDate?: string;  // Set when project is baselined
+  currentPlannedEndDate: string;    // Can be updated (triggers delay log)
+  actualEndDate?: string;           // When completed
+
+  // Status (outcome-based)
+  status: 'not-started' | 'in-progress' | 'completed' | 'blocked';
+
+  // Progress notes (not percentage)
+  lastProgressNote?: string;
+  lastProgressDate?: string;
+
+  // Metadata
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+}
+```
+
+**Key Decisions:**
+- No dependencies between milestones (simple list, manually ordered)
+- No percentage tracking (status + notes only)
+- `originalPlannedEndDate` only set when project is baselined
+- Milestones added after baseline get `originalPlannedEndDate = currentPlannedEndDate` at creation
+
+---
+
+### New Collection: Delay Logs
+
+`projects/{projectId}/delayLogs/{logId}`
+
+```typescript
+interface DelayLog {
+  id: string;
+
+  // What was delayed
+  entityType: 'project' | 'milestone';
+  entityId: string;                 // projectId or milestoneId
+  entityName: string;               // For display without joins
+
+  // The change
+  previousDate: string;
+  newDate: string;
+  delayDays: number;
+
+  // Why (required)
+  reason: string;                   // Min 20 chars
+  attribution: 'internal-team' | 'internal-process' | 'external-client' | 'external-vendor' | 'external-other';
+
+  // Cumulative tracking
+  cumulativeProjectDelay: number;   // Total days project is now delayed from original
+
+  // Metadata
+  loggedAt: string;
+  loggedBy: string;
+  loggedByName: string;             // For display
+}
+```
+
+**Attribution Categories:**
+| Category | Description | Example |
+|----------|-------------|---------|
+| `internal-team` | Team capacity, skill gaps, underestimation | "Engineer underestimated cable routing complexity" |
+| `internal-process` | Process failures, unclear scope, planning gaps | "Requirements not properly documented" |
+| `external-client` | Client delays, scope changes, approvals | "Client delayed requirements sign-off" |
+| `external-vendor` | Supplier delays, parts availability | "Camera modules backordered 3 weeks" |
+| `external-other` | Weather, regulatory, unforeseen | "Site access delayed due to safety audit" |
+
+---
+
+### New Collection: Weekly Updates
+
+`projects/{projectId}/weeklyUpdates/{updateId}`
+
+```typescript
+interface WeeklyUpdate {
+  id: string;
+  weekStartDate: string;            // Monday of the week (YYYY-MM-DD)
+
+  // Auto-generated (system fills these)
+  autoStatus: 'on-track' | 'at-risk' | 'delayed';
+  autoMilestoneSummary: string;     // "Planning ✅, Hardware 🔄 75%, Testing ⏳"
+  autoDelaysSummary?: string;       // "+3 days this week" or "No delays"
+
+  // Owner input (required before sending)
+  ownerSummary: string;             // 2-3 sentence context
+  blockers?: string;
+  nextWeekPlan?: string;
+
+  // Distribution
+  status: 'draft' | 'sent';
+  sentAt?: string;
+  sentBy?: string;
+  sentToEmails?: string[];          // Snapshot of who received it
+
+  // Metadata
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+**Integration:** Uses existing `Stakeholder` subcollection for recipient list. Stakeholders with `notificationsEnabled: true` receive weekly updates.
+
+---
+
+## Phase 2 User Workflows
+
+### Workflow 1: Create Project with Milestones
+
+**Trigger:** User creates new project or adds milestones to existing project
+
+**Steps:**
+
+1. **User creates/opens project**
+   - Sets basic project info (name, client, deadline)
+   - Sets `category`: Internal or Customer
+   - Sets `projectOwnerId` (defaults to creator)
+
+2. **User adds milestones**
+   - Click "Add Milestone"
+   - Enter: Name, Description (optional), Planned End Date
+   - System sets: `status: 'not-started'`, `order` (next in sequence)
+   - Repeat for all milestones
+
+3. **Project is in "draft" state**
+   - `isBaselined: false`
+   - Dates can be freely changed
+   - No delay logging triggered
+   - Banner shows: "⚠️ Baseline not locked. Delay tracking inactive."
+
+---
+
+### Workflow 2: Lock Baseline (Manual)
+
+**Trigger:** Owner decides plan is ready to track against
+
+**Steps:**
+
+1. **Owner reviews milestones and dates**
+   - Ensures all milestones are defined
+   - Ensures dates are realistic
+
+2. **Owner clicks "Lock Baseline"**
+   - Confirmation dialog: "Once locked, all date changes will be tracked as delays. Continue?"
+
+3. **System captures baseline:**
+   - `project.originalDeadline` = current `deadline`
+   - `project.isBaselined` = true
+   - `project.baselinedAt` = now
+   - `project.baselinedBy` = current user
+   - For each milestone: `originalPlannedEndDate` = `currentPlannedEndDate`
+
+4. **UI updates:**
+   - "Lock Baseline" button disappears
+   - Shows: "✅ Baseline locked on [date]"
+   - Dates now show variance: "Due Feb 28 (Baseline: Feb 20)"
+
+**Post-Baseline Behavior:**
+- Any date change triggers delay logging workflow
+- Milestones added after baseline auto-set `originalPlannedEndDate`
+- Baseline cannot be unlocked (by design)
+
+---
+
+### Workflow 3: Log Delay (Triggered on Date Change)
+
+**Trigger:** User changes `currentPlannedEndDate` on baselined milestone or project `deadline`
+
+**Steps:**
+
+1. **User changes date**
+   - Example: Milestone "Hardware Integration" from Feb 20 → Feb 28
+
+2. **System detects change on baselined project**
+   - Shows delay logging dialog (blocking)
+
+3. **Delay logging dialog:**
+   ```
+   ⚠️ Delay Detected
+
+   Milestone: Hardware Integration
+   Previous Date: Feb 20, 2025
+   New Date: Feb 28, 2025
+   Delay: +8 days
+
+   Reason (required, min 20 characters):
+   [________________________________________________]
+
+   Attribution (required):
+   ○ Internal - Team (capacity, skills, estimation)
+   ○ Internal - Process (planning, scope, requirements)
+   ○ External - Client (approvals, scope changes, site readiness)
+   ○ External - Vendor (parts, suppliers, third-party)
+   ○ External - Other (weather, regulatory, unforeseen)
+
+   [Cancel] [Save Delay]
+   ```
+
+4. **Validation:**
+   - Reason must be ≥ 20 characters
+   - Attribution must be selected
+   - Cannot save date change without completing this form
+
+5. **System saves:**
+   - Creates `DelayLog` entry
+   - Updates milestone `currentPlannedEndDate`
+   - Recalculates `cumulativeProjectDelay`
+   - If milestone delay affects project deadline, prompts for project delay too
+
+---
+
+### Workflow 4: Weekly Update (Hybrid Generation)
+
+**Trigger:** Weekly (e.g., Friday) or manual trigger
+
+**Steps:**
+
+1. **System auto-generates update draft:**
+   ```
+   Weekly Update - ITC Vision System
+   Week of Jan 6, 2025
+
+   [AUTO-GENERATED]
+   Status: ON TRACK
+
+   Milestones:
+   ✅ Planning & Requirements - Complete (Jan 5)
+   🔄 Hardware Integration - In Progress
+   ⏳ Software Development - Not Started
+   ⏳ Testing & Deployment - Not Started
+
+   Delays This Week: None
+
+   [OWNER INPUT REQUIRED]
+   Summary: ________________________________
+
+   Blockers (optional): ____________________
+
+   Next Week Plan (optional): ______________
+   ```
+
+2. **Owner reviews and adds context:**
+   - Fills in Summary (required): "Camera mounting complete. Controller integration starting Monday. On track for Feb 15 hardware completion."
+   - Adds blockers if any
+   - Adds next week plan
+
+3. **Owner clicks "Preview & Send"**
+   - Shows preview of final update
+   - Shows recipient list (from Stakeholders with notifications enabled)
+
+4. **Owner clicks "Send"**
+   - Email sent to all enabled stakeholders
+   - `WeeklyUpdate.status` = 'sent'
+   - `WeeklyUpdate.sentAt` = now
+   - `WeeklyUpdate.sentToEmails` = snapshot of recipients
+
+---
+
+### Workflow 5: View Delay History (CEO/Client Review)
+
+**Trigger:** CEO or client wants to understand why project is delayed
+
+**Steps:**
+
+1. **Open project detail view**
+
+2. **Navigate to "Delay History" tab/section**
+
+3. **View chronological delay timeline:**
+   ```
+   Delay History - ITC Vision System
+
+   Original Deadline: Mar 1, 2025
+   Current Deadline: Mar 22, 2025
+   Total Delay: 21 days
+
+   Breakdown by Attribution:
+   • External-Client: 14 days (67%)
+   • Internal-Team: 7 days (33%)
+
+   Timeline:
+
+   ┌─ Jan 15, 2025 ─────────────────────────────────┐
+   │ Milestone: Planning & Requirements              │
+   │ Delay: +5 days (Jan 10 → Jan 15)               │
+   │ Reason: Client delayed requirements sign-off.  │
+   │         Sent doc Jan 3, meeting Jan 12,        │
+   │         approval received Jan 14.              │
+   │ Attribution: External-Client                   │
+   │ Logged by: Rahul Kumar                         │
+   │ Cumulative Impact: +5 days                     │
+   └────────────────────────────────────────────────┘
+
+   ┌─ Feb 8, 2025 ──────────────────────────────────┐
+   │ Milestone: Hardware Integration                 │
+   │ Delay: +8 days (Feb 20 → Feb 28)               │
+   │ Reason: Custom camera brackets required.       │
+   │         Client requested higher precision      │
+   │         mounts after seeing prototype.         │
+   │ Attribution: External-Client                   │
+   │ Logged by: Rahul Kumar                         │
+   │ Cumulative Impact: +13 days                    │
+   └────────────────────────────────────────────────┘
+
+   ┌─ Feb 20, 2025 ─────────────────────────────────┐
+   │ Milestone: Hardware Integration                 │
+   │ Delay: +7 days (Feb 28 → Mar 7)                │
+   │ Reason: Underestimated cable routing           │
+   │         complexity. Original estimate 8hrs,    │
+   │         actual 30hrs.                          │
+   │ Attribution: Internal-Team                     │
+   │ Logged by: Rahul Kumar                         │
+   │ Cumulative Impact: +20 days                    │
+   └────────────────────────────────────────────────┘
+   ```
+
+4. **Filter options:**
+   - All delays
+   - External-Client only (for client discussions)
+   - Internal only (for team retrospectives)
+   - By milestone
+
+---
+
+## Phase 2 Validation Rules
+
+### Milestone Validation
+
+| Field | Rule | Error Message |
+|-------|------|---------------|
+| Name | Required, 3-100 chars | "Milestone name required" |
+| currentPlannedEndDate | Required, valid date | "End date required" |
+| currentPlannedEndDate | Must be ≥ today (for new milestones) | "End date cannot be in the past" |
+
+### Delay Log Validation
+
+| Field | Rule | Error Message |
+|-------|------|---------------|
+| reason | Required, ≥ 20 chars | "Please provide a detailed reason (min 20 characters)" |
+| attribution | Required, valid enum | "Please select an attribution category" |
+
+### Weekly Update Validation
+
+| Field | Rule | Error Message |
+|-------|------|---------------|
+| ownerSummary | Required before sending, ≥ 20 chars | "Please add a summary (min 20 characters)" |
+
+### Baseline Validation
+
+| Condition | Rule |
+|-----------|------|
+| Lock baseline | At least 1 milestone required |
+| Lock baseline | All milestones must have end dates |
+| Re-baseline | Not allowed (by design) |
+
+---
+
+## Phase 2 Auto-Calculation Logic
+
+### Project Status Auto-Suggestion
+
+Based on delay data, suggest (not auto-set) project status:
+
+| Condition | Suggested Status |
+|-----------|------------------|
+| `cumulativeProjectDelay > 0` AND deadline passed | "Delayed" |
+| `cumulativeProjectDelay > 7` days | "At Risk" (warning) |
+| All milestones complete | "Completed" |
+| Otherwise | Keep current status |
+
+**Note:** Status remains manual. System suggests, owner decides.
+
+### Cumulative Delay Calculation
+
+```
+cumulativeProjectDelay =
+  (current project deadline) - (original project deadline)
+```
+
+Recalculated whenever:
+- Project deadline changes
+- Any milestone delay that cascades to project deadline
+
+### Weekly Update Auto-Status
+
+```
+if (cumulativeProjectDelay > 7 days) → "delayed"
+else if (cumulativeProjectDelay > 0) → "at-risk"
+else if (any milestone.status === 'blocked') → "at-risk"
+else → "on-track"
+```
+
+---
+
+## Phase 2 Implementation Priority
+
+### Phase 2A: Data Model & Basic CRUD (Week 1)
+1. Extend Project model with new fields
+2. Create Milestones subcollection and CRUD operations
+3. Create DelayLogs subcollection
+4. Milestone list UI in project view
+5. Add/Edit/Delete milestone dialogs
+
+### Phase 2B: Baseline & Delay Tracking (Week 2)
+6. "Lock Baseline" functionality
+7. Delay detection on date changes
+8. Delay logging dialog (blocking)
+9. Delay history view
+10. Attribution filtering
+
+### Phase 2C: Weekly Updates (Week 3)
+11. WeeklyUpdates subcollection
+12. Auto-generation logic
+13. Owner input form
+14. Email sending (integrate with existing SendGrid)
+15. Update history view
+
+---
+
+## Phase 2 Edge Cases
+
+| Scenario | Behavior |
+|----------|----------|
+| Milestone added after baseline | `originalPlannedEndDate` = `currentPlannedEndDate` at creation |
+| Milestone deleted after baseline | Soft delete (mark as removed), keep in delay history |
+| Date changed on non-baselined project | No delay logging, free editing |
+| Multiple delays on same day | Each logged separately |
+| Delay reason < 20 chars | Block save, show error |
+| No stakeholders with notifications | Weekly update can still be created, just not sent |
+| Project already has milestones from before v4.0 | N/A - milestones are new feature |
+
+---
+
+## Phase 2 Success Criteria
+
+**Adoption Metrics (30 days post-launch):**
+- >80% of active projects have milestones defined
+- >90% of active projects are baselined
+- >95% of delays have reason + attribution logged
+
+**Quality Metrics:**
+- Average delay reason length > 50 characters (meaningful explanations)
+- <5% of delays have attribution changed after initial logging
+
+**Stakeholder Satisfaction:**
+- CEO can view project delay history in <30 seconds
+- Weekly updates reduce ad-hoc "status?" requests by >50%
+
+---
+
+# PHASE 2+ LEGACY REQUIREMENTS (ARCHIVED)
+
+> **Note:** The following section contains original Phase 2+ requirements from PRD v3.0. These have been superseded by the refined Phase 2 spec above. Kept for reference only.
+
+---
+
+## Section 1: Summary View (ARCHIVED)
 
 ### Purpose
 Quick snapshot of overall engineering portfolio health (for 1-minute scan)
@@ -1590,25 +2138,29 @@ Reason: [Text box: "Client site not ready. Pausing project until site preparatio
 
 ## Assumptions
 
-### Phase 1 Assumptions
-- **ClickUp is already being used** - Team manages projects and tasks in ClickUp
+### Phase 1 Assumptions (NEEDS REVISION)
+> **Note:** Phase 1 was designed around ClickUp integration which has been removed from scope. These assumptions need revision.
+
+- ~~**ClickUp is already being used** - Team manages projects and tasks in ClickUp~~ **REMOVED**
 - **Daily rates available** - Employee daily rates accessible via Google Spreadsheet
 - **Team will log time daily** - Minimum 7H per day (work + leave)
-- **ClickUp API access** - Valid API key with read/write permissions
+- ~~**ClickUp API access** - Valid API key with read/write permissions~~ **REMOVED**
 - **Firebase infrastructure** - Already set up for BOM Tracker project
 - **Google Sheets API access** - For fetching daily rates
 - **OpenAI API access** - For comments validation (AI gibberish check)
 - **No historical time data import** - Starting fresh with new time logs
 - **Time logs are immutable** - Once submitted, cannot be edited (by design)
-- **All time must be against ClickUp tasks** - No "general" time entries allowed
+- ~~**All time must be against ClickUp tasks** - No "general" time entries allowed~~ **REMOVED**
 
-### Phase 2+ Assumptions
-- Phase 1 time tracking data is accurate and complete
-- Team members submit check-ins daily
-- Project owners define milestones during planning with estimated duration
-- Project owners log delays with reasons when they occur (enforced by system)
-- Projects are budgeted at project level (not milestone level)
-- No formal change approval process exists
+### Phase 2 Assumptions (REFINED)
+- **BOM Tracker is the project system** - No external project management tool
+- **Existing Project model is extended** - New fields are optional, backward compatible
+- **Stakeholder infrastructure exists** - Already implemented with notification tracking
+- **SendGrid is available** - For weekly update emails (already integrated for PR emails)
+- **Project owners will baseline** - Manual action required to enable delay tracking
+- **Clients receive raw attribution** - No sanitized version, full transparency
+- **No re-baselining** - Once locked, original dates are immutable
+- **Small project volume** - Freeform milestone creation (no templates initially)
 
 ### Phase 3 Assumptions
 - **OpenAI API access** - For AI compliance analysis and document matching
@@ -2373,10 +2925,11 @@ interface DocumentMatch {
 
 | Version | Date | Changes | Author |
 |---------|------|---------|--------|
+| 4.0 | 2025-01-04 | **Major revision:** Removed ClickUp integration from scope. Refined Phase 2 (Milestone & Delay Tracking) with detailed spec based on product discovery. Added: manual baselining, delay attribution categories, weekly stakeholder updates, extended Project data model, new Milestone/DelayLog/WeeklyUpdate collections. Archived original Phase 2+ requirements. | CEO + Claude |
 | 3.0 | 2025-01-XX | Added Phase 3: BOM Tracker - PO Creation & AI Compliance. Included requirements for in-app PO creation, AI compliance analysis, automatic price verification, and document matching. Updated executive summary, problem statement, user personas, and success metrics. | CEO |
 | 2.0 | 2025-10-22 | Added comprehensive Phase 1: Compliance & Time Tracking requirements. Restructured document to show phased approach. Updated assumptions, success metrics, and out-of-scope sections. | CEO |
 | 1.1 | 2025-10-15 | Initial Phase 2+ CEO Dashboard requirements | CEO |
 
 ---
 
-**End of PRD - Version 3.0**
+**End of PRD - Version 4.0**

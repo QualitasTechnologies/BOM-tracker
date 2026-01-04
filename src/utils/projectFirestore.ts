@@ -24,7 +24,7 @@ export interface Project {
   clientName: string;
   description: string;
   status: "Planning" | "Procurement" | "Ongoing" | "Delayed" | "Completed" | "Archived";
-  deadline: string; // ISO string
+  deadline: string; // ISO string - treated as CURRENT deadline
   poValue?: number; // Purchase Order value from customer
   bomSnapshot?: any[]; // Snapshot of BOM when status changed to 'Ongoing' (order won)
   bomSnapshotDate?: string; // ISO string - when snapshot was taken
@@ -33,6 +33,17 @@ export interface Project {
   // CRM Integration Fields
   sourceDealId?: string;           // Link back to originating deal (if converted from CRM)
   driveFolderUrl?: string;         // Google Drive folder (inherited from deal)
+
+  // CEO Dashboard Fields (Phase 2)
+  category?: 'internal' | 'customer';  // Project classification
+  projectOwnerId?: string;             // User ID of project owner
+  kickoffDate?: string;                // ISO string - when project actually started
+
+  // Baseline Tracking (Phase 2)
+  originalDeadline?: string;           // Immutable once baselined
+  isBaselined?: boolean;               // false until owner locks baseline
+  baselinedAt?: string;                // ISO string - when baseline was locked
+  baselinedBy?: string;                // User ID who locked the baseline
 }
 
 const projectsCol = collection(db, "projects");
@@ -55,6 +66,15 @@ export const subscribeToProjects = (
     const projects: Project[] = snapshot.docs.map((doc) => doc.data() as Project);
     callback(projects);
   });
+};
+
+// Get all projects (one-time fetch)
+export const getProjects = async (): Promise<(Project & { id: string })[]> => {
+  const snapshot = await getDocs(projectsCol);
+  return snapshot.docs.map((doc) => ({
+    id: doc.id,
+    ...(doc.data() as Project),
+  }));
 };
 
 // Update a project
@@ -81,6 +101,40 @@ export const restoreProject = async (projectId: string, previousStatus: Project[
     archivedAt: null // Remove the archived timestamp
   };
   await updateDoc(doc(projectsCol, projectId), cleanUpdates);
+};
+
+// Lock baseline for a project (CEO Dashboard Phase 2)
+// Once locked, originalDeadline becomes immutable and delay tracking is active
+export const lockProjectBaseline = async (projectId: string, userId: string): Promise<void> => {
+  const projectRef = doc(projectsCol, projectId);
+  const projectSnap = await getDoc(projectRef);
+
+  if (!projectSnap.exists()) {
+    throw new Error('Project not found');
+  }
+
+  const project = projectSnap.data() as Project;
+
+  if (project.isBaselined) {
+    throw new Error('Project baseline is already locked');
+  }
+
+  await updateDoc(projectRef, {
+    originalDeadline: project.deadline, // Capture current deadline as baseline
+    isBaselined: true,
+    baselinedAt: new Date().toISOString(),
+    baselinedBy: userId
+  });
+};
+
+// Get a single project by ID
+export const getProject = async (projectId: string): Promise<Project | null> => {
+  const projectRef = doc(projectsCol, projectId);
+  const projectSnap = await getDoc(projectRef);
+  if (projectSnap.exists()) {
+    return projectSnap.data() as Project;
+  }
+  return null;
 };
 
 // Permanently delete a project (use with caution - data cannot be recovered)

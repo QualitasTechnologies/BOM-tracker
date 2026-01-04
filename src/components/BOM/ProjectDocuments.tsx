@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { FileText, Upload, Trash2, Link as LinkIcon, X, AlertCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -26,9 +26,10 @@ interface ProjectDocumentsProps {
   onBOMItemUpdate?: (itemId: string, updates: Partial<BOMItem>) => Promise<void>; // Callback to update BOM items
   fullPage?: boolean; // When true, renders without collapsible wrapper for tab view
   sections?: DocumentTypeSection[]; // Document sections to show (defaults to BOM_DOCUMENT_SECTIONS)
+  renderAfterSection?: { sectionType: DocumentType; content: React.ReactNode }; // Render content after specific section
 }
 
-const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate, fullPage = false, sections = BOM_DOCUMENT_SECTIONS }: ProjectDocumentsProps) => {
+const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate, fullPage = false, sections = BOM_DOCUMENT_SECTIONS, renderAfterSection }: ProjectDocumentsProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -95,7 +96,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
     const validation = validateDocumentDeletion(doc, bomItems);
 
     if (!validation.canDelete) {
-      const title = doc.type === 'outgoing-po' ? 'Cannot Delete PO' : 'Cannot Delete Invoice';
+      const title = doc.type === 'vendor-po' ? 'Cannot Delete PO' : 'Cannot Delete Invoice';
       toast({
         title,
         description: validation.reason,
@@ -153,8 +154,8 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
         }
       }
 
-      // For outgoing-po documents, update BOM items' linkedPODocumentId field
-      if (selectedDocument.type === 'outgoing-po' && onBOMItemUpdate) {
+      // For vendor-po documents, update BOM items' linkedPODocumentId field
+      if (selectedDocument.type === 'vendor-po' && onBOMItemUpdate) {
         // Update items that are now linked: set their linkedPODocumentId
         for (const itemId of selectedItemIds) {
           await onBOMItemUpdate(itemId, { linkedPODocumentId: selectedDocument.id });
@@ -219,33 +220,38 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
             </h3>
             <p className={`${isFullPage ? 'text-sm' : 'text-xs'} text-gray-500 mt-1`}>{section.description}</p>
           </div>
-          <label className="cursor-pointer">
-            <input
-              type="file"
-              className="hidden"
-              onChange={(e) => handleFileUpload(e, section.type)}
-              disabled={uploading}
-              accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg"
-            />
-            <Button
-              variant="outline"
-              size={isFullPage ? 'default' : 'sm'}
-              disabled={uploading}
-              asChild
-            >
-              <span>
-                <Upload className="mr-2 h-4 w-4" />
-                {uploading ? 'Uploading...' : 'Upload'}
-              </span>
-            </Button>
-          </label>
+          {/* Hide upload button for vendor-po - POs are generated via the app */}
+          {section.type !== 'vendor-po' && (
+            <label className="cursor-pointer">
+              <input
+                type="file"
+                className="hidden"
+                onChange={(e) => handleFileUpload(e, section.type)}
+                disabled={uploading}
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg"
+              />
+              <Button
+                variant="outline"
+                size={isFullPage ? 'default' : 'sm'}
+                disabled={uploading}
+                asChild
+              >
+                <span>
+                  <Upload className="mr-2 h-4 w-4" />
+                  {uploading ? 'Uploading...' : 'Upload'}
+                </span>
+              </Button>
+            </label>
+          )}
         </div>
 
         {/* Document List */}
         <div className={`space-y-${isFullPage ? '3' : '2'}`}>
           {sectionDocs.length === 0 ? (
             <div className={`text-center py-${isFullPage ? '8' : '6'} text-gray-400 ${isFullPage ? 'text-sm' : 'text-xs'} italic bg-gray-50 rounded border border-dashed`}>
-              No {section.label.toLowerCase()} uploaded yet
+              {section.type === 'vendor-po'
+                ? 'POs will appear here when sent from the Vendor POs section'
+                : `No ${section.label.toLowerCase()} uploaded yet`}
             </div>
           ) : (
             sectionDocs.map(doc => (
@@ -359,7 +365,10 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
       <>
         <div className="space-y-6">
           {sections.map(section => (
-            <DocumentSection key={section.type} section={section} isFullPage={true} />
+            <React.Fragment key={section.type}>
+              <DocumentSection section={section} isFullPage={true} />
+              {renderAfterSection?.sectionType === section.type && renderAfterSection.content}
+            </React.Fragment>
           ))}
         </div>
 
@@ -376,7 +385,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
               </p>
 
               {/* For PO documents, show 1-to-1 constraint notice */}
-              {selectedDocument?.type === 'outgoing-po' && (
+              {selectedDocument?.type === 'vendor-po' && (
                 <div className="flex items-start gap-2 p-2 mb-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
                   <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
                   <span>Each item can only be linked to one PO. Items already linked to another PO are disabled.</span>
@@ -389,9 +398,9 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
                 ) : (
                   bomItems.map(item => {
                     // For PO documents: check if item is already linked to ANOTHER PO
-                    const isOutgoingPO = selectedDocument?.type === 'outgoing-po';
-                    const itemLinkedToOtherPO = isOutgoingPO && documents.some(
-                      doc => doc.type === 'outgoing-po' &&
+                    const isVendorPO = selectedDocument?.type === 'vendor-po';
+                    const itemLinkedToOtherPO = isVendorPO && documents.some(
+                      doc => doc.type === 'vendor-po' &&
                              doc.id !== selectedDocument?.id &&
                              doc.linkedBOMItems?.includes(item.id)
                     );
@@ -401,7 +410,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
                     // Find which PO it's linked to (for display)
                     const linkedPOName = itemLinkedToOtherPO
                       ? documents.find(
-                          doc => doc.type === 'outgoing-po' &&
+                          doc => doc.type === 'vendor-po' &&
                                  doc.id !== selectedDocument?.id &&
                                  doc.linkedBOMItems?.includes(item.id)
                         )?.name
@@ -495,7 +504,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
             </p>
 
             {/* For PO documents, show 1-to-1 constraint notice */}
-            {selectedDocument?.type === 'outgoing-po' && (
+            {selectedDocument?.type === 'vendor-po' && (
               <div className="flex items-start gap-2 p-2 mb-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
                 <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
                 <span>Each item can only be linked to one PO. Items already linked to another PO are disabled.</span>
@@ -508,9 +517,9 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
               ) : (
                 bomItems.map(item => {
                   // For PO documents: check if item is already linked to ANOTHER PO
-                  const isOutgoingPO = selectedDocument?.type === 'outgoing-po';
-                  const itemLinkedToOtherPO = isOutgoingPO && documents.some(
-                    doc => doc.type === 'outgoing-po' &&
+                  const isVendorPO = selectedDocument?.type === 'vendor-po';
+                  const itemLinkedToOtherPO = isVendorPO && documents.some(
+                    doc => doc.type === 'vendor-po' &&
                            doc.id !== selectedDocument?.id &&
                            doc.linkedBOMItems?.includes(item.id)
                   );
@@ -520,7 +529,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
                   // Find which PO it's linked to (for display)
                   const linkedPOName = itemLinkedToOtherPO
                     ? documents.find(
-                        doc => doc.type === 'outgoing-po' &&
+                        doc => doc.type === 'vendor-po' &&
                                doc.id !== selectedDocument?.id &&
                                doc.linkedBOMItems?.includes(item.id)
                       )?.name

@@ -40,7 +40,7 @@ export interface BOMItem {
 
   // Document linking fields (for components)
   linkedQuoteDocumentId?: string; // Reference to vendor-quote document
-  linkedPODocumentId?: string; // Reference to outgoing-po document
+  linkedPODocumentId?: string; // Reference to vendor-po document
   linkedInvoiceDocumentId?: string; // Reference to vendor-invoice document
 
   // Inward Tracking fields (for components)

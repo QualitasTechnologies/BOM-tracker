@@ -69,7 +69,7 @@ interface GlobalVendor {
 interface LinkedDocument {
   id: string;
   name: string;
-  type: 'vendor-quote' | 'outgoing-po' | 'customer-po';
+  type: 'vendor-quote' | 'vendor-po' | 'customer-po';
   url: string;
 }
 
@@ -493,11 +493,11 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 ${
                           doc.type === 'vendor-quote'
                             ? 'bg-blue-100 text-blue-700'
-                            : doc.type === 'outgoing-po'
+                            : doc.type === 'vendor-po'
                             ? 'bg-green-100 text-green-700'
                             : 'bg-purple-100 text-purple-700'
                         }`}>
-                          {doc.type === 'vendor-quote' ? 'Quote' : doc.type === 'outgoing-po' ? 'PO' : 'Customer PO'}
+                          {doc.type === 'vendor-quote' ? 'Quote' : doc.type === 'vendor-po' ? 'PO' : 'Customer PO'}
                         </span>
                         {onUnlinkDocument && (
                           <button
