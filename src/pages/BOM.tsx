@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { Search, Plus, Download, Filter, X, Upload, Package, FileText, Users, ChevronDown, ChevronUp, Milestone } from 'lucide-react';
+import { Search, Plus, Download, Filter, X, Upload, Package, FileText, Users, ChevronDown, ChevronUp, Milestone, Brain } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -26,6 +26,7 @@ import ComplianceChecker from '@/components/BOM/ComplianceChecker';
 import StakeholderList from '@/components/Stakeholders/StakeholderList';
 import { MilestoneList } from '@/components/Milestones';
 import { ProjectActivityTimeline } from '@/components/Transcripts';
+import ProjectContextEditor from '@/components/Project/ProjectContextEditor';
 import { saveAs } from 'file-saver';
 import { 
   getBOMData, 
@@ -663,7 +664,7 @@ const BOM = () => {
 
             {/* Tab-based Layout */}
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-              <TabsList className="grid w-full grid-cols-5 mb-4">
+              <TabsList className="grid w-full grid-cols-6 mb-4">
                 <TabsTrigger value="bom-items" className="flex items-center gap-2">
                   <Package size={16} />
                   BOM Items
@@ -696,6 +697,10 @@ const BOM = () => {
                 <TabsTrigger value="stakeholders" className="flex items-center gap-2">
                   <Users size={16} />
                   Stakeholders
+                </TabsTrigger>
+                <TabsTrigger value="context" className="flex items-center gap-2">
+                  <Brain size={16} />
+                  Context
                 </TabsTrigger>
               </TabsList>
 
@@ -851,6 +856,7 @@ const BOM = () => {
                       getDocumentsForItem={getDocumentsForItem}
                       onUnlinkDocument={handleUnlinkDocument}
                       vendors={vendors}
+                      projectDocuments={projectDocuments}
                     />
                   ))}
 
@@ -942,6 +948,7 @@ const BOM = () => {
                                       type: v.type,
                                       status: v.status
                                     }))}
+                                    projectDocuments={projectDocuments}
                                   />
                                 ))}
                               </CardContent>
@@ -969,22 +976,28 @@ const BOM = () => {
                   onItemClick={(item) => {
                     console.log('Item clicked:', item.name);
                   }}
+                  onUpdatePONumber={(itemId, poNumber) => {
+                    if (projectId) {
+                      updateBOMItem(projectId, categories, itemId, { poNumber });
+                    }
+                  }}
                   fullPage={true}
+                  projectId={projectId}
                 />
               </TabsContent>
 
               {/* Milestones Tab */}
               <TabsContent value="milestones" className="mt-0 space-y-4">
-                {/* Activity Timeline - shows activities extracted from transcripts */}
+                {/* Milestones List */}
+                {projectId && <MilestoneList projectId={projectId} />}
+
+                {/* Daily Updates - activities extracted from transcripts */}
                 {projectId && projectDetails && (
                   <ProjectActivityTimeline
                     projectId={projectId}
                     projectName={projectDetails.projectName}
                   />
                 )}
-
-                {/* Milestones List */}
-                {projectId && <MilestoneList projectId={projectId} />}
               </TabsContent>
 
               {/* Documents Tab */}
@@ -1029,6 +1042,24 @@ const BOM = () => {
                   <StakeholderList
                     projectId={projectId}
                     projectName={projectDetails.projectName}
+                  />
+                )}
+              </TabsContent>
+
+              {/* Context Tab - Project Intelligence for Transcripts */}
+              <TabsContent value="context" className="mt-0">
+                {projectId && projectDetails && (
+                  <ProjectContextEditor
+                    projectId={projectId}
+                    project={{
+                      projectId,
+                      projectName: projectDetails.projectName,
+                      clientName: projectDetails.clientName,
+                      description: '',
+                      status: 'Ongoing',
+                      deadline: '',
+                    }}
+                    bomCategories={categories}
                   />
                 )}
               </TabsContent>

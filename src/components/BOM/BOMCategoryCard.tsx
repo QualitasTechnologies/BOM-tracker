@@ -56,6 +56,13 @@ interface Vendor {
   status: 'active' | 'inactive';
 }
 
+interface ProjectDocument {
+  id: string;
+  name: string;
+  url: string;
+  type: string;
+}
+
 interface BOMCategoryCardProps {
   category: BOMCategory;
   projectId?: string;
@@ -72,13 +79,14 @@ interface BOMCategoryCardProps {
   getDocumentsForItem?: (itemId: string) => LinkedDocument[];
   onUnlinkDocument?: (documentId: string, itemId: string) => void;
   vendors?: Vendor[];
+  projectDocuments?: ProjectDocument[]; // All project documents for attachment display
 }
 
 const formatCurrency = (value: number) => {
   return `₹${value.toLocaleString('en-IN')}`;
 };
 
-const BOMCategoryCard = ({ category, projectId, onToggle, onQuantityChange, onDeletePart, onDeleteCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [], onUpdatePart, getDocumentCount, getDocumentsForItem, onUnlinkDocument, vendors = [] }: BOMCategoryCardProps) => {
+const BOMCategoryCard = ({ category, projectId, onToggle, onQuantityChange, onDeletePart, onDeleteCategory, onStatusChange, onEditPart, onPartCategoryChange, availableCategories = [], onUpdatePart, getDocumentCount, getDocumentsForItem, onUnlinkDocument, vendors = [], projectDocuments = [] }: BOMCategoryCardProps) => {
   const [showConfirm, setShowConfirm] = useState<false | 'warning' | 'confirm'>(false);
 
   const getStatusCount = (status: string) => {
@@ -218,6 +226,7 @@ const BOMCategoryCard = ({ category, projectId, onToggle, onQuantityChange, onDe
                   linkedDocuments={getDocumentsForItem ? getDocumentsForItem(item.id) : []}
                   onUnlinkDocument={onUnlinkDocument}
                   globalVendors={vendors}
+                  projectDocuments={projectDocuments}
                 />
               ))}
             </div>

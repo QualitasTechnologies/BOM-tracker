@@ -1,8 +1,6 @@
-import { useMemo, useState } from 'react';
-import { Package, Clock, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, FileText, ExternalLink } from 'lucide-react';
+import { useMemo, useState, useRef, useEffect } from 'react';
+import { Package, Clock, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Pencil } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   Select,
@@ -11,13 +9,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
 import { BOMItem, BOMCategory, getInwardStatus, InwardStatus } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
+import ItemAttachments from './ItemAttachments';
 
 interface InwardTrackingProps {
   categories: BOMCategory[];
   documents: ProjectDocument[];
   onItemClick?: (item: BOMItem) => void;
+  onUpdatePONumber?: (itemId: string, poNumber: string) => void;
   fullPage?: boolean; // When true, renders without collapsible wrapper for tab view
 }
 
@@ -77,9 +78,51 @@ const StatusBadge = ({ status, days }: { status: InwardStatus; days: number | nu
   );
 };
 
-const InwardTracking = ({ categories, documents, onItemClick, fullPage = false }: InwardTrackingProps) => {
+const InwardTracking = ({ categories, documents, onItemClick, onUpdatePONumber, fullPage = false }: InwardTrackingProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [filterStatus, setFilterStatus] = useState<string>('all');
+
+  // PO Number inline editing state
+  const [editingPOItemId, setEditingPOItemId] = useState<string | null>(null);
+  const [editingPOValue, setEditingPOValue] = useState<string>('');
+  const poInputRef = useRef<HTMLInputElement>(null);
+
+  // Focus input when editing starts
+  useEffect(() => {
+    if (editingPOItemId && poInputRef.current) {
+      poInputRef.current.focus();
+      poInputRef.current.select();
+    }
+  }, [editingPOItemId]);
+
+  const handlePOEditStart = (item: BOMItem, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingPOItemId(item.id);
+    setEditingPOValue(item.poNumber || '');
+  };
+
+  const handlePOEditSave = () => {
+    if (editingPOItemId && onUpdatePONumber) {
+      onUpdatePONumber(editingPOItemId, editingPOValue.trim());
+    }
+    setEditingPOItemId(null);
+    setEditingPOValue('');
+  };
+
+  const handlePOEditCancel = () => {
+    setEditingPOItemId(null);
+    setEditingPOValue('');
+  };
+
+  const handlePOKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handlePOEditSave();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      handlePOEditCancel();
+    }
+  };
 
   // Get all component items (not services)
   const allItems = useMemo(() => {
@@ -161,11 +204,6 @@ const InwardTracking = ({ categories, documents, onItemClick, fullPage = false }
     });
   }, [allItems, filterStatus]);
 
-  // Get linked document for an item
-  const getLinkedDocument = (item: BOMItem): ProjectDocument | undefined => {
-    if (!item.linkedPODocumentId) return undefined;
-    return documents.find(d => d.id === item.linkedPODocumentId);
-  };
 
   // If no ordered items, show empty state in full page mode
   if (stats.ordered + stats.received === 0) {
@@ -228,18 +266,19 @@ const InwardTracking = ({ categories, documents, onItemClick, fullPage = false }
             <thead className="bg-gray-50">
               <tr>
                 <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600`}>Item</th>
+                <th className={`text-center p-${fullPage ? '3' : '2'} font-medium text-gray-600`}>Qty</th>
                 <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600 hidden sm:table-cell`}>Vendor</th>
                 <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600`}>PO #</th>
                 <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600 hidden md:table-cell`}>Ordered</th>
                 <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600`}>Expected</th>
                 <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600`}>Status</th>
+                <th className={`text-left p-${fullPage ? '3' : '2'} font-medium text-gray-600`}>Docs</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {filteredItems.map((item) => {
                 const status = getInwardStatus(item);
                 const days = getDaysFromToday(item.expectedArrival);
-                const linkedDoc = getLinkedDocument(item);
 
                 return (
                   <tr
@@ -251,24 +290,41 @@ const InwardTracking = ({ categories, documents, onItemClick, fullPage = false }
                       <div className={`font-medium text-gray-900 truncate ${fullPage ? 'max-w-[250px]' : 'max-w-[150px]'}`}>
                         {item.name}
                       </div>
-                      {linkedDoc && (
-                        <a
-                          href={linkedDoc.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-1 text-blue-600 hover:underline"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <FileText size={fullPage ? 12 : 10} />
-                          <span className={`truncate ${fullPage ? 'max-w-[150px]' : 'max-w-[100px]'}`}>{linkedDoc.name}</span>
-                        </a>
-                      )}
+                    </td>
+                    <td className={`p-${fullPage ? '3' : '2'} text-center text-gray-600`}>
+                      {item.quantity}
                     </td>
                     <td className={`p-${fullPage ? '3' : '2'} text-gray-600 hidden sm:table-cell`}>
                       {item.finalizedVendor?.name || item.vendors?.[0]?.name || '-'}
                     </td>
                     <td className={`p-${fullPage ? '3' : '2'} text-gray-600`}>
-                      {item.poNumber || '-'}
+                      {editingPOItemId === item.id ? (
+                        <Input
+                          ref={poInputRef}
+                          type="text"
+                          value={editingPOValue}
+                          onChange={(e) => setEditingPOValue(e.target.value)}
+                          onKeyDown={handlePOKeyDown}
+                          onBlur={handlePOEditSave}
+                          onClick={(e) => e.stopPropagation()}
+                          className={`${fullPage ? 'h-8 text-sm' : 'h-6 text-xs'} w-32 px-2`}
+                          placeholder="PO Number"
+                        />
+                      ) : (
+                        <button
+                          onClick={(e) => handlePOEditStart(item, e)}
+                          className={`group flex items-center gap-1 hover:bg-gray-100 rounded px-1.5 py-0.5 -mx-1.5 transition-colors ${
+                            !item.poNumber ? 'text-red-500' : ''
+                          }`}
+                          title="Click to edit PO Number"
+                        >
+                          <span>{item.poNumber || '—'}</span>
+                          <Pencil
+                            size={fullPage ? 12 : 10}
+                            className="opacity-0 group-hover:opacity-50 transition-opacity"
+                          />
+                        </button>
+                      )}
                     </td>
                     <td className={`p-${fullPage ? '3' : '2'} text-gray-600 hidden md:table-cell`}>
                       {formatDate(item.orderDate)}
@@ -283,6 +339,13 @@ const InwardTracking = ({ categories, documents, onItemClick, fullPage = false }
                     </td>
                     <td className={`p-${fullPage ? '3' : '2'}`}>
                       <StatusBadge status={status} days={days} />
+                    </td>
+                    <td className={`p-${fullPage ? '3' : '2'}`}>
+                      <ItemAttachments
+                        item={item}
+                        documents={documents}
+                        size={fullPage ? 'md' : 'sm'}
+                      />
                     </td>
                   </tr>
                 );

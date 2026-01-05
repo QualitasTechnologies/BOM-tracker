@@ -27,6 +27,8 @@ import { Brand } from '@/types/brand';
 import QuantityControl from './QuantityControl';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getInwardStatus, InwardStatus } from '@/types/bom';
+import { ProjectDocument } from '@/types/projectDocument';
+import ItemAttachments from './ItemAttachments';
 
 interface BOMItem {
   id: string;
@@ -53,6 +55,10 @@ interface BOMItem {
   expectedArrival?: string;
   actualArrival?: string;
   linkedPODocumentId?: string;
+  linkedInvoiceDocumentId?: string;
+  receivedPhotoUrl?: string;
+  // Quote linkage
+  linkedQuoteDocumentId?: string;
   // Specification sheet fields
   specificationUrl?: string;
   linkedSpecDocumentId?: string;
@@ -88,6 +94,7 @@ interface BOMPartRowProps {
   linkedDocuments?: LinkedDocument[];
   onUnlinkDocument?: (documentId: string, itemId: string) => void;
   globalVendors?: GlobalVendor[];
+  projectDocuments?: ProjectDocument[]; // All project documents for attachment display
 }
 
 // Helper function to format date
@@ -181,7 +188,7 @@ const statusStyles: Record<
   },
 };
 
-const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [], linkedDocumentsCount = 0, linkedDocuments = [], onUnlinkDocument, globalVendors = [] }: BOMPartRowProps) => {
+const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [], linkedDocumentsCount = 0, linkedDocuments = [], onUnlinkDocument, globalVendors = [], projectDocuments = [] }: BOMPartRowProps) => {
   // Backward compatibility: default to 'component' if itemType is missing
   const itemType = part.itemType || 'component';
 
@@ -528,11 +535,13 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                   {itemType === 'service' && (
                     <span className="text-xs text-indigo-600 bg-indigo-50 px-1 rounded whitespace-nowrap">Service</span>
                   )}
-                  {linkedDocumentsCount > 0 && (
-                    <span className="text-xs text-green-600 bg-green-50 px-1 rounded whitespace-nowrap flex items-center gap-1">
-                      <FileText size={12} />
-                      {linkedDocumentsCount}
-                    </span>
+                  {/* Unified attachments display */}
+                  {projectDocuments.length > 0 && (
+                    <ItemAttachments
+                      item={part as any}
+                      documents={projectDocuments}
+                      size="sm"
+                    />
                   )}
                 </div>
                 {part.price && (

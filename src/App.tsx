@@ -17,6 +17,7 @@ import NotFound from "./pages/NotFound";
 import Settings from "./pages/Settings";
 import Pipeline from "./pages/Pipeline";
 import DealDetail from "./pages/DealDetail";
+import ReceivedPhotosGallery from "./pages/ReceivedPhotosGallery";
 import KPI from "./pages/Index"; // Using Index as KPI dashboard
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { subscribeToCompanySettings, CompanySettings } from '@/utils/settingsFirestore';
@@ -44,8 +45,8 @@ const AppLayout: React.FC = () => {
   const [companyLogo, setCompanyLogo] = useState<string>('/qualitas-logo.png');
   const [companyName, setCompanyName] = useState<string>('Qualitas Technologies');
 
-  // Hide sidebar on BOM pages for better mobile experience
-  const isBOMPage = location.pathname.includes('/bom');
+  // Hide sidebar on BOM pages and gallery for better mobile experience
+  const isBOMPage = location.pathname.includes('/bom') || location.pathname.includes('/received-photos');
   const showSidebar = !isBOMPage;
 
   // Subscribe to company settings to get logo
@@ -106,6 +107,7 @@ const AppLayout: React.FC = () => {
             <Route path="/kpi" element={<KPI />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/project/:projectId/bom" element={<BOM />} />
+            <Route path="/project/:projectId/received-photos" element={<ReceivedPhotosGallery />} />
             <Route path="/time-tracking" element={<TimeTracking />} />
             <Route path="/cost-analysis" element={<CostAnalysis />} />
             <Route path="/pipeline" element={<Pipeline />} />

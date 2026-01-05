@@ -48,7 +48,7 @@ interface OrderItemDialogProps {
   onConfirm: (data: {
     orderDate: string;
     expectedArrival: string;
-    poNumber?: string;
+    poNumber: string;
     linkedPODocumentId: string;
     vendor: {
       id: string;
@@ -205,7 +205,7 @@ const OrderItemDialog = ({
     onConfirm({
       orderDate,
       expectedArrival,
-      poNumber: poNumber || undefined,
+      poNumber: poNumber.trim(),
       linkedPODocumentId,
       vendor: {
         id: selectedVendor.id,
@@ -220,7 +220,8 @@ const OrderItemDialog = ({
 
   const isExpectedArrivalModified = expectedArrival && calculatedArrival && expectedArrival !== calculatedArrival;
   const hasPODocument = linkedPODocumentId && linkedPODocumentId !== '__NONE__';
-  const canSubmit = hasVendor && hasPODocument && expectedArrival;
+  const hasPONumber = poNumber.trim().length > 0;
+  const canSubmit = hasVendor && hasPODocument && hasPONumber && expectedArrival;
 
   if (!item) return null;
 
@@ -409,15 +410,20 @@ const OrderItemDialog = ({
 
               {/* PO Number */}
               <div className="space-y-1">
-                <Label htmlFor="poNumber" className="text-xs font-medium">PO Number</Label>
+                <Label htmlFor="poNumber" className="text-xs font-medium">
+                  PO Number <span className="text-red-500">*</span>
+                </Label>
                 <Input
                   id="poNumber"
                   type="text"
                   placeholder="e.g., PO-2025-0042"
                   value={poNumber}
                   onChange={(e) => setPONumber(e.target.value)}
-                  className="h-8 text-sm"
+                  className={`h-8 text-sm ${!poNumber.trim() ? 'border-red-300' : ''}`}
                 />
+                {!poNumber.trim() && (
+                  <p className="text-xs text-red-500">PO number is required</p>
+                )}
               </div>
 
               {/* PO Document - Required */}

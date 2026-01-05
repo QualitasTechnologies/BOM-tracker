@@ -4,12 +4,17 @@ import {
   FileText,
   ChevronDown,
   ChevronUp,
+  ChevronRight,
   Filter,
   Download,
   Loader2,
   Calendar,
   User,
   AlertCircle,
+  Pencil,
+  Trash2,
+  Check,
+  X,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -31,7 +36,14 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { subscribeToProjectActivities } from '@/utils/transcriptFirestore';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { subscribeToProjectActivities, updateActivity, deleteActivity } from '@/utils/transcriptFirestore';
 import { generateStatusUpdate } from '@/utils/transcriptService';
 import type { TranscriptActivity, ActivityType } from '@/types/transcript';
 import {
@@ -54,6 +66,15 @@ const ProjectActivityTimeline = ({
   const [activities, setActivities] = useState<TranscriptActivity[]>([]);
   const [isOpen, setIsOpen] = useState(true);
   const [filterType, setFilterType] = useState<ActivityType | 'all'>('all');
+
+  // Expanded days state - which days are expanded to show individual activities
+  const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set());
+
+  // Editing state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editSummary, setEditSummary] = useState('');
+  const [editType, setEditType] = useState<ActivityType>('progress');
+  const [isSaving, setIsSaving] = useState(false);
 
   // Status update dialog state
   const [statusDialogOpen, setStatusDialogOpen] = useState(false);
@@ -102,6 +123,77 @@ const ProjectActivityTimeline = ({
     });
     return counts;
   }, [activities]);
+
+  // Toggle day expansion
+  const toggleDayExpanded = (date: string) => {
+    setExpandedDays((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(date)) {
+        newSet.delete(date);
+      } else {
+        newSet.add(date);
+      }
+      return newSet;
+    });
+  };
+
+  // Start editing an activity
+  const handleEditStart = (activity: TranscriptActivity) => {
+    setEditingId(activity.id);
+    setEditSummary(activity.summary);
+    setEditType(activity.type);
+  };
+
+  // Save edited activity
+  const handleEditSave = async () => {
+    if (!editingId || !editSummary.trim()) return;
+
+    setIsSaving(true);
+    try {
+      await updateActivity(editingId, {
+        summary: editSummary.trim(),
+        type: editType,
+      });
+      setEditingId(null);
+      setEditSummary('');
+    } catch (err) {
+      console.error('Failed to update activity:', err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Cancel editing
+  const handleEditCancel = () => {
+    setEditingId(null);
+    setEditSummary('');
+  };
+
+  // Delete activity
+  const handleDelete = async (activityId: string) => {
+    if (!window.confirm('Delete this activity?')) return;
+
+    try {
+      await deleteActivity(activityId);
+    } catch (err) {
+      console.error('Failed to delete activity:', err);
+    }
+  };
+
+  // Get summary for collapsed day view
+  const getDaySummary = (dayActivities: TranscriptActivity[]) => {
+    const typeMap: Record<ActivityType, number> = {
+      progress: 0,
+      blocker: 0,
+      decision: 0,
+      action: 0,
+      note: 0,
+    };
+    dayActivities.forEach((a) => {
+      typeMap[a.type]++;
+    });
+    return typeMap;
+  };
 
   // Get activities for status update (within date range)
   const getActivitiesForStatusUpdate = () => {
@@ -214,59 +306,178 @@ const ProjectActivityTimeline = ({
                 </Button>
               </div>
 
-              {/* Grouped activities */}
-              <div className="space-y-4">
-                {groupedActivities.map((group) => (
-                  <div key={group.date} className="border-l-2 border-gray-200 pl-4">
-                    {/* Date header */}
-                    <div className="flex items-center gap-2 mb-2">
-                      <Calendar className="h-4 w-4 text-gray-400" />
-                      <span className="text-sm font-medium text-gray-700">
-                        {group.formattedDate}
-                      </span>
-                      <span className="text-xs text-gray-400">
-                        ({group.activities.length}{' '}
-                        {group.activities.length === 1 ? 'item' : 'items'})
-                      </span>
-                    </div>
+              {/* Grouped activities - compressed by day */}
+              <div className="space-y-2">
+                {groupedActivities.map((group) => {
+                  const isExpanded = expandedDays.has(group.date);
+                  const typeSummary = getDaySummary(group.activities);
 
-                    {/* Activities for this date */}
-                    <div className="space-y-2">
-                      {group.activities.map((activity) => (
-                        <div
-                          key={activity.id}
-                          className="bg-gray-50 rounded-lg p-3 text-sm"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2 mb-1">
-                                <Badge
-                                  variant="outline"
-                                  className={`text-[10px] ${ACTIVITY_TYPE_COLORS[activity.type]}`}
-                                >
-                                  {ACTIVITY_TYPE_ICONS[activity.type]}{' '}
-                                  {ACTIVITY_TYPE_LABELS[activity.type]}
-                                </Badge>
-                                {activity.speaker && (
-                                  <span className="text-xs text-gray-500 flex items-center gap-1">
-                                    <User className="h-3 w-3" />
-                                    {activity.speaker}
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-gray-900">{activity.summary}</p>
-                            </div>
-                            {activity.timestamp && (
-                              <span className="text-xs text-gray-400">
-                                {activity.timestamp}
-                              </span>
-                            )}
-                          </div>
+                  return (
+                    <div key={group.date} className="border rounded-lg overflow-hidden">
+                      {/* Day header - clickable to expand */}
+                      <button
+                        onClick={() => toggleDayExpanded(group.date)}
+                        className="w-full flex items-center justify-between gap-2 p-3 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+                      >
+                        <div className="flex items-center gap-2">
+                          {isExpanded ? (
+                            <ChevronDown className="h-4 w-4 text-gray-500" />
+                          ) : (
+                            <ChevronRight className="h-4 w-4 text-gray-500" />
+                          )}
+                          <Calendar className="h-4 w-4 text-gray-400" />
+                          <span className="text-sm font-medium text-gray-700">
+                            {group.formattedDate}
+                          </span>
                         </div>
-                      ))}
+                        <div className="flex items-center gap-1.5">
+                          {/* Type summary badges */}
+                          {typeSummary.progress > 0 && (
+                            <Badge variant="outline" className={`text-[10px] px-1.5 ${ACTIVITY_TYPE_COLORS.progress}`}>
+                              {ACTIVITY_TYPE_ICONS.progress} {typeSummary.progress}
+                            </Badge>
+                          )}
+                          {typeSummary.blocker > 0 && (
+                            <Badge variant="outline" className={`text-[10px] px-1.5 ${ACTIVITY_TYPE_COLORS.blocker}`}>
+                              {ACTIVITY_TYPE_ICONS.blocker} {typeSummary.blocker}
+                            </Badge>
+                          )}
+                          {typeSummary.decision > 0 && (
+                            <Badge variant="outline" className={`text-[10px] px-1.5 ${ACTIVITY_TYPE_COLORS.decision}`}>
+                              {ACTIVITY_TYPE_ICONS.decision} {typeSummary.decision}
+                            </Badge>
+                          )}
+                          {typeSummary.action > 0 && (
+                            <Badge variant="outline" className={`text-[10px] px-1.5 ${ACTIVITY_TYPE_COLORS.action}`}>
+                              {ACTIVITY_TYPE_ICONS.action} {typeSummary.action}
+                            </Badge>
+                          )}
+                          {typeSummary.note > 0 && (
+                            <Badge variant="outline" className={`text-[10px] px-1.5 ${ACTIVITY_TYPE_COLORS.note}`}>
+                              {ACTIVITY_TYPE_ICONS.note} {typeSummary.note}
+                            </Badge>
+                          )}
+                          <span className="text-xs text-gray-400 ml-1">
+                            ({group.activities.length})
+                          </span>
+                        </div>
+                      </button>
+
+                      {/* Expanded activities for this date */}
+                      {isExpanded && (
+                        <div className="border-t bg-white p-2 space-y-2">
+                          {group.activities.map((activity) => (
+                            <div
+                              key={activity.id}
+                              className="bg-gray-50 rounded-lg p-3 text-sm"
+                            >
+                              {editingId === activity.id ? (
+                                /* Edit mode */
+                                <div className="space-y-2">
+                                  <div className="flex items-center gap-2">
+                                    <Select
+                                      value={editType}
+                                      onValueChange={(v) => setEditType(v as ActivityType)}
+                                    >
+                                      <SelectTrigger className="w-32 h-7 text-xs">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {(['progress', 'blocker', 'decision', 'action', 'note'] as ActivityType[]).map(
+                                          (type) => (
+                                            <SelectItem key={type} value={type}>
+                                              {ACTIVITY_TYPE_ICONS[type]} {ACTIVITY_TYPE_LABELS[type]}
+                                            </SelectItem>
+                                          )
+                                        )}
+                                      </SelectContent>
+                                    </Select>
+                                    {activity.speaker && (
+                                      <span className="text-xs text-gray-500 flex items-center gap-1">
+                                        <User className="h-3 w-3" />
+                                        {activity.speaker}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <Textarea
+                                    value={editSummary}
+                                    onChange={(e) => setEditSummary(e.target.value)}
+                                    className="text-sm min-h-[60px]"
+                                    placeholder="Activity summary"
+                                  />
+                                  <div className="flex justify-end gap-2">
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={handleEditCancel}
+                                      className="h-7 text-xs"
+                                    >
+                                      <X className="h-3 w-3 mr-1" />
+                                      Cancel
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      onClick={handleEditSave}
+                                      disabled={isSaving || !editSummary.trim()}
+                                      className="h-7 text-xs"
+                                    >
+                                      {isSaving ? (
+                                        <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                                      ) : (
+                                        <Check className="h-3 w-3 mr-1" />
+                                      )}
+                                      Save
+                                    </Button>
+                                  </div>
+                                </div>
+                              ) : (
+                                /* View mode */
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <Badge
+                                        variant="outline"
+                                        className={`text-[10px] ${ACTIVITY_TYPE_COLORS[activity.type]}`}
+                                      >
+                                        {ACTIVITY_TYPE_ICONS[activity.type]}{' '}
+                                        {ACTIVITY_TYPE_LABELS[activity.type]}
+                                      </Badge>
+                                      {activity.speaker && (
+                                        <span className="text-xs text-gray-500 flex items-center gap-1">
+                                          <User className="h-3 w-3" />
+                                          {activity.speaker}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-gray-900">{activity.summary}</p>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => handleEditStart(activity)}
+                                      className="h-6 w-6 p-0 text-gray-400 hover:text-gray-600"
+                                    >
+                                      <Pencil className="h-3 w-3" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => handleDelete(activity.id)}
+                                      className="h-6 w-6 p-0 text-gray-400 hover:text-red-600"
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {filteredActivities.length === 0 && (
                   <div className="text-center py-4 text-gray-500 text-sm">

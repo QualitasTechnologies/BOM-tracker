@@ -4171,7 +4171,7 @@ exports.extractTranscriptActivities = onRequest(
     }
 
     try {
-      const { transcript, knownProjects, meetingDate } = request.body;
+      const { transcript, knownProjects, meetingDate, projectContext } = request.body;
 
       if (!transcript || typeof transcript !== 'string') {
         response.status(400).json({ error: 'Transcript text is required' });
@@ -4185,58 +4185,84 @@ exports.extractTranscriptActivities = onRequest(
         return;
       }
 
-      // Build list of known projects for the prompt
+      // Build list of known projects from BOM Tracker
       const projectsList = knownProjects && knownProjects.length > 0
         ? knownProjects.join(', ')
-        : 'APIT, Tweezerman, Bosch, Eagle Eye, Hindalco, JK Tires';
+        : '';
 
-      const systemPrompt = `You are an expert at extracting structured information from meeting transcripts.
+      if (!projectsList && !projectContext) {
+        logger.warn('No known projects or context provided - extraction may be limited');
+      }
 
-CONTEXT: This is a transcript from a daily engineering standup meeting. Multiple projects are discussed.
+      // Use rich context if provided, otherwise fall back to simple project list
+      const projectContextSection = projectContext
+        ? projectContext
+        : `ACTIVE PROJECTS FROM BOM TRACKER: ${projectsList || '(No projects provided - extract all mentioned projects)'}`;
 
-KNOWN PROJECTS: ${projectsList}
+      const systemPrompt = `You are an expert at extracting structured project updates from engineering standup meeting transcripts.
 
-YOUR TASK: Extract activities from the transcript and group them by project.
+CONTEXT: This is a daily engineering standup where team members report updates on their assigned projects. The company (Vision AI) builds custom automation, machine vision, and robotics solutions for clients.
 
-ACTIVITY TYPES:
-- progress: Work completed, milestones achieved, tasks done
-- blocker: Issues preventing progress, problems encountered
-- decision: Technical or process decisions made
-- action: Action items, commitments, next steps agreed upon
-- note: General updates, context, information shared
+${projectContextSection}
 
-RULES:
-1. ONLY extract activities related to known projects (${projectsList})
-2. IGNORE sales leads, casual conversation, administrative talk
-3. Each activity should have a clean, client-readable summary (1-2 sentences max)
-4. Identify the speaker when possible (look for patterns like "Speaker Name (company)")
-5. Include the timestamp if available (format: "00:00:00")
-6. Be concise - summarize, don't copy verbatim
-7. Skip any internal-only discussions that shouldn't be shared with clients
+TRANSCRIPT FORMAT:
+- Speaker lines appear as: "Speaker Name (Vision AI) 00:00:00" or "Speaker Name (Company) 00:00:00"
+- Extract the speaker name (without company) and the timestamp
+- Each speaker typically discusses 1-3 projects they're working on
+
+YOUR TASK: Extract actionable updates ONLY for projects listed above.
+
+ACTIVITY TYPES (be precise):
+- progress: Tangible work completed - "fixture ready", "machine running", "code deployed", "parts received", "testing done"
+- blocker: Issues ACTIVELY blocking progress - waiting for approvals, missing parts, technical issues, client delays
+- decision: Explicit decisions made during the meeting - "we decided to...", "agreed to use...", "will go with..."
+- action: Commitments for future work - "will send by EOD", "need to follow up", "scheduled for tomorrow"
+- note: Status context that doesn't fit above - "client visit next week", "awaiting feedback", general status
+
+EXTRACTION RULES:
+1. ONLY extract updates for projects listed in the PROJECTS section above
+2. Use the VENDORS mapping: When someone mentions a vendor name, attribute to the associated project
+3. Use the OWNERS info: When a specific person speaks, likely discussing their owned projects
+4. Use ALIASES: Project may be referenced by alternative names (client name, code name, etc.)
+5. Any project/company mentioned that is NOT in the list = SALES/LEAD (add to unrecognizedProjects)
+6. One speaker may discuss multiple projects - create separate activities for each
+7. Keep summaries CLIENT-READABLE (1-2 sentences, professional tone)
+8. DO NOT include:
+   - Projects not in the known list (these are sales leads)
+   - Internal tools/software development discussions
+   - Administrative talk, casual conversation, greetings
+9. INFER project context - if someone says "the fixture" right after discussing a known project, it's still that project
+10. Use "Remember" hints - if a term was previously learned to mean a project, apply that
+11. Set confidence: 0.9+ if project explicitly named, 0.7-0.8 if inferred from context/vendor/owner
 
 OUTPUT FORMAT (strict JSON):
 {
   "activities": [
     {
-      "projectName": "APIT",
+      "projectName": "ExactNameFromBOMTracker",
       "type": "progress",
-      "summary": "Machine 1 and Machine 2 are now running. First machine is ready to ship for pilot.",
-      "speaker": "Anandha",
+      "summary": "Professional, client-readable summary of the update.",
+      "speaker": "SpeakerName",
       "timestamp": "00:02:30",
-      "rawExcerpt": "Original text from transcript for reference",
-      "confidence": 0.9
+      "rawExcerpt": "Original text from transcript",
+      "confidence": 0.95
     }
   ],
-  "unrecognizedProjects": ["Any project names mentioned but not in known list"],
-  "warnings": ["Any extraction issues or notes"]
+  "unrecognizedProjects": ["ProjectX", "NewLead"],
+  "warnings": ["Any extraction issues"]
 }
 
-CRITICAL: Return ONLY valid JSON. No explanation text.`;
+IMPORTANT:
+- "unrecognizedProjects" should list ALL project/company names mentioned that are NOT in the BOM Tracker list
+- These are potential sales leads or new projects not yet in the system
+
+CRITICAL: Return ONLY valid JSON. No markdown, no explanation.`;
 
       const userPrompt = `Extract activities from this transcript:
 
 ${transcript}`;
 
+      // Using GPT-5.2 for better transcript understanding and extraction
       const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -4244,13 +4270,13 @@ ${transcript}`;
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'gpt-4o-mini',
+          model: 'gpt-5.2',
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt }
           ],
           temperature: 0.2,
-          max_tokens: 4000,
+          max_completion_tokens: 4000,
           response_format: { type: 'json_object' }
         })
       });
@@ -4399,6 +4425,7 @@ RULES:
 
 OUTPUT: Return ONLY the status update text (no JSON, no formatting instructions).`;
 
+      // Using GPT-5.2 for better status update generation
       const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -4406,13 +4433,13 @@ OUTPUT: Return ONLY the status update text (no JSON, no formatting instructions)
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'gpt-4o-mini',
+          model: 'gpt-5.2',
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: context }
           ],
           temperature: 0.3,
-          max_tokens: 1000
+          max_completion_tokens: 1000
         })
       });
 

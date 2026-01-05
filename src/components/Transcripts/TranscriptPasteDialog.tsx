@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Loader2, Check, AlertCircle, Trash2, Edit2, FileText, Calendar } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Loader2, Check, AlertCircle, Trash2, Edit2, FileText, Calendar, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -25,6 +25,7 @@ import {
 import { useAuth } from '@/hooks/useAuth';
 import { getProjects } from '@/utils/projectFirestore';
 import { extractActivitiesFromTranscript } from '@/utils/transcriptService';
+import { buildContextPrompt, addLearnedTerm, addVendorToContext } from '@/utils/projectContextFirestore';
 import {
   addTranscript,
   markTranscriptProcessed,
@@ -51,9 +52,11 @@ const TranscriptPasteDialog = ({
   onSuccess,
 }: TranscriptPasteDialogProps) => {
   const { user } = useAuth();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Step 1: Input state
   const [transcript, setTranscript] = useState('');
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const [meetingDate, setMeetingDate] = useState(
     new Date().toISOString().split('T')[0]
   );
@@ -79,12 +82,17 @@ const TranscriptPasteDialog = ({
       loadProjects();
       // Reset state
       setTranscript('');
+      setUploadedFileName(null);
       setMeetingDate(new Date().toISOString().split('T')[0]);
       setStep('input');
       setActivities([]);
       setUnrecognizedProjects([]);
       setWarnings([]);
       setError(null);
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   }, [open]);
 
@@ -132,6 +140,43 @@ const TranscriptPasteDialog = ({
     return undefined;
   };
 
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    const validTypes = ['text/plain', 'text/markdown', '.txt', '.md'];
+    const isValidType = validTypes.some(type =>
+      file.type === type || file.name.endsWith('.txt') || file.name.endsWith('.md')
+    );
+
+    if (!isValidType) {
+      setError('Please upload a text file (.txt or .md)');
+      return;
+    }
+
+    // Validate file size (max 1MB)
+    if (file.size > 1024 * 1024) {
+      setError('File is too large. Maximum size is 1MB.');
+      return;
+    }
+
+    setError(null);
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+      const content = e.target?.result as string;
+      setTranscript(content);
+      setUploadedFileName(file.name);
+    };
+
+    reader.onerror = () => {
+      setError('Failed to read file. Please try again.');
+    };
+
+    reader.readAsText(file);
+  };
+
   const handleExtract = async () => {
     if (!transcript.trim()) {
       setError('Please paste a transcript');
@@ -144,10 +189,19 @@ const TranscriptPasteDialog = ({
     try {
       const knownProjects = projects.map((p) => p.name);
 
+      // Build rich context from project context files
+      let projectContext: string | undefined;
+      try {
+        projectContext = await buildContextPrompt();
+      } catch (ctxErr) {
+        console.warn('Failed to load project context, falling back to simple list:', ctxErr);
+      }
+
       const result = await extractActivitiesFromTranscript({
         transcript,
         knownProjects,
         meetingDate,
+        projectContext,
       });
 
       // Map extracted activities to editable format with project IDs
@@ -183,8 +237,28 @@ const TranscriptPasteDialog = ({
     );
   };
 
-  const handleActivityProjectChange = (id: string, projectId: string) => {
+  const handleActivityProjectChange = async (id: string, projectId: string) => {
     const project = projects.find((p) => p.id === projectId);
+    const activity = activities.find((a) => a.id === id);
+
+    // If user is changing from one project to another, learn from the correction
+    if (activity && activity.projectId && activity.projectId !== projectId) {
+      const originalProjectName = activity.projectName;
+
+      // Learn that the original term should map to the new project
+      // This helps future extractions
+      try {
+        // If the original name doesn't match the new project, it's a correction
+        if (originalProjectName && project && originalProjectName !== project.name) {
+          await addLearnedTerm(projectId, originalProjectName, user?.uid);
+          console.log(`Learned: "${originalProjectName}" → ${project.name}`);
+        }
+      } catch (err) {
+        // Don't block the UI if learning fails
+        console.warn('Failed to save learning:', err);
+      }
+    }
+
     setActivities((prev) =>
       prev.map((a) =>
         a.id === id
@@ -304,10 +378,37 @@ const TranscriptPasteDialog = ({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="transcript">Transcript</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="transcript">Transcript</Label>
+                <div className="flex items-center gap-2">
+                  {uploadedFileName && (
+                    <span className="text-xs text-green-600 flex items-center gap-1">
+                      <Check className="h-3 w-3" />
+                      {uploadedFileName}
+                    </span>
+                  )}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".txt,.md,text/plain,text/markdown"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="h-7 text-xs"
+                  >
+                    <Upload className="h-3 w-3 mr-1" />
+                    Upload File
+                  </Button>
+                </div>
+              </div>
               <Textarea
                 id="transcript"
-                placeholder="Paste your Fathom transcript here...
+                placeholder="Paste your Fathom transcript here, or upload a .txt file...
 
 Example format:
 00:00:11 - Raghava Kashyapa (qualitastech.com)
@@ -315,7 +416,10 @@ Example format:
 00:00:15 - Puneeth Raj (qualitastech.com)
     Hey, morning..."
                 value={transcript}
-                onChange={(e) => setTranscript(e.target.value)}
+                onChange={(e) => {
+                  setTranscript(e.target.value);
+                  setUploadedFileName(null); // Clear file name when manually editing
+                }}
                 className="min-h-[300px] font-mono text-sm"
               />
               <p className="text-xs text-muted-foreground">

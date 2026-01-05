@@ -1,6 +1,7 @@
 // Transcript Service - AI extraction and status update generation
 
 import type { ExtractedActivity, ActivityType } from '@/types/transcript';
+import { buildContextPrompt, getProjectNamesForExtraction } from '@/utils/projectContextFirestore';
 
 const FUNCTIONS_BASE_URL = 'https://us-central1-visionbomtracker.cloudfunctions.net';
 
@@ -8,6 +9,7 @@ export interface ExtractionRequest {
   transcript: string;
   knownProjects: string[];
   meetingDate?: string;
+  projectContext?: string; // Rich context from project context files
 }
 
 export interface ExtractionResponse {
@@ -51,6 +53,7 @@ export const extractActivitiesFromTranscript = async (
       transcript: request.transcript,
       knownProjects: request.knownProjects,
       meetingDate: request.meetingDate,
+      projectContext: request.projectContext,
     }),
   });
 
@@ -60,6 +63,27 @@ export const extractActivitiesFromTranscript = async (
   }
 
   return response.json();
+};
+
+/**
+ * Extract activities with auto-loaded context from project context files
+ */
+export const extractActivitiesWithContext = async (
+  transcript: string,
+  meetingDate?: string
+): Promise<ExtractionResponse> => {
+  // Load context from project context files
+  const [projectContext, projectNames] = await Promise.all([
+    buildContextPrompt(),
+    getProjectNamesForExtraction(),
+  ]);
+
+  return extractActivitiesFromTranscript({
+    transcript,
+    knownProjects: projectNames,
+    meetingDate,
+    projectContext,
+  });
 };
 
 /**

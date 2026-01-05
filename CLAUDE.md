@@ -145,6 +145,42 @@
 - Click-through to affected items for quick fixes
 - See `docs/AI_Compliance_Checker_PRD.md` for original spec (IMPLEMENTED)
 
+### 📝 Meeting Transcript System (Jan 2026)
+- **Transcript Paste Dialog** - Paste or upload (.txt/.md) meeting transcripts
+  - File upload support for .txt and .md files (max 1MB)
+  - Visual feedback showing uploaded filename with checkmark
+- **AI Activity Extraction** - GPT-5.2 powered extraction of project activities
+  - Uses `max_completion_tokens` parameter (required for GPT-5.2+)
+  - Identifies activity types: progress, blocker, decision, action-item, note
+  - Groups activities by project with confidence scores
+- **Project Context System** - Per-project context files for better AI attribution
+  - Auto-generated from BOM data (vendors, categories, client info)
+  - Stores aliases, owners, keywords for project identification
+  - Learning system: Corrections train future extractions (`addLearnedTerm`)
+  - YAML-like editable format with live preview
+- **Activity Review UI** - Edit/approve extracted activities before saving
+  - Reassign activities to different projects (triggers learning)
+  - Edit summaries, change activity types
+  - Select/deselect activities for batch save
+- **Project Activity Timeline** - View extracted activities per project
+  - **Compressed Day View** - Activities grouped by date, collapsed by default
+    - Type summary badges showing counts (🚀 3 🚧 1 ⚡ 2)
+    - Click to expand and see individual activities
+  - **Inline Edit/Delete** - Edit activity type and summary, delete activities
+- **Status Update Generator** - AI-generated client-ready status updates
+
+### 📦 Inward Tracking Enhancements (Jan 2026)
+- **Click-to-Edit PO Number** - Inline editing of PO numbers in Inward Tracking table
+  - Pencil icon on hover indicates editability
+  - Enter to save, Escape to cancel, blur to save
+  - Missing PO numbers highlighted in red
+- **Unified Attachments Display** - `ItemAttachments` component showing:
+  - Quote (teal), PO (blue), Invoice (purple), Photo (green) icons
+  - Tooltips showing document names
+  - Used in both Inward Tracking table and BOM Part rows
+- **Qty Column** - Added quantity display to Inward Tracking table
+- **PO Number Required** - PO Number now mandatory when marking items as "Ordered"
+
 ### 📋 Purchase Order System (Jan 2026)
 - **PO Creation from BOM Items**
   - Create PO dialog with vendor selection (searchable dropdown)
