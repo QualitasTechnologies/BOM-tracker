@@ -3,7 +3,7 @@
 ## Document Info
 - **Created**: January 6, 2026
 - **Status**: Draft
-- **Author**: Rahul Kashyapa / Claude
+- **Author**: Raghava Kashyapa / Claude
 
 ---
 
@@ -277,7 +277,7 @@ Delivered 15-30 minutes before scheduled standup.
 │  🔴 CRITICAL (needs immediate attention)                │
 │  ─────────────────────────────────────────────         │
 │  • Power supply design - discussed 7 consecutive       │
-│    days with no progress. Rahul owns this.             │
+│    days with no progress. Priya owns this.             │
 │    → Suggested question: "What's specifically          │
 │      blocking the power supply completion?"            │
 │                                                         │
@@ -298,7 +298,7 @@ Delivered 15-30 minutes before scheduled standup.
 │  ✅ COMPLETED SINCE LAST STANDUP                        │
 │  ─────────────────────────────────────────────         │
 │  • BOM finalization (Priya) - done yesterday           │
-│  • Vendor selection for connectors (Rahul) - done      │
+│  • Vendor selection for connectors (Amit) - done       │
 │                                                         │
 │  📊 PROJECT HEALTH                                      │
 │  ─────────────────────────────────────────────         │
