@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, Archive, Wrench, ClipboardList } from "lucide-react";
+import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, Archive, Wrench, ClipboardList, Target } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -277,6 +277,17 @@ const Projects = () => {
               <span className="hidden sm:inline text-xs sm:text-sm">BOM</span>
             </Link>
           </Button>
+          <Button
+            asChild
+            variant="outline"
+            size="sm"
+            className="flex-1 min-w-0 px-2 sm:px-3 overflow-hidden"
+          >
+            <Link to={`/project/${project.projectId}/milestones`} className="flex items-center justify-center gap-1.5 sm:gap-2 min-w-0">
+              <Target className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0 text-blue-600" />
+              <span className="hidden sm:inline text-xs sm:text-sm">Milestones</span>
+            </Link>
+          </Button>
         </div>
       </CardFooter>
     </Card>
@@ -428,6 +439,11 @@ const Projects = () => {
                           <Button asChild variant="outline" size="sm" title="BOM">
                             <Link to={`/project/${project.projectId}/bom`}>
                               <Wrench className="h-4 w-4 text-purple-600" />
+                            </Link>
+                          </Button>
+                          <Button asChild variant="outline" size="sm" title="Milestones">
+                            <Link to={`/project/${project.projectId}/milestones`}>
+                              <Target className="h-4 w-4 text-blue-600" />
                             </Link>
                           </Button>
                           <Button
