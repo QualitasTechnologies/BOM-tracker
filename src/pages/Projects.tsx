@@ -283,7 +283,7 @@ const Projects = () => {
             size="sm"
             className="flex-1 min-w-0 px-2 sm:px-3 overflow-hidden"
           >
-            <Link to={`/project/${project.projectId}/milestones`} className="flex items-center justify-center gap-1.5 sm:gap-2 min-w-0">
+            <Link to={`/project/${project.projectId}/bom?tab=milestones`} className="flex items-center justify-center gap-1.5 sm:gap-2 min-w-0">
               <Target className="h-3.5 w-3.5 sm:h-4 sm:w-4 flex-shrink-0 text-blue-600" />
               <span className="hidden sm:inline text-xs sm:text-sm">Milestones</span>
             </Link>
@@ -442,7 +442,7 @@ const Projects = () => {
                             </Link>
                           </Button>
                           <Button asChild variant="outline" size="sm" title="Milestones">
-                            <Link to={`/project/${project.projectId}/milestones`}>
+                            <Link to={`/project/${project.projectId}/bom?tab=milestones`}>
                               <Target className="h-4 w-4 text-blue-600" />
                             </Link>
                           </Button>

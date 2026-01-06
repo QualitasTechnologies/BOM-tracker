@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { Search, Plus, Download, Filter, X, Upload, Package, FileText, Users, ChevronDown, ChevronUp, Milestone, Brain } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -68,12 +68,15 @@ interface OrderDialogData {
 }
 
 const BOM = () => {
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get('tab') || 'bom-items';
+
   const [searchTerm, setSearchTerm] = useState('');
   const [categories, setCategories] = useState<BOMCategory[]>([]);
-  const [activeTab, setActiveTab] = useState('bom-items');
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [groupBy, setGroupBy] = useState<'category' | 'vendor'>('category');
   const [expandedVendors, setExpandedVendors] = useState<Set<string>>(new Set());
-  
+
   const toggleVendor = (vendorName: string) => {
     setExpandedVendors(prev => {
       const next = new Set(prev);
