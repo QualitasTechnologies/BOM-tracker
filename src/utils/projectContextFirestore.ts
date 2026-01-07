@@ -129,9 +129,18 @@ export async function generateProjectContext(
   // Extract unique vendors from BOM items
   const vendorMap = new Map<string, ProjectContextVendor>();
   bomItems.forEach((item) => {
-    if (item.finalizedVendor?.name && !vendorMap.has(item.finalizedVendor.name)) {
-      vendorMap.set(item.finalizedVendor.name, {
-        name: item.finalizedVendor.name,
+    // Get vendor name - handle both string and object (legacy data) cases
+    let vendorName: string | undefined;
+    if (item.finalizedVendor?.name) {
+      // Handle legacy data where name might be an object
+      vendorName = typeof item.finalizedVendor.name === 'string'
+        ? item.finalizedVendor.name
+        : (item.finalizedVendor.name as any)?.company || (item.finalizedVendor.name as any)?.name;
+    }
+
+    if (vendorName && !vendorMap.has(vendorName)) {
+      vendorMap.set(vendorName, {
+        name: vendorName,
         context: item.category || undefined,
       });
     }

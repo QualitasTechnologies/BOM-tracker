@@ -2,14 +2,18 @@
 
 ## Document Info
 - **Created**: January 6, 2026
-- **Status**: Draft
+- **Last Updated**: January 7, 2026
+- **Status**: Draft v2
 - **Author**: Raghava Kashyapa / Claude
 
 ---
 
+# PART I: THE PROBLEM & VALUE
+
 ## 1. Business Problem
 
 ### The Reality Today
+
 Projects run for months. Daily standups happen, decisions are made, blockers arise, commitments are given. But this information disappears into the void.
 
 When a customer asks "why is this delayed?":
@@ -19,12 +23,14 @@ When a customer asks "why is this delayed?":
 - Sometimes blame is taken for delays that weren't internal
 
 ### Root Causes
+
 1. **Project Amnesia** - Critical information lives in people's heads and is never captured
 2. **Pattern Blindness** - Same tasks stretch for weeks, but no one notices the repetition
 3. **Commitment Drift** - Engineers say "I'll finish by Friday," miss it, and no one tracks this
-4. **Unasked Questions** - The right follow-up questions don't get asked because managers don't remember the history
+4. **Communication Gap** - Clients feel out of the loop; updates are inconsistent or missed
 
 ### The Cost
+
 - Delays escalate into crises (no early warning)
 - Poor estimation repeats (no pattern learning)
 - Customer trust erodes (reactive, not proactive communication)
@@ -34,7 +40,9 @@ When a customer asks "why is this delayed?":
 
 ## 2. Value Proposition
 
-A system that watches project activity and surfaces patterns early:
+A system that captures project activity, surfaces patterns, and generates world-class client communication.
+
+### For Internal Team (CEO, Managers)
 
 | Insight Type | Example | Action Enabled |
 |--------------|---------|----------------|
@@ -43,112 +51,280 @@ A system that watches project activity and surfaces patterns early:
 | Estimation Pattern | "Your PCB tasks take 2.3x estimated time" | Improve future estimates |
 | Recurring Blocker | "Waiting on client approval - 4th time this month" | Escalate or change process |
 
+### For Clients (CEO, PM)
+
+| Output | Value |
+|--------|-------|
+| Weekly Status Update | Professional, consistent communication that builds trust |
+| Health Dashboard | At-a-glance project status without asking |
+| Proactive Alerts | Know about challenges before they become surprises |
+| Complete History | "What happened with X?" answered instantly |
+
 ### Outcomes
+
 - **Early Intervention** - Problems surfaced before they become crises
 - **Better Estimation** - Learn from historical patterns
 - **Proactive Communication** - Know about delays before customers do
-- **Informed Meetings** - Manager armed with the right questions to ask
+- **Client Delight** - Professional, consistent updates that differentiate your service
 
 ---
 
-## 3. System Architecture
+## 3. The Dual Audience
 
-### Overview
+This system serves two distinct audiences with different needs:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                  PROJECT INTELLIGENCE SERVICE                    │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────┐     ┌─────────────┐     ┌─────────────────┐   │
-│  │  Meeting    │     │   Daily     │     │  Future Inputs  │   │
-│  │ Transcripts │     │  Check-ins  │     │  (Email, Chat)  │   │
-│  └──────┬──────┘     └──────┬──────┘     └────────┬────────┘   │
-│         │                   │                      │            │
-│         └───────────────────┼──────────────────────┘            │
-│                             ▼                                    │
-│                  ┌─────────────────────┐                        │
-│                  │   EXTRACTION LAYER   │                        │
-│                  │  - Activities        │                        │
-│                  │  - Commitments       │                        │
-│                  │  - Blockers          │                        │
-│                  │  - Decisions         │                        │
-│                  └──────────┬──────────┘                        │
-│                             ▼                                    │
-│                  ┌─────────────────────┐                        │
-│                  │   INTELLIGENCE LAYER │                        │
-│                  │  - Pattern Detection │                        │
-│                  │  - Cross-time Analysis│                       │
-│                  │  - Commitment Tracking│                       │
-│                  │  - Learning Engine   │                        │
-│                  └──────────┬──────────┘                        │
-│                             ▼                                    │
-│                  ┌─────────────────────┐                        │
-│                  │     DATA STORE       │                        │
-│                  │  - Activities        │                        │
-│                  │  - Patterns          │                        │
-│                  │  - Insights          │                        │
-│                  │  - Learning Data     │                        │
-│                  └──────────┬──────────┘                        │
-│                             ▼                                    │
-│         ┌───────────────────┼───────────────────┐               │
-│         ▼                   ▼                   ▼               │
-│  ┌─────────────┐     ┌─────────────┐     ┌─────────────┐       │
-│  │   Daily     │     │   Critical  │     │   Query     │       │
-│  │  Briefing   │     │   Alerts    │     │  Interface  │       │
-│  └─────────────┘     └─────────────┘     └─────────────┘       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-                    ┌─────────────────┐
-                    │  External Apps  │
-                    │  - BOM Tracker  │
-                    │  - Future Apps  │
-                    └─────────────────┘
-```
+| Audience | What They Need | Format |
+|----------|----------------|--------|
+| **Internal** (CEO, Managers) | Raw patterns, accountability, suggested questions | Daily Briefing, Alerts |
+| **External** (Client CEO, PM) | Confidence, progress narrative, no surprises | Weekly Status Update |
 
-### Components
+**Key Insight:** Same underlying data, different presentations.
+- Internal = raw truth, accountability focus
+- External = professional narrative, confidence focus
 
-#### Input Layer
-1. **Meeting Transcripts** - Passive capture of discussions (existing)
-2. **Daily Check-ins** - Active capture via intelligent questions (new)
-3. **Future**: Email, WhatsApp, commit messages, task updates
+### Client Audience Layers
 
-#### Extraction Layer
-Processes raw inputs to extract structured information:
-- **Activities** - What happened (progress, work done)
-- **Commitments** - Who promised what by when
-- **Blockers** - What's preventing progress, and attribution
-- **Decisions** - What was decided and why
+For enterprise clients, there are typically two stakeholders:
 
-#### Intelligence Layer
-Cross-references data over time to detect patterns:
-- **Stuck Task Detection** - Same item appearing repeatedly
-- **Commitment Tracking** - Promise made vs. delivered
-- **Estimation Analysis** - Predicted vs. actual duration
-- **Pattern Recognition** - Recurring blockers, common delay causes
+| Role | What They Want | Update Style |
+|------|----------------|--------------|
+| **Client CEO/VP** | High-level health, confidence, no surprises | One-liner + health indicator |
+| **Client PM** | Enough detail to report upward, track progress | Full weekly update |
 
-#### Learning Engine
-Gets smarter over time:
-- Learns which task types are underestimated
-- Learns individual engineer patterns
-- Learns which language precedes missed deadlines
-- Adjusts question specificity based on history
-
-#### Output Layer
-1. **Daily Briefing** - Pushed before standup meetings
-2. **Critical Alerts** - Real-time for threshold breaches
-3. **Query Interface** - Ask questions about project history (future)
+The system generates layered updates that serve both.
 
 ---
 
-## 4. Input Source 1: Meeting Transcripts
+# PART II: SYSTEM ARCHITECTURE
 
-### What Gets Captured
-Daily standups, project meetings, client calls - any meeting with a transcript.
+## 4. Architecture Overview
 
-### Extraction Targets
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    PROJECT INTELLIGENCE SERVICE                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                       CONTEXT LAYER                               │   │
+│  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌────────────┐  │   │
+│  │  │   Project   │ │  BOM Data   │ │  Documents  │ │  Calendar  │  │   │
+│  │  │   Context   │ │  & Status   │ │  & Specs    │ │  & Holidays│  │   │
+│  │  └─────────────┘ └─────────────┘ └─────────────┘ └────────────┘  │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                    │                                     │
+│  ┌─────────────────────────────────┼────────────────────────────────┐   │
+│  │                       INPUT LAYER                                 │   │
+│  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐                 │   │
+│  │  │  Meeting    │ │   Daily     │ │   Future    │                 │   │
+│  │  │ Transcripts │ │  Check-ins  │ │   Inputs    │                 │   │
+│  │  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘                 │   │
+│  └─────────┼───────────────┼───────────────┼────────────────────────┘   │
+│            └───────────────┼───────────────┘                             │
+│                            ▼                                             │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                    PROCESSING LAYER                               │   │
+│  │                                                                   │   │
+│  │   Transcripts ──► EXTRACTION ──► Activities ──► CONSOLIDATION    │   │
+│  │                                                         │         │   │
+│  │                                                         ▼         │   │
+│  │                                                   Developments    │   │
+│  │                                                         │         │   │
+│  │                                                         ▼         │   │
+│  │                                           ┌─────────────────────┐ │   │
+│  │                                           │ HUMAN REVIEW (HIL)  │ │   │
+│  │                                           │ Approve/Edit/Delete │ │   │
+│  │                                           └──────────┬──────────┘ │   │
+│  └──────────────────────────────────────────────────────┼───────────┘   │
+│                                                          │               │
+│  ┌───────────────────────────────────────────────────────┼──────────┐   │
+│  │                    INTELLIGENCE LAYER                  │          │   │
+│  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐   │          │   │
+│  │  │   Pattern    │ │  Commitment  │ │   Learning   │◄──┘          │   │
+│  │  │  Detection   │ │   Tracking   │ │    Engine    │ (feedback)   │   │
+│  │  └──────────────┘ └──────────────┘ └──────────────┘              │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                    │                                     │
+│  ┌─────────────────────────────────┼────────────────────────────────┐   │
+│  │                       OUTPUT LAYER                                │   │
+│  │         ┌───────────────────────┼───────────────────┐            │   │
+│  │         ▼                       ▼                   ▼            │   │
+│  │  ┌─────────────┐         ┌─────────────┐     ┌─────────────┐    │   │
+│  │  │   Weekly    │         │    Daily    │     │  Critical   │    │   │
+│  │  │   Client    │         │  Briefing   │     │   Alerts    │    │   │
+│  │  │   Update    │         │ (Internal)  │     │             │    │   │
+│  │  └─────────────┘         └─────────────┘     └─────────────┘    │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 5. Context Layer
+
+### Purpose
+
+Extraction quality depends on context. The more the system knows about a project, the better it can:
+- Attribute activities to the correct project
+- Understand technical terms and jargon
+- Assess timeline impacts
+- Generate client-appropriate summaries
+
+### 5.1 Project Context
+
+Basic project information that guides extraction:
+
+```yaml
+project: Raize Labz - Initial Machines
+client: APIT
+objective: "Ship grain analyzer with 90% accuracy by Nov 30"
+
+aliases:
+  - APIT
+  - "grain analyzer"
+  - "rice project"
+
+team:
+  - name: Anandha Lakshmi
+    role: lead
+  - name: Royce
+    role: engineer
+
+client_contacts:
+  - name: Shashisar
+    aliases: [SKT, "Shashi sir"]
+  - name: Pradeep
+  - name: Deependra
+
+vendors:
+  - Hikrobot (cameras)
+  - Sumotech (lighting)
+
+keywords:
+  - tracking
+  - object detection
+  - DeepStream
+  - ByteTrack
+  - NvDCF
+
+# Learned from corrections
+learned_terms:
+  - "tracker" → this project
+  - "Eagle Eye" → internal analysis tool
+
+preferred_tone: concise, business-focused
+```
+
+### 5.2 BOM & Procurement Data
+
+Integration with BOM Tracker provides:
+
+| Data | Use in Intelligence |
+|------|---------------------|
+| BOM items and status | "Waiting on Hikrobot camera" → blocker attribution |
+| Vendor lead times | Expected arrival vs. actual → delay detection |
+| Procurement blockers | Auto-surface supply chain issues |
+| Project costs | Budget context for decisions |
+
+**Integration**: Via Firestore shared collections or MCP server.
+
+### 5.3 Project Documents
+
+Additional context from project artifacts:
+
+| Document Type | Value |
+|---------------|-------|
+| **Proposal/SOW** | Original scope, deliverables, timeline commitments |
+| **Technical Specs** | What "done" looks like, acceptance criteria |
+| **Meeting Notes** | Historical decisions, client preferences |
+| **Emails** | Client communication context |
+
+**Implementation Options**:
+1. **Document Upload** - Manual upload to project, indexed for context
+2. **MCP Integration** - Connect to Google Drive, SharePoint, etc.
+3. **RAG Pipeline** - Embed documents, retrieve relevant context per query
+
+### 5.4 Calendar & Holiday Awareness
+
+Timeline intelligence requires knowing:
+
+| Data | Use |
+|------|-----|
+| **Company Holidays** | Adjust expected delivery dates |
+| **Client Holidays** | Know when client won't respond |
+| **Team PTO** | Factor into capacity/commitment |
+| **Key Dates** | Client deadlines, demos, milestones |
+
+**Example Impact**:
+```
+Commitment: "I'll have it done by Friday"
+Context: Thursday and Friday are holidays
+System: Flags as unrealistic, suggests Monday
+```
+
+**Integration**: Google Calendar API or manual calendar configuration.
+
+### 5.5 Context Data Model
+
+```typescript
+interface ProjectContext {
+  id: string;
+  projectId: string;
+
+  // Basic info
+  projectName: string;
+  client: string;
+  objective: string;
+
+  // Recognition
+  aliases: string[];
+  keywords: string[];
+  learnedTerms: { term: string; mapsTo: string }[];
+
+  // People
+  team: { name: string; role: string; aliases?: string[] }[];
+  clientContacts: { name: string; aliases?: string[] }[];
+
+  // Vendors
+  vendors: { name: string; context?: string }[];
+
+  // Documents (references)
+  linkedDocuments: {
+    type: 'proposal' | 'spec' | 'sow' | 'other';
+    name: string;
+    url?: string;
+    summary?: string; // AI-generated summary for context
+  }[];
+
+  // Calendar
+  holidays: { date: string; description: string }[];
+  keyDates: { date: string; description: string; type: 'milestone' | 'demo' | 'deadline' }[];
+
+  // Preferences (learned)
+  preferredTone: 'concise' | 'detailed' | 'technical';
+  detailLevel: 'high' | 'medium' | 'low';
+
+  // Metadata
+  lastUpdated: string;
+  updatedBy: string;
+}
+```
+
+---
+
+## 6. Input Layer
+
+### 6.1 Meeting Transcripts
+
+**Source**: Daily standups, project meetings, client calls - any meeting with a transcript.
+
+**Current Implementation** (BOM Tracker):
+- Transcript paste/upload dialog
+- GPT-based activity extraction
+- Project attribution with learning
+- Activity timeline display
+
+**Extraction Targets**:
 
 | Type | Example | Why It Matters |
 |------|---------|----------------|
@@ -159,270 +335,67 @@ Daily standups, project meetings, client calls - any meeting with a transcript.
 | Risk | "This might take longer than expected" | Early warning capture |
 | Timeline Impact | "This pushes us back a week" | Delay tracking |
 
-### Attribution
-Each extracted item should capture:
+**Attribution** - Each extracted item captures:
 - **Who** said it
 - **About what** project/task
 - **When** it was said
 - **Category**: Internal-Team, Internal-Process, External-Client, External-Vendor
 
-### Existing Implementation
-Currently in BOM Tracker:
-- Transcript paste/upload dialog
-- GPT-based activity extraction
-- Project attribution with learning
-- Activity timeline display
+### 6.2 Intelligent Daily Check-ins
 
-**Gap**: Current system extracts single-transcript activities. Doesn't do cross-transcript pattern detection.
+**Purpose**: Capture information that doesn't surface in meetings.
+
+**Design Principles**:
+
+1. **Fact-Finding, Not Interrogation**
+   - Bad: "Why isn't this done yet?"
+   - Good: "What's the current state of the power supply design?"
+
+2. **Specific, Not Generic**
+   - Bad: "Any blockers?"
+   - Good: "You mentioned waiting on a vendor quote Monday. Has it arrived?"
+
+3. **Learning Over Time**
+   - Week 1: "What's the status of Task X?"
+   - Week 4: "Task X is a PCB layout. These typically take you 2x estimated. Is Friday realistic?"
+
+**Check-in Flow**:
+```
+1. System reviews engineer's active tasks
+2. System reviews recent history & patterns
+3. System generates 3-5 specific questions
+4. Engineer answers (mobile-friendly, <2 min)
+5. Responses stored + fed to processing layer
+```
+
+**Question Categories**:
+1. Task Status - Current state of specific active tasks
+2. Completion Capture - What was actually finished today
+3. Blocker Probe - What's waiting on something/someone
+4. Commitment Follow-up - Status on previous commitments
+5. Finish Line Clarity - "What does 'done' look like for this?"
+
+### 6.3 Future Inputs
+
+Potential future integrations:
+- Email threads (client communication)
+- Chat messages (Slack, WhatsApp)
+- Commit messages (development activity)
+- Task management updates (Jira, Linear)
 
 ---
 
-## 5. Input Source 2: Intelligent Daily Check-ins
+## 7. Processing Layer
 
-### Purpose
-Capture information that doesn't surface in meetings:
-- Work done outside of discussions
-- Blockers engineers don't volunteer
-- Honest status on task progress
+### 7.1 Extraction: Transcript → Activities
 
-### Design Principles
+Raw transcript is processed to extract structured Activities:
 
-#### Fact-Finding, Not Interrogation
-Questions should feel neutral, not accusatory.
-
-**Bad** (creates defensiveness):
-> "Why isn't this done yet?"
-> "You said Tuesday. It's Thursday. What happened?"
-
-**Good** (neutral fact-finding):
-> "What's the current state of the power supply design?"
-> "Is anything waiting on someone else?"
-> "What did you complete today?"
-
-#### Specific, Not Generic
-Questions should reference actual tasks, not be generic prompts.
-
-**Bad** (invites garbage):
-> "What did you work on today?"
-> "Any blockers?"
-
-**Good** (specific):
-> "The PCB layout was marked 'in progress' 4 days ago. What's remaining?"
-> "You mentioned waiting on a vendor quote Monday. Has it arrived?"
-
-#### Learning Over Time
-Questions evolve based on patterns.
-
-**Week 1** (generic baseline):
-> "What's the status of Task X?"
-
-**Week 4** (learned pattern):
-> "Task X is a PCB layout. These typically take you 2x estimated. Current estimate is Friday - is that realistic?"
-
-**Week 8** (individual pattern):
-> "You've marked this 'in progress' for 6 days. On similar tasks, this usually means a blocker. Anything stuck?"
-
-### Check-in Flow
-
-```
-┌────────────────────────────────────────────────────────┐
-│                  DAILY CHECK-IN FLOW                    │
-├────────────────────────────────────────────────────────┤
-│                                                         │
-│  1. System reviews engineer's active tasks              │
-│                    ▼                                    │
-│  2. System reviews recent history & patterns            │
-│                    ▼                                    │
-│  3. System generates 3-5 specific questions             │
-│                    ▼                                    │
-│  4. Engineer answers (mobile-friendly, <2 min)          │
-│                    ▼                                    │
-│  5. Responses stored + fed to intelligence layer        │
-│                                                         │
-└────────────────────────────────────────────────────────┘
-```
-
-### Question Categories
-
-1. **Task Status** - Current state of specific active tasks
-2. **Completion Capture** - What was actually finished today
-3. **Blocker Probe** - What's waiting on something/someone
-4. **Commitment Follow-up** - Status on previous commitments
-5. **Time Check** - Remaining effort vs. estimate accuracy
-
-### UX Requirements
-- **Fast**: Complete in under 2 minutes
-- **Mobile-first**: Engineers might fill during commute
-- **Non-punitive feel**: Information gathering, not surveillance
-- **Optional elaboration**: Quick answers default, expand if needed
-
----
-
-## 6. Output 1: Daily Briefing
-
-### Purpose
-Before each standup, manager receives synthesized insights to ask the right questions.
-
-### Timing
-Delivered 15-30 minutes before scheduled standup.
-
-### Format
-
-```
-┌────────────────────────────────────────────────────────┐
-│           DAILY BRIEFING - January 6, 2026             │
-│                Project: Customer XYZ                    │
-├────────────────────────────────────────────────────────┤
-│                                                         │
-│  🔴 CRITICAL (needs immediate attention)                │
-│  ─────────────────────────────────────────────         │
-│  • Power supply design - discussed 7 consecutive       │
-│    days with no progress. Priya owns this.             │
-│    → Suggested question: "What's specifically          │
-│      blocking the power supply completion?"            │
-│                                                         │
-│  ⚠️ WARNING (trending negative)                         │
-│  ─────────────────────────────────────────────         │
-│  • PCB routing - 4 days in progress, originally        │
-│    estimated 2 days. Pattern: John's PCB tasks         │
-│    average 2.1x estimates.                             │
-│    → Suggested question: "Is Friday still realistic    │
-│      for PCB routing, or should we adjust?"            │
-│                                                         │
-│  📋 COMMITMENT CHECK                                    │
-│  ─────────────────────────────────────────────         │
-│  • John committed "schematic done by Monday" on        │
-│    Jan 3. Today is Jan 6. No completion recorded.      │
-│    → Follow up: "John, what's the schematic status?"   │
-│                                                         │
-│  ✅ COMPLETED SINCE LAST STANDUP                        │
-│  ─────────────────────────────────────────────         │
-│  • BOM finalization (Priya) - done yesterday           │
-│  • Vendor selection for connectors (Amit) - done       │
-│                                                         │
-│  📊 PROJECT HEALTH                                      │
-│  ─────────────────────────────────────────────         │
-│  • Timeline: 3 days behind (was 1 day behind Monday)   │
-│  • Tasks on track: 4 of 7                              │
-│  • Open blockers: 2 (both external-vendor)             │
-│                                                         │
-└────────────────────────────────────────────────────────┘
-```
-
-### Key Elements
-1. **Critical items** - Immediate attention needed, with suggested questions
-2. **Warnings** - Trending negative, watch closely
-3. **Commitment tracking** - Promised vs. delivered
-4. **Completions** - Celebrate wins, confirm understanding
-5. **Project health** - High-level status
-
----
-
-## 7. Output 2: Critical Alerts
-
-### Purpose
-Real-time notification when patterns cross thresholds.
-
-### Alert Triggers
-
-| Pattern | Threshold | Alert |
-|---------|-----------|-------|
-| Stuck Task | Same task, 5+ consecutive days | "Task X stuck for 5 days" |
-| Commitment Miss | 2+ days past committed date | "John's commitment overdue" |
-| Repeat Blocker | Same blocker type, 3+ occurrences | "Vendor delays - 3rd time" |
-| Estimation Blow | Task at 3x+ original estimate | "PCB layout at 3x estimate" |
-| Stagnation | No check-in or activity in 48h | "No updates from John in 2 days" |
-
-### Alert Delivery
-- Push notification (mobile)
-- Email digest option
-- Integration with Slack/Teams (future)
-
-### Alert Levels
-- **Critical** (red): Immediate intervention likely needed
-- **Warning** (yellow): Trending negative, monitor closely
-- **Info** (blue): FYI, no action required
-
----
-
-## 8. Intelligence Layer Details
-
-### Pattern Detection Algorithms
-
-#### Stuck Task Detection
-```
-IF task mentioned in >= 3 consecutive days
-   AND no completion recorded
-   AND status unchanged
-THEN flag as "stuck"
-
-Severity = days_stuck / estimated_duration
-```
-
-#### Commitment Tracking
-```
-EXTRACT commitments: "I'll have X done by [DATE]"
-STORE: who, what, promised_date
-ON promised_date + 1:
-   CHECK: completion recorded?
-   IF no: flag as "commitment miss"
-```
-
-#### Estimation Variance
-```
-FOR each completed task:
-   variance = actual_duration / estimated_duration
-   STORE by: engineer, task_type, project
-
-AGGREGATE patterns:
-   - Engineer average variance
-   - Task type average variance
-   - Identify systematic underestimation
-```
-
-#### Recurring Blocker Detection
-```
-CLUSTER blockers by semantic similarity
-IF same blocker type appears 3+ times in 30 days:
-   FLAG as "recurring blocker"
-   ATTRIBUTE: internal vs external
-```
-
-### Learning System
-
-#### What It Learns
-1. **Engineer patterns**: Who underestimates, by how much, on what task types
-2. **Task type patterns**: Which categories consistently take longer
-3. **Language patterns**: Phrases that precede missed deadlines
-4. **Blocker patterns**: Common delay causes by project type
-
-#### How It Learns
-- Track predictions vs. actuals
-- Feedback loop from manager corrections
-- Explicit teaching ("this project is called X, aliases: Y, Z")
-
-#### How Learning Improves Questions
-```
-IF engineer.pcb_variance > 2.0:
-   WHEN asking about PCB tasks:
-   ADD context: "Your PCB tasks typically take {variance}x estimate"
-
-IF task.days_in_progress > engineer.avg_completion_time:
-   PROBE: "This is taking longer than your average. Anything blocking?"
-```
-
----
-
-## 9. Data Model
-
-### Core Entities
-
-#### Activity
 ```typescript
 interface Activity {
   id: string;
   source: 'transcript' | 'checkin' | 'manual';
-  sourceId: string; // transcript ID, checkin ID, etc.
+  sourceId: string;
   projectId: string;
 
   type: 'progress' | 'blocker' | 'decision' | 'commitment' | 'risk' | 'note';
@@ -434,10 +407,6 @@ interface Activity {
   personName?: string;
   attribution?: 'Internal-Team' | 'Internal-Process' | 'External-Client' | 'External-Vendor';
 
-  // Linking
-  taskId?: string;
-  milestoneId?: string;
-
   // Timestamps
   activityDate: Date;
   extractedAt: Date;
@@ -447,247 +416,480 @@ interface Activity {
 }
 ```
 
-#### Commitment
+### 7.2 Consolidation: Activities → Developments
+
+**The Problem**: 6 activities/meeting × 20 meetings/month = 120 activities = data dump
+
+**The Solution**: Consolidate into **Developments** - meaningful changes clients care about.
+
 ```typescript
-interface Commitment {
+interface Development {
   id: string;
-  activityId: string; // source activity
   projectId: string;
 
-  personId: string;
-  personName: string;
+  // Classification
+  type: 'achievement' | 'blocker' | 'decision' | 'risk' | 'milestone' | 'progress';
+  status: 'active' | 'resolved' | 'superseded';
+  importance: 'critical' | 'high' | 'medium' | 'low';
 
-  description: string;
-  promisedDate: Date;
+  // Content (client-ready)
+  title: string;              // "Tracking System Performance Gap"
+  summary: string;            // 2-3 sentences, client-readable
+  technicalContext?: string;  // Optional deeper detail
 
-  // Tracking
-  status: 'open' | 'completed' | 'missed' | 'revised';
-  completedDate?: Date;
-  revisedDate?: Date;
-  revisionReason?: string;
+  // For blockers/risks
+  impact?: string;
+  mitigation?: string;
 
-  // Linking
-  taskId?: string;
+  // For decisions
+  rationale?: string;
+
+  // Timeline
+  firstReported: string;
+  lastUpdated: string;
+  resolvedDate?: string;
+
+  // Lineage
+  parentId?: string;          // If update to previous development
+  relatedIds?: string[];
+
+  // Source evidence
+  sourceActivities: {
+    activityId: string;
+    transcriptId: string;
+    timestamp: string;
+    speaker: string;
+    excerpt: string;
+  }[];
+
+  // Review tracking
+  humanReviewed: boolean;
+  reviewedBy?: string;
+  reviewedAt?: string;
 }
 ```
 
-#### Pattern
-```typescript
-interface Pattern {
-  id: string;
-  projectId: string;
-  type: 'stuck_task' | 'commitment_miss' | 'estimation_variance' | 'recurring_blocker';
+**Consolidation Rules**:
 
-  // What triggered it
-  relatedActivityIds: string[];
-  relatedTaskId?: string;
-  personId?: string;
+| Signal | Example | Result |
+|--------|---------|--------|
+| Same topic, same meeting | 3 excerpts about tracking | Merge into single Development |
+| Q&A exchange | Question + Answer + Confirmation | Single Development |
+| Problem + Commitment | "Tracker failing" + "Will fix by Friday" | One Blocker with mitigation |
 
-  // Details
-  description: string;
-  severity: 'critical' | 'warning' | 'info';
-  metric: number; // e.g., days stuck, variance ratio
+**Target**: 5-7 Developments per week per project (not 50 activities)
 
-  // Lifecycle
-  detectedAt: Date;
-  resolvedAt?: Date;
-  resolution?: string;
+### 7.3 Human-in-the-Loop Review
 
-  // Was this surfaced?
-  alertSent: boolean;
-  briefingIncluded: boolean;
-}
+Every Development goes through human review before becoming "official":
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ DEVELOPMENT REVIEW                                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│ Title: Tracking System Performance Gap                      │
+│ Type: Blocker                                               │
+│ Summary: Object detection working but tracking failing...   │
+│                                                             │
+│ [✓ Approve]  [✎ Edit]  [🗑 Delete]  [🔗 Merge with...]     │
+│                                                             │
+│ Quick fixes:                                                │
+│ ○ Wrong project → [dropdown]                                │
+│ ○ Wrong type → [dropdown]                                   │
+│ ○ Too technical → [Auto-simplify]                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-#### CheckIn
-```typescript
-interface CheckIn {
-  id: string;
-  engineerId: string;
-  date: Date;
-
-  questions: CheckInQuestion[];
-  completedAt?: Date;
-
-  // Derived
-  extractedActivities: string[]; // Activity IDs
-}
-
-interface CheckInQuestion {
-  id: string;
-  questionText: string;
-  questionType: 'task_status' | 'completion' | 'blocker' | 'commitment' | 'time_check';
-
-  // Context that generated this question
-  relatedTaskId?: string;
-  relatedCommitmentId?: string;
-  patternContext?: string;
-
-  // Response
-  response?: string;
-  respondedAt?: Date;
-}
-```
-
-#### EngineerProfile (Learning)
-```typescript
-interface EngineerProfile {
-  id: string;
-  name: string;
-
-  // Learned patterns
-  estimationVariance: {
-    overall: number;
-    byTaskType: Record<string, number>;
-  };
-
-  avgCompletionTime: {
-    overall: number;
-    byTaskType: Record<string, number>;
-  };
-
-  commitmentReliability: number; // % of commitments met
-
-  // Question calibration
-  questionAggressiveness: 'gentle' | 'standard' | 'direct';
-
-  lastUpdated: Date;
-}
-```
-
-### Storage Considerations
-
-#### Why Vector Store Might Be Needed
-- **Semantic search**: "Find all discussions about vendor delays" needs to match variations ("waiting on supplier", "vendor hasn't responded", etc.)
-- **Similarity matching**: Detecting that "power supply design" and "PSU work" are the same thing
-- **Cross-transcript patterns**: Finding related mentions across many documents
-
-#### Recommended Approach
-1. **Primary store**: Firestore for structured data (activities, commitments, patterns, check-ins)
-2. **Vector store**: Pinecone or similar for semantic search and similarity (activity embeddings)
-3. **Sync**: Activities stored in both, linked by ID
+**Goal**: <30 seconds per item review.
 
 ---
 
-## 10. Integration Points
+## 8. Intelligence Layer
 
-### BOM Tracker Integration
-The Project Intelligence Service feeds relevant insights to BOM Tracker:
+### 8.1 Pattern Detection
 
-| Insight Type | BOM Tracker Use |
-|--------------|-----------------|
-| Supply chain blockers | Surface in Inward Tracking |
-| Vendor delays pattern | Flag in vendor performance |
-| Commitment on delivery | Link to expected arrival |
+**Stuck Task Detection**:
+```
+IF task mentioned in >= 3 consecutive days
+   AND no completion recorded
+   AND status unchanged
+THEN flag as "stuck"
 
-### API Design
-```typescript
-// Get insights for a project
-GET /api/projects/{projectId}/insights
-  ?types=stuck_task,commitment_miss
-  &severity=critical,warning
-  &since=2026-01-01
+Severity = days_stuck / estimated_duration
+```
 
-// Get daily briefing
-GET /api/briefings/daily
-  ?projectIds=proj1,proj2
-  &date=2026-01-06
+**Commitment Tracking**:
+```
+EXTRACT commitments: "I'll have X done by [DATE]"
+STORE: who, what, promised_date
+ON promised_date + 1:
+   CHECK: completion recorded?
+   IF no: flag as "commitment miss"
+```
 
-// Submit check-in
-POST /api/checkins
-  { engineerId, responses: [...] }
+**Estimation Variance**:
+```
+FOR each completed task:
+   variance = actual_duration / estimated_duration
+   STORE by: engineer, task_type, project
 
-// Query project history
-POST /api/query
-  { projectId, question: "When did we decide on vendor X?" }
+AGGREGATE patterns:
+   - Engineer average variance
+   - Task type average variance
+```
+
+**Recurring Blocker Detection**:
+```
+CLUSTER blockers by semantic similarity
+IF same blocker type appears 3+ times in 30 days:
+   FLAG as "recurring blocker"
+   ATTRIBUTE: internal vs external
+```
+
+### 8.2 Learning Engine
+
+**What It Learns**:
+1. Engineer patterns - Who underestimates, by how much, on what
+2. Task type patterns - Which categories consistently take longer
+3. Language patterns - Phrases that precede missed deadlines
+4. Project patterns - What terminology maps to which project
+
+**Learning Sources**:
+
+| User Action | System Learns |
+|-------------|---------------|
+| Deletes Development | "This pattern = noise" → filter similar |
+| Merges Developments | "These topics = same thing" → consolidate similar |
+| Edits summary | "This tone/style preferred" → adjust generation |
+| Changes project | "Term X = Project Y" → add to project context |
+| Changes type | "This pattern = [type]" → improve classification |
+
+**Feedback Loop**:
+```
+Extraction → Human Review → Corrections → Learning → Better Extraction
 ```
 
 ---
 
-## 11. Implementation Phases
+## 9. Output Layer
 
-### Phase 1: Foundation (MVP)
-**Goal**: Basic cross-transcript pattern detection
+### 9.1 Weekly Client Status Update
 
-- [ ] Enhance activity extraction with commitment detection
-- [ ] Store activities with proper attribution
-- [ ] Basic stuck-task detection (same task, multiple days)
-- [ ] Simple daily briefing (list of stuck tasks, missed commitments)
-- [ ] Manual trigger for briefing generation
+**Purpose**: Professional, client-ready update that builds trust.
 
-### Phase 2: Check-ins
-**Goal**: Add active capture via intelligent questions
+**Format**:
+```
+┌────────────────────────────────────────────────────────────────┐
+│        PROJECT STATUS UPDATE - [Project Name]                   │
+│        Week of [Date Range]                                     │
+├────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  HEALTH: 🟢 On Track | 🟡 Needs Attention | 🔴 At Risk          │
+│  ───────────────────────────────────────────────────────────── │
+│  [One sentence executive summary]                               │
+│                                                                 │
+│  THIS WEEK'S PROGRESS                                           │
+│  ───────────────────────────────────────────────────────────── │
+│  ✅ [Achievement 1 - client-meaningful language]                │
+│  ✅ [Achievement 2]                                             │
+│                                                                 │
+│  ACTIVE CHALLENGES                                              │
+│  ───────────────────────────────────────────────────────────── │
+│  ⚠️ [Challenge] - [Impact] - [What we're doing about it]       │
+│                                                                 │
+│  KEY DECISIONS                                                  │
+│  ───────────────────────────────────────────────────────────── │
+│  📋 [Decision made] - [Rationale in client terms]              │
+│                                                                 │
+│  WHAT'S NEXT                                                    │
+│  ───────────────────────────────────────────────────────────── │
+│  → [Next week's focus areas]                                   │
+│                                                                 │
+│  TIMELINE STATUS                                                │
+│  ───────────────────────────────────────────────────────────── │
+│  | Milestone        | Target   | Status      |                 │
+│  | [Milestone 1]    | [Date]   | 🟢 On Track |                 │
+│                                                                 │
+│  NEED FROM YOU                                                  │
+│  ───────────────────────────────────────────────────────────── │
+│  → [Pending client actions/decisions]                          │
+│                                                                 │
+└────────────────────────────────────────────────────────────────┘
+```
 
-- [ ] Check-in data model and storage
-- [ ] Basic question generation (task-status focused)
+**Delta Detection** - Each update shows what CHANGED:
+- New this week: Achievements, blockers, decisions
+- Resolved: Items that were open, now closed
+- Status changes: Milestone dates moved, health changed
+- Escalations: Items that increased in severity
+
+**Tone Translation** - Engineer-speak becomes client-speak:
+
+| Engineer Says | Client Update Says |
+|---------------|-------------------|
+| "NvDCF tracker with IoU 0.3 got 67%" | "Testing tracking approaches - current best at 67%, targeting 90%" |
+| "Tried ByteTrack, didn't work" | "Evaluated multiple solutions, narrowing down to best approach" |
+| "Waiting on Pradeep's review" | "Internal review in progress" |
+
+### 9.2 Daily Briefing (Internal)
+
+**Purpose**: Before standup, manager has insights to ask the right questions.
+
+**Format**:
+```
+┌────────────────────────────────────────────────────────┐
+│           DAILY BRIEFING - January 6, 2026             │
+│                Project: Customer XYZ                    │
+├────────────────────────────────────────────────────────┤
+│                                                         │
+│  🔴 CRITICAL (needs immediate attention)                │
+│  • Power supply design - discussed 7 consecutive       │
+│    days with no progress. Priya owns this.             │
+│    → Ask: "What's blocking the power supply?"          │
+│                                                         │
+│  ⚠️ WARNING (trending negative)                         │
+│  • PCB routing - 4 days in progress, estimated 2.      │
+│    Pattern: John's PCB tasks average 2.1x estimates.   │
+│    → Ask: "Is Friday still realistic for routing?"     │
+│                                                         │
+│  📋 COMMITMENT CHECK                                    │
+│  • John: "schematic done by Monday" (Jan 3)            │
+│    Today is Jan 6. No completion recorded.             │
+│                                                         │
+│  ✅ COMPLETED SINCE LAST STANDUP                        │
+│  • BOM finalization (Priya) - done yesterday           │
+│                                                         │
+│  📊 PROJECT HEALTH                                      │
+│  • Timeline: 3 days behind (was 1 day Monday)          │
+│  • Tasks on track: 4 of 7                              │
+│  • Open blockers: 2 (external-vendor)                  │
+│                                                         │
+└────────────────────────────────────────────────────────┘
+```
+
+### 9.3 Critical Alerts
+
+**Purpose**: Real-time notification when patterns cross thresholds.
+
+| Pattern | Threshold | Alert |
+|---------|-----------|-------|
+| Stuck Task | 5+ consecutive days | "Task X stuck for 5 days" |
+| Commitment Miss | 2+ days past date | "John's commitment overdue" |
+| Repeat Blocker | 3+ occurrences | "Vendor delays - 3rd time" |
+| Estimation Blow | 3x+ original | "PCB layout at 3x estimate" |
+
+---
+
+# PART III: KEY DESIGN DECISIONS
+
+## 10. Hierarchical Objective Tracking
+
+### The Problem
+
+Engineers work on tasks with fuzzy finish lines. "Make progress on tracking" isn't measurable.
+
+### The Solution
+
+Track objectives hierarchically, flag when lower levels are fuzzy.
+
+```
+PROJECT OBJECTIVE (North Star - clear finish line)
+│   "Ship grain analyzer to APIT by Nov 30"
+│
+├── MILESTONE (should have clear criteria)
+│   │   "Tracking system at 90% accuracy"
+│   │
+│   └── TASK (may discover sub-tasks)
+│       │   "Evaluate ByteTrack approach"
+│       │
+│       └── SUB-TASK (discovered during work)
+│           "Configure IoU threshold parameters"
+```
+
+### Fuzzy Finish Line = Risk Signal
+
+```
+Engineer: "I'm making progress on tracking"
+System: "What does 'done' look like for this task?"
+Engineer: "Not sure exactly - maybe 80%? 90%?"
+           ↓
+    🚨 RISK SIGNAL → Bubbles to CEO
+    "Tracking task has unclear completion criteria"
+           ↓
+    CEO crystallizes: "Done = 90% accuracy on 500-grain test"
+```
+
+---
+
+## 11. Feedback Loop Design
+
+### Critical Failure Modes
+
+Focus feedback on the three highest-impact failures:
+
+| Failure Mode | Impact | Feedback Action |
+|--------------|--------|-----------------|
+| **Over-extraction** | Noise pollutes insights | "Delete - not relevant" |
+| **Under-consolidation** | Data dump, not intelligence | "Merge these" |
+| **Wrong tone/detail** | Client communication fails | "Rewrite as: [text]" |
+
+### Context Auto-Enrichment
+
+Feedback automatically enriches project context:
+
+```yaml
+# Auto-added from corrections
+project: Raize Labz - Initial Machines
+learned_terms:
+  - "tracker" → this project
+  - "NvDCF" → this project
+  - "SKT" → client contact (alias for Shashisar)
+preferred_tone: concise, business-focused
+```
+
+---
+
+## 12. Engineer Value Proposition
+
+### The Adoption Challenge
+
+Engineers resist check-ins because they feel like surveillance.
+
+### The Reframe: "Your Work Diary That Writes Itself"
+
+| Pain Point Today | System Solves It |
+|------------------|------------------|
+| "What did I do this quarter?" | Auto-generated accomplishment summary |
+| "Why did this take 3 weeks?" | Timeline showing approaches tried, pivots made |
+| "Explain this to the new person" | Complete context of what was tried |
+| "I already said this in standup" | "My status is captured, check the system" |
+
+### The Message
+
+> "This system captures your work so YOU don't have to explain yourself repeatedly.
+> Every approach you try, every blocker you hit - it's recorded.
+> Next time someone asks 'why did this take so long?', you show them the timeline.
+> It PROTECTS you by creating a record of your effort and problem-solving."
+
+---
+
+# PART IV: IMPLEMENTATION
+
+## 13. Phased Rollout
+
+### Phase 0: Foundation (Week 1-2)
+**Goal**: Basic extraction working, data flowing
+
+- [ ] Enhance transcript extraction with commitment detection
+- [ ] Store Activities with proper attribution
+- [ ] Basic project context with aliases
+- [ ] Manual review UI (approve/edit/delete)
+
+**Success**: Extract activities from transcript with >60% accuracy
+
+### Phase 1: Client Updates (Week 3-4)
+**Goal**: Generate client-ready weekly updates
+
+- [ ] Development data model
+- [ ] Consolidation prompt (Activities → Developments)
+- [ ] Weekly update generation prompt
+- [ ] Preview/edit UI before sending
+- [ ] Email integration
+
+**Success**: Weekly update generated in <10 min (including review)
+
+### Phase 2: Context Integration (Week 5-6)
+**Goal**: Rich context improves extraction
+
+- [ ] BOM Tracker data integration
+- [ ] Document upload and indexing
+- [ ] Holiday calendar integration
+- [ ] Context-aware extraction prompts
+
+**Success**: Extraction accuracy improves to >75%
+
+### Phase 3: Check-ins (Week 7-8)
+**Goal**: Active capture from engineers
+
+- [ ] Check-in data model
+- [ ] Question generation (task-specific)
 - [ ] Mobile-friendly check-in UI
-- [ ] Check-in responses feed into activity stream
+- [ ] Check-in responses → Activities
 
-### Phase 3: Intelligence
-**Goal**: Pattern detection gets smarter
+**Success**: >70% check-in completion rate
 
-- [ ] Commitment tracking (promise → delivery)
-- [ ] Estimation variance calculation
-- [ ] Recurring blocker detection
-- [ ] Engineer profile building (learned patterns)
+### Phase 4: Intelligence (Week 9-12)
+**Goal**: Pattern detection and learning
 
-### Phase 4: Learning Questions
-**Goal**: Check-in questions adapt based on history
+- [ ] Stuck task detection
+- [ ] Commitment tracking
+- [ ] Daily briefing generation
+- [ ] Feedback loop for learning
 
-- [ ] Context-aware question generation
-- [ ] Engineer-specific question calibration
-- [ ] Pattern-triggered probing questions
+**Success**: Daily briefing surfaces 1-2 actionable insights
 
-### Phase 5: Semantic Search
-**Goal**: Enable natural language queries
-
-- [ ] Vector embeddings for activities
-- [ ] Semantic similarity matching
-- [ ] Chat interface for project history queries
-
-### Phase 6: Advanced Outputs
-**Goal**: Proactive alerts and richer briefings
-
-- [ ] Real-time critical alerts
-- [ ] Suggested questions with context
-- [ ] Project health scores
-- [ ] Trend analysis (getting better/worse)
+### Phase 5: Polish (Ongoing)
+- Semantic search (vector store)
+- Advanced alerts
+- Engineer accomplishment reports
+- Client portal (optional)
 
 ---
 
-## 12. Success Metrics
+## 14. Success Metrics
 
-### Leading Indicators
-- Check-in completion rate (target: >80%)
-- Daily briefing open rate (target: >90%)
-- Time to complete check-in (target: <2 min)
+### Phase 0-1 Metrics (Extraction & Updates)
+- Activity extraction accuracy: >60% (MVP), >80% (target)
+- Consolidation ratio: 5-7 developments per 20 activities
+- Human edit rate: <40% of items need editing
+- Time to generate update: <10 minutes including review
 
-### Lagging Indicators
-- Reduction in "stuck tasks" duration (before: X days avg → after: Y days avg)
-- Commitment hit rate improvement
-- Estimation accuracy improvement (variance reduction)
-- Customer escalations related to delays (should decrease)
+### Phase 2+ Metrics (Full System)
+- Check-in completion: >70%
+- Stuck task early detection: catch 80% before crisis
+- Client feedback on updates: >4/5 "useful" rating
+- Updates sent on schedule: >90%
 
 ### Qualitative
-- Manager feels "prepared" for standups
-- Engineers feel questions are "fair, not accusatory"
-- Delay discussions have data, not guesses
+- CEO feels "prepared" for client calls
+- Engineers feel system "protects" them, not surveils
+- Clients say they feel "informed" and "confident"
 
 ---
 
-## 13. Open Questions
+## 15. Open Questions
 
-1. **Check-in timing**: Morning (plan the day) or evening (report the day)?
+1. **Check-in timing**: Morning (plan) or evening (report)?
 2. **Multi-project engineers**: How to handle people on 3+ projects?
-3. **Transcript source**: Continue with manual paste/upload, or integrate with Zoom/Teams/Meet?
+3. **Client update cadence**: Weekly standard, but configurable per client?
 4. **Alert fatigue**: How many alerts per day is too many?
-5. **Privacy**: Who sees check-in responses? Just aggregated insights, or raw responses?
+5. **Document context**: How deep to index (summary only vs. full RAG)?
 
 ---
 
-## 14. Appendix: Name Candidates
+## 16. Technical Architecture Decisions
 
-The service needs a name. Options:
+### LLM Strategy
+- **Approach**: LLM-native with RAG (not fine-tuned)
+- **Rationale**: Ride the wave of improving models, minimal proprietary dependency
+- **Models**: OpenAI GPT-4/5 or Anthropic Claude for extraction/generation
+
+### Storage
+- **Primary**: Firestore for structured data (Activities, Developments, Context)
+- **Vector** (future): Pinecone or similar for semantic search
+- **Files**: Firebase Storage for uploaded documents
+
+### Integration
+- **BOM Tracker**: Shared Firestore collections
+- **Calendar**: Google Calendar API
+- **Documents**: MCP server or direct upload
+- **Email**: SendGrid for update delivery
+
+---
+
+## Appendix A: Name Candidates
 
 | Name | Vibe |
 |------|------|
@@ -696,7 +898,6 @@ The service needs a name. Options:
 | Chronicle | Historical record |
 | Sentinel | Watchful guardian |
 | Momentum | Tracking progress |
-| Hindsight | Learning from history |
 
 **Current working name**: Project Intelligence Service
 
