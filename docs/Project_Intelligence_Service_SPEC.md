@@ -919,6 +919,9 @@ The human-in-the-loop is permanent by design. The system drafts; humans approve.
 - Engineer accomplishment reports
 - Client portal (optional)
 
+### Parking Lot (Future Consideration)
+- **Probing Coach** - System helps engineers think through problems before escalating to manager. Triggered during check-in or on-demand. Asks structured questions (max 4) to help engineer identify root cause. Raises quality of input to manager conversations. Not a replacement for 1:1s, but prep for more productive conversations.
+
 ---
 
 ## 15. Success Metrics
