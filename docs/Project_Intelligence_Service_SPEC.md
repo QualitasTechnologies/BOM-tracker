@@ -3,7 +3,7 @@
 ## Document Info
 - **Created**: January 6, 2026
 - **Last Updated**: January 7, 2026
-- **Status**: Draft v2
+- **Status**: Draft v3
 - **Author**: Raghava Kashyapa / Claude
 
 ---
@@ -228,7 +228,7 @@ Integration with BOM Tracker provides:
 
 **Integration**: Via Firestore shared collections or MCP server.
 
-### 5.3 Project Documents
+### 5.3 Project Documents & Emails
 
 Additional context from project artifacts:
 
@@ -237,12 +237,30 @@ Additional context from project artifacts:
 | **Proposal/SOW** | Original scope, deliverables, timeline commitments |
 | **Technical Specs** | What "done" looks like, acceptance criteria |
 | **Meeting Notes** | Historical decisions, client preferences |
-| **Emails** | Client communication context |
+
+**Email Context** (Important):
+
+Emails are a critical context source - many decisions are made via email, not meetings.
+
+| Email Source | What's Extracted |
+|--------------|------------------|
+| Sent by team | Commitments made, decisions communicated |
+| Sent by client | Requirements, approvals, concerns |
+| Received from vendors | Quotes, timelines, blockers |
+
+**Email Preprocessing**: Emails are NOT ingested raw. They are:
+1. Filtered to project-relevant threads only
+2. Parsed for decisions, commitments, and blockers
+3. Summarized into structured context
+4. Linked to the relevant project
+
+This prevents noise (spam, CC chains, newsletters) while capturing decision history.
 
 **Implementation Options**:
 1. **Document Upload** - Manual upload to project, indexed for context
-2. **MCP Integration** - Connect to Google Drive, SharePoint, etc.
+2. **MCP Integration** - Connect to Google Drive, SharePoint, Gmail, etc.
 3. **RAG Pipeline** - Embed documents, retrieve relevant context per query
+4. **Email Connector** - Periodic sync from Gmail/Outlook with preprocessing
 
 ### 5.4 Calendar & Holiday Awareness
 
@@ -375,10 +393,35 @@ interface ProjectContext {
 4. Commitment Follow-up - Status on previous commitments
 5. Finish Line Clarity - "What does 'done' look like for this?"
 
-### 6.3 Future Inputs
+### 6.3 Email Threads (Phase 2+)
+
+**Source**: Client emails, vendor correspondence, internal project emails.
+
+**Preprocessing Pipeline** (emails are never raw-ingested):
+```
+Email Thread → Filter (project-relevant only)
+            → Parse (extract decisions, commitments, blockers)
+            → Summarize (structured context)
+            → Store (linked to project)
+```
+
+**What Gets Extracted**:
+- Decisions made ("Let's go with Vendor X")
+- Commitments given ("We'll deliver by Friday")
+- Client concerns ("The timeline seems aggressive")
+- Approvals received ("Approved to proceed")
+- Blockers identified ("Waiting on your approval")
+
+**What Gets Filtered Out**:
+- CC-only threads (no active participation)
+- Newsletters, automated notifications
+- Non-project correspondence
+
+**Context Horizon**: ~3-6 months active. Older emails archived but searchable.
+
+### 6.4 Future Inputs
 
 Potential future integrations:
-- Email threads (client communication)
 - Chat messages (Slack, WhatsApp)
 - Commit messages (development activity)
 - Task management updates (Jira, Linear)
@@ -775,9 +818,49 @@ Engineers resist check-ins because they feel like surveillance.
 
 ---
 
+## 13. System Identity: The Company Twin
+
+### What This System Is
+
+This is not a personal assistant or an individual's tool. It is a **Company + Role Twin**:
+
+| Aspect | Meaning |
+|--------|---------|
+| **Company Twin** | Captures institutional knowledge, not individual quirks |
+| **Role Twin** | Embodies "what the CEO function needs" - transferable to future leadership |
+| **Not Personal** | Learns "how this company communicates" not "how Raghava writes" |
+
+### Implications
+
+1. **Institutional Memory** - Knowledge survives personnel changes
+2. **Consistent Voice** - Company communication style, not individual style
+3. **Transferable** - New CEO inherits the system's learned patterns
+4. **Scalable** - Can extend to PM roles, team leads (same architecture, different scope)
+
+### Trust Progression
+
+The system earns autonomy over time, but never acts without oversight:
+
+| Stage | System Does | Human Does | Timeline |
+|-------|-------------|------------|----------|
+| **Infant** | Draft everything | Review 100%, heavy edits | Phase 0-1 |
+| **Junior** | Draft + suggest actions | Review 80%, light edits | Phase 2-3 |
+| **Trusted** | Send routine updates | Review exceptions only | Phase 4+ |
+| **Partner** | Flag patterns, recommend | Override when wrong | Long-term |
+
+**Design Principle**: Start with (Infant), design for (Trusted), never promise full autonomy.
+
+The human-in-the-loop is permanent by design. The system drafts; humans approve. This ensures:
+- Accountability remains with people
+- Edge cases are caught
+- The system learns from corrections
+- Trust is earned, not assumed
+
+---
+
 # PART IV: IMPLEMENTATION
 
-## 13. Phased Rollout
+## 14. Phased Rollout
 
 ### Phase 0: Foundation (Week 1-2)
 **Goal**: Basic extraction working, data flowing
@@ -838,7 +921,7 @@ Engineers resist check-ins because they feel like surveillance.
 
 ---
 
-## 14. Success Metrics
+## 15. Success Metrics
 
 ### Phase 0-1 Metrics (Extraction & Updates)
 - Activity extraction accuracy: >60% (MVP), >80% (target)
@@ -859,7 +942,7 @@ Engineers resist check-ins because they feel like surveillance.
 
 ---
 
-## 15. Open Questions
+## 16. Open Questions
 
 1. **Check-in timing**: Morning (plan) or evening (report)?
 2. **Multi-project engineers**: How to handle people on 3+ projects?
@@ -869,7 +952,7 @@ Engineers resist check-ins because they feel like surveillance.
 
 ---
 
-## 16. Technical Architecture Decisions
+## 17. Technical Architecture Decisions
 
 ### LLM Strategy
 - **Approach**: LLM-native with RAG (not fine-tuned)
