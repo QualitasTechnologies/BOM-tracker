@@ -270,14 +270,20 @@ const MilestoneTableView = ({
               <div className="space-y-1 mt-2">
                 <div className="text-xs text-gray-400 font-medium">Timeline</div>
                 {(() => {
-                  // Calculate timeline range
-                  const startDate = project?.baselinedAt
-                    ? new Date(project.baselinedAt)
-                    : new Date();
+                  // Calculate timeline range using earliest milestone and latest end date
+                  const earliestMilestoneDate = milestonesWithSlip.reduce((min, m) => {
+                    if (!m.currentPlannedEndDate) return min;
+                    const mDate = new Date(m.currentPlannedEndDate);
+                    return mDate < min ? mDate : min;
+                  }, new Date(milestonesWithSlip[0]?.currentPlannedEndDate || Date.now()));
+
+                  const today = new Date();
+                  // Start from the earlier of: earliest milestone or today
+                  const startDate = earliestMilestoneDate < today ? earliestMilestoneDate : today;
+
                   const endDate = stats.projectedEnd
                     ? new Date(stats.projectedEnd)
                     : new Date(stats.baselineEnd!);
-                  const today = new Date();
 
                   const totalMs = endDate.getTime() - startDate.getTime();
                   const totalDays = totalMs / (1000 * 60 * 60 * 24);
