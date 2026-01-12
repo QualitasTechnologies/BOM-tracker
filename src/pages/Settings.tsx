@@ -663,19 +663,32 @@ const Settings = () => {
       const result = await verifyGSTIN(gstNo);
 
       if (result.success && result.data) {
-        // Auto-fill vendor details from GST data
-        setVendorForm(prev => ({
-          ...prev,
-          company: prev.company || result.data!.tradeName || result.data!.legalName,
-          address: prev.address || result.data!.formattedAddress,
-          stateCode: result.data!.stateCode,
-          stateName: result.data!.stateName,
-        }));
+        const newName = result.data.legalName || result.data.tradeName;
+        const newAddress = result.data.formattedAddress;
 
-        toast({
-          title: 'GSTIN Verified',
-          description: `Business: ${result.data.tradeName || result.data.legalName} (${result.data.status})`,
-        });
+        // Show confirmation before updating
+        const confirmMessage = `GST Verified Successfully!\n\nUpdate vendor details?\n\nName: ${newName}\nAddress: ${newAddress}\nState: ${result.data.stateName} (${result.data.stateCode})\nStatus: ${result.data.status}`;
+
+        if (window.confirm(confirmMessage)) {
+          // Auto-fill vendor details from GST data (always use official GST names)
+          setVendorForm(prev => ({
+            ...prev,
+            company: newName || prev.company,
+            address: newAddress || prev.address,
+            stateCode: result.data!.stateCode,
+            stateName: result.data!.stateName,
+          }));
+
+          toast({
+            title: 'Vendor Details Updated',
+            description: `Updated from GST: ${newName}`,
+          });
+        } else {
+          toast({
+            title: 'GSTIN Verified',
+            description: `Business: ${newName} (${result.data.status}) - Details not updated`,
+          });
+        }
       } else {
         toast({
           title: 'Verification Failed',
