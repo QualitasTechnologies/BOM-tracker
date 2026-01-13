@@ -28,12 +28,13 @@ import { MilestoneList } from '@/components/Milestones';
 import { ProjectActivityTimeline } from '@/components/Transcripts';
 import ProjectContextEditor from '@/components/Project/ProjectContextEditor';
 import { saveAs } from 'file-saver';
-import { 
-  getBOMData, 
-  subscribeToBOM, 
-  updateBOMData, 
-  updateBOMItem, 
+import {
+  getBOMData,
+  subscribeToBOM,
+  updateBOMData,
+  updateBOMItem,
   deleteBOMItem,
+  updateMultipleBOMItemsStatus,
 } from '@/utils/projectFirestore';
 import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
 import { getBrands } from '@/utils/brandFirestore';
@@ -1026,16 +1027,8 @@ const BOM = () => {
                           projectId={projectId}
                           onPOSent={async (poId, bomItemIds) => {
                             // Update all BOM items to "Ordered" status in a single write
-                            // (updating one-by-one causes race condition where later writes overwrite earlier ones)
-                            const updatedCategories = categories.map(category => ({
-                              ...category,
-                              items: category.items.map(item =>
-                                bomItemIds.includes(item.id)
-                                  ? { ...item, status: 'ordered' as BOMStatus }
-                                  : item
-                              )
-                            }));
-                            await updateBOMData(projectId, updatedCategories);
+                            // Uses helper to prevent race condition when updating multiple items
+                            await updateMultipleBOMItemsStatus(projectId, categories, bomItemIds, 'ordered');
                           }}
                         />
                       )
