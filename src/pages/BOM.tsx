@@ -1025,12 +1025,17 @@ const BOM = () => {
                         <POListSection
                           projectId={projectId}
                           onPOSent={async (poId, bomItemIds) => {
-                            // Update BOM items to "Ordered" status when PO is sent
-                            for (const itemId of bomItemIds) {
-                              await updateBOMItem(projectId, categories, itemId, {
-                                status: 'ordered',
-                              });
-                            }
+                            // Update all BOM items to "Ordered" status in a single write
+                            // (updating one-by-one causes race condition where later writes overwrite earlier ones)
+                            const updatedCategories = categories.map(category => ({
+                              ...category,
+                              items: category.items.map(item =>
+                                bomItemIds.includes(item.id)
+                                  ? { ...item, status: 'ordered' as BOMStatus }
+                                  : item
+                              )
+                            }));
+                            await updateBOMData(projectId, updatedCategories);
                           }}
                         />
                       )
