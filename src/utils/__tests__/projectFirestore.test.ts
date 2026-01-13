@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { getTotalBOMCost } from '../projectFirestore';
-import type { BOMCategory, BOMItem } from '@/types/bom';
+import { getTotalBOMCost, batchUpdateItemStatus } from '../projectFirestore';
+import type { BOMCategory, BOMItem, BOMStatus } from '@/types/bom';
 
 // Helper function to create a minimal BOM item
 const createBOMItem = (overrides: Partial<BOMItem> = {}): BOMItem => ({
@@ -358,6 +358,214 @@ describe('getTotalBOMCost', () => {
       // Services: (10 * 5000) = 50000
       // Total: 170000
       expect(result).toBe(170000);
+    });
+  });
+});
+
+describe('batchUpdateItemStatus', () => {
+  describe('basic functionality', () => {
+    it('updates a single item status', () => {
+      const categories: BOMCategory[] = [
+        createCategory('Motors', [
+          createBOMItem({ id: 'item-1', status: 'not-ordered' }),
+        ])
+      ];
+
+      const result = batchUpdateItemStatus(categories, ['item-1'], 'ordered');
+
+      expect(result[0].items[0].status).toBe('ordered');
+    });
+
+    it('updates multiple items in same category', () => {
+      const categories: BOMCategory[] = [
+        createCategory('Motors', [
+          createBOMItem({ id: 'item-1', status: 'not-ordered' }),
+          createBOMItem({ id: 'item-2', status: 'not-ordered' }),
+          createBOMItem({ id: 'item-3', status: 'not-ordered' }),
+        ])
+      ];
+
+      const result = batchUpdateItemStatus(categories, ['item-1', 'item-2'], 'ordered');
+
+      expect(result[0].items[0].status).toBe('ordered');
+      expect(result[0].items[1].status).toBe('ordered');
+      expect(result[0].items[2].status).toBe('not-ordered'); // Not in the list
+    });
+
+    it('updates items across multiple categories', () => {
+      const categories: BOMCategory[] = [
+        createCategory('Motors', [
+          createBOMItem({ id: 'motor-1', status: 'not-ordered' }),
+        ]),
+        createCategory('Sensors', [
+          createBOMItem({ id: 'sensor-1', status: 'not-ordered' }),
+        ]),
+        createCategory('Control', [
+          createBOMItem({ id: 'control-1', status: 'not-ordered' }),
+        ])
+      ];
+
+      const result = batchUpdateItemStatus(
+        categories,
+        ['motor-1', 'control-1'],
+        'ordered'
+      );
+
+      expect(result[0].items[0].status).toBe('ordered');     // motor-1
+      expect(result[1].items[0].status).toBe('not-ordered'); // sensor-1 (not updated)
+      expect(result[2].items[0].status).toBe('ordered');     // control-1
+    });
+  });
+
+  describe('edge cases', () => {
+    it('handles empty itemIds array', () => {
+      const categories: BOMCategory[] = [
+        createCategory('Motors', [
+          createBOMItem({ id: 'item-1', status: 'not-ordered' }),
+        ])
+      ];
+
+      const result = batchUpdateItemStatus(categories, [], 'ordered');
+
+      expect(result[0].items[0].status).toBe('not-ordered'); // Unchanged
+    });
+
+    it('handles non-existent itemIds gracefully', () => {
+      const categories: BOMCategory[] = [
+        createCategory('Motors', [
+          createBOMItem({ id: 'item-1', status: 'not-ordered' }),
+        ])
+      ];
+
+      const result = batchUpdateItemStatus(categories, ['non-existent'], 'ordered');
+
+      expect(result[0].items[0].status).toBe('not-ordered'); // Unchanged
+    });
+
+    it('handles empty categories array', () => {
+      const result = batchUpdateItemStatus([], ['item-1'], 'ordered');
+
+      expect(result).toEqual([]);
+    });
+
+    it('handles category with empty items array', () => {
+      const categories: BOMCategory[] = [
+        createCategory('Empty Category', [])
+      ];
+
+      const result = batchUpdateItemStatus(categories, ['item-1'], 'ordered');
+
+      expect(result[0].items).toEqual([]);
+    });
+  });
+
+  describe('immutability', () => {
+    it('does not mutate the original categories', () => {
+      const originalItem = createBOMItem({ id: 'item-1', status: 'not-ordered' });
+      const categories: BOMCategory[] = [
+        createCategory('Motors', [originalItem])
+      ];
+
+      batchUpdateItemStatus(categories, ['item-1'], 'ordered');
+
+      // Original should be unchanged
+      expect(categories[0].items[0].status).toBe('not-ordered');
+      expect(originalItem.status).toBe('not-ordered');
+    });
+
+    it('returns new array references', () => {
+      const categories: BOMCategory[] = [
+        createCategory('Motors', [
+          createBOMItem({ id: 'item-1', status: 'not-ordered' }),
+        ])
+      ];
+
+      const result = batchUpdateItemStatus(categories, ['item-1'], 'ordered');
+
+      expect(result).not.toBe(categories);
+      expect(result[0]).not.toBe(categories[0]);
+      expect(result[0].items).not.toBe(categories[0].items);
+      expect(result[0].items[0]).not.toBe(categories[0].items[0]);
+    });
+  });
+
+  describe('status transitions', () => {
+    it('can update from not-ordered to ordered', () => {
+      const categories: BOMCategory[] = [
+        createCategory('Motors', [
+          createBOMItem({ id: 'item-1', status: 'not-ordered' }),
+        ])
+      ];
+
+      const result = batchUpdateItemStatus(categories, ['item-1'], 'ordered');
+
+      expect(result[0].items[0].status).toBe('ordered');
+    });
+
+    it('can update from ordered to received', () => {
+      const categories: BOMCategory[] = [
+        createCategory('Motors', [
+          createBOMItem({ id: 'item-1', status: 'ordered' }),
+        ])
+      ];
+
+      const result = batchUpdateItemStatus(categories, ['item-1'], 'received');
+
+      expect(result[0].items[0].status).toBe('received');
+    });
+
+    it('preserves other item properties when updating status', () => {
+      const categories: BOMCategory[] = [
+        createCategory('Motors', [
+          createBOMItem({
+            id: 'item-1',
+            name: 'Test Motor',
+            quantity: 5,
+            price: 1000,
+            status: 'not-ordered',
+            finalizedVendor: { name: 'Vendor A', price: 1000, leadTime: '2 weeks', availability: 'In Stock' }
+          }),
+        ])
+      ];
+
+      const result = batchUpdateItemStatus(categories, ['item-1'], 'ordered');
+
+      expect(result[0].items[0]).toEqual({
+        ...categories[0].items[0],
+        status: 'ordered'
+      });
+      expect(result[0].items[0].name).toBe('Test Motor');
+      expect(result[0].items[0].quantity).toBe(5);
+      expect(result[0].items[0].finalizedVendor?.name).toBe('Vendor A');
+    });
+  });
+
+  describe('PO send scenario (the bug this function fixes)', () => {
+    it('updates all items in a PO atomically - preventing race condition', () => {
+      // This test simulates what happens when a PO with 3 items is sent
+      const categories: BOMCategory[] = [
+        createCategory('Motors', [
+          createBOMItem({ id: 'po-item-1', name: 'Motor A', status: 'not-ordered' }),
+          createBOMItem({ id: 'po-item-2', name: 'Motor B', status: 'not-ordered' }),
+          createBOMItem({ id: 'other-item', name: 'Motor C', status: 'not-ordered' }),
+        ]),
+        createCategory('Sensors', [
+          createBOMItem({ id: 'po-item-3', name: 'Sensor A', status: 'not-ordered' }),
+        ])
+      ];
+
+      // PO contains items 1, 2, and 3
+      const poItemIds = ['po-item-1', 'po-item-2', 'po-item-3'];
+
+      const result = batchUpdateItemStatus(categories, poItemIds, 'ordered');
+
+      // All PO items should be ordered
+      expect(result[0].items[0].status).toBe('ordered'); // po-item-1
+      expect(result[0].items[1].status).toBe('ordered'); // po-item-2
+      expect(result[1].items[0].status).toBe('ordered'); // po-item-3
+
+      // Non-PO item should remain not-ordered
+      expect(result[0].items[2].status).toBe('not-ordered'); // other-item
     });
   });
 });

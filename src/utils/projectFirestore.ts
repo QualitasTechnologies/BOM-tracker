@@ -214,6 +214,45 @@ export const deleteBOMItem = async (projectId: string, categories: BOMCategory[]
   await updateBOMData(projectId, updatedCategories);
 };
 
+/**
+ * Pure function to update multiple BOM items' status in a single transformation.
+ * This prevents the race condition that occurs when updating items one-by-one
+ * in a loop (where each update overwrites the previous one).
+ *
+ * @param categories - Current BOM categories
+ * @param itemIds - Array of item IDs to update
+ * @param newStatus - The new status to set
+ * @returns Updated categories with all specified items' status changed
+ */
+export const batchUpdateItemStatus = (
+  categories: BOMCategory[],
+  itemIds: string[],
+  newStatus: BOMStatus
+): BOMCategory[] => {
+  return categories.map(category => ({
+    ...category,
+    items: category.items.map(item =>
+      itemIds.includes(item.id)
+        ? { ...item, status: newStatus }
+        : item
+    )
+  }));
+};
+
+/**
+ * Update multiple BOM items to a new status in a single Firestore write.
+ * Use this instead of calling updateBOMItem in a loop to avoid race conditions.
+ */
+export const updateMultipleBOMItemsStatus = async (
+  projectId: string,
+  categories: BOMCategory[],
+  itemIds: string[],
+  newStatus: BOMStatus
+): Promise<void> => {
+  const updatedCategories = batchUpdateItemStatus(categories, itemIds, newStatus);
+  await updateBOMData(projectId, updatedCategories);
+};
+
 // Utility to calculate total BOM material cost for a project
 export const getTotalBOMCost = (categories: BOMCategory[]): number => {
   return categories.reduce((total, category) => {
