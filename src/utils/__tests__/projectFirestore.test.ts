@@ -24,13 +24,13 @@ const createCategory = (name: string, items: BOMItem[]): BOMCategory => ({
 
 describe('getTotalBOMCost', () => {
   describe('basic cost calculation', () => {
-    it('calculates cost for single item with finalized vendor', () => {
+    it('calculates cost for single item with price', () => {
       const categories: BOMCategory[] = [
         createCategory('Motors', [
           createBOMItem({
             id: '1',
             quantity: 2,
-            finalizedVendor: { name: 'Vendor A', price: 1000, leadTime: '2 weeks', availability: 'In Stock' }
+            price: 1000,
           })
         ])
       ];
@@ -46,12 +46,12 @@ describe('getTotalBOMCost', () => {
           createBOMItem({
             id: '1',
             quantity: 2,
-            finalizedVendor: { name: 'Vendor A', price: 1000, leadTime: '2 weeks', availability: 'In Stock' }
+            price: 1000,
           }),
           createBOMItem({
             id: '2',
             quantity: 3,
-            finalizedVendor: { name: 'Vendor B', price: 500, leadTime: '1 week', availability: 'In Stock' }
+            price: 500,
           })
         ])
       ];
@@ -67,21 +67,21 @@ describe('getTotalBOMCost', () => {
           createBOMItem({
             id: '1',
             quantity: 1,
-            finalizedVendor: { name: 'Vendor A', price: 1000, leadTime: '2 weeks', availability: 'In Stock' }
+            price: 1000,
           })
         ]),
         createCategory('Sensors', [
           createBOMItem({
             id: '2',
             quantity: 5,
-            finalizedVendor: { name: 'Vendor B', price: 200, leadTime: '1 week', availability: 'In Stock' }
+            price: 200,
           })
         ]),
         createCategory('Control', [
           createBOMItem({
             id: '3',
             quantity: 2,
-            finalizedVendor: { name: 'Vendor C', price: 750, leadTime: '3 days', availability: 'In Stock' }
+            price: 750,
           })
         ])
       ];
@@ -93,10 +93,10 @@ describe('getTotalBOMCost', () => {
   });
 
   describe('items without pricing', () => {
-    it('returns 0 for items without finalized vendor', () => {
+    it('returns 0 for items without price', () => {
       const categories: BOMCategory[] = [
         createCategory('Motors', [
-          createBOMItem({ id: '1', quantity: 10 }) // No finalizedVendor
+          createBOMItem({ id: '1', quantity: 10 }) // No price
         ])
       ];
 
@@ -105,13 +105,13 @@ describe('getTotalBOMCost', () => {
       expect(result).toBe(0);
     });
 
-    it('returns 0 for items with finalized vendor but no price', () => {
+    it('returns 0 for items with undefined price', () => {
       const categories: BOMCategory[] = [
         createCategory('Motors', [
           createBOMItem({
             id: '1',
             quantity: 10,
-            finalizedVendor: { name: 'Vendor A', price: undefined as any, leadTime: '2 weeks', availability: 'In Stock' }
+            price: undefined as any,
           })
         ])
       ];
@@ -127,13 +127,13 @@ describe('getTotalBOMCost', () => {
           createBOMItem({
             id: '1',
             quantity: 2,
-            finalizedVendor: { name: 'Vendor A', price: 1000, leadTime: '2 weeks', availability: 'In Stock' }
+            price: 1000,
           }),
-          createBOMItem({ id: '2', quantity: 5 }), // No finalized vendor
+          createBOMItem({ id: '2', quantity: 5 }), // No price
           createBOMItem({
             id: '3',
             quantity: 1,
-            finalizedVendor: { name: 'Vendor B', price: 500, leadTime: '1 week', availability: 'In Stock' }
+            price: 500,
           })
         ])
       ];
@@ -151,7 +151,7 @@ describe('getTotalBOMCost', () => {
           createBOMItem({
             id: '1',
             quantity: undefined as any,
-            finalizedVendor: { name: 'Vendor A', price: 1000, leadTime: '2 weeks', availability: 'In Stock' }
+            price: 1000,
           })
         ])
       ];
@@ -169,7 +169,7 @@ describe('getTotalBOMCost', () => {
           createBOMItem({
             id: '1',
             quantity: 0,
-            finalizedVendor: { name: 'Vendor A', price: 1000, leadTime: '2 weeks', availability: 'In Stock' }
+            price: 1000,
           })
         ])
       ];
@@ -187,7 +187,7 @@ describe('getTotalBOMCost', () => {
             id: '1',
             itemType: 'service',
             quantity: 0.5, // Half day
-            finalizedVendor: { name: 'Contractor', price: 2000, leadTime: 'N/A', availability: 'Available' }
+            price: 2000,
           })
         ])
       ];
@@ -203,7 +203,7 @@ describe('getTotalBOMCost', () => {
           createBOMItem({
             id: '1',
             quantity: 1.5,
-            finalizedVendor: { name: 'Vendor A', price: 100, leadTime: '1 day', availability: 'In Stock' }
+            price: 100,
           })
         ])
       ];
@@ -238,7 +238,7 @@ describe('getTotalBOMCost', () => {
           createBOMItem({
             id: '1',
             quantity: 10,
-            finalizedVendor: { name: 'Vendor A', price: 0, leadTime: '2 weeks', availability: 'In Stock' }
+            price: 0,
           })
         ])
       ];
@@ -254,7 +254,7 @@ describe('getTotalBOMCost', () => {
           createBOMItem({
             id: '1',
             quantity: 1000,
-            finalizedVendor: { name: 'Vendor A', price: 50000, leadTime: '4 weeks', availability: 'Special Order' }
+            price: 50000,
           })
         ])
       ];
@@ -273,7 +273,7 @@ describe('getTotalBOMCost', () => {
             id: '1',
             itemType: 'service',
             quantity: 5, // 5 days
-            finalizedVendor: { name: 'Contractor', price: 3000, leadTime: 'N/A', availability: 'Available' } // 3000/day
+            price: 3000, // 3000/day
           })
         ])
       ];
@@ -290,7 +290,7 @@ describe('getTotalBOMCost', () => {
             id: '1',
             itemType: 'component',
             quantity: 2,
-            finalizedVendor: { name: 'Vendor A', price: 1000, leadTime: '2 weeks', availability: 'In Stock' }
+            price: 1000,
           })
         ]),
         createCategory('Services', [
@@ -298,7 +298,7 @@ describe('getTotalBOMCost', () => {
             id: '2',
             itemType: 'service',
             quantity: 3, // 3 days
-            finalizedVendor: { name: 'Contractor', price: 2000, leadTime: 'N/A', availability: 'Available' }
+            price: 2000,
           })
         ])
       ];
@@ -317,13 +317,13 @@ describe('getTotalBOMCost', () => {
             id: 'cam-1',
             name: 'Basler Camera',
             quantity: 2,
-            finalizedVendor: { name: 'Basler', price: 25000, leadTime: '3 weeks', availability: 'In Stock' }
+            price: 25000,
           }),
           createBOMItem({
             id: 'lens-1',
             name: 'Lens 16mm',
             quantity: 2,
-            finalizedVendor: { name: 'Computar', price: 5000, leadTime: '1 week', availability: 'In Stock' }
+            price: 5000,
           })
         ]),
         createCategory('Motors', [
@@ -331,13 +331,13 @@ describe('getTotalBOMCost', () => {
             id: 'motor-1',
             name: 'Servo Motor',
             quantity: 4,
-            finalizedVendor: { name: 'Festo', price: 15000, leadTime: '2 weeks', availability: 'In Stock' }
+            price: 15000,
           }),
           createBOMItem({
             id: 'motor-2',
             name: 'Stepper Motor',
             quantity: 2
-            // No finalized vendor yet
+            // No price yet
           })
         ]),
         createCategory('Services', [
@@ -346,7 +346,7 @@ describe('getTotalBOMCost', () => {
             name: 'Integration Services',
             itemType: 'service',
             quantity: 10, // 10 days
-            finalizedVendor: { name: 'Integrator', price: 5000, leadTime: 'N/A', availability: 'Available' }
+            price: 5000,
           })
         ])
       ];
