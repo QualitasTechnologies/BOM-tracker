@@ -12,7 +12,8 @@ import {
   XCircle,
   Loader2,
   Download,
-  Mail
+  Mail,
+  Users
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -53,6 +54,8 @@ import {
   PurchaseOrder
 } from '@/utils/poFirestore';
 import { getCompanySettings } from '@/utils/settingsFirestore';
+import { getStakeholders } from '@/utils/stakeholderFirestore';
+import type { Stakeholder } from '@/types/stakeholder';
 import { auth } from '@/firebase';
 import { useAuth } from '@/hooks/useAuth';
 
@@ -98,6 +101,8 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
   const [deleting, setDeleting] = useState(false);
   const [generatingPDF, setGeneratingPDF] = useState<string | null>(null);
   const [sendingEmail, setSendingEmail] = useState(false);
+  const [stakeholders, setStakeholders] = useState<Stakeholder[]>([]);
+  const [loadingStakeholders, setLoadingStakeholders] = useState(false);
   const { toast } = useToast();
   const { isAdmin } = useAuth();
 
@@ -212,11 +217,23 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
     }
   };
 
-  const handleSendClick = (po: PurchaseOrder, mode: 'email' | 'mark' = 'email') => {
+  const handleSendClick = async (po: PurchaseOrder, mode: 'email' | 'mark' = 'email') => {
     setPOToSend(po);
     setSendToEmail(po.vendorEmail || '');
     setSendMode(mode);
     setSendDialogOpen(true);
+
+    // Fetch stakeholders for this project
+    setLoadingStakeholders(true);
+    try {
+      const projectStakeholders = await getStakeholders(projectId);
+      setStakeholders(projectStakeholders);
+    } catch (error) {
+      console.error('Error fetching stakeholders:', error);
+      setStakeholders([]);
+    } finally {
+      setLoadingStakeholders(false);
+    }
   };
 
   const handleConfirmSend = async () => {
@@ -326,6 +343,17 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
       const user = auth.currentUser;
       if (!user) throw new Error('Not authenticated');
 
+      // Build CC list: user email + stakeholders with notifications enabled
+      const ccList: string[] = [];
+      if (user.email) {
+        ccList.push(user.email);
+      }
+      // Add stakeholders with notifications enabled
+      const stakeholderEmails = stakeholders
+        .filter(s => s.notificationsEnabled && s.email)
+        .map(s => s.email);
+      ccList.push(...stakeholderEmails);
+
       // Send email with PDF
       await sendPOEmail({
         purchaseOrder: poToSend,
@@ -343,7 +371,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
         // Pass logo path - Cloud Function will fetch from Storage (avoids CORS)
         companyLogoPath: companySettings.logoPath,
         recipientEmail: sendToEmail.trim(),
-        ccEmails: user.email ? [user.email] : [],
+        ccEmails: ccList,
       });
 
       // Also update local status
@@ -718,6 +746,49 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                 }
               </p>
             </div>
+
+            {/* Stakeholders CC Section - only show for email mode */}
+            {sendMode === 'email' && (
+              <div className="space-y-2">
+                <Label className="flex items-center gap-2">
+                  <Users size={14} />
+                  CC: Project Stakeholders
+                </Label>
+                {loadingStakeholders ? (
+                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <Loader2 size={14} className="animate-spin" />
+                    Loading stakeholders...
+                  </div>
+                ) : (
+                  <div className="bg-gray-50 border rounded p-3">
+                    {(() => {
+                      const enabledStakeholders = stakeholders.filter(s => s.notificationsEnabled);
+                      if (enabledStakeholders.length === 0) {
+                        return (
+                          <p className="text-sm text-gray-500 italic">
+                            No stakeholders with notifications enabled. Add stakeholders in the Stakeholders tab.
+                          </p>
+                        );
+                      }
+                      return (
+                        <div className="space-y-1">
+                          {enabledStakeholders.map(s => (
+                            <div key={s.id} className="flex items-center gap-2 text-sm">
+                              <CheckCircle size={14} className="text-green-500" />
+                              <span className="font-medium">{s.name}</span>
+                              <span className="text-gray-500">({s.email})</span>
+                            </div>
+                          ))}
+                          <p className="text-xs text-gray-500 mt-2">
+                            {enabledStakeholders.length} stakeholder{enabledStakeholders.length !== 1 ? 's' : ''} will be CC'd on this email.
+                          </p>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <DialogFooter>
