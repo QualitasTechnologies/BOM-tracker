@@ -2441,6 +2441,90 @@ exports.triggerSpecSearch = onRequest(
 // ==================== BOM STATUS DIGEST FUNCTIONS ====================
 
 /**
+ * Get ISO week string (e.g., "2026-W03")
+ */
+const getISOWeek = (date = new Date()) => {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+  const yearStart = new Date(d.getFullYear(), 0, 1);
+  const weekNum = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return `${d.getFullYear()}-W${weekNum.toString().padStart(2, '0')}`;
+};
+
+/**
+ * Get last week's ISO week string
+ */
+const getLastISOWeek = () => {
+  const lastWeek = new Date();
+  lastWeek.setDate(lastWeek.getDate() - 7);
+  return getISOWeek(lastWeek);
+};
+
+/**
+ * Save weekly snapshot for a project
+ */
+const saveWeeklySnapshot = async (db, projectId, summary) => {
+  const weekOf = getISOWeek();
+  const snapshotRef = db
+    .collection('projects')
+    .doc(projectId)
+    .collection('weeklySnapshots')
+    .doc(weekOf);
+
+  await snapshotRef.set({
+    projectId,
+    weekOf,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    summary: {
+      received: summary.received,
+      ordered: summary.ordered,
+      overdue: summary.overdue,
+      pending: summary.pending,
+      progressPercent: summary.progressPercent
+    }
+  });
+
+  return weekOf;
+};
+
+/**
+ * Get last week's snapshot for a project
+ */
+const getLastWeekSnapshot = async (db, projectId) => {
+  const lastWeekId = getLastISOWeek();
+  const snapshotRef = db
+    .collection('projects')
+    .doc(projectId)
+    .collection('weeklySnapshots')
+    .doc(lastWeekId);
+
+  const snapshot = await snapshotRef.get();
+  if (!snapshot.exists) {
+    return null;
+  }
+
+  return snapshot.data().summary;
+};
+
+/**
+ * Calculate delta between current and last week's summary
+ */
+const calculateDelta = (current, lastWeek) => {
+  if (!lastWeek) {
+    return null; // First week, no delta to show
+  }
+
+  return {
+    received: current.received - lastWeek.received,
+    ordered: current.ordered - lastWeek.ordered,
+    overdue: current.overdue - lastWeek.overdue,
+    pending: current.pending - lastWeek.pending,
+    progressPercent: current.progressPercent - lastWeek.progressPercent
+  };
+};
+
+/**
  * Generate HTML email for BOM status digest
  */
 const generateBOMDigestEmailHTML = ({
@@ -2449,7 +2533,9 @@ const generateBOMDigestEmailHTML = ({
   clientLogo,
   companyName,
   reportDate,
+  weekOf,
   summary,
+  delta,
   overdueItems,
   arrivingSoonItems,
   pendingItems,
@@ -2466,6 +2552,17 @@ const generateBOMDigestEmailHTML = ({
     return `${days} days`;
   };
 
+  // Format delta with +/- sign and color
+  const formatDelta = (value, isInverse = false) => {
+    if (value === 0) return '';
+    const isPositive = value > 0;
+    // For some metrics like overdue/pending, increase is bad (inverse)
+    const isGood = isInverse ? !isPositive : isPositive;
+    const color = isGood ? '#16a34a' : '#dc2626';
+    const sign = isPositive ? '+' : '';
+    return `<span style="font-size: 12px; color: ${color}; margin-left: 4px;">(${sign}${value})</span>`;
+  };
+
   return `
 <!DOCTYPE html>
 <html>
@@ -2479,7 +2576,8 @@ const generateBOMDigestEmailHTML = ({
     <!-- Header -->
     <div style="background: #1a365d; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
       <h1 style="margin: 0; font-size: 24px;">${companyName}</h1>
-      <p style="margin: 5px 0 0 0; opacity: 0.9;">BOM Status Update</p>
+      <p style="margin: 5px 0 0 0; opacity: 0.9;">Weekly BOM Status Update</p>
+      ${weekOf ? `<p style="margin: 5px 0 0 0; font-size: 12px; opacity: 0.7;">Week ${weekOf}</p>` : ''}
     </div>
 
     <!-- Project Info -->
@@ -2500,28 +2598,36 @@ const generateBOMDigestEmailHTML = ({
 
     <!-- Summary Section -->
     <div style="background: white; padding: 20px; border-bottom: 1px solid #e5e7eb;">
-      <h2 style="margin: 0 0 15px 0; font-size: 16px; color: #1a365d;">Summary</h2>
+      <h2 style="margin: 0 0 15px 0; font-size: 16px; color: #1a365d;">Summary ${delta ? '<span style="font-size: 12px; color: #666; font-weight: normal;">(vs last week)</span>' : ''}</h2>
       <div style="display: flex; justify-content: space-around; text-align: center;">
         <div style="flex: 1; padding: 10px;">
-          <div style="font-size: 28px; font-weight: bold; color: #22c55e;">${summary.received}</div>
+          <div style="font-size: 28px; font-weight: bold; color: #22c55e;">
+            ${summary.received}${delta ? formatDelta(delta.received) : ''}
+          </div>
           <div style="font-size: 12px; color: #666;">Received</div>
         </div>
         <div style="flex: 1; padding: 10px;">
-          <div style="font-size: 28px; font-weight: bold; color: #3b82f6;">${summary.ordered}</div>
+          <div style="font-size: 28px; font-weight: bold; color: #3b82f6;">
+            ${summary.ordered}${delta ? formatDelta(delta.ordered) : ''}
+          </div>
           <div style="font-size: 12px; color: #666;">Ordered</div>
         </div>
         <div style="flex: 1; padding: 10px;">
-          <div style="font-size: 28px; font-weight: bold; color: #ef4444;">${summary.overdue}</div>
+          <div style="font-size: 28px; font-weight: bold; color: #ef4444;">
+            ${summary.overdue}${delta ? formatDelta(delta.overdue, true) : ''}
+          </div>
           <div style="font-size: 12px; color: #666;">Overdue</div>
         </div>
         <div style="flex: 1; padding: 10px;">
-          <div style="font-size: 28px; font-weight: bold; color: #9ca3af;">${summary.pending}</div>
+          <div style="font-size: 28px; font-weight: bold; color: #9ca3af;">
+            ${summary.pending}${delta ? formatDelta(delta.pending, true) : ''}
+          </div>
           <div style="font-size: 12px; color: #666;">Pending</div>
         </div>
       </div>
       <div style="margin-top: 15px; text-align: center;">
         <p style="margin: 0; font-size: 14px; color: #666;">
-          Total Items: ${summary.total} | Progress: ${summary.progressPercent}%
+          Total Items: ${summary.total} | Progress: ${summary.progressPercent}%${delta ? formatDelta(delta.progressPercent) : ''}
         </p>
       </div>
     </div>
@@ -2777,6 +2883,20 @@ const sendProjectDigest = async (projectId, projectData, prSettings) => {
     year: 'numeric'
   });
 
+  // Get current week identifier
+  const weekOf = getISOWeek();
+
+  // Get last week's snapshot for delta comparison
+  let lastWeekSummary = null;
+  try {
+    lastWeekSummary = await getLastWeekSnapshot(db, projectId);
+    if (lastWeekSummary) {
+      logger.info('Found last week snapshot for delta', { projectId, lastWeekId: getLastISOWeek() });
+    }
+  } catch (error) {
+    logger.warn('Could not fetch last week snapshot', { projectId, error: error.message });
+  }
+
   // Try to get client logo by looking up client by company name
   let clientLogo = null;
   if (projectData.clientName) {
@@ -2794,24 +2914,36 @@ const sendProjectDigest = async (projectId, projectData, prSettings) => {
     }
   }
 
+  // Calculate digest data once for all stakeholders (summary is same for all)
+  // Note: recentChanges will still use per-stakeholder lastNotificationSentAt
+  const baseDigestData = calculateBOMDigestData(categories, null);
+
+  // Calculate delta from last week
+  const delta = calculateDelta(baseDigestData.summary, lastWeekSummary);
+
+  // Save this week's snapshot (do this once per project, not per stakeholder)
+  let snapshotSaved = false;
+
   // Send email to each stakeholder
   for (const stakeholderDoc of stakeholdersSnapshot.docs) {
     const stakeholder = stakeholderDoc.data();
 
     try {
-      // Calculate digest data for this stakeholder (uses their lastNotificationSentAt)
+      // Calculate digest data for this stakeholder (uses their lastNotificationSentAt for recent changes)
       const digestData = calculateBOMDigestData(
         categories,
         stakeholder.lastNotificationSentAt
       );
 
-      // Generate email HTML
+      // Generate email HTML with delta comparison
       const htmlContent = generateBOMDigestEmailHTML({
         projectName: projectData.projectName,
         clientName: projectData.clientName,
         clientLogo: clientLogo,
         companyName: prSettings.companyName || 'Qualitas Technologies Pvt Ltd',
         reportDate,
+        weekOf,
+        delta,
         ...digestData
       });
 
@@ -2819,7 +2951,7 @@ const sendProjectDigest = async (projectId, projectData, prSettings) => {
       const msg = {
         to: stakeholder.email,
         from: prSettings.fromEmail || 'info@qualitastech.com',
-        subject: `[${projectData.projectName}] - BOM Status Update (${reportDate})`,
+        subject: `[${projectData.projectName}] - Weekly BOM Status Update (${weekOf})`,
         html: htmlContent,
         text: stripHtml(htmlContent),
         trackingSettings: {
@@ -2835,12 +2967,24 @@ const sendProjectDigest = async (projectId, projectData, prSettings) => {
         lastNotificationSentAt: admin.firestore.FieldValue.serverTimestamp()
       });
 
+      // Save this week's snapshot (only once per project after first successful email)
+      if (!snapshotSaved) {
+        try {
+          await saveWeeklySnapshot(db, projectId, baseDigestData.summary);
+          snapshotSaved = true;
+          logger.info('Saved weekly snapshot', { projectId, weekOf });
+        } catch (snapshotError) {
+          logger.warn('Could not save weekly snapshot', { projectId, error: snapshotError.message });
+        }
+      }
+
       results.sent++;
 
-      logger.info('Digest sent to stakeholder', {
+      logger.info('Weekly digest sent to stakeholder', {
         projectId,
         stakeholderEmail: stakeholder.email,
-        itemsTotal: digestData.summary.total
+        itemsTotal: digestData.summary.total,
+        hasDelta: !!delta
       });
 
     } catch (error) {
@@ -2857,17 +3001,17 @@ const sendProjectDigest = async (projectId, projectData, prSettings) => {
 };
 
 /**
- * Daily scheduled function to send BOM status digests
- * Runs at 9:00 AM IST every day
+ * Weekly scheduled function to send BOM status digests
+ * Runs at 9:00 AM IST every Monday
  */
-exports.sendDailyBOMDigest = onSchedule(
+exports.sendWeeklyBOMDigest = onSchedule(
   {
-    schedule: 'every day 09:00',
+    schedule: 'every monday 09:00',
     timeZone: 'Asia/Kolkata',
     secrets: [sendgridApiKey]
   },
   async (event) => {
-    logger.info('Starting daily BOM digest job');
+    logger.info('Starting weekly BOM digest job');
     const startTime = Date.now();
     const db = admin.firestore();
 
@@ -2907,13 +3051,13 @@ exports.sendDailyBOMDigest = onSchedule(
       }
 
       const duration = Date.now() - startTime;
-      logger.info('Daily BOM digest job completed', {
+      logger.info('Weekly BOM digest job completed', {
         ...results,
         durationMs: duration
       });
 
     } catch (error) {
-      logger.error('Daily BOM digest job failed', { error: error.message });
+      logger.error('Weekly BOM digest job failed', { error: error.message });
       throw error;
     }
   }
