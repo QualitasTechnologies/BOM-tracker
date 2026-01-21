@@ -887,8 +887,38 @@ exports.sendPurchaseRequest = onCall(
       };
 
     } catch (error) {
-      logger.error('Error sending purchase request:', error);
-      throw new Error(`Failed to send purchase request: ${error.message}`);
+      // Log full error for debugging
+      logger.error('Error sending purchase request:', {
+        message: error.message,
+        code: error.code,
+        response: error.response?.body,
+        stack: error.stack
+      });
+
+      // Provide user-friendly error messages based on error type
+      let userMessage = 'Failed to send purchase request';
+      let troubleshooting = '';
+
+      if (error.code === 401 || error.message?.includes('Unauthorized')) {
+        userMessage = 'Email service authentication failed';
+        troubleshooting = 'The SendGrid API key is invalid or expired. Please contact your administrator to update the API key in Firebase secrets.';
+      } else if (error.code === 403 || error.message?.includes('Forbidden')) {
+        userMessage = 'Email service access denied';
+        troubleshooting = 'The sender email address may not be verified in SendGrid, or the API key lacks required permissions.';
+      } else if (error.code === 400) {
+        userMessage = 'Invalid email request';
+        troubleshooting = 'Check that all recipient email addresses are valid and the email content is properly formatted.';
+      } else if (error.message?.includes('ENOTFOUND') || error.message?.includes('ETIMEDOUT')) {
+        userMessage = 'Email service unreachable';
+        troubleshooting = 'Network connectivity issue. Please try again in a few moments.';
+      } else if (error.response?.body?.errors) {
+        // Extract SendGrid specific errors
+        const sgErrors = error.response.body.errors.map(e => e.message).join('; ');
+        userMessage = 'Email service error';
+        troubleshooting = sgErrors;
+      }
+
+      throw new Error(`${userMessage}. ${troubleshooting || error.message}`);
     }
   }
 );
@@ -2988,12 +3018,25 @@ const sendProjectDigest = async (projectId, projectData, prSettings) => {
       });
 
     } catch (error) {
+      // Log detailed error for debugging
       logger.error('Failed to send digest to stakeholder', {
         projectId,
         stakeholderEmail: stakeholder.email,
-        error: error.message
+        errorMessage: error.message,
+        errorCode: error.code,
+        sendGridResponse: error.response?.body,
+        stack: error.stack
       });
+
+      // Track specific error types for reporting
+      if (error.code === 401) {
+        results.authError = 'SendGrid API key invalid or expired';
+      } else if (error.code === 403) {
+        results.authError = 'Sender email not verified in SendGrid';
+      }
+
       results.failed++;
+      results.lastError = error.message;
     }
   }
 
@@ -3105,6 +3148,23 @@ exports.sendBOMDigestNow = onCall(
 
       logger.info('Manual BOM digest completed', { projectId, results });
 
+      // Check if there was an auth error
+      if (results.authError) {
+        return {
+          success: false,
+          message: results.authError,
+          ...results
+        };
+      }
+
+      if (results.sent === 0 && results.failed > 0) {
+        return {
+          success: false,
+          message: `Failed to send to ${results.failed} stakeholder(s). ${results.lastError || ''}`,
+          ...results
+        };
+      }
+
       return {
         success: true,
         message: `Digest sent to ${results.sent} stakeholder(s)`,
@@ -3112,8 +3172,25 @@ exports.sendBOMDigestNow = onCall(
       };
 
     } catch (error) {
-      logger.error('Manual BOM digest failed', { projectId, error: error.message });
-      throw new Error(`Failed to send digest: ${error.message}`);
+      // Log detailed error
+      logger.error('Manual BOM digest failed', {
+        projectId,
+        errorMessage: error.message,
+        errorCode: error.code,
+        stack: error.stack
+      });
+
+      // Provide user-friendly error messages
+      let userMessage = 'Failed to send digest';
+      if (error.code === 401 || error.message?.includes('Unauthorized')) {
+        userMessage = 'Email service authentication failed. The SendGrid API key may be invalid or expired.';
+      } else if (error.message?.includes('Project not found')) {
+        userMessage = 'Project not found. Please refresh and try again.';
+      } else if (error.message?.includes('No enabled stakeholders')) {
+        userMessage = 'No stakeholders with notifications enabled. Add stakeholders first.';
+      }
+
+      throw new Error(`${userMessage}`);
     }
   }
 );
@@ -4274,14 +4351,47 @@ exports.sendPurchaseOrder = onCall(
       };
 
     } catch (error) {
+      // Log full error for debugging
       logger.error('Failed to send PO email', {
         poNumber: purchaseOrder?.poNumber,
         error: error.message,
+        code: error.code,
+        response: error.response?.body,
         stack: error.stack
       });
+
+      // Provide user-friendly error messages based on error type
+      let errorCode = 'internal';
+      let userMessage = 'Failed to send Purchase Order';
+      let troubleshooting = '';
+
+      if (error.code === 401 || error.message?.includes('Unauthorized')) {
+        errorCode = 'unauthenticated';
+        userMessage = 'Email service authentication failed';
+        troubleshooting = 'The SendGrid API key is invalid or expired. Please contact your administrator.';
+      } else if (error.code === 403 || error.message?.includes('Forbidden')) {
+        errorCode = 'permission-denied';
+        userMessage = 'Email service access denied';
+        troubleshooting = 'The sender email may not be verified in SendGrid.';
+      } else if (error.code === 400) {
+        errorCode = 'invalid-argument';
+        userMessage = 'Invalid email request';
+        troubleshooting = 'Check that the vendor email address is valid.';
+      } else if (error.message?.includes('ENOTFOUND') || error.message?.includes('ETIMEDOUT')) {
+        errorCode = 'unavailable';
+        userMessage = 'Email service unreachable';
+        troubleshooting = 'Network issue. Please try again.';
+      } else if (error.message?.includes('PDF')) {
+        userMessage = 'Failed to generate PO PDF';
+        troubleshooting = error.message;
+      } else if (error.response?.body?.errors) {
+        const sgErrors = error.response.body.errors.map(e => e.message).join('; ');
+        troubleshooting = sgErrors;
+      }
+
       throw new functions.https.HttpsError(
-        'internal',
-        `Failed to send PO: ${error.message}`
+        errorCode,
+        `${userMessage}. ${troubleshooting || error.message}`
       );
     }
   }
