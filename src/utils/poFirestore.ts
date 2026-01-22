@@ -280,7 +280,7 @@ export const getPurchaseOrders = async (projectId: string): Promise<PurchaseOrde
       expectedDeliveryDate: toDate(data.expectedDeliveryDate),
       sentAt: toDate(data.sentAt),
       closedAt: toDate(data.closedAt),
-    } as PurchaseOrder;
+    } as unknown as PurchaseOrder;
   });
 };
 
@@ -302,7 +302,7 @@ export const getPurchaseOrder = async (projectId: string, poId: string): Promise
     expectedDeliveryDate: toDate(data.expectedDeliveryDate),
     sentAt: toDate(data.sentAt),
     closedAt: toDate(data.closedAt),
-  } as PurchaseOrder;
+  } as unknown as PurchaseOrder;
 };
 
 // ============================================
@@ -328,7 +328,7 @@ export const subscribeToPurchaseOrders = (
         expectedDeliveryDate: toDate(data.expectedDeliveryDate),
         sentAt: toDate(data.sentAt),
         closedAt: toDate(data.closedAt),
-      } as PurchaseOrder;
+      } as unknown as PurchaseOrder;
     });
     callback(pos);
   });
@@ -465,7 +465,7 @@ export const getPurchaseOrdersByVendor = async (
       expectedDeliveryDate: toDate(data.expectedDeliveryDate),
       sentAt: toDate(data.sentAt),
       closedAt: toDate(data.closedAt),
-    } as PurchaseOrder;
+    } as unknown as PurchaseOrder;
   });
 };
 
@@ -496,7 +496,7 @@ export const getPurchaseOrdersByStatus = async (
       expectedDeliveryDate: toDate(data.expectedDeliveryDate),
       sentAt: toDate(data.sentAt),
       closedAt: toDate(data.closedAt),
-    } as PurchaseOrder;
+    } as unknown as PurchaseOrder;
   });
 };
 
@@ -654,7 +654,7 @@ export interface SendPOEmailResult {
 
 /**
  * Generate PDF and send PO via email to vendor
- * Uses Firebase Function with SendGrid
+ * Uses Firebase Function with Resend
  */
 export const sendPOEmail = async (
   input: SendPOEmailInput

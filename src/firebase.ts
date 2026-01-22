@@ -1,10 +1,10 @@
 // src/firebase.ts
 import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getAnalytics } from "firebase/analytics";
-import { getFunctions } from "firebase/functions";
-import { getStorage } from "firebase/storage";
+import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
+import { getStorage, connectStorageEmulator } from "firebase/storage";
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
@@ -26,6 +26,19 @@ export const db = getFirestore(app);
 export const auth = getAuth(app);
 export const functions = getFunctions(app);
 export const storage = getStorage(app);
+
+// Connect to emulators in development mode
+// Set USE_EMULATOR=true in your .env file to enable
+if (import.meta.env.DEV && import.meta.env.VITE_USE_EMULATOR === 'true') {
+  try {
+    // Connect to Functions emulator (port 5001)
+    connectFunctionsEmulator(functions, 'localhost', 5001);
+    console.log('🔥 Connected to Firebase Functions Emulator');
+  } catch (error) {
+    // Emulators already connected, ignore error
+    console.log('Emulator connection:', error);
+  }
+}
 
 // ✅ Google Auth Provider setup
 export const googleProvider = new GoogleAuthProvider();

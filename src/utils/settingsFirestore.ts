@@ -424,7 +424,7 @@ export interface PRSettings {
   id: string;
   recipients: string[]; // Array of email addresses
   companyName: string;
-  fromEmail: string; // Sender email (must be verified in SendGrid)
+  fromEmail: string; // Sender email (must be verified in Resend)
   updatedAt: Date;
 }
 

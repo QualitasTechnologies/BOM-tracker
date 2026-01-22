@@ -14,7 +14,7 @@ const {onDocumentWritten} = require("firebase-functions/v2/firestore");
 const logger = require("firebase-functions/logger");
 const {defineSecret} = require("firebase-functions/params");
 const admin = require("firebase-admin");
-const sgMail = require("@sendgrid/mail");
+const { Resend } = require("resend");
 const pdfParse = require("pdf-parse");
 const PDFDocument = require("pdfkit");
 
@@ -28,7 +28,19 @@ if (!admin.apps.length) {
 
 // Define secrets
 const openaiApiKeySecret = defineSecret('OPENAI_API_KEY');
-const sendgridApiKey = defineSecret('SENDGRID_API_KEY');
+const resendApiKey = defineSecret('RESEND_API_KEY');
+
+// Helper function to get Resend API key (works in both emulator and production)
+const getResendApiKey = () => {
+  try {
+    const secretValue = resendApiKey.value();
+    if (secretValue) return secretValue;
+  } catch (error) {
+    // Secret not available (likely in emulator)
+  }
+  // Fallback to environment variable for emulator/local testing
+  return process.env.RESEND_API_KEY || '';
+};
 
 // For cost control, you can set the maximum number of containers that can be
 // running at the same time. This helps mitigate the impact of unexpected
@@ -808,9 +820,9 @@ const stripHtml = (html) => {
   return html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 };
 
-// Send Purchase Request via SendGrid
+// Send Purchase Request via Resend
 exports.sendPurchaseRequest = onCall(
-  { secrets: [sendgridApiKey] },
+  { secrets: [resendApiKey] },
   async (request) => {
     const { auth, data } = request;
 
@@ -848,26 +860,20 @@ exports.sendPurchaseRequest = onCall(
         requestedBy
       });
 
-      // Configure SendGrid
-      sgMail.setApiKey(sendgridApiKey.value());
+      // Initialize Resend
+      const resend = new Resend(getResendApiKey());
 
       // Prepare email message
-      const msg = {
+      const emailData = {
+        from: fromEmail || 'info@qualitastech.com', // Must be verified in Resend
         to: recipients,
-        from: fromEmail || 'info@qualitastech.com', // Must be verified in SendGrid
         subject: `Purchase Request - ${projectDetails.projectName} - ${new Date().toLocaleDateString('en-IN')}`,
         html: htmlContent,
-        text: stripHtml(htmlContent),
-        trackingSettings: {
-          clickTracking: {
-            enable: false,
-            enableText: false
-          }
-        }
+        text: stripHtml(htmlContent)
       };
 
       // Send email
-      const response = await sgMail.send(msg);
+      const response = await resend.emails.send(emailData);
 
       logger.info('Purchase request sent successfully', {
         projectId: projectDetails.projectId,
@@ -876,13 +882,13 @@ exports.sendPurchaseRequest = onCall(
         itemCount: groupedItems.reduce((sum, vendor) => sum + vendor.items.length, 0),
         vendorCount: groupedItems.length,
         sentBy: auth.uid,
-        statusCode: response[0].statusCode
+        emailId: response.id
       });
 
       return {
         success: true,
         message: 'Purchase request sent successfully',
-        statusCode: response[0].statusCode,
+        emailId: response.id,
         recipients: recipients
       };
 
@@ -891,7 +897,6 @@ exports.sendPurchaseRequest = onCall(
       logger.error('Error sending purchase request:', {
         message: error.message,
         code: error.code,
-        response: error.response?.body,
         stack: error.stack
       });
 
@@ -899,23 +904,21 @@ exports.sendPurchaseRequest = onCall(
       let userMessage = 'Failed to send purchase request';
       let troubleshooting = '';
 
-      if (error.code === 401 || error.message?.includes('Unauthorized')) {
+      if (error.message?.includes('Unauthorized') || error.message?.includes('Invalid API key')) {
         userMessage = 'Email service authentication failed';
-        troubleshooting = 'The SendGrid API key is invalid or expired. Please contact your administrator to update the API key in Firebase secrets.';
-      } else if (error.code === 403 || error.message?.includes('Forbidden')) {
+        troubleshooting = 'The Resend API key is invalid or expired. Please contact your administrator to update the API key in Firebase secrets.';
+      } else if (error.message?.includes('Forbidden') || error.message?.includes('Domain not verified')) {
         userMessage = 'Email service access denied';
-        troubleshooting = 'The sender email address may not be verified in SendGrid, or the API key lacks required permissions.';
-      } else if (error.code === 400) {
+        troubleshooting = 'The sender email address may not be verified in Resend, or the API key lacks required permissions.';
+      } else if (error.message?.includes('Invalid') || error.code === 400) {
         userMessage = 'Invalid email request';
         troubleshooting = 'Check that all recipient email addresses are valid and the email content is properly formatted.';
       } else if (error.message?.includes('ENOTFOUND') || error.message?.includes('ETIMEDOUT')) {
         userMessage = 'Email service unreachable';
         troubleshooting = 'Network connectivity issue. Please try again in a few moments.';
-      } else if (error.response?.body?.errors) {
-        // Extract SendGrid specific errors
-        const sgErrors = error.response.body.errors.map(e => e.message).join('; ');
+      } else {
         userMessage = 'Email service error';
-        troubleshooting = sgErrors;
+        troubleshooting = error.message;
       }
 
       throw new Error(`${userMessage}. ${troubleshooting || error.message}`);
@@ -2880,7 +2883,7 @@ const calculateBOMDigestData = (categories, lastNotificationSentAt) => {
 /**
  * Send BOM digest for a single project to all enabled stakeholders
  */
-const sendProjectDigest = async (projectId, projectData, prSettings) => {
+const sendProjectDigest = async (projectId, projectData, prSettings, resendApiKeyValue) => {
   const db = admin.firestore();
   const results = { sent: 0, failed: 0, skipped: 0 };
 
@@ -2977,20 +2980,20 @@ const sendProjectDigest = async (projectId, projectData, prSettings) => {
         ...digestData
       });
 
+      // Initialize Resend
+      const resend = new Resend(resendApiKeyValue);
+
       // Prepare email
-      const msg = {
-        to: stakeholder.email,
+      const emailData = {
         from: prSettings.fromEmail || 'info@qualitastech.com',
+        to: stakeholder.email,
         subject: `[${projectData.projectName}] - Weekly BOM Status Update (${weekOf})`,
         html: htmlContent,
-        text: stripHtml(htmlContent),
-        trackingSettings: {
-          clickTracking: { enable: false, enableText: false }
-        }
+        text: stripHtml(htmlContent)
       };
 
       // Send email
-      await sgMail.send(msg);
+      await resend.emails.send(emailData);
 
       // Update lastNotificationSentAt
       await stakeholderDoc.ref.update({
@@ -3024,15 +3027,15 @@ const sendProjectDigest = async (projectId, projectData, prSettings) => {
         stakeholderEmail: stakeholder.email,
         errorMessage: error.message,
         errorCode: error.code,
-        sendGridResponse: error.response?.body,
+        resendResponse: error.message,
         stack: error.stack
       });
 
       // Track specific error types for reporting
-      if (error.code === 401) {
-        results.authError = 'SendGrid API key invalid or expired';
-      } else if (error.code === 403) {
-        results.authError = 'Sender email not verified in SendGrid';
+      if (error.code === 401 || error.message?.includes('Unauthorized') || error.message?.includes('Invalid API key')) {
+        results.authError = 'Resend API key invalid or expired';
+      } else if (error.code === 403 || error.message?.includes('Forbidden') || error.message?.includes('Domain not verified')) {
+        results.authError = 'Sender email not verified in Resend';
       }
 
       results.failed++;
@@ -3051,7 +3054,7 @@ exports.sendWeeklyBOMDigest = onSchedule(
   {
     schedule: 'every monday 09:00',
     timeZone: 'Asia/Kolkata',
-    secrets: [sendgridApiKey]
+    secrets: [resendApiKey]
   },
   async (event) => {
     logger.info('Starting weekly BOM digest job');
@@ -3059,8 +3062,8 @@ exports.sendWeeklyBOMDigest = onSchedule(
     const db = admin.firestore();
 
     try {
-      // Configure SendGrid
-      sgMail.setApiKey(sendgridApiKey.value());
+      // Get Resend API key for passing to sendProjectDigest
+      const resendApiKeyValue = getResendApiKey();
 
       // Get PR settings for email config
       const prSettingsDoc = await db.collection('settings').doc('purchaseRequest').get();
@@ -3084,7 +3087,7 @@ exports.sendWeeklyBOMDigest = onSchedule(
         const projectId = projectDoc.id;
 
         try {
-          const projectResults = await sendProjectDigest(projectId, projectData, prSettings);
+          const projectResults = await sendProjectDigest(projectId, projectData, prSettings, resendApiKeyValue);
           results.projectsProcessed++;
           results.totalSent += projectResults.sent;
           results.totalFailed += projectResults.failed;
@@ -3111,7 +3114,7 @@ exports.sendWeeklyBOMDigest = onSchedule(
  * Called from the UI "Send Update Now" button
  */
 exports.sendBOMDigestNow = onCall(
-  { secrets: [sendgridApiKey] },
+  { secrets: [resendApiKey] },
   async (request) => {
     const { auth, data } = request;
 
@@ -3129,8 +3132,8 @@ exports.sendBOMDigestNow = onCall(
     const db = admin.firestore();
 
     try {
-      // Configure SendGrid
-      sgMail.setApiKey(sendgridApiKey.value());
+      // Get Resend API key for passing to sendProjectDigest
+      const resendApiKeyValue = getResendApiKey();
 
       // Get project data
       const projectDoc = await db.collection('projects').doc(projectId).get();
@@ -3144,7 +3147,7 @@ exports.sendBOMDigestNow = onCall(
       const prSettings = prSettingsDoc.exists ? prSettingsDoc.data() : {};
 
       // Send digest
-      const results = await sendProjectDigest(projectId, projectData, prSettings);
+      const results = await sendProjectDigest(projectId, projectData, prSettings, resendApiKeyValue);
 
       logger.info('Manual BOM digest completed', { projectId, results });
 
@@ -3182,8 +3185,8 @@ exports.sendBOMDigestNow = onCall(
 
       // Provide user-friendly error messages
       let userMessage = 'Failed to send digest';
-      if (error.code === 401 || error.message?.includes('Unauthorized')) {
-        userMessage = 'Email service authentication failed. The SendGrid API key may be invalid or expired.';
+      if (error.code === 401 || error.message?.includes('Unauthorized') || error.message?.includes('Invalid API key')) {
+        userMessage = 'Email service authentication failed. The Resend API key may be invalid or expired.';
       } else if (error.message?.includes('Project not found')) {
         userMessage = 'Project not found. Please refresh and try again.';
       } else if (error.message?.includes('No enabled stakeholders')) {
@@ -3420,7 +3423,7 @@ const detectBOMChanges = (beforeData, afterData) => {
 exports.onBOMUpdate = onDocumentWritten(
   {
     document: 'projects/{projectId}/bom/data',
-    secrets: [sendgridApiKey]
+    secrets: [resendApiKey]
   },
   async (event) => {
     const projectId = event.params.projectId;
@@ -3477,8 +3480,8 @@ exports.onBOMUpdate = onDocumentWritten(
       const prSettingsDoc = await db.collection('settings').doc('purchaseRequest').get();
       const prSettings = prSettingsDoc.exists ? prSettingsDoc.data() : {};
 
-      // Configure SendGrid
-      sgMail.setApiKey(sendgridApiKey.value());
+      // Initialize Resend
+      const resend = new Resend(getResendApiKey());
 
       const companyName = prSettings.companyName || 'Qualitas Technologies Pvt Ltd';
       const fromEmail = prSettings.fromEmail || 'info@qualitastech.com';
@@ -3517,18 +3520,15 @@ exports.onBOMUpdate = onDocumentWritten(
         const stakeholder = stakeholderDoc.data();
 
         try {
-          const msg = {
-            to: stakeholder.email,
+          const emailData = {
             from: fromEmail,
+            to: stakeholder.email,
             subject: `[${projectData.projectName}] BOM ${changeTypeSummary} - ${changes.length} change(s)`,
             html: htmlContent,
-            text: stripHtml(htmlContent),
-            trackingSettings: {
-              clickTracking: { enable: false, enableText: false }
-            }
+            text: stripHtml(htmlContent)
           };
 
-          await sgMail.send(msg);
+          await resend.emails.send(emailData);
           sentCount++;
 
           logger.info('BOM update notification sent', {
@@ -4227,7 +4227,7 @@ exports.generatePOPDF = onCall(async (request) => {
  * Generates PDF and sends to vendor with the PO attached
  */
 exports.sendPurchaseOrder = onCall(
-  { secrets: [sendgridApiKey] },
+  { secrets: [resendApiKey] },
   async (request) => {
     const { purchaseOrder, companySettings, companyLogo, companyLogoPath, recipientEmail, ccEmails } = request.data;
 
@@ -4254,15 +4254,15 @@ exports.sendPurchaseOrder = onCall(
       const file = bucket.file(pdfResult.storagePath);
       const [pdfBuffer] = await file.download();
 
-      // Setup SendGrid
-      sgMail.setApiKey(sendgridApiKey.value());
+      // Initialize Resend
+      const resend = new Resend(getResendApiKey());
 
       // Build email
       const poNum = purchaseOrder.poNumber || 'DRAFT';
-      const msg = {
+      const emailData = {
+        from: 'info@qualitastech.com', // Must be verified in Resend
         to: recipientEmail,
         cc: ccEmails || [],
-        from: 'info@qualitastech.com', // Must be verified in SendGrid
         subject: `Purchase Order ${poNum} - ${companySettings.companyName || 'Company'}`,
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -4303,13 +4303,12 @@ exports.sendPurchaseOrder = onCall(
           {
             content: pdfBuffer.toString('base64'),
             filename: `${poNum}.pdf`,
-            type: 'application/pdf',
-            disposition: 'attachment'
+            type: 'application/pdf'
           }
         ]
       };
 
-      await sgMail.send(msg);
+      await resend.emails.send(emailData);
 
       // Update PO status to 'sent' in Firestore
       const db = admin.firestore();
@@ -4365,14 +4364,14 @@ exports.sendPurchaseOrder = onCall(
       let userMessage = 'Failed to send Purchase Order';
       let troubleshooting = '';
 
-      if (error.code === 401 || error.message?.includes('Unauthorized')) {
+      if (error.code === 401 || error.message?.includes('Unauthorized') || error.message?.includes('Invalid API key')) {
         errorCode = 'unauthenticated';
         userMessage = 'Email service authentication failed';
-        troubleshooting = 'The SendGrid API key is invalid or expired. Please contact your administrator.';
-      } else if (error.code === 403 || error.message?.includes('Forbidden')) {
+        troubleshooting = 'The Resend API key is invalid or expired. Please contact your administrator.';
+      } else if (error.code === 403 || error.message?.includes('Forbidden') || error.message?.includes('Domain not verified')) {
         errorCode = 'permission-denied';
         userMessage = 'Email service access denied';
-        troubleshooting = 'The sender email may not be verified in SendGrid.';
+        troubleshooting = 'The sender email may not be verified in Resend.';
       } else if (error.code === 400) {
         errorCode = 'invalid-argument';
         userMessage = 'Invalid email request';
@@ -4384,9 +4383,8 @@ exports.sendPurchaseOrder = onCall(
       } else if (error.message?.includes('PDF')) {
         userMessage = 'Failed to generate PO PDF';
         troubleshooting = error.message;
-      } else if (error.response?.body?.errors) {
-        const sgErrors = error.response.body.errors.map(e => e.message).join('; ');
-        troubleshooting = sgErrors;
+      } else {
+        troubleshooting = error.message;
       }
 
       throw new functions.https.HttpsError(
