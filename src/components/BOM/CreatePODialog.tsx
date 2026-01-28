@@ -233,6 +233,10 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
   const [showTerms, setShowTerms] = useState(false);
   const [vendorQuoteReference, setVendorQuoteReference] = useState('');
 
+  // Ship To address (different from company address)
+  const [useCustomShipTo, setUseCustomShipTo] = useState(false);
+  const [shipToAddress, setShipToAddress] = useState('');
+
   const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingSettings, setLoadingSettings] = useState(true);
@@ -412,6 +416,13 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
       setError('Delivery terms are required');
       return;
     }
+    // Validate custom Ship To if enabled
+    if (useCustomShipTo) {
+      if (!shipToAddress.trim()) {
+        setError('Ship To address is required when using custom shipping address');
+        return;
+      }
+    }
 
     const selectedItems = selectableItems.filter((item) => item.isSelected);
     if (selectedItems.length === 0) {
@@ -445,6 +456,15 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
         vendorEmail: selectedVendor.email,
         vendorPhone: selectedVendor.phone,
 
+        // Ship To address (only include if using custom address)
+        // GSTIN and State always from company settings (not editable)
+        ...(useCustomShipTo && {
+          shipToAddress: shipToAddress,
+          shipToGstin: companySettings?.gstin,
+          shipToStateCode: companySettings?.stateCode,
+          shipToStateName: companySettings?.stateName,
+        }),
+
         items: calculatedTotals.items,
 
         paymentTerms,
@@ -474,6 +494,8 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
       setDeliveryTerms(companySettings?.defaultDeliveryTerms || '');
       setExpectedDeliveryDate('');
       setVendorQuoteReference('');
+      setUseCustomShipTo(false);
+      setShipToAddress('');
 
       onOpenChange(false);
     } catch (err: any) {
@@ -569,6 +591,57 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
                 )}
               </CardContent>
             </Card>
+
+            {/* Ship To Address */}
+            {selectedVendor && (
+              <Card>
+                <CardHeader className="py-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <MapPin className="h-4 w-4" />
+                        Ship To Address
+                      </CardTitle>
+                      <CardDescription className="text-xs">
+                        Where should the vendor deliver the items?
+                      </CardDescription>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={useCustomShipTo}
+                        onCheckedChange={setUseCustomShipTo}
+                        id="customShipTo"
+                      />
+                      <Label htmlFor="customShipTo" className="text-sm">
+                        Custom Address
+                      </Label>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  {!useCustomShipTo ? (
+                    <div className="p-3 bg-muted rounded-lg text-sm">
+                      <div className="font-medium mb-1">{companySettings?.companyName}</div>
+                      <div className="text-muted-foreground">{companySettings?.companyAddress}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        GSTIN: {companySettings?.gstin} | {companySettings?.stateName}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <Label htmlFor="shipToAddress">Address <span className="text-red-500">*</span></Label>
+                      <Textarea
+                        id="shipToAddress"
+                        value={shipToAddress}
+                        onChange={(e) => setShipToAddress(e.target.value)}
+                        placeholder="Enter shipping address"
+                        className="min-h-[60px]"
+                      />
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
 
             {/* Items Selection */}
             {selectedVendor && (

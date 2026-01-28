@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Loader2, Save } from 'lucide-react';
+import { Loader2, Save, MapPin } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -20,6 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { Separator } from '@/components/ui/separator';
 import { PurchaseOrder, POItem, calculatePOTotals } from '@/types/purchaseOrder';
 import { updatePurchaseOrder } from '@/utils/poFirestore';
 import { toast } from '@/components/ui/use-toast';
@@ -46,18 +47,32 @@ const EditPODialog: React.FC<EditPODialogProps> = ({
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState('');
   const [items, setItems] = useState<POItem[]>([]);
 
+  // Ship To address
+  const [shipToAddress, setShipToAddress] = useState('');
+
+  // Helper function to safely format date for input
+  const formatDateForInput = (date: Date | string | undefined | null): string => {
+    if (!date) return '';
+    try {
+      const dateObj = date instanceof Date ? date : new Date(date);
+      if (isNaN(dateObj.getTime())) return '';
+      return dateObj.toISOString().split('T')[0];
+    } catch {
+      return '';
+    }
+  };
+
   // Initialize form when PO changes
   useEffect(() => {
     if (purchaseOrder) {
       setPaymentTerms(purchaseOrder.paymentTerms || '');
       setDeliveryTerms(purchaseOrder.deliveryTerms || '');
       setVendorQuoteReference(purchaseOrder.vendorQuoteReference || '');
-      setExpectedDeliveryDate(
-        purchaseOrder.expectedDeliveryDate
-          ? new Date(purchaseOrder.expectedDeliveryDate).toISOString().split('T')[0]
-          : ''
-      );
+      setExpectedDeliveryDate(formatDateForInput(purchaseOrder.expectedDeliveryDate));
       setItems([...purchaseOrder.items]);
+
+      // Initialize Ship To address
+      setShipToAddress(purchaseOrder.shipToAddress || '');
     }
   }, [purchaseOrder]);
 
@@ -101,10 +116,12 @@ const EditPODialog: React.FC<EditPODialogProps> = ({
         deliveryTerms,
         vendorQuoteReference,
         expectedDeliveryDate: expectedDeliveryDate ? new Date(expectedDeliveryDate) : undefined,
+        // Ship To address only - GSTIN/State come from company settings when PO is generated
+        shipToAddress,
       });
 
       // Note: Item updates would need a separate function if we want to update items
-      // For now, we only update terms and dates
+      // For now, we update terms, dates, and Ship To address
 
       toast({
         title: 'PO Updated',
@@ -184,6 +201,26 @@ const EditPODialog: React.FC<EditPODialogProps> = ({
               />
             </div>
           </div>
+
+          <Separator />
+
+          {/* Ship To Address Section */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <MapPin className="h-4 w-4" />
+              <Label className="text-base font-medium">Ship To Address</Label>
+            </div>
+
+            <Textarea
+              id="shipToAddress"
+              value={shipToAddress}
+              onChange={(e) => setShipToAddress(e.target.value)}
+              placeholder="Enter shipping address"
+              rows={2}
+            />
+          </div>
+
+          <Separator />
 
           {/* Items Table (Read-only for now, can be extended) */}
           <div>

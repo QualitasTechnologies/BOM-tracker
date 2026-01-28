@@ -111,6 +111,12 @@ export interface CreatePOInput {
   vendorEmail?: string;
   vendorPhone?: string;
 
+  // Ship To (optional - defaults to company address if not provided)
+  shipToAddress?: string;
+  shipToGstin?: string;
+  shipToStateCode?: string;
+  shipToStateName?: string;
+
   // Items
   items: Omit<POItem, 'slNo'>[];
 
@@ -192,11 +198,11 @@ export const createPurchaseOrder = async (input: CreatePOInput): Promise<string>
     invoiceToStateCode: companySettings.stateCode,
     invoiceToStateName: companySettings.stateName,
 
-    // Ship To (same as invoice for now - can be customized later)
-    shipToAddress: companySettings.companyAddress,
-    shipToGstin: companySettings.gstin,
-    shipToStateCode: companySettings.stateCode,
-    shipToStateName: companySettings.stateName,
+    // Ship To (use provided values or default to company address)
+    shipToAddress: input.shipToAddress || companySettings.companyAddress,
+    shipToGstin: input.shipToGstin || companySettings.gstin,
+    shipToStateCode: input.shipToStateCode || companySettings.stateCode,
+    shipToStateName: input.shipToStateName || companySettings.stateName,
 
     // Items
     items: itemsWithSlNo,
@@ -346,6 +352,12 @@ export interface UpdatePOInput {
   destination?: string;
   termsAndConditions?: string;
   includeAnnexure?: boolean;
+
+  // Ship To address (can be edited while in draft)
+  shipToAddress?: string;
+  shipToGstin?: string;
+  shipToStateCode?: string;
+  shipToStateName?: string;
 
   // Dates
   expectedDeliveryDate?: Date;
