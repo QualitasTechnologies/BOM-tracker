@@ -4109,7 +4109,7 @@ exports.generatePOPDF = onCall(async (request) => {
     y += 25;
 
     // ========== TERMS ==========
-    if (purchaseOrder.paymentTerms || purchaseOrder.deliveryTerms) {
+    if (purchaseOrder.paymentTerms || purchaseOrder.deliveryTerms || purchaseOrder.vendorQuoteReference) {
       doc.rect(startX, y, pageWidth, 20)
          .fillAndStroke(headerBgColor, borderColor);
       doc.font('Helvetica-Bold')
@@ -4118,42 +4118,107 @@ exports.generatePOPDF = onCall(async (request) => {
          .text('Terms & Conditions', startX + 5, y + 5);
       y += 20;
 
-      doc.rect(startX, y, pageWidth, 50)
-         .stroke(borderColor);
+      // Calculate dynamic height for terms box
+      const termsStartY = y;
+      let termsContentY = y + 5;
+      const labelWidth = 85;
+      const contentWidth = pageWidth - labelWidth - 15;
 
       if (purchaseOrder.paymentTerms) {
         doc.font('Helvetica-Bold')
            .fontSize(8)
            .fillColor('#4b5563')
-           .text('Payment Terms:', startX + 5, y + 4);
+           .text('Payment Terms:', startX + 5, termsContentY);
         doc.font('Helvetica')
-           .text(purchaseOrder.paymentTerms, startX + 80, y + 4, { width: pageWidth - 90 });
+           .text(purchaseOrder.paymentTerms, startX + labelWidth, termsContentY, { width: contentWidth });
+        // Calculate height of the text
+        const paymentTermsHeight = doc.heightOfString(purchaseOrder.paymentTerms, { width: contentWidth });
+        termsContentY += Math.max(paymentTermsHeight, 12) + 5;
       }
 
       if (purchaseOrder.deliveryTerms) {
         doc.font('Helvetica-Bold')
-           .text('Delivery Terms:', startX + 5, y + 18);
+           .fontSize(8)
+           .fillColor('#4b5563')
+           .text('Delivery Terms:', startX + 5, termsContentY);
         doc.font('Helvetica')
-           .text(purchaseOrder.deliveryTerms, startX + 80, y + 18, { width: pageWidth - 90 });
+           .text(purchaseOrder.deliveryTerms, startX + labelWidth, termsContentY, { width: contentWidth });
+        const deliveryTermsHeight = doc.heightOfString(purchaseOrder.deliveryTerms, { width: contentWidth });
+        termsContentY += Math.max(deliveryTermsHeight, 12) + 5;
       }
 
-      y += 55;
+      if (purchaseOrder.vendorQuoteReference) {
+        doc.font('Helvetica-Bold')
+           .fontSize(8)
+           .fillColor('#4b5563')
+           .text('Quote Ref.', startX + 5, termsContentY);
+        doc.font('Helvetica')
+           .text(purchaseOrder.vendorQuoteReference, startX + labelWidth, termsContentY, { width: contentWidth });
+        termsContentY += 15;
+      }
+
+      // Draw the box around terms content
+      const termsBoxHeight = termsContentY - termsStartY + 5;
+      doc.rect(startX, termsStartY, pageWidth, termsBoxHeight)
+         .stroke(borderColor);
+
+      y = termsContentY + 10;
     }
 
     // ========== SIGNATURE ==========
-    // Check for page break
-    if (y > doc.page.height - 100) {
+    // Check for page break - need more space for signature section
+    if (y > doc.page.height - 150) {
       doc.addPage();
       y = 40;
     }
 
-    y += 30;
+    y += 20;
+
+    // Company name
+    doc.font('Helvetica-Bold')
+       .fontSize(9)
+       .fillColor('#1f2937')
+       .text(`For ${companySettings.companyName || 'Company'}`, startX + pageWidth - 180, y, { width: 180, align: 'right' });
+    y += 15;
+
+    // Try to add signature and seal images
+    const signatureX = startX + pageWidth - 170;
+    const sealX = startX + pageWidth - 80;
+    const imageY = y;
+
+    try {
+      const path = require('path');
+      const fs = require('fs');
+      const assetsDir = path.join(__dirname, 'assets');
+
+      // Add signature image
+      const signaturePath = path.join(assetsDir, 'signature.jpg');
+      if (fs.existsSync(signaturePath)) {
+        doc.image(signaturePath, signatureX, imageY, {
+          width: 80,
+          height: 40
+        });
+      }
+
+      // Add seal image
+      const sealPath = path.join(assetsDir, 'seal.png');
+      if (fs.existsSync(sealPath)) {
+        doc.image(sealPath, sealX, imageY, {
+          width: 55,
+          height: 55
+        });
+      }
+    } catch (imgError) {
+      logger.warn('Could not load signature/seal images', { error: imgError.message });
+    }
+
+    y += 60;
+
+    // Authorized Signatory text
     doc.font('Helvetica')
        .fontSize(9)
        .fillColor('#4b5563')
-       .text(`For ${companySettings.companyName || 'Company'}`, startX + pageWidth - 150, y, { width: 150, align: 'right' });
-    y += 40;
-    doc.text('Authorized Signatory', startX + pageWidth - 150, y, { width: 150, align: 'right' });
+       .text('Authorized Signatory', startX + pageWidth - 180, y, { width: 180, align: 'right' });
 
     // Finalize PDF
     doc.end();

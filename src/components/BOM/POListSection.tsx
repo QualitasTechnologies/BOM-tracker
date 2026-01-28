@@ -58,6 +58,7 @@ import { getStakeholders } from '@/utils/stakeholderFirestore';
 import type { Stakeholder } from '@/types/stakeholder';
 import { auth } from '@/firebase';
 import { useAuth } from '@/hooks/useAuth';
+import EditPODialog from './EditPODialog';
 
 // Helper to convert image URL to base64
 const fetchImageAsBase64 = async (url: string): Promise<string | null> => {
@@ -103,8 +104,15 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
   const [sendingEmail, setSendingEmail] = useState(false);
   const [stakeholders, setStakeholders] = useState<Stakeholder[]>([]);
   const [loadingStakeholders, setLoadingStakeholders] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [poToEdit, setPOToEdit] = useState<PurchaseOrder | null>(null);
   const { toast } = useToast();
   const { isAdmin } = useAuth();
+
+  const handleEditClick = (po: PurchaseOrder) => {
+    setPOToEdit(po);
+    setEditDialogOpen(true);
+  };
 
   // Subscribe to purchase orders
   useEffect(() => {
@@ -488,6 +496,13 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                       Download PDF
                     </DropdownMenuItem>
 
+                    {po.status === 'draft' && (
+                      <DropdownMenuItem onClick={() => handleEditClick(po)}>
+                        <Edit className="mr-2 h-4 w-4" />
+                        Edit PO
+                      </DropdownMenuItem>
+                    )}
+
                     {po.status === 'draft' && isAdmin && (
                       <DropdownMenuItem onClick={() => handleSendClick(po, 'email')}>
                         <Mail className="mr-2 h-4 w-4" />
@@ -827,6 +842,17 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Edit PO Dialog */}
+      <EditPODialog
+        open={editDialogOpen}
+        onOpenChange={setEditDialogOpen}
+        purchaseOrder={poToEdit}
+        projectId={projectId}
+        onSaved={() => {
+          // POs will auto-refresh via subscription
+        }}
+      />
     </div>
   );
 };
