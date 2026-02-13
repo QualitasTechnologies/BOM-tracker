@@ -446,8 +446,8 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                   </div>
                 )}
               </div>
-              {/* Vendor Selection for components - use globalVendors with search */}
-              {editForm.itemType === 'component' && globalVendors.length > 0 && (
+              {/* Vendor Selection - available for both components and services */}
+              {globalVendors.length > 0 && (
                 <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                   <span className="text-xs text-gray-500">Vendor:</span>
                   <SearchableVendorSelect
@@ -567,7 +567,7 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                 <span className="text-xs text-gray-500 bg-gray-100 px-1 rounded whitespace-nowrap">
                   {itemType === 'service' ? 'Duration:' : 'Qty:'} {part.quantity}{itemType === 'service' && ' days'}
                 </span>
-                {itemType === 'component' && part.finalizedVendor && (
+                {part.finalizedVendor && (
                   <span className="truncate min-w-0">Vendor: {part.finalizedVendor.name}</span>
                 )}
                 {/* Inward Tracking Status */}

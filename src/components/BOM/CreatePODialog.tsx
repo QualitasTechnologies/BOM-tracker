@@ -70,6 +70,7 @@ interface CreatePODialogProps {
 
 interface SelectablePOItem {
   bomItemId: string;
+  itemType: BOMItem['itemType'];
   name: string;
   description: string;
   make?: string;
@@ -287,7 +288,7 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
 
     categories.forEach((category) => {
       category.items?.forEach((item) => {
-        if (item.itemType === 'component' && item.finalizedVendor?.name) {
+        if (item.finalizedVendor?.name) {
           const matchingVendor = vendors.find(
             (v) =>
               v.company.toLowerCase() === item.finalizedVendor?.name.toLowerCase()
@@ -313,7 +314,6 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
 
     categories.forEach((category) => {
       category.items?.forEach((item) => {
-        if (item.itemType !== 'component') return;
         if (!item.finalizedVendor?.name) return;
 
         // Match vendor by name
@@ -324,11 +324,12 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
         if (vendorMatches) {
           items.push({
             bomItemId: item.id,
+            itemType: item.itemType,
             name: item.name,
             description: item.description,
             make: item.make,
             sku: item.sku,
-            uom: 'nos', // Default UOM
+            uom: item.itemType === 'service' ? 'days' : 'nos',
             quantity: item.quantity,
             rate: item.price || 0,
             category: category.name,
@@ -720,6 +721,11 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
                               {item.name}
                             </div>
                             <div className="text-xs text-muted-foreground flex items-center gap-1">
+                              {item.itemType === 'service' && (
+                                <span className="bg-indigo-100 text-indigo-700 px-1 rounded">
+                                  Service
+                                </span>
+                              )}
                               {item.make && (
                                 <span className="bg-blue-100 text-blue-700 px-1 rounded">
                                   {item.make}
@@ -731,12 +737,14 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
                           <div className="col-span-2">
                             <Input
                               type="number"
-                              min="1"
+                              min={item.itemType === 'service' ? '0.5' : '1'}
+                              step={item.itemType === 'service' ? '0.5' : '1'}
                               value={item.quantity}
                               onChange={(e) =>
                                 handleQuantityChange(
                                   item.bomItemId,
-                                  parseInt(e.target.value) || 1
+                                  parseFloat(e.target.value) ||
+                                    (item.itemType === 'service' ? 0.5 : 1)
                                 )
                               }
                               disabled={!item.isSelected}

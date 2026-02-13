@@ -663,30 +663,38 @@ const Settings = () => {
       const result = await verifyGSTIN(gstNo);
 
       if (result.success && result.data) {
-        const newName = result.data.legalName || result.data.tradeName;
+        const tradeName = result.data.tradeName?.trim() || '';
+        const legalName = result.data.legalName?.trim() || '';
+        const companyNameFromGST = tradeName || legalName;
         const newAddress = result.data.formattedAddress;
 
-        // Show confirmation before updating
-        const confirmMessage = `GST Verified Successfully!\n\nUpdate vendor details?\n\nName: ${newName}\nAddress: ${newAddress}\nState: ${result.data.stateName} (${result.data.stateCode})\nStatus: ${result.data.status}`;
+        // Show both GST name fields clearly so users can confirm mapping.
+        const confirmMessage = `GST Verified Successfully!\n\nUpdate vendor details?\n\nTrade Name: ${tradeName || '(not provided)'}\nLegal Name: ${legalName || '(not provided)'}\nCompany (will be set): ${companyNameFromGST || '(unchanged)'}\nAddress: ${newAddress || '(not provided)'}\nState: ${result.data.stateName} (${result.data.stateCode})\nStatus: ${result.data.status}`;
 
         if (window.confirm(confirmMessage)) {
-          // Auto-fill vendor details from GST data (always use official GST names)
+          // Map AppyFlow data into vendor fields:
+          // - company: trade name first (business-facing), fallback to legal name
+          // - contactPerson: legal name only when empty and different from company
           setVendorForm(prev => ({
             ...prev,
-            company: newName || prev.company,
+            company: companyNameFromGST || prev.company,
+            contactPerson: !prev.contactPerson && legalName && legalName !== companyNameFromGST
+              ? legalName
+              : prev.contactPerson,
             address: newAddress || prev.address,
+            gstNo: result.data!.gstin || prev.gstNo,
             stateCode: result.data!.stateCode,
             stateName: result.data!.stateName,
           }));
 
           toast({
             title: 'Vendor Details Updated',
-            description: `Updated from GST: ${newName}`,
+            description: `Updated from GST: ${companyNameFromGST || 'Name unavailable'}`,
           });
         } else {
           toast({
             title: 'GSTIN Verified',
-            description: `Business: ${newName} (${result.data.status}) - Details not updated`,
+            description: `Business: ${companyNameFromGST || 'Name unavailable'} (${result.data.status}) - Details not updated`,
           });
         }
       } else {
