@@ -124,14 +124,12 @@ const InwardTracking = ({ categories, documents, onItemClick, onUpdatePONumber, 
     }
   };
 
-  // Get all component items (not services)
+  // Get all BOM items (components + services)
   const allItems = useMemo(() => {
     const items: BOMItem[] = [];
     categories.forEach(cat => {
       cat.items.forEach(item => {
-        if (item.itemType !== 'service') {
-          items.push(item);
-        }
+        items.push(item);
       });
     });
     return items;

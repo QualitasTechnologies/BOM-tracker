@@ -51,6 +51,7 @@ const ReceiveItemDialog = ({
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [photoUrl, setPhotoUrl] = useState<string>('');
   const [photoPreview, setPhotoPreview] = useState<string>('');
+  const [uploadedInvoiceDoc, setUploadedInvoiceDoc] = useState<ProjectDocument | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
@@ -119,12 +120,13 @@ const ReceiveItemDialog = ({
       }
 
       setLinkedInvoiceDocumentId(existingInvoiceId);
+      setUploadedInvoiceDoc(null);
 
       // Reset photo state
       setPhotoUrl('');
       setPhotoPreview('');
     }
-  }, [open, item, availableVendorQuotes]);
+  }, [open, item]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || !e.target.files[0] || !projectId || !item) return;
@@ -140,6 +142,7 @@ const ReceiveItemDialog = ({
       const newDoc = await uploadProjectDocument(file, projectId, 'vendor-invoice', user.uid);
 
       onDocumentUploaded?.(newDoc);
+      setUploadedInvoiceDoc(newDoc);
       setLinkedInvoiceDocumentId(newDoc.id);
 
       toast({
@@ -283,6 +286,11 @@ const ReceiveItemDialog = ({
   };
 
   const deliveryStatus = getDeliveryStatus();
+  const invoiceDocuments = uploadedInvoiceDoc &&
+    !availableVendorQuotes.some((doc) => doc.id === uploadedInvoiceDoc.id)
+    ? [uploadedInvoiceDoc, ...availableVendorQuotes]
+    : availableVendorQuotes;
+  const selectedInvoiceDoc = invoiceDocuments.find((doc) => doc.id === linkedInvoiceDocumentId);
   const hasInvoice = linkedInvoiceDocumentId && linkedInvoiceDocumentId !== '__NONE__';
   const hasPhoto = !!photoUrl;
   const canSubmit = actualArrival && hasInvoice && hasPhoto;
@@ -362,10 +370,10 @@ const ReceiveItemDialog = ({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__NONE__" disabled>Select a document</SelectItem>
-                  {availableVendorQuotes.length === 0 && (
+                  {invoiceDocuments.length === 0 && (
                     <div className="px-2 py-1.5 text-sm text-gray-500">No invoices uploaded yet</div>
                   )}
-                  {availableVendorQuotes.map((doc) => (
+                  {invoiceDocuments.map((doc) => (
                     <SelectItem key={doc.id} value={doc.id}>
                       <span className="flex items-center gap-2">
                         <FileText className="h-3 w-3" />
@@ -389,10 +397,16 @@ const ReceiveItemDialog = ({
                 className="h-9 px-3"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
+                title={hasInvoice ? 'Upload another file to replace selected invoice' : 'Upload invoice'}
               >
                 {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               </Button>
             </div>
+            {hasInvoice && selectedInvoiceDoc && (
+              <div className="rounded border border-green-200 bg-green-50 px-2 py-1.5 text-xs text-green-800">
+                Selected invoice: <span className="font-medium">{selectedInvoiceDoc.name}</span>
+              </div>
+            )}
             {!hasInvoice && (
               <p className="text-xs text-red-500">Vendor invoice is required to complete inwarding</p>
             )}

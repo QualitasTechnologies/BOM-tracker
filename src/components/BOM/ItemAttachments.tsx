@@ -21,18 +21,26 @@ const ItemAttachments = ({
   const iconSize = size === 'sm' ? 14 : 16;
   const iconClass = size === 'sm' ? 'h-3.5 w-3.5' : 'h-4 w-4';
 
-  // Find linked documents
+  // Find linked documents from either:
+  // 1) explicit item linkage fields, or
+  // 2) document.linkedBOMItems back-links.
   const quoteDoc = item.linkedQuoteDocumentId
-    ? documents.find(d => d.id === item.linkedQuoteDocumentId)
-    : undefined;
+    ? documents.find((d) => d.id === item.linkedQuoteDocumentId)
+    : documents.find(
+        (d) => d.type === 'vendor-quote' && d.linkedBOMItems?.includes(item.id)
+      );
 
   const poDoc = item.linkedPODocumentId
-    ? documents.find(d => d.id === item.linkedPODocumentId)
-    : undefined;
+    ? documents.find((d) => d.id === item.linkedPODocumentId)
+    : documents.find(
+        (d) => d.type === 'vendor-po' && d.linkedBOMItems?.includes(item.id)
+      );
 
   const invoiceDoc = item.linkedInvoiceDocumentId
-    ? documents.find(d => d.id === item.linkedInvoiceDocumentId)
-    : undefined;
+    ? documents.find((d) => d.id === item.linkedInvoiceDocumentId)
+    : documents.find(
+        (d) => d.type === 'vendor-invoice' && d.linkedBOMItems?.includes(item.id)
+      );
 
   const hasPhoto = !!item.receivedPhotoUrl;
 

@@ -34,7 +34,6 @@ import {
   updateBOMData,
   updateBOMItem,
   deleteBOMItem,
-  updateMultipleBOMItemsStatus,
 } from '@/utils/projectFirestore';
 import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
 import { getBrands } from '@/utils/brandFirestore';
@@ -829,6 +828,11 @@ const BOM = () => {
 
                         // If changing to "ordered", refresh documents and show the order dialog
                         if (newStatus === 'ordered' && targetItem) {
+                          // Services don't use the PO order dialog.
+                          if (targetItem.itemType === 'service') {
+                            updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                            return;
+                          }
                           // Refresh documents to get latest linkedBOMItems data
                           getProjectDocuments(projectId).then(docs => {
                             setProjectDocuments(docs);
@@ -918,6 +922,11 @@ const BOM = () => {
 
                                       // If changing to "ordered", show the order dialog
                                       if (newStatus === 'ordered' && targetItem) {
+                                        // Services don't use the PO order dialog.
+                                        if (targetItem.itemType === 'service') {
+                                          updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                                          return;
+                                        }
                                         getProjectDocuments(projectId).then(docs => {
                                           setProjectDocuments(docs);
                                           setSelectedItemForOrder(targetItem);
@@ -1025,10 +1034,19 @@ const BOM = () => {
                       content: (
                         <POListSection
                           projectId={projectId}
-                          onPOSent={async (poId, bomItemIds) => {
-                            // Update all BOM items to "Ordered" status in a single write
-                            // Uses helper to prevent race condition when updating multiple items
-                            await updateMultipleBOMItemsStatus(projectId, categories, bomItemIds, 'ordered');
+                          onPOSent={async (poId, bomItemIds, poNumber) => {
+                            // Update linked BOM items in one write:
+                            // - mark as ordered
+                            // - persist PO number so Inward Tracking can show it
+                            const updatedCategories = categories.map((category) => ({
+                              ...category,
+                              items: category.items.map((item) =>
+                                bomItemIds.includes(item.id)
+                                  ? { ...item, status: 'ordered' as BOMStatus, poNumber }
+                                  : item
+                              ),
+                            }));
+                            await updateBOMData(projectId, updatedCategories);
                           }}
                         />
                       )

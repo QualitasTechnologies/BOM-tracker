@@ -635,7 +635,7 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
             </>
           ) : (
             <>
-              {itemType === 'component' && (
+              {(
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button

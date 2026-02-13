@@ -85,7 +85,7 @@ const fetchImageAsBase64 = async (url: string): Promise<string | null> => {
 
 interface POListSectionProps {
   projectId: string;
-  onPOSent?: (poId: string, bomItemIds: string[]) => Promise<void>;
+  onPOSent?: (poId: string, bomItemIds: string[], poNumber: string) => Promise<void>;
 }
 
 const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
@@ -278,7 +278,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
           sentToEmail: sendToEmail.trim(),
         },
         onPOSent ? async (bomItemIds) => {
-          await onPOSent(poToSend.id, bomItemIds);
+          await onPOSent(poToSend.id, bomItemIds, poToSend.poNumber);
         } : undefined
       );
 
@@ -396,7 +396,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
       // Also update local status
       if (onPOSent) {
         const bomItemIds = poToSend.items.map(item => item.bomItemId);
-        await onPOSent(poToSend.id, bomItemIds);
+        await onPOSent(poToSend.id, bomItemIds, poToSend.poNumber);
       }
 
       toast({

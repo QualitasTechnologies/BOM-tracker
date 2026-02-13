@@ -62,7 +62,7 @@ export type InwardStatus = 'not-ordered' | 'on-track' | 'arriving-soon' | 'overd
 
 // Helper function to calculate inward status
 export function getInwardStatus(item: BOMItem): InwardStatus {
-  if (item.status === 'not-ordered' || item.itemType === 'service') return 'not-ordered';
+  if (item.status === 'not-ordered') return 'not-ordered';
   if (item.status === 'received') return 'received';
   if (!item.expectedArrival) return 'on-track';
 
