@@ -14,21 +14,30 @@ const generateOptimizedPrompt = (existingMakes: string[], existingCategories: st
   return `You are a BOM (Bill of Materials) extraction expert. Extract items from the provided text.
 
 INSTRUCTIONS:
-1. Extract item names, quantities, and descriptions
+1. Extract item names, quantities, pricing, and descriptions
 2. Look for manufacturer/brand names (makes) - match to existing: ${existingMakes.join(', ') || 'any recognizable brands'}
 3. Assign logical categories: ${existingCategories.join(', ') || 'Vision Systems, Motors & Drives, Sensors, Control Systems, Mechanical, Electrical, Uncategorized'}
 4. Extract part numbers/SKUs when visible
-5. Default unit is "pcs" unless specified
+5. Detect item type:
+   - "component" for physical material/parts
+   - "service" for labor/engineering/manpower activities
+6. For services, map man-days to quantity (supports decimals like 0.5, 2.5)
+7. Extract price:
+   - component => unit price (INR)
+   - service => rate per day (INR/day)
+8. Default unit is "pcs" for components and "days" for services unless explicitly specified
 
 Return JSON with this exact structure:
 {
   "items": [
     {
       "name": "Item Name",
+      "itemType": "component or service",
       "make": "Brand Name or null",
       "description": "Item description", 
       "sku": "Part number or null",
       "quantity": 1,
+      "price": 0,
       "category": "Category Name",
       "unit": "pcs"
     }
@@ -53,10 +62,12 @@ export interface AIAnalysisResponse {
 
 export interface ExtractedBOMItem {
   name: string;
+  itemType?: 'component' | 'service';
   make?: string;
   description: string;
   sku?: string;
   quantity: number;
+  price?: number;
   category: string;
   unit?: string;
   specifications?: Record<string, string>;
@@ -130,7 +141,15 @@ export const analyzeBOMWithKeywords = async (text: string, existingMakes: string
     'Safety': ['guard', 'safety', 'emergency', 'stop', 'light', 'alarm']
   };
 
-  lines.forEach((line, index) => {
+  const parseNumericValue = (input: string): number | undefined => {
+    if (!input) return undefined;
+    const normalized = input.replace(/[,\s]/g, '').replace(/[^\d.]/g, '');
+    if (!normalized) return undefined;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+
+  lines.forEach((line) => {
     const trimmedLine = line.trim();
     
     // Skip empty lines and headers
@@ -142,9 +161,19 @@ export const analyzeBOMWithKeywords = async (text: string, existingMakes: string
       return;
     }
 
+    const serviceKeywords = /(service|engineering|man\s*-?\s*day|manday|manpower|installation|commissioning|consulting|support)/i;
+    const isService = serviceKeywords.test(trimmedLine);
+
     // Try to extract quantity from the line
-    const quantityMatch = trimmedLine.match(/(\d+)/);
-    const quantity = quantityMatch ? parseInt(quantityMatch[1]) : 1;
+    const quantityMatch = isService
+      ? trimmedLine.match(/(?:qty|quantity|man\s*-?\s*days?|mandays?|days?)\s*[:=]?\s*(\d+(?:\.\d+)?)/i)
+      : trimmedLine.match(/(?:qty|quantity)\s*[:=]?\s*(\d+(?:\.\d+)?)/i) || trimmedLine.match(/(\d+(?:\.\d+)?)/);
+    const quantity = quantityMatch ? Number(quantityMatch[1]) : 1;
+
+    // Price extraction (rate/unit price/cost)
+    const priceMatch = trimmedLine.match(/(?:rate|price|unit\s*price|cost|amount)\s*[:=]?\s*(?:₹|rs\.?|inr)?\s*([\d,]+(?:\.\d+)?)/i)
+      || trimmedLine.match(/(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d+)?)/i);
+    const price = priceMatch ? parseNumericValue(priceMatch[1]) : undefined;
 
     // Remove quantity from name and clean up
     let name = trimmedLine.replace(/\d+/g, '').replace(/[-\s]+$/, '').trim();
@@ -194,12 +223,14 @@ export const analyzeBOMWithKeywords = async (text: string, existingMakes: string
       
       items.push({
         name: name,
+        itemType: isService ? 'service' : 'component',
         make: matchedMake,
         description: name,
         sku: skuMatch ? skuMatch[1] : undefined,
         quantity,
+        price,
         category: suggestedCategory,
-        unit: 'pcs'
+        unit: isService ? 'days' : 'pcs'
       });
     }
   });

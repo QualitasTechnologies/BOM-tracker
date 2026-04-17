@@ -26,11 +26,13 @@ interface ImportBOMDialogProps {
 interface EditableBOMItem {
   id: string;
   selected: boolean;
+  itemType: 'component' | 'service';
   name: string;
   make: string;
   sku: string;
   description: string;
   quantity: number;
+  price?: number;
   unit: string;
   category: string;
   isValid: boolean;
@@ -98,7 +100,10 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
     const errors: string[] = [];
 
     if (!item.name?.trim()) errors.push('Name is required');
-    if (!item.quantity || item.quantity <= 0) errors.push('Quantity must be greater than 0');
+    const minQuantity = item.itemType === 'service' ? 0.5 : 1;
+    if (!item.quantity || item.quantity < minQuantity) {
+      errors.push(item.itemType === 'service' ? 'Mandays must be at least 0.5' : 'Quantity must be at least 1');
+    }
     if (!item.unit?.trim()) errors.push('Unit is required');
     if (!item.category?.trim()) {
       errors.push('Category is required');
@@ -183,12 +188,14 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
       const editableItem: Partial<EditableBOMItem> = {
         id: `ai-${Date.now()}-${index}`,
         selected: true,
+        itemType: item.itemType === 'service' ? 'service' : 'component',
         name: item.name || '',
         make: makeName,
         sku: item.sku || '',
         description: item.description || item.name || '',
         quantity: item.quantity || 1,
-        unit: item.unit || 'pcs',
+        price: typeof item.price === 'number' && Number.isFinite(item.price) ? item.price : undefined,
+        unit: item.itemType === 'service' ? (item.unit || 'days') : (item.unit || 'pcs'),
         category: categoryName
       };
 
@@ -262,11 +269,13 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
     const newItem: EditableBOMItem = {
       id: `manual-${Date.now()}`,
       selected: true,
+      itemType: 'component',
       name: '',
       make: 'unspecified',
       sku: '',
       description: '',
       quantity: 1,
+      price: undefined,
       unit: 'pcs',
       category: existingCategories[0] || 'Uncategorized',
       isValid: false,
@@ -294,10 +303,12 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
     try {
       const bomItems: BOMItem[] = selectedItems.map((item, index) => ({
         id: `imported-${Date.now()}-${index}`,
+        itemType: item.itemType,
         name: item.name,
-        make: item.make,
+        ...(item.itemType === 'component' && { make: item.make }),
         description: item.description || item.name,
-        sku: item.sku,
+        ...(item.itemType === 'component' && { sku: item.sku }),
+        ...(item.price !== undefined && { price: item.price }),
         category: item.category,
         quantity: item.quantity,
         vendors: [],
@@ -427,10 +438,12 @@ Example:
                       <TableRow>
                         <TableHead className="w-12">Select</TableHead>
                         <TableHead className="w-48">Name*</TableHead>
+                        <TableHead className="w-32">Type*</TableHead>
                         <TableHead className="w-32">Make</TableHead>
                         <TableHead className="w-32">SKU</TableHead>
                         <TableHead className="w-48">Description</TableHead>
-                        <TableHead className="w-24">Qty*</TableHead>
+                        <TableHead className="w-24">Qty/Days*</TableHead>
+                        <TableHead className="w-24">Price/Rate</TableHead>
                         <TableHead className="w-24">Unit*</TableHead>
                         <TableHead className="w-32">Category*</TableHead>
                         <TableHead className="w-12">Actions</TableHead>
@@ -454,8 +467,30 @@ Example:
                           </TableCell>
                           <TableCell>
                             <Select
+                              value={item.itemType}
+                              onValueChange={(value: 'component' | 'service') =>
+                                updateEditableItem(item.id, {
+                                  itemType: value,
+                                  make: value === 'service' ? 'unspecified' : item.make,
+                                  sku: value === 'service' ? '' : item.sku,
+                                  unit: value === 'service' ? 'days' : (item.unit === 'days' ? 'pcs' : item.unit)
+                                })
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="component">Component</SelectItem>
+                                <SelectItem value="service">Service</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </TableCell>
+                          <TableCell>
+                            <Select
                               value={item.make}
                               onValueChange={(value) => updateEditableItem(item.id, { make: value })}
+                              disabled={item.itemType === 'service'}
                             >
                               <SelectTrigger>
                                 <SelectValue />
@@ -475,6 +510,7 @@ Example:
                             <Input
                               value={item.sku}
                               onChange={(e) => updateEditableItem(item.id, { sku: e.target.value })}
+                              disabled={item.itemType === 'service'}
                             />
                           </TableCell>
                           <TableCell>
@@ -486,10 +522,23 @@ Example:
                           <TableCell>
                             <Input
                               type="number"
-                              min="1"
+                              step={item.itemType === 'service' ? '0.5' : '1'}
+                              min={item.itemType === 'service' ? '0.5' : '1'}
                               value={item.quantity}
-                              onChange={(e) => updateEditableItem(item.id, { quantity: parseInt(e.target.value) || 1 })}
+                              onChange={(e) => updateEditableItem(item.id, { quantity: Number(e.target.value) || 1 })}
                               className={item.quantity <= 0 ? 'border-red-300' : ''}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={item.price ?? ''}
+                              onChange={(e) => updateEditableItem(item.id, {
+                                price: e.target.value === '' ? undefined : Number(e.target.value)
+                              })}
+                              placeholder={item.itemType === 'service' ? 'Rate/day' : 'Unit price'}
                             />
                           </TableCell>
                           <TableCell>

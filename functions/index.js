@@ -114,6 +114,11 @@ EXTRACTION LOGIC:
 - Extract manufacturer/brand from dedicated columns or within text
 - Match manufacturers to existing: ${existingMakes?.join(', ') || 'KEYENCE, Siemens, Omron, Allen Bradley, Schneider'}
 - Categorize using: ${existingCategories?.join(', ') || 'Vision Systems, Control Systems, Motors & Drives, Sensors, Mechanical, Electrical'}
+- Detect services (engineering, installation, commissioning, consulting, mandays) as itemType: "service"
+- For services, use mandays/days as quantity and unit "days"
+- Extract price/rate when present:
+  - Components: unit price
+  - Services: rate per day
 - For vision/camera equipment → "Vision Systems"
 - For controllers/PLCs → "Control Systems"
 
@@ -122,12 +127,14 @@ STRICT JSON OUTPUT:
   "items": [
     {
       "name": "Primary item name (longest descriptive text)",
+      "itemType": "component or service",
       "make": "Exact manufacturer name or null", 
       "description": "Full description",
       "sku": "Part number/model or null",
-      "quantity": integer,
+      "quantity": number,
+      "price": number or null,
       "category": "Best matching category",
-      "unit": "pcs"
+      "unit": "pcs for components, days for services"
     }
   ],
   "totalItems": number
@@ -192,6 +199,14 @@ ${text}`;
     }
 
     // Transform and validate items
+    const parseNumericValue = (value) => {
+      if (value === null || value === undefined || value === '') return undefined;
+      const normalized = String(value).replace(/[,\s]/g, '').replace(/[^\d.]/g, '');
+      if (!normalized) return undefined;
+      const parsed = Number(normalized);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+
     const items = parsedResponse.items.map((item, index) => {
       // Clean and validate make field to prevent concatenation issues
       let cleanMake = undefined;
@@ -208,14 +223,23 @@ ${text}`;
         }
       }
 
+      const itemType = item.itemType === 'service' ? 'service' : 'component';
+      const parsedQuantity = parseNumericValue(item.quantity);
+      const minimumQuantity = itemType === 'service' ? 0.5 : 1;
+      const quantity = parsedQuantity && parsedQuantity > 0 ? parsedQuantity : minimumQuantity;
+      const unit = item.unit || (itemType === 'service' ? 'days' : 'pcs');
+      const price = parseNumericValue(item.price);
+
       return {
         name: item.name || `Item ${index + 1}`,
+        itemType,
         make: cleanMake,
         description: item.description || item.name || 'No description provided',
         sku: item.sku || undefined,
-        quantity: parseInt(item.quantity) || 1,
+        quantity,
+        price,
         category: item.category || 'Uncategorized',
-        unit: item.unit || 'pcs',
+        unit,
         specifications: item.specifications || undefined
       };
     });
