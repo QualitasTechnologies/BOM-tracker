@@ -3,41 +3,59 @@
 
 // Generate optimized prompts for effective BOM analysis
 const generateOptimizedPrompt = (existingMakes: string[], existingCategories: string[]): string => {
-  const makesList = existingMakes.length > 0 
-    ? `Existing vendor makes in our database: ${existingMakes.join(', ')}\n`
-    : '';
-
   const categoriesList = existingCategories.length > 0
-    ? `Preferred categories: ${existingCategories.join(', ')}\n`
-    : 'Standard categories: Vision Systems, Motors & Drives, Sensors, Control Systems, Mechanical, Electrical, Pneumatic, Hydraulic, Tools, Safety, Uncategorized\n';
+    ? existingCategories.join(', ')
+    : 'Vision Systems, Motors & Drives, Sensors, Control Systems, Mechanical, Electrical, Pneumatic, Hydraulic, Tools, Safety, Uncategorized';
 
-  return `You are a BOM (Bill of Materials) extraction expert. Extract items from the provided text.
+  const makesList = existingMakes.length > 0 ? existingMakes.join(', ') : 'none';
 
-INSTRUCTIONS:
-1. Extract item names, quantities, pricing, and descriptions
-2. Look for manufacturer/brand names (makes) - match to existing: ${existingMakes.join(', ') || 'any recognizable brands'}
-3. Assign logical categories: ${existingCategories.join(', ') || 'Vision Systems, Motors & Drives, Sensors, Control Systems, Mechanical, Electrical, Uncategorized'}
-4. Extract part numbers/SKUs when visible
-5. Detect item type:
-   - "component" for physical material/parts
-   - "service" for labor/engineering/manpower activities
-6. For services, map man-days to quantity (supports decimals like 0.5, 2.5)
-7. Extract price:
-   - component => unit price (INR)
-   - service => rate per day (INR/day)
-8. Default unit is "pcs" for components and "days" for services unless explicitly specified
+  return `You are a BOM (Bill of Materials) extraction expert. Extract ONLY actual line items from the provided text.
 
-Return JSON with this exact structure:
+SKIP these rows entirely — do NOT include them in output:
+- Section/group headers (e.g. "Machine Vision Hardware", "Industrial PC", "Activities - Installation and Commissioning")
+- Column header rows (e.g. "Item", "Description", "Daily Rate", "Qty", "Margin", "Selling Price")
+- Empty rows with no item name
+- Rows where quantity = 0
+- Subtotal / total / summary rows (e.g. "Without Buffer", "Final Price", "Total")
+- Any row where the name contains only currency symbols (₹, Rs) or formula artifacts
+
+ITEM TYPE:
+- itemType = "service" when: row is under an "Activities" section, has a "Daily Rate" column, or describes labor/engineering/installation/commissioning/support/manpower
+- itemType = "component" for all physical hardware and parts
+
+MAKE (manufacturer brand):
+- Only set make if a brand name is explicitly written in that specific row
+- Known brands in our database: ${makesList}
+- If the brand is in our list, use the exact name from the list
+- If not explicitly mentioned in the row, return null
+
+PRICE:
+- For components: use the "Unit Price" or "Unit Price (INR)" column value ONLY — never use "Selling Price" or margin-adjusted prices
+- For services: use the "Daily Rate" or "Rate/Day" column value
+- Strip currency symbols and commas before returning the number
+
+NAME and DESCRIPTION cleanup:
+- Remove leading/trailing quote characters (" ' " ")
+- Remove leading ₹ symbols or currency prefixes
+- Remove trailing punctuation artifacts
+- Keep the text clean and readable
+
+CATEGORIES — map each item to the closest match from: ${categoriesList}
+
+UNIT — choose from: pcs, nos, sets, kg, g, m, mm, cm, sqm, l, ml, hrs, days, lot
+- Default: "pcs" for components, "days" for services
+
+Return ONLY this JSON (no markdown fences):
 {
   "items": [
     {
-      "name": "Item Name",
-      "itemType": "component or service",
+      "name": "Clean item name",
+      "itemType": "component",
       "make": "Brand Name or null",
-      "description": "Item description", 
+      "description": "Clean description",
       "sku": "Part number or null",
       "quantity": 1,
-      "price": 0,
+      "price": 100000,
       "category": "Category Name",
       "unit": "pcs"
     }

@@ -576,7 +576,7 @@ const BOM = () => {
           item.description,
           category.name,
           item.quantity,
-          isService ? 'days' : 'units',
+          item.unit || (isService ? 'days' : 'pcs'),
           item.price !== undefined ? (isService ? `${item.price}/day` : item.price) : '',
           item.price !== undefined ? item.price * item.quantity : '',
           item.status === 'not-ordered' ? 'Pending' : item.status.charAt(0).toUpperCase() + item.status.slice(1),

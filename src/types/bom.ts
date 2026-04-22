@@ -17,6 +17,8 @@ export interface BOMItem {
   // For services: duration in days (minimum 0.5)
   quantity: number;
 
+  unit?: string; // Unit of measure: pcs, nos, sets, kg, m, mm, days, hrs, lot, etc.
+
   thumbnailUrl?: string; // Thumbnail image URL for the part
   category: string; // Category name (matches BOMCategory.name)
   order?: number; // For drag-and-drop ordering within categories
@@ -195,6 +197,7 @@ export function sanitizeBOMItemForFirestore(item: Partial<BOMItem>): Record<stri
   if (item.make !== undefined) sanitized.make = item.make;
   if (item.sku !== undefined) sanitized.sku = item.sku;
   if (item.price !== undefined) sanitized.price = item.price;
+  if (item.unit !== undefined) sanitized.unit = item.unit;
   if (item.thumbnailUrl !== undefined) sanitized.thumbnailUrl = item.thumbnailUrl;
   if (item.order !== undefined) sanitized.order = item.order;
   if (item.expectedDelivery !== undefined) sanitized.expectedDelivery = item.expectedDelivery;

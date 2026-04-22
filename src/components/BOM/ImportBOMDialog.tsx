@@ -1,5 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { X, Loader2, Check, AlertCircle, Plus, Trash2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { Loader2, Check, AlertCircle, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -10,11 +10,21 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Badge } from '@/components/ui/badge';
 import { BOMItem } from '@/types/bom';
 import { getBOMSettings } from '@/utils/settingsFirestore';
 import { getBrands } from '@/utils/brandFirestore';
 import { analyzeBOMWithAI, ExtractedBOMItem as AIExtractedItem } from '@/utils/aiService';
+
+const UOM_OPTIONS = ['pcs', 'nos', 'sets', 'kg', 'g', 'm', 'mm', 'cm', 'sqm', 'l', 'ml', 'hrs', 'days', 'lot'];
+
+const cleanText = (text: string): string => {
+  if (!text) return '';
+  return text
+    .replace(/^["'"“”‘’]+|["'"“”‘’]+$/g, '')
+    .replace(/^[₹\s,]+|[₹\s,]+$/g, '')
+    .replace(/^\s+|\s+$/g, '')
+    .trim();
+};
 
 interface ImportBOMDialogProps {
   open: boolean;
@@ -119,7 +129,12 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
 
   // Convert AI response to editable items
   const convertToEditableItems = (aiItems: AIExtractedItem[]): EditableBOMItem[] => {
-    return aiItems.map((item, index) => {
+    return aiItems
+      .filter(item => {
+        const name = cleanText(item.name || '');
+        return name.length > 0;
+      })
+      .map((item, index) => {
       // Smart make matching: only use predefined makes from vendor DB
       let makeName = 'unspecified';
 
@@ -185,17 +200,19 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
           || 'Uncategorized';
       }
 
+      const qty = item.quantity || 1;
+      const isService = item.itemType === 'service';
       const editableItem: Partial<EditableBOMItem> = {
         id: `ai-${Date.now()}-${index}`,
-        selected: true,
-        itemType: item.itemType === 'service' ? 'service' : 'component',
-        name: item.name || '',
+        selected: qty > 0,
+        itemType: isService ? 'service' : 'component',
+        name: cleanText(item.name || ''),
         make: makeName,
-        sku: item.sku || '',
-        description: item.description || item.name || '',
-        quantity: item.quantity || 1,
-        price: typeof item.price === 'number' && Number.isFinite(item.price) ? item.price : undefined,
-        unit: item.itemType === 'service' ? (item.unit || 'days') : (item.unit || 'pcs'),
+        sku: cleanText(item.sku || ''),
+        description: cleanText(item.description || item.name || ''),
+        quantity: qty,
+        price: typeof item.price === 'number' && Number.isFinite(item.price) && item.price > 0 ? item.price : undefined,
+        unit: isService ? (item.unit || 'days') : (item.unit || 'pcs'),
         category: categoryName
       };
 
@@ -309,6 +326,7 @@ const ImportBOMDialog: React.FC<ImportBOMDialogProps> = ({
         description: item.description || item.name,
         ...(item.itemType === 'component' && { sku: item.sku }),
         ...(item.price !== undefined && { price: item.price }),
+        unit: item.unit || (item.itemType === 'service' ? 'days' : 'pcs'),
         category: item.category,
         quantity: item.quantity,
         vendors: [],
@@ -431,28 +449,28 @@ Example:
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="flex-1 overflow-y-auto">
-                <div className="border rounded-lg">
-                  <Table>
+              <CardContent className="flex-1 overflow-y-auto p-0">
+                <div className="overflow-x-auto border rounded-lg">
+                  <Table className="min-w-[1300px]">
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="w-12">Select</TableHead>
-                        <TableHead className="w-48">Name*</TableHead>
-                        <TableHead className="w-32">Type*</TableHead>
-                        <TableHead className="w-32">Make</TableHead>
-                        <TableHead className="w-32">SKU</TableHead>
-                        <TableHead className="w-48">Description</TableHead>
-                        <TableHead className="w-24">Qty/Days*</TableHead>
-                        <TableHead className="w-24">Price/Rate</TableHead>
-                        <TableHead className="w-24">Unit*</TableHead>
-                        <TableHead className="w-32">Category*</TableHead>
-                        <TableHead className="w-12">Actions</TableHead>
+                        <TableHead className="w-10 px-2">Select</TableHead>
+                        <TableHead className="min-w-[200px]">Name*</TableHead>
+                        <TableHead className="min-w-[120px]">Type*</TableHead>
+                        <TableHead className="min-w-[140px]">Make</TableHead>
+                        <TableHead className="min-w-[110px]">SKU</TableHead>
+                        <TableHead className="min-w-[220px]">Description</TableHead>
+                        <TableHead className="min-w-[90px]">Qty/Days*</TableHead>
+                        <TableHead className="min-w-[110px]">Price/Rate</TableHead>
+                        <TableHead className="min-w-[100px]">Unit*</TableHead>
+                        <TableHead className="min-w-[150px]">Category*</TableHead>
+                        <TableHead className="w-10 px-2">Del</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {editableItems.map((item) => (
-                        <TableRow key={item.id} className={!item.isValid ? 'bg-red-50' : ''}>
-                          <TableCell>
+                        <TableRow key={item.id} className={!item.isValid ? 'bg-red-50' : item.quantity === 0 ? 'bg-gray-50 opacity-60' : ''}>
+                          <TableCell className="px-2">
                             <Checkbox
                               checked={item.selected}
                               onCheckedChange={(checked) => toggleItemSelection(item.id, !!checked)}
@@ -462,7 +480,7 @@ Example:
                             <Input
                               value={item.name}
                               onChange={(e) => updateEditableItem(item.id, { name: e.target.value })}
-                              className={!item.name.trim() ? 'border-red-300' : ''}
+                              className={`min-w-[180px] ${!item.name.trim() ? 'border-red-300' : ''}`}
                             />
                           </TableCell>
                           <TableCell>
@@ -477,7 +495,7 @@ Example:
                                 })
                               }
                             >
-                              <SelectTrigger>
+                              <SelectTrigger className="min-w-[110px]">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
@@ -492,7 +510,7 @@ Example:
                               onValueChange={(value) => updateEditableItem(item.id, { make: value })}
                               disabled={item.itemType === 'service'}
                             >
-                              <SelectTrigger>
+                              <SelectTrigger className="min-w-[130px]">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
@@ -511,22 +529,24 @@ Example:
                               value={item.sku}
                               onChange={(e) => updateEditableItem(item.id, { sku: e.target.value })}
                               disabled={item.itemType === 'service'}
+                              className="min-w-[90px]"
                             />
                           </TableCell>
                           <TableCell>
                             <Input
                               value={item.description}
                               onChange={(e) => updateEditableItem(item.id, { description: e.target.value })}
+                              className="min-w-[200px]"
                             />
                           </TableCell>
                           <TableCell>
                             <Input
                               type="number"
                               step={item.itemType === 'service' ? '0.5' : '1'}
-                              min={item.itemType === 'service' ? '0.5' : '1'}
+                              min={item.itemType === 'service' ? '0.5' : '0'}
                               value={item.quantity}
-                              onChange={(e) => updateEditableItem(item.id, { quantity: Number(e.target.value) || 1 })}
-                              className={item.quantity <= 0 ? 'border-red-300' : ''}
+                              onChange={(e) => updateEditableItem(item.id, { quantity: Number(e.target.value) || 0 })}
+                              className={`min-w-[75px] ${item.quantity <= 0 ? 'border-red-300' : ''}`}
                             />
                           </TableCell>
                           <TableCell>
@@ -539,21 +559,30 @@ Example:
                                 price: e.target.value === '' ? undefined : Number(e.target.value)
                               })}
                               placeholder={item.itemType === 'service' ? 'Rate/day' : 'Unit price'}
+                              className="min-w-[90px]"
                             />
                           </TableCell>
                           <TableCell>
-                            <Input
-                              value={item.unit}
-                              onChange={(e) => updateEditableItem(item.id, { unit: e.target.value })}
-                              className={!item.unit.trim() ? 'border-red-300' : ''}
-                            />
+                            <Select
+                              value={item.unit || (item.itemType === 'service' ? 'days' : 'pcs')}
+                              onValueChange={(value) => updateEditableItem(item.id, { unit: value })}
+                            >
+                              <SelectTrigger className="min-w-[85px]">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {UOM_OPTIONS.map((u) => (
+                                  <SelectItem key={u} value={u}>{u}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           </TableCell>
                           <TableCell>
                             <Select
                               value={item.category}
                               onValueChange={(value) => updateEditableItem(item.id, { category: value })}
                             >
-                              <SelectTrigger>
+                              <SelectTrigger className="min-w-[140px]">
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
