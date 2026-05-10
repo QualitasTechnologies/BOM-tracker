@@ -1,35 +1,22 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, TrendingUp, TrendingDown, FileDown, Edit2, DollarSign, Clock, Package, X, ChevronDown, ChevronRight, User, ExternalLink, Upload, FileText, Trash2 } from "lucide-react";
-import { useNavigate, useSearchParams, Link } from "react-router-dom";
+import { ArrowLeft, TrendingUp, TrendingDown, FileDown, Edit2, DollarSign, Package, X, ExternalLink, Upload, FileText, Trash2 } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Progress } from "@/components/ui/progress";
 import Sidebar from "@/components/Sidebar";
 import { doc, getDoc } from "firebase/firestore";
 import { db, auth } from "@/firebase";
-import { getBOMData, getTotalBOMCost, updateProject, subscribeToProjects } from "@/utils/projectFirestore";
+import { getBOMData, getTotalBOMCost, updateProject } from "@/utils/projectFirestore";
 import { fetchEngineers, getTotalManHours } from "@/utils/timeTrackingFirestore";
-import { subscribeToClients, Client } from "@/utils/settingsFirestore";
+import { WeekNavigator, weekRangeFromDate, type WeekRange } from "@/components/CostAnalysis/WeekNavigator";
+import { getProjectCosts, type ProjectCostRow } from "@/utils/pulseProxyFirestore";
 import { uploadProjectDocument, getProjectDocuments, deleteProjectDocument } from "@/utils/projectDocumentFirestore";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/components/ui/use-toast";
-import type { FirestoreProject } from "@/types/project";
 import type { ProjectDocument } from "@/types/projectDocument";
-
-// Project with calculated cost data
-interface ProjectCostData {
-  project: FirestoreProject;
-  materialCost: number;
-  engineerCost: number;
-  miscCost: number;
-  totalCost: number;
-  poValue: number;
-  grossProfit: number;
-  profitMargin: number;
-  isProfit: boolean;
-}
 
 // Summary View Component
 const CostAnalysisSummary = ({
@@ -41,85 +28,35 @@ const CostAnalysisSummary = ({
 }) => {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [projects, setProjects] = useState<FirestoreProject[]>([]);
-  const [clients, setClients] = useState<Client[]>([]);
-  const [projectCosts, setProjectCosts] = useState<Map<string, ProjectCostData>>(new Map());
+  const [range, setRange] = useState<WeekRange>(() => weekRangeFromDate(new Date()));
+  const [rows, setRows] = useState<ProjectCostRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['Ongoing', 'Delayed', 'Planning', 'Completed']));
+  const [error, setError] = useState<string | null>(null);
 
-  // Subscribe to projects and clients
   useEffect(() => {
-    const unsubscribeProjects = subscribeToProjects((fetchedProjects) => {
-      // Filter out archived projects
-      setProjects(fetchedProjects.filter(p => p.status !== 'Archived'));
-    });
-    const unsubscribeClients = subscribeToClients(setClients);
-
-    return () => {
-      unsubscribeProjects();
-      unsubscribeClients();
-    };
-  }, []);
-
-  // Fetch cost data for all projects
-  useEffect(() => {
-    const fetchAllCosts = async () => {
-      if (projects.length === 0) {
+    setLoading(true);
+    setError(null);
+    getProjectCosts(range.start, range.end)
+      .then((res) => {
+        setRows(res.projects);
         setLoading(false);
-        return;
-      }
+      })
+      .catch((err) => {
+        setError(String(err.message || err));
+        setLoading(false);
+      });
+  }, [range.start, range.end]);
 
-      const costsMap = new Map<string, ProjectCostData>();
-
-      await Promise.all(
-        projects.map(async (project) => {
-          try {
-            // Get project details for costPerHour and miscCost
-            const projectRef = doc(db, 'projects', project.projectId);
-            const projectSnap = await getDoc(projectRef);
-            const projectData = projectSnap.exists() ? projectSnap.data() : {};
-
-            const costPerHour = projectData.costPerHour || 0;
-            const miscCost = projectData.miscCost || 0;
-            const poValue = projectData.poValue || project.poValue || 0;
-
-            // Get BOM cost
-            const bomCategories = await getBOMData(project.projectId);
-            const materialCost = getTotalBOMCost(bomCategories);
-
-            // Get engineering cost
-            const engineers = await fetchEngineers(project.projectId);
-            const totalManHours = getTotalManHours(engineers);
-            const engineerCost = totalManHours * costPerHour;
-
-            // Calculate totals
-            const totalCost = materialCost + engineerCost + miscCost;
-            const grossProfit = poValue - totalCost;
-            const profitMargin = poValue ? ((grossProfit / poValue) * 100) : 0;
-
-            costsMap.set(project.projectId, {
-              project,
-              materialCost,
-              engineerCost,
-              miscCost,
-              totalCost,
-              poValue,
-              grossProfit,
-              profitMargin,
-              isProfit: grossProfit >= 0,
-            });
-          } catch (error) {
-            console.error(`Error fetching costs for project ${project.projectId}:`, error);
-          }
-        })
-      );
-
-      setProjectCosts(costsMap);
-      setLoading(false);
-    };
-
-    fetchAllCosts();
-  }, [projects]);
+  const grouped = useMemo(() => {
+    const order = ['Ongoing', 'Delayed', 'Planning', 'Completed'];
+    const m = new Map<string, ProjectCostRow[]>();
+    for (const r of rows) {
+      const arr = m.get(r.status) || [];
+      arr.push(r);
+      m.set(r.status, arr);
+    }
+    return order.filter((s) => m.has(s)).map((s) => ({ status: s, rows: m.get(s)! }));
+  }, [rows]);
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-IN', {
@@ -129,30 +66,6 @@ const CostAnalysisSummary = ({
       maximumFractionDigits: 0,
     }).format(amount);
   };
-
-  const getClientLogo = (clientName: string): string | undefined => {
-    const client = clients.find(c => c.company === clientName);
-    return client?.logo;
-  };
-
-  const toggleGroup = (status: string) => {
-    setExpandedGroups(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(status)) {
-        newSet.delete(status);
-      } else {
-        newSet.add(status);
-      }
-      return newSet;
-    });
-  };
-
-  // Group projects by status
-  const statusOrder = ['Ongoing', 'Delayed', 'Planning', 'Completed'];
-  const groupedProjects = statusOrder.map(status => ({
-    status,
-    projects: projects.filter(p => p.status === status),
-  }));
 
   // Check admin access
   if (!user || !user.isAdmin) {
@@ -183,125 +96,101 @@ const CostAnalysisSummary = ({
       <div className={`flex-1 transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
         <div className="border-b bg-card">
           <div className="container mx-auto px-4 py-4">
-            <h1 className="text-2xl font-bold">Cost Analysis</h1>
-            <p className="text-sm text-muted-foreground mt-1">Financial overview of all projects</p>
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-2xl font-bold">Cost Analysis</h1>
+                <p className="text-sm text-muted-foreground mt-1">Financial overview of all projects</p>
+              </div>
+              <WeekNavigator range={range} onChange={setRange} />
+            </div>
           </div>
         </div>
 
         <div className="container mx-auto px-4 py-6 space-y-4">
-          {loading ? (
+          {loading && (
             <div className="flex items-center justify-center h-64">
               <div className="text-center">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
                 <p className="text-muted-foreground">Loading project costs...</p>
               </div>
             </div>
-          ) : (
-            groupedProjects.map(({ status, projects: statusProjects }) => (
-              <Card key={status}>
-                <CardHeader
-                  className="cursor-pointer hover:bg-muted/50 transition-colors py-3"
-                  onClick={() => toggleGroup(status)}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      {expandedGroups.has(status) ? (
-                        <ChevronDown className="h-5 w-5 text-muted-foreground" />
-                      ) : (
-                        <ChevronRight className="h-5 w-5 text-muted-foreground" />
-                      )}
-                      <CardTitle className="text-lg">{status}</CardTitle>
-                      <Badge variant="secondary">{statusProjects.length} projects</Badge>
-                    </div>
-                  </div>
-                </CardHeader>
-
-                {expandedGroups.has(status) && (
-                  <CardContent className="pt-0">
-                    {statusProjects.length === 0 ? (
-                      <p className="text-muted-foreground text-sm py-4 text-center">No projects</p>
-                    ) : (
-                      <div className="overflow-x-auto">
-                        <table className="w-full">
-                          <thead>
-                            <tr className="border-b text-sm">
-                              <th className="text-left py-2 px-3 font-medium">Project</th>
-                              <th className="text-left py-2 px-3 font-medium">Client</th>
-                              <th className="text-right py-2 px-3 font-medium">PO Value</th>
-                              <th className="text-right py-2 px-3 font-medium">Total Cost</th>
-                              <th className="text-right py-2 px-3 font-medium">Profit/Loss</th>
-                              <th className="text-center py-2 px-3 font-medium w-16">BOM</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {statusProjects.map((project) => {
-                              const costData = projectCosts.get(project.projectId);
-
-                              return (
-                                <tr key={project.projectId} className="border-b hover:bg-muted/30">
-                                  <td className="py-3 px-3">
-                                    <Link
-                                      to={`/cost-analysis?project=${project.projectId}`}
-                                      className="text-primary hover:underline font-medium"
-                                    >
-                                      {project.projectName}
-                                    </Link>
-                                    <div className="text-xs text-muted-foreground">{project.projectId}</div>
-                                  </td>
-                                  <td className="py-3 px-3">
-                                    <div className="flex items-center gap-2">
-                                      {getClientLogo(project.clientName) ? (
-                                        <img
-                                          src={getClientLogo(project.clientName)}
-                                          alt={project.clientName}
-                                          className="h-5 w-5 rounded object-contain"
-                                        />
-                                      ) : (
-                                        <User className="h-4 w-4 text-muted-foreground" />
-                                      )}
-                                      <span className="text-sm">{project.clientName}</span>
-                                    </div>
-                                  </td>
-                                  <td className="py-3 px-3 text-right font-medium">
-                                    {costData ? formatCurrency(costData.poValue) : '-'}
-                                  </td>
-                                  <td className="py-3 px-3 text-right">
-                                    {costData ? formatCurrency(costData.totalCost) : '-'}
-                                  </td>
-                                  <td className="py-3 px-3 text-right">
-                                    {costData && costData.poValue > 0 ? (
-                                      <div className={`font-medium ${costData.isProfit ? 'text-green-600' : 'text-red-600'}`}>
-                                        <span>{costData.isProfit ? '✅' : '❌'} </span>
-                                        {costData.isProfit ? '' : '-'}{formatCurrency(Math.abs(costData.grossProfit))}
-                                        <div className="text-xs font-normal">
-                                          {costData.profitMargin.toFixed(1)}% margin
-                                        </div>
-                                      </div>
-                                    ) : (
-                                      <span className="text-muted-foreground text-sm">⏳ TBD</span>
-                                    )}
-                                  </td>
-                                  <td className="py-3 px-3 text-center">
-                                    <Link
-                                      to={`/project/${project.projectId}/bom`}
-                                      className="inline-flex items-center justify-center h-8 w-8 rounded-md hover:bg-muted transition-colors"
-                                      title="View BOM"
-                                    >
-                                      <Package className="h-4 w-4 text-muted-foreground hover:text-primary" />
-                                    </Link>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </CardContent>
-                )}
-              </Card>
-            ))
           )}
+
+          {error && (
+            <div className="flex items-center justify-center h-64">
+              <div className="text-center">
+                <X className="h-12 w-12 text-red-500 mx-auto mb-4" />
+                <p className="text-red-600 font-medium">Error loading costs</p>
+                <p className="text-sm text-muted-foreground mt-1">{error}</p>
+              </div>
+            </div>
+          )}
+
+          {!loading && !error && grouped.map((g) => (
+            <Card key={g.status}>
+              <CardHeader className="py-3">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-lg">{g.status}</CardTitle>
+                  <Badge variant="secondary">{g.rows.length} projects</Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left py-2 px-3 font-medium">Project</th>
+                        <th className="text-center py-2 px-3 font-medium">Link</th>
+                        <th className="text-right py-2 px-3 font-medium" colSpan={3}>This Week</th>
+                        <th className="text-right py-2 px-3 font-medium" colSpan={4}>Cumulative</th>
+                        <th className="text-right py-2 px-3 font-medium">vs PO</th>
+                      </tr>
+                      <tr className="border-b text-xs text-muted-foreground">
+                        <th className="text-left py-1 px-3"></th>
+                        <th className="py-1 px-3"></th>
+                        <th className="text-right py-1 px-3">Material</th>
+                        <th className="text-right py-1 px-3">Time (hrs · ₹)</th>
+                        <th className="text-right py-1 px-3">Total</th>
+                        <th className="text-right py-1 px-3">Material</th>
+                        <th className="text-right py-1 px-3">Time</th>
+                        <th className="text-right py-1 px-3">Misc</th>
+                        <th className="text-right py-1 px-3">Total</th>
+                        <th className="text-right py-1 px-3">GP%</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {g.rows.map((r) => (
+                        <tr
+                          key={r.projectId}
+                          className="border-b hover:bg-muted/30 cursor-pointer"
+                          onClick={() => navigate(`/cost-analysis?project=${r.projectId}`)}
+                        >
+                          <td className="py-3 px-3 font-medium">{r.projectName}</td>
+                          <td className="py-3 px-3 text-center">
+                            {r.pulseProjectId ? (
+                              <span title="Linked to Pulse">🔗</span>
+                            ) : (
+                              <span title="Not linked — using fallback hours" className="text-amber-600">⚠️</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 text-right">{formatCurrency(r.thisWeek.materialCost)}</td>
+                          <td className="py-3 px-3 text-right">{r.thisWeek.timeHours.toFixed(1)}h · {formatCurrency(r.thisWeek.timeCost)}</td>
+                          <td className="py-3 px-3 text-right font-semibold">{formatCurrency(r.thisWeek.total)}</td>
+                          <td className="py-3 px-3 text-right">{formatCurrency(r.cumulative.materialCost)}</td>
+                          <td className="py-3 px-3 text-right">{formatCurrency(r.cumulative.timeCost)}</td>
+                          <td className="py-3 px-3 text-right">{formatCurrency(r.cumulative.miscCost)}</td>
+                          <td className="py-3 px-3 text-right font-semibold">{formatCurrency(r.cumulative.total)}</td>
+                          <td className="py-3 px-3 text-right">
+                            {r.cumulative.profitMargin === null ? '—' : `${r.cumulative.profitMargin.toFixed(0)}%`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
         </div>
       </div>
     </div>
