@@ -10,7 +10,6 @@ import Sidebar from "@/components/Sidebar";
 import { doc, getDoc } from "firebase/firestore";
 import { db, auth } from "@/firebase";
 import { getBOMData, getTotalBOMCost, updateProject } from "@/utils/projectFirestore";
-import { fetchEngineers, getTotalManHours } from "@/utils/timeTrackingFirestore";
 import { WeekNavigator, weekRangeFromDate, type WeekRange } from "@/components/CostAnalysis/WeekNavigator";
 import { getProjectCosts, type ProjectCostRow } from "@/utils/pulseProxyFirestore";
 import { uploadProjectDocument, getProjectDocuments, deleteProjectDocument } from "@/utils/projectDocumentFirestore";
@@ -197,7 +196,7 @@ const CostAnalysisSummary = ({
   );
 };
 
-// Detailed View Component (existing functionality)
+// Detailed View Component
 const CostAnalysisDetail = ({
   projectIdParam,
   sidebarCollapsed,
@@ -209,17 +208,19 @@ const CostAnalysisDetail = ({
 }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [costPerHour, setCostPerHour] = useState(0);
-  const [estimatedBudget, setEstimatedBudget] = useState(600000);
+
+  // Editable Firestore fields
   const [isEditingBudget, setIsEditingBudget] = useState(false);
+  const [estimatedBudget, setEstimatedBudget] = useState(0);
+  const [isEditingPO, setIsEditingPO] = useState(false);
+  const [poValue, setPoValue] = useState(0);
+  const [costPerHour, setCostPerHour] = useState(0);
   const [isEditingRate, setIsEditingRate] = useState(false);
   const [miscCost, setMiscCost] = useState(0);
   const [isEditingMisc, setIsEditingMisc] = useState(false);
-  const [poValue, setPoValue] = useState(0);
-  const [isEditingPO, setIsEditingPO] = useState(false);
 
+  // BOM snapshot data (for the BOM Changes section — untouched)
   const [materialCost, setMaterialCost] = useState(0);
-  const [totalManHours, setTotalManHours] = useState(0);
   const [currentBOM, setCurrentBOM] = useState<any[]>([]);
 
   const [projectDetails, setProjectDetails] = useState<{ projectName: string; projectId: string; clientName: string; deadline: string; status: string; bomSnapshot?: any[]; bomSnapshotDate?: string } | null>(null);
@@ -228,6 +229,12 @@ const CostAnalysisDetail = ({
   const [customerPODocs, setCustomerPODocs] = useState<ProjectDocument[]>([]);
   const [uploadingPO, setUploadingPO] = useState(false);
   const { toast } = useToast();
+
+  // Pulse cost data
+  const [range, setRange] = useState<WeekRange>(() => weekRangeFromDate(new Date()));
+  const [row, setRow] = useState<ProjectCostRow | null>(null);
+  const [costLoading, setCostLoading] = useState(true);
+  const [costError, setCostError] = useState<string | null>(null);
 
   // Load Customer PO documents
   const loadCustomerPODocs = async () => {
@@ -292,8 +299,9 @@ const CostAnalysisDetail = ({
     }
   };
 
+  // Fetch project metadata + BOM snapshot data (unchanged sections)
   useEffect(() => {
-    const fetchAllData = async () => {
+    const fetchProjectData = async () => {
       if (!projectIdParam) return;
       // Fetch project details and editable fields
       const projectRef = doc(db, 'projects', projectIdParam);
@@ -309,44 +317,49 @@ const CostAnalysisDetail = ({
           bomSnapshot: data.bomSnapshot || null,
           bomSnapshotDate: data.bomSnapshotDate || null,
         });
-        setCostPerHour(data.costPerHour || 0);
-        setMiscCost(data.miscCost || 0);
         setPoValue(data.poValue || 0);
         setEstimatedBudget(
           typeof data.estimatedBudget === 'number' && !isNaN(data.estimatedBudget)
             ? data.estimatedBudget
             : 0
         );
+        setCostPerHour(typeof data.costPerHour === 'number' && !isNaN(data.costPerHour) ? data.costPerHour : 0);
+        setMiscCost(typeof data.miscCost === 'number' && !isNaN(data.miscCost) ? data.miscCost : 0);
       }
-      // Fetch BOM and calculate material cost
+      // Fetch BOM data — used only by BOM Changes section
       const bomCategories = await getBOMData(projectIdParam);
       const bomItems = bomCategories.flatMap(cat => cat.items);
       setCurrentBOM(bomItems);
       setMaterialCost(getTotalBOMCost(bomCategories));
-      // Fetch engineers and calculate total man hours
-      const engineers = await fetchEngineers(projectIdParam);
-      setTotalManHours(getTotalManHours(engineers));
 
       // Fetch Customer PO documents
       const docs = await getProjectDocuments(projectIdParam);
       setCustomerPODocs(docs.filter(d => d.type === 'customer-po'));
     };
-    fetchAllData();
+    fetchProjectData();
   }, [projectIdParam]);
 
-  // Update cost per hour in Firestore
-  const handleCostPerHourBlur = async () => {
-    if (!projectIdParam) return;
-    await updateProject(projectIdParam, { costPerHour });
-    setIsEditingRate(false);
-  };
-
-  // Update misc cost in Firestore
-  const handleMiscCostBlur = async () => {
-    if (!projectIdParam) return;
-    await updateProject(projectIdParam, { miscCost });
-    setIsEditingMisc(false);
-  };
+  // Fetch Pulse cost data for the selected week range
+  useEffect(() => {
+    setCostLoading(true);
+    setCostError(null);
+    getProjectCosts(range.start, range.end)
+      .then((res) => {
+        const found = res.projects.find((p) => p.projectId === projectIdParam);
+        if (!found) {
+          setCostError('Project not found in cost data');
+          setRow(null);
+        } else {
+          setRow(found);
+          setCostError(null);
+        }
+        setCostLoading(false);
+      })
+      .catch((err) => {
+        setCostError(String(err.message || err));
+        setCostLoading(false);
+      });
+  }, [projectIdParam, range.start, range.end]);
 
   // Update estimated budget in Firestore
   const handleEstimatedBudgetBlur = async () => {
@@ -362,12 +375,26 @@ const CostAnalysisDetail = ({
     setIsEditingPO(false);
   };
 
-  const engineerCost = totalManHours * costPerHour;
-  const totalCost = materialCost + engineerCost + miscCost;
-  const grossProfit = poValue - totalCost;
+  // Update fallback cost-per-hour in Firestore
+  const handleCostPerHourBlur = async () => {
+    if (!projectIdParam) return;
+    await updateProject(projectIdParam, { costPerHour });
+    setIsEditingRate(false);
+  };
+
+  // Update miscellaneous cost in Firestore
+  const handleMiscCostBlur = async () => {
+    if (!projectIdParam) return;
+    await updateProject(projectIdParam, { miscCost });
+    setIsEditingMisc(false);
+  };
+
+  // Derive cost summary from Pulse row (cumulative is source of truth)
+  const totalCost = row ? row.cumulative.total : 0;
+  const grossProfit = row ? row.cumulative.grossProfit : 0;
   const isProfit = grossProfit > 0;
-  const profitMargin = poValue ? ((grossProfit / poValue) * 100) : 0;
-  const budgetUsage = (totalCost / estimatedBudget) * 100;
+  const profitMargin = row ? (row.cumulative.profitMargin ?? 0) : 0;
+  const budgetUsage = estimatedBudget > 0 ? (totalCost / estimatedBudget) * 100 : 0;
 
   const getStatusBadge = () => {
     if (budgetUsage <= 80) return { label: "On Track", variant: "default" as const };
@@ -384,36 +411,17 @@ const CostAnalysisDetail = ({
     }).format(amount);
   };
 
-  // Editable descriptions for cost items
-  const [costDescriptions, setCostDescriptions] = useState([
-    "Material and component costs",
-    `${totalManHours} hrs @ ₹${costPerHour}/hr`,
-    "Transport, overhead",
-  ]);
   const [editingDescIdx, setEditingDescIdx] = useState<number | null>(null);
+  const [miscDesc, setMiscDesc] = useState("Transport, overhead");
   const descInputRef = useRef<HTMLInputElement>(null);
-
-  // Update engineer description if hours or rate changes
-  useEffect(() => {
-    setCostDescriptions((prev) => [
-      prev[0],
-      `${totalManHours} hrs @ ₹${costPerHour}/hr`,
-      prev[2],
-    ]);
-  }, [totalManHours, costPerHour]);
-
-  const handleDescChange = (idx: number, value: string) => {
-    setCostDescriptions((prev) => prev.map((desc, i) => (i === idx ? value : desc)));
-  };
-
   const handleDescBlur = () => setEditingDescIdx(null);
 
   const statusBadge = getStatusBadge();
 
   const costItemsData = [
-    { category: "BOM", description: costDescriptions[0], cost: materialCost, notes: "From BOM tab" },
-    { category: "Engineer", description: costDescriptions[1], cost: engineerCost, notes: "Auto-calculated" },
-    { category: "Miscellaneous", description: costDescriptions[2], cost: miscCost, notes: "Manually added" },
+    { category: "BOM", description: "Material and component costs", cost: row ? row.cumulative.materialCost : 0, notes: "From BOM tab" },
+    { category: "Engineer", description: row ? `${row.cumulative.timeHours.toFixed(1)} hrs (Pulse)` : "—", cost: row ? row.cumulative.timeCost : 0, notes: "From Pulse" },
+    { category: "Miscellaneous", description: miscDesc, cost: row ? row.cumulative.miscCost : 0, notes: "Manually added" },
   ];
 
   // Check admin access
@@ -445,17 +453,20 @@ const CostAnalysisDetail = ({
       <div className={`flex-1 transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
         <div className="border-b bg-card">
           <div className="container mx-auto px-4 py-4">
-            <div className="flex items-center gap-4">
-              <Button variant="ghost" size="sm" onClick={() => navigate('/cost-analysis')}>
-                <ArrowLeft className="h-4 w-4 mr-2" />
-                All Projects
-              </Button>
-              <div className="flex items-center gap-2">
-                <h1 className="text-2xl font-bold">Cost Analysis</h1>
-                {projectDetails && (
-                  <Badge variant="outline">{projectDetails.projectName}</Badge>
-                )}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <Button variant="ghost" size="sm" onClick={() => navigate('/cost-analysis')}>
+                  <ArrowLeft className="h-4 w-4 mr-2" />
+                  All Projects
+                </Button>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-2xl font-bold">Cost Analysis</h1>
+                  {projectDetails && (
+                    <Badge variant="outline">{projectDetails.projectName}</Badge>
+                  )}
+                </div>
               </div>
+              <WeekNavigator range={range} onChange={setRange} />
             </div>
           </div>
         </div>
@@ -501,18 +512,32 @@ const CostAnalysisDetail = ({
               </CardTitle>
             </CardHeader>
             <CardContent>
+              {costLoading && (
+                <div className="flex items-center gap-2 text-muted-foreground text-sm mb-4">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary"></div>
+                  Loading cost data...
+                </div>
+              )}
+              {costError && (
+                <div className="text-sm text-amber-700 border border-amber-300 rounded p-2 bg-amber-50 mb-4">
+                  ⚠️ {costError}
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-4">
                   <div className="flex justify-between items-center py-2 border-b">
-                    <span className="text-sm font-medium">Material Cost</span>
-                    <span className="font-semibold">{formatCurrency(materialCost)}</span>
+                    <span className="text-sm font-medium">Material Cost (cumulative)</span>
+                    <span className="font-semibold">{formatCurrency(row ? row.cumulative.materialCost : 0)}</span>
                   </div>
                   <div className="flex justify-between items-center py-2 border-b">
-                    <span className="text-sm font-medium">Total Man Hours</span>
-                    <span className="font-semibold">{totalManHours} hrs</span>
+                    <span className="text-sm font-medium">Total Man Hours (cumulative)</span>
+                    <span className="font-semibold">{row ? row.cumulative.timeHours.toFixed(1) : '—'} hrs</span>
                   </div>
                   <div className="flex justify-between items-center py-2 border-b">
-                    <span className="text-sm font-medium">Cost per Hour</span>
+                    <div>
+                      <span className="text-sm font-medium">Fallback Cost Per Hour (₹/hr)</span>
+                      <p className="text-xs text-muted-foreground">Used as fallback when an engineer's individual rate isn't set.</p>
+                    </div>
                     <div className="flex items-center gap-2">
                       {isEditingRate ? (
                         <Input
@@ -525,7 +550,7 @@ const CostAnalysisDetail = ({
                         />
                       ) : (
                         <>
-                          <span className="font-semibold">₹{costPerHour}</span>
+                          <span className="font-semibold">₹{costPerHour.toLocaleString('en-IN')}</span>
                           <Button
                             variant="ghost"
                             size="sm"
@@ -539,7 +564,15 @@ const CostAnalysisDetail = ({
                     </div>
                   </div>
                   <div className="flex justify-between items-center py-2 border-b">
-                    <span className="text-sm font-medium">Miscellaneous Cost</span>
+                    <span className="text-sm font-medium">Engineering Cost (cumulative)</span>
+                    <span className="font-semibold">{formatCurrency(row ? row.cumulative.timeCost : 0)}</span>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b">
+                    <span className="text-sm font-medium">Miscellaneous Cost (cumulative)</span>
+                    <span className="font-semibold">{formatCurrency(row ? row.cumulative.miscCost : 0)}</span>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b">
+                    <span className="text-sm font-medium">Miscellaneous Cost (project, ₹)</span>
                     <div className="flex items-center gap-2">
                       {isEditingMisc ? (
                         <Input
@@ -547,7 +580,7 @@ const CostAnalysisDetail = ({
                           value={miscCost}
                           onChange={(e) => setMiscCost(parseInt(e.target.value) || 0)}
                           onBlur={handleMiscCostBlur}
-                          className="w-24 h-8"
+                          className="w-28 h-8"
                           autoFocus
                         />
                       ) : (
@@ -566,14 +599,49 @@ const CostAnalysisDetail = ({
                     </div>
                   </div>
                   <div className="flex justify-between items-center py-2 border-b">
-                    <span className="text-sm font-medium">Engineering Cost</span>
-                    <span className="font-semibold">{formatCurrency(engineerCost)}</span>
+                    <span className="text-sm font-medium">Time Cost (this week)</span>
+                    <span className="font-semibold">
+                      {row ? `${row.thisWeek.timeHours.toFixed(1)} hrs · ` : ''}{formatCurrency(row ? row.thisWeek.timeCost : 0)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b">
+                    <span className="text-sm font-medium">Estimated Budget</span>
+                    <div className="flex items-center gap-2">
+                      {isEditingBudget ? (
+                        <Input
+                          type="number"
+                          value={estimatedBudget}
+                          onChange={(e) => setEstimatedBudget(parseInt(e.target.value) || 0)}
+                          onBlur={handleEstimatedBudgetBlur}
+                          className="w-28 h-8"
+                          autoFocus
+                        />
+                      ) : (
+                        <>
+                          <span className="font-semibold">{formatCurrency(estimatedBudget)}</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setIsEditingBudget(true)}
+                            className="h-6 w-6 p-0"
+                          >
+                            <Edit2 className="h-3 w-3" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
                 <div className="bg-muted p-6 rounded-lg text-center">
                   <p className="text-sm text-muted-foreground mb-2">Total Project Cost</p>
                   <p className="text-3xl font-bold text-primary">{formatCurrency(totalCost)}</p>
-                  <p className="text-xs text-muted-foreground mt-2">BOM + Engineer + Misc</p>
+                  <p className="text-xs text-muted-foreground mt-2">BOM + Engineer + Misc (cumulative)</p>
+                  {estimatedBudget > 0 && (
+                    <div className="mt-4">
+                      <Progress value={Math.min(budgetUsage, 100)} className="h-2" />
+                      <p className="text-xs text-muted-foreground mt-1">{budgetUsage.toFixed(0)}% of budget</p>
+                    </div>
+                  )}
                 </div>
               </div>
             </CardContent>
@@ -615,7 +683,7 @@ const CostAnalysisDetail = ({
                       autoFocus
                     />
                   ) : (
-                    <p className="text-3xl font-bold text-blue-900">{formatCurrency(poValue)}</p>
+                    <p className="text-3xl font-bold text-blue-900">{formatCurrency(row ? row.cumulative.poValue : poValue)}</p>
                   )}
                 </div>
 
@@ -723,6 +791,54 @@ const CostAnalysisDetail = ({
             </CardContent>
           </Card>
 
+          {/* Time Breakdown (per-engineer) */}
+          {row && (
+            <Card>
+              <CardHeader><CardTitle>Time breakdown</CardTitle></CardHeader>
+              <CardContent>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-left py-2">Engineer</th>
+                      <th className="text-right py-2">Hours (week)</th>
+                      <th className="text-right py-2">Cost (week)</th>
+                      <th className="text-right py-2">Hours (total)</th>
+                      <th className="text-right py-2">Cost (total)</th>
+                      <th className="text-right py-2">Rate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {row.byPerson.map((p) => (
+                      <tr key={p.email} className="border-b">
+                        <td className="py-2">{p.name} <span className="text-xs text-muted-foreground">({p.email})</span></td>
+                        <td className="py-2 text-right">{p.hoursThisWeek.toFixed(1)}</td>
+                        <td className="py-2 text-right">{formatCurrency(p.costThisWeek)}</td>
+                        <td className="py-2 text-right">{p.hoursCumulative.toFixed(1)}</td>
+                        <td className="py-2 text-right">{formatCurrency(p.costCumulative)}</td>
+                        <td className="py-2 text-right">
+                          ₹{p.rateUsed.toLocaleString('en-IN')}{' '}
+                          <span className="text-xs text-muted-foreground">
+                            ({p.rateSource === 'engineer' ? 'engineer rate' : p.rateSource === 'project_fallback' ? 'project fallback' : 'no rate'})
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {row.byPerson.length === 0 && (
+                      <tr><td colSpan={6} className="py-4 text-center text-muted-foreground">
+                        {row.usingFallbackHours ? 'Using fallback hours from manual entry. Link this project to Pulse for per-person breakdown.' : 'No hours logged in Pulse yet.'}
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+                {row.warnings.length > 0 && (
+                  <div className="mt-3 text-xs text-amber-700 border border-amber-300 rounded p-2 bg-amber-50">
+                    {row.warnings.map((w, i) => <div key={i}>⚠️ {w}</div>)}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {/* Cost Items Table */}
           <Card>
             <CardHeader>
@@ -761,8 +877,8 @@ const CostAnalysisDetail = ({
                             editingDescIdx === index ? (
                               <Input
                                 ref={descInputRef}
-                                value={costDescriptions[index]}
-                                onChange={e => handleDescChange(index, e.target.value)}
+                                value={miscDesc}
+                                onChange={e => setMiscDesc(e.target.value)}
                                 onBlur={handleDescBlur}
                                 onKeyDown={e => { if (e.key === 'Enter') handleDescBlur(); }}
                                 className="w-full h-8"
