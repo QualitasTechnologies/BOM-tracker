@@ -29,6 +29,8 @@ if (!admin.apps.length) {
 // Define secrets
 const openaiApiKeySecret = defineSecret('OPENAI_API_KEY');
 const resendApiKey = defineSecret('RESEND_API_KEY');
+const pulseApiKey = defineSecret('PULSE_API_KEY');
+const PULSE_BASE_URL = process.env.PULSE_BASE_URL || 'https://eagle-eye.qualitastech.com/pulse';
 
 // Helper function to get Resend API key (works in both emulator and production)
 const getResendApiKey = () => {
@@ -4794,5 +4796,41 @@ OUTPUT: Return ONLY the status update text (no JSON, no formatting instructions)
         error: 'Internal server error during status update generation'
       });
     }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Pulse <-> BOM Tracker integration (unified cost tracking)
+// ---------------------------------------------------------------------------
+
+function requireAdminContext(context) {
+  // v2 onCall passes auth on `context.auth`; custom claims live on `token`.
+  const claims = context?.auth?.token || {};
+  if (claims.role !== 'admin' || claims.status !== 'approved') {
+    throw new functions.https.HttpsError('permission-denied', 'admin access required');
+  }
+}
+
+async function callPulse(pathAndQuery, secretValue) {
+  const url = `${PULSE_BASE_URL}${pathAndQuery}`;
+  const res = await fetch(url, { headers: { 'X-API-Key': secretValue } });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Pulse ${pathAndQuery} failed: ${res.status} ${body.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+exports.listPulseProjects = onCall(
+  { secrets: [pulseApiKey], region: 'us-central1' },
+  async (request) => {
+    requireAdminContext(request);
+    const json = await callPulse('/api/projects', pulseApiKey.value());
+    const projects = (json.projects || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      tag: p.tag || null,
+    }));
+    return { projects };
   }
 );
