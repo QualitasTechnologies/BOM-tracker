@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch *)",
+      "Bash(npm run test:run)",
+      "Bash(npm run lint)",
+      "Bash(npx vitest run *)",
+      "Bash(firebase --version)",
+      "Bash(firebase projects:list)",
+      "Bash(firebase use)",
+      "Bash(firebase use *)",
+      "Bash(firebase functions:list)",
+      "Bash(firebase functions:log *)",
+      "Bash(firebase firestore:rules:get *)",
+      "Bash(firebase functions:config:get *)",
+      "mcp__ccd_session__mark_chapter",
+      "mcp__n8n-mcp__n8n_list_workflows",
+      "mcp__n8n-mcp__n8n_get_workflow",
+      "mcp__plugin_playwright_playwright__browser_navigate",
+      "mcp__plugin_playwright_playwright__browser_snapshot",
+      "mcp__plugin_playwright_playwright__browser_console_messages",
+      "mcp__plugin_playwright_playwright__browser_network_requests",
+      "mcp__plugin_playwright_playwright__browser_tabs",
+      "mcp__plugin_playwright_playwright__browser_wait_for"
+    ]
+  }
+}

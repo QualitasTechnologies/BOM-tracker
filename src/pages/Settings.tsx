@@ -31,8 +31,7 @@ import {
   Search,
   Filter,
   AlertCircle,
-  Tag,
-  DollarSign
+  Tag
 } from 'lucide-react';
 import { 
   Dialog, 
@@ -84,8 +83,15 @@ import { toast } from '@/components/ui/use-toast';
 import BrandsTab from '@/components/settings/BrandsTab';
 import BOMTemplatesTab from '@/components/settings/BOMTemplatesTab';
 import CompanySettingsTab from '@/components/settings/CompanySettingsTab';
-import { EngineerRatesTab } from '@/components/settings/EngineerRatesTab';
 import { Brand } from '@/types/brand';
+import {
+  subscribeToEngineerRates,
+  upsertEngineerRate,
+  deleteEngineerRate,
+  validateEmail as validateEngineerEmail,
+  validateRate,
+} from '@/utils/engineerRatesFirestore';
+import type { EngineerRate } from '@/types/engineerRate';
 import { verifyGSTIN, isValidGSTINFormat } from '@/utils/gstVerification';
 import { INDIAN_STATE_CODES } from '@/types/purchaseOrder';
 import { subscribeToBrands } from '@/utils/brandFirestore';
@@ -118,6 +124,10 @@ const Settings = () => {
   const [updatingCRMUserId, setUpdatingCRMUserId] = useState<string | null>(null);
   const [usersLoading, setUsersLoading] = useState(false);
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
+  const [engineerRates, setEngineerRates] = useState<Record<string, EngineerRate>>({});
+  const [editingRateEmail, setEditingRateEmail] = useState<string | null>(null);
+  const [rateDraft, setRateDraft] = useState('');
+  const [savingRateEmail, setSavingRateEmail] = useState<string | null>(null);
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [categoryDraft, setCategoryDraft] = useState("");
   const [prSettings, setPRSettings] = useState<PRSettings | null>(null);
@@ -417,6 +427,17 @@ const Settings = () => {
       cleanup?.then(cleanupFn => cleanupFn && cleanupFn());
     };
   }, []);
+
+  // Subscribe to engineer rates (admin only — Firestore rules enforce access)
+  useEffect(() => {
+    if (!isAdmin) return;
+    const unsubscribe = subscribeToEngineerRates((rates) => {
+      const byEmail: Record<string, EngineerRate> = {};
+      for (const r of rates) byEmail[r.email.toLowerCase()] = r;
+      setEngineerRates(byEmail);
+    });
+    return unsubscribe;
+  }, [isAdmin]);
 
   // Client logo handlers
   const handleClientImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1136,6 +1157,62 @@ const Settings = () => {
     }
   };
 
+  const startEditRate = (email: string) => {
+    const existing = engineerRates[email.toLowerCase()];
+    setEditingRateEmail(email);
+    setRateDraft(existing ? String(existing.hourlyRate) : '');
+  };
+
+  const cancelEditRate = () => {
+    setEditingRateEmail(null);
+    setRateDraft('');
+  };
+
+  const handleSaveRate = async (appUser: AppUser) => {
+    if (!user?.email) return;
+    if (!validateEngineerEmail(appUser.email)) {
+      toast({
+        title: 'Cannot set rate',
+        description: 'Engineer rates require a @qualitastech.com email.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    const trimmed = rateDraft.trim();
+    if (trimmed === '') {
+      // Empty input clears the rate
+      setSavingRateEmail(appUser.email);
+      try {
+        await deleteEngineerRate(appUser.email);
+        toast({ title: 'Rate removed', description: appUser.email });
+        cancelEditRate();
+      } catch (err: any) {
+        toast({ title: 'Failed to remove rate', description: err.message || String(err), variant: 'destructive' });
+      } finally {
+        setSavingRateEmail(null);
+      }
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (!validateRate(parsed)) {
+      toast({ title: 'Invalid rate', description: 'Rate must be a number ≥ 0', variant: 'destructive' });
+      return;
+    }
+    setSavingRateEmail(appUser.email);
+    try {
+      await upsertEngineerRate(
+        { email: appUser.email, name: appUser.displayName || appUser.email, hourlyRate: parsed },
+        user.email,
+      );
+      toast({ title: 'Rate saved', description: `${appUser.displayName || appUser.email} – ₹${parsed}/hr` });
+      cancelEditRate();
+    } catch (err: any) {
+      toast({ title: 'Save failed', description: err.message || String(err), variant: 'destructive' });
+    } finally {
+      setSavingRateEmail(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="container mx-auto py-6 px-4">
@@ -1226,9 +1303,6 @@ const Settings = () => {
             <TabsTrigger value="general" className="flex items-center gap-2">
               <SettingsIcon size={16} />
               General
-            </TabsTrigger>
-            <TabsTrigger value="engineer-rates" className="flex items-center gap-2">
-              <DollarSign className="h-4 w-4" /> Engineer Rates
             </TabsTrigger>
           </TabsList>
 
@@ -2577,6 +2651,7 @@ const Settings = () => {
                         <TableHead>Role</TableHead>
                         <TableHead>Admin</TableHead>
                         <TableHead>CRM Access</TableHead>
+                        <TableHead className="text-right">Rate (₹/hr)</TableHead>
                         <TableHead>Actions</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -2654,6 +2729,52 @@ const Settings = () => {
                                 <span className="text-xs text-gray-400">Auto (Admin)</span>
                               )}
                             </div>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {(() => {
+                              const isQualitas = validateEngineerEmail(appUser.email);
+                              if (!isQualitas) {
+                                return <span className="text-xs text-gray-400">—</span>;
+                              }
+                              const rate = engineerRates[appUser.email.toLowerCase()];
+                              const isEditing = editingRateEmail === appUser.email;
+                              const isSaving = savingRateEmail === appUser.email;
+                              if (isEditing) {
+                                return (
+                                  <div className="flex items-center gap-1 justify-end">
+                                    <Input
+                                      type="number"
+                                      min="0"
+                                      autoFocus
+                                      className="h-7 w-24 text-right"
+                                      value={rateDraft}
+                                      onChange={(e) => setRateDraft(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') handleSaveRate(appUser);
+                                        if (e.key === 'Escape') cancelEditRate();
+                                      }}
+                                      disabled={isSaving}
+                                    />
+                                    <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => handleSaveRate(appUser)} disabled={isSaving}>
+                                      {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                                    </Button>
+                                    <Button size="sm" variant="ghost" className="h-7 px-2" onClick={cancelEditRate} disabled={isSaving}>
+                                      <X size={14} />
+                                    </Button>
+                                  </div>
+                                );
+                              }
+                              return (
+                                <button
+                                  type="button"
+                                  className="text-sm hover:underline"
+                                  onClick={() => startEditRate(appUser.email)}
+                                  title="Click to edit rate (leave blank to remove)"
+                                >
+                                  {rate ? `₹${rate.hourlyRate.toLocaleString('en-IN')}` : <span className="text-gray-400">— set</span>}
+                                </button>
+                              );
+                            })()}
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-2">
@@ -2877,11 +2998,6 @@ const Settings = () => {
                 </CardContent>
               </Card>
             </div>
-          </TabsContent>
-
-          {/* Engineer Rates Tab */}
-          <TabsContent value="engineer-rates">
-            <EngineerRatesTab />
           </TabsContent>
         </Tabs>
       </div>
