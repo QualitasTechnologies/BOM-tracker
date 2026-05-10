@@ -20,7 +20,17 @@ service cloud.firestore {
     match /settings/{document=**} {
       allow read, write: if request.auth != null;
     }
-    
+
+    // Engineer hourly rates — admin-only.
+    // Confidentiality is enforced here regardless of UI gates: only an
+    // approved admin can read or write. Cost Analysis page is also
+    // admin-only on the client side.
+    match /engineerRates/{doc} {
+      allow read, write: if request.auth != null
+        && request.auth.token.role == 'admin'
+        && request.auth.token.status == 'approved';
+    }
+
     // Allow all other authenticated operations
     match /{document=**} {
       allow read, write: if request.auth != null;
