@@ -22,5 +22,6 @@ export interface EditableProjectInput {
   status: FirestoreProject["status"];
   deadline: string;
   poValue?: number; // Purchase Order value - optional for backward compatibility
+  pulseProjectId?: number;
 }
 

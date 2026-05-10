@@ -7,9 +7,12 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { deleteField, doc, updateDoc } from "firebase/firestore";
+import { db } from "@/firebase";
 import { subscribeToProjects, getBOMData, updateProject } from "@/utils/projectFirestore";
 import { subscribeToClients, Client } from "@/utils/settingsFirestore";
 import { getProjectDocuments } from "@/utils/projectDocumentFirestore";
+import { listPulseProjects, type PulseProjectOption } from "@/utils/pulseProxyFirestore";
 import type { EditableProjectInput, FirestoreProject } from "@/types/project";
 
 interface EditProjectDialogProps {
@@ -28,12 +31,25 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
   const [deadline, setDeadline] = useState("");
   const [error, setError] = useState("");
   const [clients, setClients] = useState<Client[]>([]);
+  const [pulseOptions, setPulseOptions] = useState<PulseProjectOption[]>([]);
+  const [pulseFilter, setPulseFilter] = useState('');
+  const [pulseProjectId, setPulseProjectId] = useState<number | undefined>(undefined);
 
   // Load clients when dialog opens
   useEffect(() => {
     if (!open) return;
     const unsubscribeClients = subscribeToClients(setClients);
     return () => unsubscribeClients();
+  }, [open]);
+
+  // Load Pulse projects once when dialog opens
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    listPulseProjects()
+      .then((opts) => { if (alive) setPulseOptions(opts); })
+      .catch((err) => console.error('listPulseProjects failed', err));
+    return () => { alive = false; };
   }, [open]);
 
   // Reset form when dialog closes
@@ -46,6 +62,8 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
       setStatus("Ongoing");
       setDeadline("");
       setError("");
+      setPulseProjectId(undefined);
+      setPulseFilter('');
     }
   }, [open]);
 
@@ -58,6 +76,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
     setDescription(project.description);
     setStatus(project.status);
     setDeadline(project.deadline);
+    setPulseProjectId(project.pulseProjectId);
   }, [project, open]);
 
   // Set clientName after clients are loaded to ensure exact match
@@ -136,6 +155,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
             description,
             status,
             deadline,
+            ...(pulseProjectId !== undefined ? { pulseProjectId } : {}),
           });
         } else {
           // Normal update without snapshot
@@ -146,6 +166,14 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
             description,
             status,
             deadline,
+            ...(pulseProjectId !== undefined ? { pulseProjectId } : {}),
+          });
+        }
+
+        // If unlinking a previously linked Pulse project, explicitly delete the field
+        if (pulseProjectId === undefined && project?.pulseProjectId !== undefined) {
+          await updateDoc(doc(db, 'projects', projectId), {
+            pulseProjectId: deleteField(),
           });
         }
 
@@ -248,6 +276,51 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
                 <SelectItem value="Completed">Completed</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Link to Pulse Project</Label>
+            {pulseProjectId !== undefined ? (
+              <div className="flex items-center gap-2">
+                <span className="text-sm">
+                  🔗 {pulseOptions.find((o) => o.id === pulseProjectId)?.name ?? `id ${pulseProjectId}`}
+                </span>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setPulseProjectId(undefined)}>
+                  Unlink
+                </Button>
+              </div>
+            ) : (
+              <>
+                <Input
+                  placeholder="Type to search Pulse projects..."
+                  value={pulseFilter}
+                  onChange={(e) => setPulseFilter(e.target.value)}
+                  className="h-8"
+                />
+                {pulseFilter && (
+                  <div className="border rounded max-h-40 overflow-auto">
+                    {pulseOptions
+                      .filter((o) => o.name.toLowerCase().includes(pulseFilter.toLowerCase()))
+                      .slice(0, 20)
+                      .map((o) => (
+                        <button
+                          type="button"
+                          key={o.id}
+                          className="block w-full text-left px-2 py-1 hover:bg-muted text-sm"
+                          onClick={() => { setPulseProjectId(o.id); setPulseFilter(''); }}
+                        >
+                          {o.name} <span className="text-xs text-muted-foreground">(id {o.id})</span>
+                        </button>
+                      ))}
+                    {pulseOptions.filter((o) => o.name.toLowerCase().includes(pulseFilter.toLowerCase())).length === 0 && (
+                      <p className="px-2 py-1 text-sm text-muted-foreground">No matching projects</p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Live time data from Pulse will be used in Cost Analysis when this is set.
+            </p>
           </div>
           <div className="space-y-1">
             <Label htmlFor="deadline">Deadline</Label>
