@@ -393,7 +393,7 @@ const CostAnalysisDetail = ({
   const totalCost = row ? row.cumulative.total : 0;
   const grossProfit = row ? row.cumulative.grossProfit : 0;
   const isProfit = grossProfit > 0;
-  const profitMargin = row ? (row.cumulative.profitMargin ?? 0) : 0;
+  const profitMargin = row?.cumulative.profitMargin ?? null;
   const budgetUsage = estimatedBudget > 0 ? (totalCost / estimatedBudget) * 100 : 0;
 
   const getStatusBadge = () => {
@@ -713,7 +713,7 @@ const CostAnalysisDetail = ({
                     {formatCurrency(Math.abs(grossProfit))}
                   </p>
                   <p className={`text-sm font-medium mt-1 ${isProfit ? 'text-green-700' : 'text-red-700'}`}>
-                    {profitMargin.toFixed(1)}% margin
+                    {profitMargin === null ? '—' : `${profitMargin.toFixed(1)}% margin`}
                   </p>
                 </div>
               </div>

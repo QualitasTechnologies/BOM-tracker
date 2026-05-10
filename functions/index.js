@@ -4844,7 +4844,7 @@ async function computeMaterialCost(projectId, from, to) {
   const bomSnap = await admin.firestore().collection('projects').doc(projectId).collection('bom').doc('data').get();
   let cumulative = 0;
   let inRange = 0;
-  if (bomSnap.exists()) {
+  if (bomSnap.exists) {
     const categories = Array.isArray(bomSnap.data().categories) ? bomSnap.data().categories : [];
     for (const cat of categories) {
       const items = Array.isArray(cat.items) ? cat.items : [];
@@ -4879,8 +4879,8 @@ async function loadEngineerRates() {
 
 function resolveRate(email, projectFallback, ratesMap) {
   const r = email ? ratesMap.get(String(email).toLowerCase()) : undefined;
-  if (Number.isFinite(r)) return { rate: r, source: 'engineer' };
-  if (Number.isFinite(projectFallback)) return { rate: projectFallback, source: 'project_fallback' };
+  if (Number.isFinite(r) && r > 0) return { rate: r, source: 'engineer' };
+  if (Number.isFinite(projectFallback) && projectFallback > 0) return { rate: projectFallback, source: 'project_fallback' };
   return { rate: 0, source: 'none' };
 }
 
