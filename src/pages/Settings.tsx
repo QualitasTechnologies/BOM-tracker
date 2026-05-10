@@ -31,7 +31,8 @@ import {
   Search,
   Filter,
   AlertCircle,
-  Tag
+  Tag,
+  DollarSign
 } from 'lucide-react';
 import { 
   Dialog, 
@@ -83,6 +84,7 @@ import { toast } from '@/components/ui/use-toast';
 import BrandsTab from '@/components/settings/BrandsTab';
 import BOMTemplatesTab from '@/components/settings/BOMTemplatesTab';
 import CompanySettingsTab from '@/components/settings/CompanySettingsTab';
+import { EngineerRatesTab } from '@/components/settings/EngineerRatesTab';
 import { Brand } from '@/types/brand';
 import { verifyGSTIN, isValidGSTINFormat } from '@/utils/gstVerification';
 import { INDIAN_STATE_CODES } from '@/types/purchaseOrder';
@@ -1192,7 +1194,7 @@ const Settings = () => {
         )}
 
         <Tabs defaultValue="clients" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-8">
+          <TabsList className="grid w-full grid-cols-9">
             <TabsTrigger value="company" className="flex items-center gap-2">
               <Building size={16} />
               Company
@@ -1224,6 +1226,9 @@ const Settings = () => {
             <TabsTrigger value="general" className="flex items-center gap-2">
               <SettingsIcon size={16} />
               General
+            </TabsTrigger>
+            <TabsTrigger value="engineer-rates" className="flex items-center gap-2">
+              <DollarSign className="h-4 w-4" /> Engineer Rates
             </TabsTrigger>
           </TabsList>
 
@@ -2872,6 +2877,11 @@ const Settings = () => {
                 </CardContent>
               </Card>
             </div>
+          </TabsContent>
+
+          {/* Engineer Rates Tab */}
+          <TabsContent value="engineer-rates">
+            <EngineerRatesTab />
           </TabsContent>
         </Tabs>
       </div>
