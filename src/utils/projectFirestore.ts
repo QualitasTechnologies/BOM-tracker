@@ -34,6 +34,12 @@ export interface Project {
   sourceDealId?: string;           // Link back to originating deal (if converted from CRM)
   driveFolderUrl?: string;         // Google Drive folder (inherited from deal)
 
+  // Pulse Integration (unified cost tracking)
+  // Numeric Pulse SQLite project id. Stable across name changes.
+  // When set, BOM Tracker pulls live time data from Pulse instead of
+  // the manual engineers/weeks subcollection.
+  pulseProjectId?: number;
+
   // CEO Dashboard Fields (Phase 2)
   category?: 'internal' | 'customer';  // Project classification
   projectOwnerId?: string;             // User ID of project owner

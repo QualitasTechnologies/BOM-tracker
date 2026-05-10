@@ -29,6 +29,8 @@ if (!admin.apps.length) {
 // Define secrets
 const openaiApiKeySecret = defineSecret('OPENAI_API_KEY');
 const resendApiKey = defineSecret('RESEND_API_KEY');
+const pulseApiKey = defineSecret('PULSE_API_KEY');
+const PULSE_BASE_URL = process.env.PULSE_BASE_URL || 'https://eagle-eye.qualitastech.com/pulse';
 
 // Helper function to get Resend API key (works in both emulator and production)
 const getResendApiKey = () => {
@@ -4818,5 +4820,214 @@ OUTPUT: Return ONLY the status update text (no JSON, no formatting instructions)
         error: 'Internal server error during status update generation'
       });
     }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Pulse <-> BOM Tracker integration (unified cost tracking)
+// ---------------------------------------------------------------------------
+
+function requireAdminContext(context) {
+  // v2 onCall passes auth on `context.auth`; custom claims live on `token`.
+  const claims = context?.auth?.token || {};
+  if (claims.role !== 'admin' || claims.status !== 'approved') {
+    throw new functions.https.HttpsError('permission-denied', 'admin access required');
+  }
+}
+
+async function callPulse(pathAndQuery, secretValue) {
+  const url = `${PULSE_BASE_URL}${pathAndQuery}`;
+  const res = await fetch(url, { headers: { 'X-API-Key': secretValue } });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Pulse ${pathAndQuery} failed: ${res.status} ${body.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+exports.listPulseProjects = onCall(
+  { secrets: [pulseApiKey], region: 'us-central1' },
+  async (request) => {
+    requireAdminContext(request);
+    const json = await callPulse('/api/projects', pulseApiKey.value());
+    const projects = (json.projects || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      tag: p.tag || null,
+    }));
+    return { projects };
+  }
+);
+
+// Sum item.totalCost across a BOM, optionally only for items where
+// orderDate falls in [from, to] (both inclusive ISO YYYY-MM-DD strings).
+// BOM is stored as a single doc at projects/{projectId}/bom/data with a
+// top-level `categories` array, each category having an `items` array.
+// Each item has `quantity` and `price`; cost = quantity * price.
+async function computeMaterialCost(projectId, from, to) {
+  const bomSnap = await admin.firestore().collection('projects').doc(projectId).collection('bom').doc('data').get();
+  let cumulative = 0;
+  let inRange = 0;
+  if (bomSnap.exists) {
+    const categories = Array.isArray(bomSnap.data().categories) ? bomSnap.data().categories : [];
+    for (const cat of categories) {
+      const items = Array.isArray(cat.items) ? cat.items : [];
+      for (const item of items) {
+        const qty = Number(item.quantity) || 0;
+        const price = Number(item.price) || 0;
+        const cost = qty * price;
+        cumulative += cost;
+        if (from && to && item.orderDate) {
+          const d = String(item.orderDate).slice(0, 10);
+          if (d >= from && d <= to) inRange += cost;
+        }
+      }
+    }
+  }
+  return { cumulative, inRange };
+}
+
+// Returns Map<email, hourlyRate>. Reads the engineerRates collection once
+// per invocation (small collection — one doc per engineer).
+async function loadEngineerRates() {
+  const snap = await admin.firestore().collection('engineerRates').get();
+  const map = new Map();
+  for (const d of snap.docs) {
+    const data = d.data();
+    if (data.email && Number.isFinite(data.hourlyRate)) {
+      map.set(String(data.email).toLowerCase(), Number(data.hourlyRate));
+    }
+  }
+  return map;
+}
+
+function resolveRate(email, projectFallback, ratesMap) {
+  const r = email ? ratesMap.get(String(email).toLowerCase()) : undefined;
+  if (Number.isFinite(r) && r > 0) return { rate: r, source: 'engineer' };
+  if (Number.isFinite(projectFallback) && projectFallback > 0) return { rate: projectFallback, source: 'project_fallback' };
+  return { rate: 0, source: 'none' };
+}
+
+exports.getProjectCosts = onCall(
+  { secrets: [pulseApiKey], region: 'us-central1', timeoutSeconds: 60 },
+  async (request) => {
+    requireAdminContext(request);
+
+    const data = request.data || {};
+    const weekStart = String(data.weekStart || '').trim();
+    const weekEnd = String(data.weekEnd || '').trim();
+    const isoDate = /^\d{4}-\d{2}-\d{2}$/;
+    if (!isoDate.test(weekStart) || !isoDate.test(weekEnd)) {
+      throw new functions.https.HttpsError('invalid-argument', 'weekStart and weekEnd must be YYYY-MM-DD');
+    }
+
+    const [projectsSnap, ratesMap] = await Promise.all([
+      admin.firestore().collection('projects').get(),
+      loadEngineerRates(),
+    ]);
+
+    const results = [];
+
+    for (const projectDoc of projectsSnap.docs) {
+      const project = projectDoc.data();
+      const projectId = projectDoc.id;
+      if (project.status === 'Archived') continue;
+
+      const projectFallbackRate = Number(project.costPerHour) || 0;
+      const miscCost = Number(project.miscCost) || 0;
+      const poValue = Number(project.poValue) || 0;
+      const pulseProjectId = Number(project.pulseProjectId) || null;
+
+      const material = await computeMaterialCost(projectId, weekStart, weekEnd);
+
+      let hoursThisWeek = 0;
+      let hoursCumulative = 0;
+      let timeCostThisWeek = 0;
+      let timeCostCumulative = 0;
+      const byPersonMap = new Map(); // email -> aggregate row
+      let usingFallbackHours = false;
+      const warnings = [];
+
+      if (pulseProjectId) {
+        try {
+          const [weekJson, lifetimeJson] = await Promise.all([
+            callPulse(`/api/projects/${pulseProjectId}/hours-summary?from=${weekStart}&to=${weekEnd}`, pulseApiKey.value()),
+            callPulse(`/api/projects/${pulseProjectId}/hours-summary`, pulseApiKey.value()),
+          ]);
+
+          for (const p of weekJson.by_person || []) {
+            const { rate, source } = resolveRate(p.email, projectFallbackRate, ratesMap);
+            const cost = Number(p.hours) * rate;
+            hoursThisWeek += Number(p.hours);
+            timeCostThisWeek += cost;
+            const row = byPersonMap.get(p.email) || { email: p.email, name: p.name, hoursThisWeek: 0, hoursCumulative: 0, costThisWeek: 0, costCumulative: 0, rateUsed: rate, rateSource: source };
+            row.hoursThisWeek = Number(p.hours);
+            row.costThisWeek = cost;
+            byPersonMap.set(p.email, row);
+            if (source === 'none') warnings.push(`No rate set for ${p.email}`);
+          }
+
+          for (const p of lifetimeJson.by_person || []) {
+            const { rate, source } = resolveRate(p.email, projectFallbackRate, ratesMap);
+            const cost = Number(p.hours) * rate;
+            hoursCumulative += Number(p.hours);
+            timeCostCumulative += cost;
+            const row = byPersonMap.get(p.email) || { email: p.email, name: p.name, hoursThisWeek: 0, hoursCumulative: 0, costThisWeek: 0, costCumulative: 0, rateUsed: rate, rateSource: source };
+            row.hoursCumulative = Number(p.hours);
+            row.costCumulative = cost;
+            byPersonMap.set(p.email, row);
+          }
+        } catch (err) {
+          logger.error(`Pulse fetch failed for project ${projectId} (pulseProjectId=${pulseProjectId}):`, err);
+          warnings.push(`Pulse fetch failed: ${err.message}`);
+        }
+      } else {
+        // Fallback: read existing engineers/weeks subcollection.
+        const engineersSnap = await admin.firestore().collection('projects').doc(projectId).collection('engineers').get();
+        for (const eng of engineersSnap.docs) {
+          const e = eng.data();
+          const weeks = e.weeks || {};
+          let engHours = 0;
+          for (const wk of Object.values(weeks)) {
+            engHours += Number(wk.total) || 0;
+          }
+          hoursCumulative += engHours;
+          timeCostCumulative += engHours * projectFallbackRate;
+        }
+        usingFallbackHours = true;
+      }
+
+      const cumulativeTotal = material.cumulative + timeCostCumulative + miscCost;
+      const grossProfit = poValue - cumulativeTotal;
+      const profitMargin = poValue ? (grossProfit / poValue) * 100 : null;
+
+      results.push({
+        projectId,
+        projectName: project.projectName || projectId,
+        status: project.status,
+        pulseProjectId,
+        usingFallbackHours,
+        thisWeek: {
+          materialCost: material.inRange,
+          timeHours: hoursThisWeek,
+          timeCost: timeCostThisWeek,
+          total: material.inRange + timeCostThisWeek,
+        },
+        cumulative: {
+          materialCost: material.cumulative,
+          timeHours: hoursCumulative,
+          timeCost: timeCostCumulative,
+          miscCost,
+          total: cumulativeTotal,
+          poValue,
+          grossProfit,
+          profitMargin,
+        },
+        byPerson: Array.from(byPersonMap.values()).sort((a, b) => b.hoursCumulative - a.hoursCumulative),
+        warnings,
+      });
+    }
+
+    return { range: { from: weekStart, to: weekEnd }, projects: results };
   }
 );
