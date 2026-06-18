@@ -38,7 +38,7 @@ const CostAnalysisSummary = ({
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (collapsed: boolean) => void;
 }) => {
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
   const navigate = useNavigate();
   const [projects, setProjects] = useState<FirestoreProject[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -48,10 +48,12 @@ const CostAnalysisSummary = ({
 
   // Subscribe to projects and clients
   useEffect(() => {
-    const unsubscribeProjects = subscribeToProjects((fetchedProjects) => {
-      // Filter out archived projects
-      setProjects(fetchedProjects.filter(p => p.status !== 'Archived'));
-    });
+    const unsubscribeProjects = subscribeToProjects(
+      (fetchedProjects) => {
+        setProjects(fetchedProjects.filter(p => p.status !== 'Archived'));
+      },
+      user ? { uid: user.uid, isAdmin } : undefined
+    );
     const unsubscribeClients = subscribeToClients(setClients);
 
     return () => {

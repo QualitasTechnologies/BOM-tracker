@@ -17,8 +17,10 @@ import { getTemplate, subscribeToClients, Client } from "@/utils/settingsFiresto
 import type { EditableProjectInput, FirestoreProject, NewProjectFormData, ProjectViewMode } from "@/types/project";
 import type { BOMCategory, BOMItem } from "@/types/bom";
 import { TranscriptPasteDialog } from "@/components/Transcripts";
+import { useAuth } from "@/hooks/useAuth";
 
 const Projects = () => {
+  const { user, isAdmin } = useAuth();
   const [viewMode, setViewMode] = useState<ProjectViewMode>("cards");
   const [searchQuery, setSearchQuery] = useState("");
   const [clientFilter, setClientFilter] = useState("all");
@@ -33,10 +35,11 @@ const Projects = () => {
   const [clients, setClients] = useState<Client[]>([]);
 
   useEffect(() => {
-    // Subscribe to Firestore projects
-    const unsubscribeProjects = subscribeToProjects((fetchedProjects) => {
-      setProjects(fetchedProjects);
-    });
+    // Subscribe to Firestore projects (filtered by membership for non-admins)
+    const unsubscribeProjects = subscribeToProjects(
+      (fetchedProjects) => { setProjects(fetchedProjects); },
+      user ? { uid: user.uid, isAdmin } : undefined
+    );
     // Subscribe to clients to get logos
     const unsubscribeClients = subscribeToClients((fetchedClients) => {
       setClients(fetchedClients);
@@ -79,7 +82,10 @@ const Projects = () => {
       deadline: newProject.deadline,
       poValue: newProject.poValue,
     };
-    await addProject(project);
+    await addProject(
+      project,
+      user ? { uid: user.uid, email: user.email || '', displayName: user.displayName || '' } : undefined
+    );
 
     // If a template is selected, apply it to the BOM
     if (templateId) {

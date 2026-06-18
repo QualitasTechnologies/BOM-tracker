@@ -51,7 +51,7 @@ const TranscriptPasteDialog = ({
   onOpenChange,
   onSuccess,
 }: TranscriptPasteDialogProps) => {
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Step 1: Input state
@@ -98,7 +98,7 @@ const TranscriptPasteDialog = ({
 
   const loadProjects = async () => {
     try {
-      const projectList = await getProjects();
+      const projectList = await getProjects(user ? { uid: user.uid, isAdmin } : undefined);
       // Project uses projectId and projectName fields
       setProjects(projectList.map((p) => ({ id: p.projectId, name: p.projectName })));
 

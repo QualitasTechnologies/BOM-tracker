@@ -13,6 +13,7 @@ import { subscribeToProjects } from "@/utils/projectFirestore";
 import { subscribeToClients, Client, subscribeToTemplates } from "@/utils/settingsFirestore";
 import type { FirestoreProject, NewProjectFormData } from "@/types/project";
 import type { BOMTemplate } from "@/types/bom";
+import { useAuth } from "@/hooks/useAuth";
 
 interface AddProjectDialogProps {
   open: boolean;
@@ -21,6 +22,7 @@ interface AddProjectDialogProps {
 }
 
 const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialogProps) => {
+  const { user, isAdmin } = useAuth();
   const [id, setId] = useState("");
   const [name, setName] = useState("");
   const [client, setClient] = useState("");
@@ -80,11 +82,12 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
   // Generate project ID when dialog opens or when projects change
   useEffect(() => {
     if (!open) return;
-    const unsubscribe = subscribeToProjects((projects) => {
-      setId(generateProjectId(projects));
-    });
+    const unsubscribe = subscribeToProjects(
+      (projects) => { setId(generateProjectId(projects)); },
+      user ? { uid: user.uid, isAdmin } : undefined
+    );
     return () => unsubscribe();
-  }, [open]);
+  }, [open, user?.uid, isAdmin]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -94,7 +97,6 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
     try {
       const unsubscribe = subscribeToProjects(async (projects) => {
         unsubscribe();
-
         const projectExists = projects.some((project) => project.projectId === id);
         if (projectExists) {
           setError("Project ID already exists. Please try again.");
@@ -127,7 +129,7 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
         } finally {
           setLoading(false);
         }
-      });
+      }, user ? { uid: user.uid, isAdmin } : undefined);
     } catch (err) {
       console.error("AddProjectDialog: Subscription error", err);
       setError("Failed to create project. Please try again.");

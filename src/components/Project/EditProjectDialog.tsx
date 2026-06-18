@@ -14,6 +14,7 @@ import { subscribeToClients, Client } from "@/utils/settingsFirestore";
 import { getProjectDocuments } from "@/utils/projectDocumentFirestore";
 import { listPulseProjects, type PulseProjectOption } from "@/utils/pulseProxyFirestore";
 import type { EditableProjectInput, FirestoreProject } from "@/types/project";
+import { useAuth } from "@/hooks/useAuth";
 
 interface EditProjectDialogProps {
   open: boolean;
@@ -23,6 +24,7 @@ interface EditProjectDialogProps {
 }
 
 const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: EditProjectDialogProps) => {
+  const { user, isAdmin } = useAuth();
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState("");
   const [clientName, setClientName] = useState("");
@@ -193,7 +195,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
           return;
         }
         void submitUpdate();
-      });
+      }, user ? { uid: user.uid, isAdmin } : undefined);
       return;
     }
 
