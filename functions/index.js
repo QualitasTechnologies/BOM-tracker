@@ -5031,3 +5031,61 @@ exports.getProjectCosts = onCall(
     return { range: { from: weekStart, to: weekEnd }, projects: results };
   }
 );
+
+// Migration: backfill memberIds/members for all existing projects that lack them.
+// Adds all currently approved users to every un-migrated project.
+// Call once from Settings as admin. Safe to call multiple times (idempotent per project).
+exports.migrateProjectMembership = onCall(async (request) => {
+  if (request.auth?.token?.role !== 'admin') {
+    throw new functions.https.HttpsError('permission-denied', 'Admin role required.');
+  }
+
+  const db = admin.firestore();
+
+  // Find projects without memberIds
+  const projectsSnap = await db.collection('projects').get();
+  const unmigrated = projectsSnap.docs.filter(d => {
+    const data = d.data();
+    return !data.memberIds || data.memberIds.length === 0;
+  });
+
+  if (unmigrated.length === 0) {
+    return { migrated: 0, message: 'All projects already have membership data.' };
+  }
+
+  // Collect all approved users (Firebase Auth list, up to 1000)
+  const listResult = await admin.auth().listUsers(1000);
+  const approvedUsers = listResult.users
+    .filter(u => (u.customClaims || {}).status === 'approved')
+    .map(u => ({
+      userId: u.uid,
+      email: u.email || '',
+      displayName: u.displayName || u.email || u.uid,
+    }));
+
+  const today = new Date().toISOString().split('T')[0];
+  const BATCH_SIZE = 500; // Firestore batch limit
+
+  // Write in batches of 500
+  for (let i = 0; i < unmigrated.length; i += BATCH_SIZE) {
+    const batch = db.batch();
+    const slice = unmigrated.slice(i, i + BATCH_SIZE);
+    for (const projectDoc of slice) {
+      batch.update(projectDoc.ref, {
+        memberIds: approvedUsers.map(u => u.userId),
+        members: approvedUsers.map(u => ({
+          ...u,
+          addedAt: today,
+          addedBy: 'migration',
+        })),
+      });
+    }
+    await batch.commit();
+  }
+
+  return {
+    migrated: unmigrated.length,
+    totalUsers: approvedUsers.length,
+    message: `Migrated ${unmigrated.length} project(s) with ${approvedUsers.length} user(s).`,
+  };
+});
