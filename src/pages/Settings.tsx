@@ -95,6 +95,8 @@ import type { EngineerRate } from '@/types/engineerRate';
 import { verifyGSTIN, isValidGSTINFormat } from '@/utils/gstVerification';
 import { INDIAN_STATE_CODES } from '@/types/purchaseOrder';
 import { subscribeToBrands } from '@/utils/brandFirestore';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '@/firebase';
 import { fetchAllUsers, updateUserRole, approveUser, rejectUser, deleteUser, UserRole } from '@/utils/userService';
 import { Shield, UserCog } from 'lucide-react';
 
@@ -119,6 +121,7 @@ const Settings = () => {
     createdAt?: string;
   }
   const [appUsers, setAppUsers] = useState<AppUser[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
   const [usersLoading, setUsersLoading] = useState(false);
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
   const [engineerRates, setEngineerRates] = useState<Record<string, EngineerRate>>({});
@@ -1016,6 +1019,7 @@ const Settings = () => {
         createdAt: rawUser.creationTime,
       }));
       setAppUsers(usersData);
+      setPendingCount(usersData.filter(u => !u.status || u.status === 'pending').length);
     } catch (error) {
       console.error('Error loading users:', error);
       toast({
@@ -1260,9 +1264,14 @@ const Settings = () => {
               <Mail size={16} />
               Purchase Request
             </TabsTrigger>
-            <TabsTrigger value="users" className="flex items-center gap-2" onClick={() => loadUsers()}>
+            <TabsTrigger value="users" className="flex items-center gap-2 relative" onClick={() => loadUsers()}>
               <UserCog size={16} />
               Users
+              {pendingCount > 0 && (
+                <span className="ml-1 inline-flex items-center justify-center rounded-full bg-amber-500 text-white text-[10px] font-bold h-4 min-w-4 px-1">
+                  {pendingCount}
+                </span>
+              )}
             </TabsTrigger>
             <TabsTrigger value="general" className="flex items-center gap-2">
               <SettingsIcon size={16} />
@@ -2575,6 +2584,20 @@ const Settings = () => {
                     ) : (
                       'Refresh'
                     )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={async () => {
+                      try {
+                        const migrate = httpsCallable(functions, 'migrateProjectMembership');
+                        const result = await migrate();
+                        toast({ title: 'Migration complete', description: (result.data as { message: string }).message });
+                      } catch (err: any) {
+                        toast({ title: 'Migration failed', description: err.message, variant: 'destructive' });
+                      }
+                    }}
+                  >
+                    Run Migration
                   </Button>
                 </div>
               </CardHeader>
