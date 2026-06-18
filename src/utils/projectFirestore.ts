@@ -9,6 +9,7 @@ import {
   updateDoc,
   deleteDoc,
   query,
+  where,
   DocumentData,
   Unsubscribe,
   getDoc
@@ -17,6 +18,15 @@ import type { BOMItem, BOMCategory, BOMStatus } from "@/types/bom";
 import { sanitizeBOMItemForFirestore } from "@/types/bom";
 
 export type { BOMItem, BOMCategory, BOMStatus };
+
+export interface ProjectMember {
+  userId: string;
+  email: string;
+  displayName: string;
+  addedAt: string;      // ISO date YYYY-MM-DD
+  addedBy: string;      // UID of admin who added them (or 'migration' / 'self')
+  categoryScope?: string[]; // undefined = all categories (internal); [] = none; ['Mech'] = scoped
+}
 
 export interface Project {
   projectId: string;
@@ -50,24 +60,49 @@ export interface Project {
   isBaselined?: boolean;               // false until owner locks baseline
   baselinedAt?: string;                // ISO string - when baseline was locked
   baselinedBy?: string;                // User ID who locked the baseline
+
+  // Membership — used in Firestore security rules and client queries
+  memberIds?: string[];    // UIDs of all members (optional for backward compat during migration)
+  members?: ProjectMember[]; // Full member records for UI display
 }
 
 const projectsCol = collection(db, "projects");
 
 // Add a new project (projectId as document ID)
-export const addProject = async (project: Project) => {
-  // Filter out undefined values to prevent Firestore errors
+export const addProject = async (
+  project: Project,
+  creator?: { uid: string; email: string; displayName: string }
+) => {
+  const today = new Date().toISOString().split('T')[0];
+  const projectWithMembership: Project = creator
+    ? {
+        ...project,
+        memberIds: [creator.uid],
+        members: [{
+          userId: creator.uid,
+          email: creator.email,
+          displayName: creator.displayName || creator.email,
+          addedAt: today,
+          addedBy: creator.uid,
+        }],
+      }
+    : project;
+
   const cleanProject = Object.fromEntries(
-    Object.entries(project).filter(([_, value]) => value !== undefined)
+    Object.entries(projectWithMembership).filter(([_, value]) => value !== undefined)
   );
   await setDoc(doc(projectsCol, project.projectId), cleanProject);
 };
 
 // Get all projects (real-time listener)
 export const subscribeToProjects = (
-  callback: (projects: Project[]) => void
+  callback: (projects: Project[]) => void,
+  userInfo?: { uid: string; isAdmin: boolean }
 ): Unsubscribe => {
-  const q = query(projectsCol);
+  const q =
+    userInfo && !userInfo.isAdmin
+      ? query(projectsCol, where('memberIds', 'array-contains', userInfo.uid))
+      : query(projectsCol);
   return onSnapshot(q, (snapshot) => {
     const projects: Project[] = snapshot.docs.map((doc) => doc.data() as Project);
     callback(projects);
@@ -75,8 +110,14 @@ export const subscribeToProjects = (
 };
 
 // Get all projects (one-time fetch)
-export const getProjects = async (): Promise<(Project & { id: string })[]> => {
-  const snapshot = await getDocs(projectsCol);
+export const getProjects = async (
+  userInfo?: { uid: string; isAdmin: boolean }
+): Promise<(Project & { id: string })[]> => {
+  const q =
+    userInfo && !userInfo.isAdmin
+      ? query(projectsCol, where('memberIds', 'array-contains', userInfo.uid))
+      : query(projectsCol);
+  const snapshot = await getDocs(q);
   return snapshot.docs.map((doc) => ({
     id: doc.id,
     ...(doc.data() as Project),
@@ -146,6 +187,45 @@ export const getProject = async (projectId: string): Promise<Project | null> => 
 // Permanently delete a project (use with caution - data cannot be recovered)
 export const deleteProject = async (projectId: string) => {
   await deleteDoc(doc(projectsCol, projectId));
+};
+
+// Member management functions
+export const addProjectMember = async (
+  projectId: string,
+  project: Project,
+  newMember: ProjectMember
+): Promise<void> => {
+  const updatedMemberIds = [...(project.memberIds || []), newMember.userId];
+  const updatedMembers = [...(project.members || []), newMember];
+  await updateDoc(doc(projectsCol, projectId), {
+    memberIds: updatedMemberIds,
+    members: updatedMembers,
+  });
+};
+
+export const removeProjectMember = async (
+  projectId: string,
+  project: Project,
+  userId: string
+): Promise<void> => {
+  const updatedMemberIds = (project.memberIds || []).filter(id => id !== userId);
+  const updatedMembers = (project.members || []).filter(m => m.userId !== userId);
+  await updateDoc(doc(projectsCol, projectId), {
+    memberIds: updatedMemberIds,
+    members: updatedMembers,
+  });
+};
+
+export const updateProjectMemberScope = async (
+  projectId: string,
+  project: Project,
+  userId: string,
+  categoryScope: string[]
+): Promise<void> => {
+  const updatedMembers = (project.members || []).map(m =>
+    m.userId === userId ? { ...m, categoryScope } : m
+  );
+  await updateDoc(doc(projectsCol, projectId), { members: updatedMembers });
 };
 
 // BOM Functions
