@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import { Search, Plus, Download, Filter, X, Upload, Package, FileText, Users, ChevronDown, ChevronUp, Milestone, Brain } from 'lucide-react';
+import { Search, Plus, Download, Filter, X, Upload, Package, FileText, Users, ChevronDown, ChevronUp, Milestone, Brain, UserCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -34,7 +34,12 @@ import {
   updateBOMData,
   updateBOMItem,
   deleteBOMItem,
+  Project,
 } from '@/utils/projectFirestore';
+import { useAuth } from '@/hooks/useAuth';
+import { getVisibleCategories } from '@/utils/accessControl';
+import ProjectMembersTab from '@/components/Project/ProjectMembersTab';
+import { fetchAllUsers } from '@/utils/userService';
 import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
 import { getBrands } from '@/utils/brandFirestore';
 import type { Vendor, BOMCategory as SettingsCategory } from '@/utils/settingsFirestore';
@@ -127,6 +132,9 @@ const BOM = () => {
   const [availableMakes, setAvailableMakes] = useState<string[]>([]);
   const [canonicalCategories, setCanonicalCategories] = useState<SettingsCategory[]>([]);
   const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([]);
+  const { user, isAdmin } = useAuth();
+  const [fullProject, setFullProject] = useState<Project | null>(null);
+  const [approvedUsers, setApprovedUsers] = useState<Array<{ uid: string; email: string; displayName: string }>>([]);
   const canonicalCategoryNames = useMemo(
     () =>
       canonicalCategories
@@ -173,7 +181,8 @@ const BOM = () => {
         const projectSnap = await getDoc(projectRef);
 
         if (projectSnap.exists()) {
-          const projectData = projectSnap.data() as { projectName: string; projectId: string; clientName: string };
+          const projectData = projectSnap.data() as Project & { projectName: string; clientName: string };
+          setFullProject(projectData);
           setProjectDetails({
             projectName: projectData.projectName,
             projectId: projectData.projectId,
@@ -186,6 +195,17 @@ const BOM = () => {
         // Load project documents
         const docs = await getProjectDocuments(projectId);
         setProjectDocuments(docs);
+
+        // Load approved users for Members tab (admins only — non-admins get permission denied)
+        try {
+          const result = await fetchAllUsers() as { users: Array<{ uid: string; email?: string; displayName?: string; customClaims?: { status?: string } }> };
+          const approved = (result.users || [])
+            .filter(u => u.customClaims?.status === 'approved')
+            .map(u => ({ uid: u.uid, email: u.email || '', displayName: u.displayName || u.email || '' }));
+          setApprovedUsers(approved);
+        } catch {
+          // Non-admin users won't have access to fetchAllUsers — silently ignore
+        }
       } catch (error) {
         console.error('Error loading project details:', error);
       }
@@ -492,8 +512,14 @@ const BOM = () => {
     setPRDialogOpen(true);
   };
 
+  // Category scoping: external partners see only their assigned categories
+  const currentMember = fullProject?.members?.find(m => m.userId === user?.uid);
+  const visibleCategories = user
+    ? getVisibleCategories(user.email || '', user.claims?.role || 'user', currentMember, categories)
+    : categories;
+
   // Filtered categories based on search and filter selections
-  const filteredCategories = categories
+  const filteredCategories = visibleCategories
     .map(category => ({
       ...category,
       items: category.items.filter(item => {
@@ -597,7 +623,7 @@ const BOM = () => {
 
   // Calculate BOM financial metrics
   const calculateBOMMetrics = () => {
-    const allParts = categories.flatMap(cat => cat.items);
+    const allParts = visibleCategories.flatMap(cat => cat.items);
     const totalItems = allParts.length;
 
     // Calculate items with pricing
@@ -667,19 +693,19 @@ const BOM = () => {
 
             {/* Tab-based Layout */}
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-              <TabsList className="grid w-full grid-cols-6 mb-4">
+              <TabsList className="grid w-full grid-cols-7 mb-4">
                 <TabsTrigger value="bom-items" className="flex items-center gap-2">
                   <Package size={16} />
                   BOM Items
                   <Badge variant="secondary" className="ml-1 text-xs">
-                    {categories.flatMap(cat => cat.items).length}
+                    {visibleCategories.flatMap(cat => cat.items).length}
                   </Badge>
                 </TabsTrigger>
                 <TabsTrigger value="inward-tracking" className="flex items-center gap-2">
                   <Package size={16} />
                   Inward Tracking
                   {(() => {
-                    const orderedCount = categories.flatMap(cat => cat.items)
+                    const orderedCount = visibleCategories.flatMap(cat => cat.items)
                       .filter(item => item.status === 'ordered' || item.status === 'received').length;
                     return orderedCount > 0 ? (
                       <Badge variant="secondary" className="ml-1 text-xs">{orderedCount}</Badge>
@@ -704,6 +730,13 @@ const BOM = () => {
                 <TabsTrigger value="context" className="flex items-center gap-2">
                   <Brain size={16} />
                   Context
+                </TabsTrigger>
+                <TabsTrigger value="members" className="flex items-center gap-2">
+                  <UserCheck size={16} />
+                  Members
+                  <Badge variant="secondary" className="ml-1 text-xs">
+                    {fullProject?.members?.length ?? 0}
+                  </Badge>
                 </TabsTrigger>
               </TabsList>
 
@@ -984,7 +1017,7 @@ const BOM = () => {
               {/* Inward Tracking Tab */}
               <TabsContent value="inward-tracking" className="mt-0">
                 <InwardTracking
-                  categories={categories}
+                  categories={visibleCategories}
                   documents={projectDocuments}
                   onItemClick={(item) => {
                     console.log('Item clicked:', item.name);
@@ -1082,6 +1115,21 @@ const BOM = () => {
                   />
                 )}
               </TabsContent>
+
+              {/* Members Tab */}
+              <TabsContent value="members" className="mt-0">
+                {fullProject && (
+                  <ProjectMembersTab
+                    projectId={projectId || ''}
+                    project={fullProject}
+                    currentUserId={user?.uid || ''}
+                    isAdmin={isAdmin}
+                    categoryNames={categories.map(c => c.name)}
+                    availableUsers={approvedUsers}
+                    onProjectUpdated={(updated) => setFullProject(updated)}
+                  />
+                )}
+              </TabsContent>
             </Tabs>
           </div>
         </main>
@@ -1114,7 +1162,7 @@ const BOM = () => {
             </div>
             <div>
               <div className="font-semibold text-sm mb-2">Category</div>
-              {categories.map(cat => (
+              {visibleCategories.map(cat => (
                 <label key={cat.name} className="flex items-center gap-2 mb-1">
                   <input
                     type="checkbox"
@@ -1385,7 +1433,7 @@ const BOM = () => {
           onOpenChange={setPRDialogOpen}
           projectId={projectId!}
           projectDetails={projectDetails}
-          categories={categories}
+          categories={visibleCategories}
           vendors={vendors}
           documents={projectDocuments}
         />
