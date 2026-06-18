@@ -1,6 +1,13 @@
 export type BOMStatus = 'not-ordered' | 'ordered' | 'received';
 export type BOMItemType = 'component' | 'service';
 
+export interface ServiceTranche {
+  id: string;           // e.g. `${Date.now()}-${Math.random().toString(36).substr(2,9)}`
+  days: number;         // min 0.5, step 0.5
+  invoiceDocId?: string; // reference to ProjectDocument.id
+  loggedAt: string;     // ISO date YYYY-MM-DD
+}
+
 export interface BOMItem {
   id: string;
   itemType: BOMItemType; // Distinguish between component and service
@@ -50,6 +57,9 @@ export interface BOMItem {
   expectedArrival?: string; // ISO string - calculated from orderDate + leadTime
   actualArrival?: string; // ISO string - when item was actually received
   receivedPhotoUrl?: string; // Photo proof of receipt (box or items)
+
+  // Service fulfillment tracking (services only)
+  serviceTranches?: ServiceTranche[];
 
   // Specification sheet fields (for components)
   specificationUrl?: string; // Original source URL where spec sheet was found
@@ -210,6 +220,7 @@ export function sanitizeBOMItemForFirestore(item: Partial<BOMItem>): Record<stri
   if (item.linkedPODocumentId !== undefined) sanitized.linkedPODocumentId = item.linkedPODocumentId;
   if (item.linkedInvoiceDocumentId !== undefined) sanitized.linkedInvoiceDocumentId = item.linkedInvoiceDocumentId;
   if (item.receivedPhotoUrl !== undefined) sanitized.receivedPhotoUrl = item.receivedPhotoUrl;
+  if (item.serviceTranches !== undefined) sanitized.serviceTranches = item.serviceTranches;
   if (item.specificationUrl !== undefined) sanitized.specificationUrl = item.specificationUrl;
   if (item.linkedSpecDocumentId !== undefined) sanitized.linkedSpecDocumentId = item.linkedSpecDocumentId;
   if (item.createdAt !== undefined) sanitized.createdAt = item.createdAt;
