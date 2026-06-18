@@ -1,37 +1,58 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Allow authenticated users to read and write their projects
-    match /projects/{document=**} {
-      allow read, write: if request.auth != null;
+
+    // Projects: admins see all; non-admins see only projects where their UID is in memberIds.
+    // During migration window, projects without memberIds fall back to any authenticated user.
+    match /projects/{projectId} {
+      allow read: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && (request.auth.token.role == 'admin'
+            || (resource.data.memberIds == null)
+            || request.auth.uid in resource.data.memberIds);
+
+      allow create: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && (request.auth.token.role == 'admin'
+            || request.auth.uid in request.resource.data.memberIds);
+
+      allow update: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && (request.auth.token.role == 'admin'
+            || (resource.data.memberIds == null)
+            || request.auth.uid in resource.data.memberIds);
+
+      allow delete: if request.auth != null
+        && request.auth.token.role == 'admin';
+
+      // Subcollections (BOM data, documents, POs, milestones, etc.)
+      match /{subcollection=**} {
+        allow read, write: if request.auth != null
+          && request.auth.token.status == 'approved'
+          && (request.auth.token.role == 'admin'
+              || get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds == null
+              || request.auth.uid in get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds);
+      }
     }
-    
-    // Allow authenticated users to read and write clients
+
     match /clients/{document=**} {
       allow read, write: if request.auth != null;
     }
-    
-    // Allow authenticated users to read and write vendors
+
     match /vendors/{document=**} {
       allow read, write: if request.auth != null;
     }
-    
-    // Allow authenticated users to read and write settings
+
     match /settings/{document=**} {
       allow read, write: if request.auth != null;
     }
 
-    // Engineer hourly rates — admin-only.
-    // Confidentiality is enforced here regardless of UI gates: only an
-    // approved admin can read or write. Cost Analysis page is also
-    // admin-only on the client side.
     match /engineerRates/{doc} {
       allow read, write: if request.auth != null
         && request.auth.token.role == 'admin'
         && request.auth.token.status == 'approved';
     }
 
-    // Allow all other authenticated operations
     match /{document=**} {
       allow read, write: if request.auth != null;
     }
