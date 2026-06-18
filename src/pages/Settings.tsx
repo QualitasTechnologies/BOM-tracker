@@ -95,9 +95,8 @@ import type { EngineerRate } from '@/types/engineerRate';
 import { verifyGSTIN, isValidGSTINFormat } from '@/utils/gstVerification';
 import { INDIAN_STATE_CODES } from '@/types/purchaseOrder';
 import { subscribeToBrands } from '@/utils/brandFirestore';
-import { fetchAllUsers, updateUserRole, approveUser, rejectUser, deleteUser, UserRole, getUserCRMAccess, setUserCRMAccess } from '@/utils/userService';
-import { Shield, UserCog, UserPlus } from 'lucide-react';
-import ContactsDialog from '@/components/CRM/ContactsDialog';
+import { fetchAllUsers, updateUserRole, approveUser, rejectUser, deleteUser, UserRole } from '@/utils/userService';
+import { Shield, UserCog } from 'lucide-react';
 
 const Settings = () => {
   // Auth check
@@ -118,10 +117,8 @@ const Settings = () => {
     role?: UserRole;
     status?: string;
     createdAt?: string;
-    crmAccess?: boolean;
   }
   const [appUsers, setAppUsers] = useState<AppUser[]>([]);
-  const [updatingCRMUserId, setUpdatingCRMUserId] = useState<string | null>(null);
   const [usersLoading, setUsersLoading] = useState(false);
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
   const [engineerRates, setEngineerRates] = useState<Record<string, EngineerRate>>({});
@@ -143,7 +140,6 @@ const Settings = () => {
   const [vendorDialog, setVendorDialog] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [editingVendor, setEditingVendor] = useState<Vendor | null>(null);
-  const [contactsDialogClient, setContactsDialogClient] = useState<Client | null>(null);
 
   // Form states
   const [clientForm, setClientForm] = useState<Partial<Client>>({});
@@ -1011,18 +1007,13 @@ const Settings = () => {
         creationTime?: string;
         customClaims?: { role?: string; status?: string };
       }> }).users || [];
-      // Map customClaims to top-level properties and fetch CRM access
-      const usersData: AppUser[] = await Promise.all(rawUsers.map(async (rawUser) => {
-        const crmAccess = await getUserCRMAccess(rawUser.uid);
-        return {
-          uid: rawUser.uid,
-          email: rawUser.email,
-          displayName: rawUser.displayName,
-          role: (rawUser.customClaims?.role as UserRole) || undefined,
-          status: rawUser.customClaims?.status,
-          createdAt: rawUser.creationTime,
-          crmAccess,
-        };
+      const usersData: AppUser[] = rawUsers.map((rawUser) => ({
+        uid: rawUser.uid,
+        email: rawUser.email,
+        displayName: rawUser.displayName,
+        role: (rawUser.customClaims?.role as UserRole) || undefined,
+        status: rawUser.customClaims?.status,
+        createdAt: rawUser.creationTime,
       }));
       setAppUsers(usersData);
     } catch (error) {
@@ -1034,33 +1025,6 @@ const Settings = () => {
       });
     } finally {
       setUsersLoading(false);
-    }
-  };
-
-  // Toggle CRM access for a user
-  const handleToggleCRMAccess = async (targetUid: string, currentAccess: boolean) => {
-    if (!user?.uid) return;
-
-    setUpdatingCRMUserId(targetUid);
-    try {
-      await setUserCRMAccess(targetUid, !currentAccess, user.uid);
-      // Update local state
-      setAppUsers(prev => prev.map(u =>
-        u.uid === targetUid ? { ...u, crmAccess: !currentAccess } : u
-      ));
-      toast({
-        title: "Success",
-        description: `CRM access ${!currentAccess ? 'granted' : 'revoked'}`,
-      });
-    } catch (error: any) {
-      console.error('Error toggling CRM access:', error);
-      toast({
-        title: "Error",
-        description: error.message || "Failed to update CRM access",
-        variant: "destructive",
-      });
-    } finally {
-      setUpdatingCRMUserId(null);
     }
   };
 
@@ -1519,14 +1483,6 @@ const Settings = () => {
                               <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={() => setContactsDialogClient(client)}
-                                title="Manage Contacts"
-                              >
-                                <UserPlus size={14} />
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
                                 onClick={() => handleEditClient(client)}
                               >
                                 <Edit size={14} />
@@ -1548,14 +1504,6 @@ const Settings = () => {
               </CardContent>
             </Card>
 
-            {/* Contacts Dialog */}
-            {contactsDialogClient && (
-              <ContactsDialog
-                open={!!contactsDialogClient}
-                onOpenChange={(open) => !open && setContactsDialogClient(null)}
-                client={contactsDialogClient}
-              />
-            )}
           </TabsContent>
 
           {/* Vendors Tab */}
@@ -2650,7 +2598,6 @@ const Settings = () => {
                         <TableHead>Status</TableHead>
                         <TableHead>Role</TableHead>
                         <TableHead>Admin</TableHead>
-                        <TableHead>CRM Access</TableHead>
                         <TableHead className="text-right">Rate (₹/hr)</TableHead>
                         <TableHead>Actions</TableHead>
                       </TableRow>
@@ -2709,24 +2656,6 @@ const Settings = () => {
                               )}
                               {appUser.uid === user?.uid && (
                                 <span className="text-xs text-gray-400">Can't modify self</span>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <Switch
-                                checked={appUser.role === 'admin' || appUser.crmAccess === true}
-                                onCheckedChange={() => handleToggleCRMAccess(appUser.uid, appUser.crmAccess || false)}
-                                disabled={
-                                  updatingCRMUserId === appUser.uid ||
-                                  appUser.role === 'admin' // Admins always have CRM access
-                                }
-                              />
-                              {updatingCRMUserId === appUser.uid && (
-                                <Loader2 size={14} className="animate-spin" />
-                              )}
-                              {appUser.role === 'admin' && (
-                                <span className="text-xs text-gray-400">Auto (Admin)</span>
                               )}
                             </div>
                           </TableCell>
