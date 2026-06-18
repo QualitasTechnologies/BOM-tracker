@@ -36,7 +36,6 @@ import { useAuth } from "@/hooks/useAuth";
 import { doc, getDoc, collection, getDocs, query, orderBy, limit } from "firebase/firestore";
 import { db } from "@/firebase";
 import { getBOMData, getTotalBOMCost } from "@/utils/projectFirestore";
-import { fetchEngineers, getTotalManHours } from "@/utils/timeTrackingFirestore";
 
 const KPI = () => {
   const navigate = useNavigate();
@@ -110,17 +109,8 @@ const KPI = () => {
         const vendorsSnapshot = await getDocs(vendorsRef);
         setVendorCount(vendorsSnapshot.size);
         
-        // Fetch total man hours (across all projects)
-        let totalHours = 0;
-        for (const project of projectsData) {
-          try {
-            const engineers = await fetchEngineers(project.id);
-            totalHours += getTotalManHours(engineers);
-          } catch (error) {
-            console.log(`No time tracking data for project ${project.id}`);
-          }
-        }
-        setTotalManHours(totalHours);
+        // Time tracking removed — man hours not tracked in this app
+        setTotalManHours(0);
         
       } catch (error) {
         console.error('Error fetching KPI data:', error);

@@ -4,27 +4,19 @@ import {
   LayoutDashboard,
   FolderOpen,
   Package,
-  Clock,
   Calculator,
   FileText,
   Settings,
   ChevronLeft,
   ChevronRight,
   Activity,
-  Target,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/hooks/useAuth';
-import { useCRMAccess } from '@/hooks/useCRMAccess';
 
 const baseMenuItems = [
   { icon: LayoutDashboard, label: 'KPI Dashboard', path: '/kpi' },
   { icon: FolderOpen, label: 'Projects', path: '/projects' },
-  { icon: Clock, label: 'Time Tracking', path: '/time-tracking' },
-];
-
-const crmMenuItems = [
-  { icon: Target, label: 'Sales Pipeline', path: '/pipeline' },
 ];
 
 const adminMenuItems = [
@@ -40,12 +32,10 @@ interface SidebarProps {
 const Sidebar = ({ collapsed, onToggle }: SidebarProps) => {
   const location = useLocation();
   const { user } = useAuth();
-  const { hasCRMAccess } = useCRMAccess();
 
   // Combine menu items based on user role and permissions
   const menuItems = [
     ...baseMenuItems,
-    ...(hasCRMAccess ? crmMenuItems : []),
     ...(user?.isAdmin ? adminMenuItems : [])
   ];
 
