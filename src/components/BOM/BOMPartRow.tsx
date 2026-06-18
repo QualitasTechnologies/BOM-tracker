@@ -1,5 +1,7 @@
 
 import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText, Clock, AlertTriangle, CheckCircle2, Package, Unlink } from 'lucide-react';
+import { Progress } from '@/components/ui/progress';
+import LogFulfillmentDialog from './LogFulfillmentDialog';
 import { SpecSearchButton } from './SpecSearchButton';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -62,6 +64,13 @@ interface BOMItem {
   // Specification sheet fields
   specificationUrl?: string;
   linkedSpecDocumentId?: string;
+  // Service fulfillment tracking
+  serviceTranches?: Array<{
+    id: string;
+    days: number;
+    invoiceDocId?: string;
+    loggedAt: string;
+  }>;
 }
 
 interface GlobalVendor {
@@ -213,6 +222,8 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
     finalizedVendor: part.finalizedVendor
   });
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [fulfillmentDialogOpen, setFulfillmentDialogOpen] = useState(false);
+  const [showTranches, setShowTranches] = useState(false);
 
   // Load brands for make dropdown
   useEffect(() => {
@@ -267,6 +278,22 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
     setVendors(prev => [...prev, form]);
     setForm({ name: '', price: 0, leadTime: '', availability: '' });
     setDialogOpen(false);
+  };
+
+  const handleLogFulfillmentConfirm = (data: { days: number; invoiceDocId?: string }) => {
+    const newTranche = {
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      days: data.days,
+      invoiceDocId: data.invoiceDocId,
+      loggedAt: new Date().toISOString().split('T')[0],
+    };
+    const updatedTranches = [...(part.serviceTranches ?? []), newTranche];
+    const consumedDays = updatedTranches.reduce((s, t) => s + t.days, 0);
+    const updates: Partial<BOMItem> = { serviceTranches: updatedTranches };
+    if (consumedDays >= part.quantity && part.status !== 'received') {
+      updates.status = 'received';
+    }
+    onEdit?.(part.id, updates);
   };
 
   const getStatusBadge = (status: BOMItem["status"]) => {
@@ -581,6 +608,68 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                   </span>
                 )}
               </div>
+              {/* Service fulfillment consumption bar */}
+              {itemType === 'service' && part.status !== 'not-ordered' && (() => {
+                const tranches = part.serviceTranches ?? [];
+                const consumedDays = tranches.reduce((s, t) => s + t.days, 0);
+                const remainingDays = part.quantity - consumedDays;
+                const pct = part.quantity > 0 ? Math.min(100, (consumedDays / part.quantity) * 100) : 0;
+                return (
+                  <div className="mt-2 space-y-1" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Progress
+                        value={pct}
+                        className={`flex-1 h-1.5 min-w-[80px] ${consumedDays >= part.quantity ? '[&>div]:bg-green-500' : '[&>div]:bg-indigo-500'}`}
+                      />
+                      <span className="text-xs text-gray-600 whitespace-nowrap">
+                        {consumedDays} / {part.quantity} days
+                      </span>
+                      {remainingDays > 0 && (
+                        <span className="text-xs text-gray-400 whitespace-nowrap">
+                          • {remainingDays} remaining
+                        </span>
+                      )}
+                      {part.status !== 'received' && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-xs px-2 ml-auto"
+                          onClick={e => {
+                            e.stopPropagation();
+                            setFulfillmentDialogOpen(true);
+                          }}
+                        >
+                          + Log
+                        </Button>
+                      )}
+                    </div>
+                    {tranches.length > 0 && (
+                      <button
+                        className="text-xs text-gray-400 hover:text-gray-600 underline"
+                        onClick={e => { e.stopPropagation(); setShowTranches(v => !v); }}
+                      >
+                        {tranches.length} {tranches.length === 1 ? 'entry' : 'entries'} {showTranches ? '▲' : '▼'}
+                      </button>
+                    )}
+                    {showTranches && (
+                      <div className="bg-gray-50 rounded border divide-y text-xs mt-1">
+                        {tranches.map(t => (
+                          <div key={t.id} className="flex items-center gap-3 px-2 py-1.5 text-gray-600">
+                            <span className="font-medium">{t.days}d</span>
+                            <span className="text-gray-400">{t.loggedAt}</span>
+                            {t.invoiceDocId && (
+                              <span className="flex items-center gap-1 text-purple-600">
+                                <FileText size={10} />
+                                <span>Invoice</span>
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -702,6 +791,25 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
         </div>
       </div>
       
+      {/* Log Fulfillment Dialog - service items only */}
+      {itemType === 'service' && projectId && fulfillmentDialogOpen && (() => {
+        const tranches = part.serviceTranches ?? [];
+        const consumedDays = tranches.reduce((s, t) => s + t.days, 0);
+        const remainingDays = part.quantity - consumedDays;
+        return (
+          <LogFulfillmentDialog
+            open={fulfillmentDialogOpen}
+            onOpenChange={setFulfillmentDialogOpen}
+            itemName={part.name}
+            budgetedDays={part.quantity}
+            remainingDays={remainingDays}
+            projectId={projectId}
+            projectDocuments={projectDocuments}
+            onConfirm={handleLogFulfillmentConfirm}
+          />
+        );
+      })()}
+
       {/* Delete confirmation */}
       {showDeleteConfirm && (
         <div className="absolute right-0 top-8 z-50 bg-white border border-gray-300 rounded shadow-lg p-3 text-xs">
