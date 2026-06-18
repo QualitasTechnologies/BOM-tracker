@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
+import { BOMItemType } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
 import { uploadProjectDocument } from '@/utils/projectDocumentFirestore';
 import { auth } from '@/firebase';
@@ -25,25 +26,32 @@ import { auth } from '@/firebase';
 interface LogFulfillmentDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  itemType: BOMItemType;
   itemName: string;
-  budgetedDays: number;
-  remainingDays: number;
+  budgetedQty: number;
+  remainingQty: number;
   projectId: string;
   projectDocuments: ProjectDocument[];
-  onConfirm: (data: { days: number; invoiceDocId?: string }) => void;
+  onConfirm: (data: { quantity: number; invoiceDocId?: string }) => void;
 }
 
 const LogFulfillmentDialog = ({
   open,
   onOpenChange,
+  itemType,
   itemName,
-  budgetedDays,
-  remainingDays,
+  budgetedQty,
+  remainingQty,
   projectId,
   projectDocuments,
   onConfirm,
 }: LogFulfillmentDialogProps) => {
-  const [days, setDays] = useState<string>('');
+  const isService = itemType === 'service';
+  const unit = isService ? 'days' : 'units';
+  const step = isService ? 0.5 : 1;
+  const min = isService ? 0.5 : 1;
+
+  const [qty, setQty] = useState<string>('');
   const [invoiceDocId, setInvoiceDocId] = useState<string>('');
   const [uploading, setUploading] = useState(false);
   const [uploadedDoc, setUploadedDoc] = useState<ProjectDocument | null>(null);
@@ -52,7 +60,7 @@ const LogFulfillmentDialog = ({
 
   useEffect(() => {
     if (open) {
-      setDays('');
+      setQty('');
       setInvoiceDocId('');
       setUploadedDoc(null);
     }
@@ -85,14 +93,14 @@ const LogFulfillmentDialog = ({
     }
   };
 
-  const daysNum = parseFloat(days);
-  const validDays = !isNaN(daysNum) && daysNum >= 0.5 && daysNum <= remainingDays;
-  const overBudget = !isNaN(daysNum) && daysNum > remainingDays;
+  const qtyNum = parseFloat(qty);
+  const validQty = !isNaN(qtyNum) && qtyNum >= min && qtyNum <= remainingQty;
+  const overBudget = !isNaN(qtyNum) && qtyNum > remainingQty;
   const selectedDoc = invoiceDocuments.find(d => d.id === invoiceDocId);
 
   const handleConfirm = () => {
-    if (!validDays) return;
-    onConfirm({ days: daysNum, invoiceDocId: invoiceDocId || undefined });
+    if (!validQty) return;
+    onConfirm({ quantity: qtyNum, invoiceDocId: invoiceDocId || undefined });
     onOpenChange(false);
   };
 
@@ -100,41 +108,39 @@ const LogFulfillmentDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md" onClick={e => e.stopPropagation()}>
         <DialogHeader>
-          <DialogTitle>Log Service Fulfillment</DialogTitle>
+          <DialogTitle>Log {isService ? 'Service Fulfillment' : 'Partial Receipt'}</DialogTitle>
           <p className="text-sm text-gray-500 mt-1">
-            {remainingDays} days remaining of {budgetedDays} budgeted — {itemName}
+            {remainingQty} {unit} remaining of {budgetedQty} {isService ? 'budgeted' : 'ordered'} — {itemName}
           </p>
         </DialogHeader>
 
         <div className="space-y-4 py-2">
-          {/* Days consumed */}
           <div className="space-y-1.5">
-            <Label htmlFor="ful-days" className="text-sm font-medium">
-              Days consumed <span className="text-red-500">*</span>
+            <Label htmlFor="ful-qty" className="text-sm font-medium">
+              {isService ? 'Days consumed' : 'Units received'} <span className="text-red-500">*</span>
             </Label>
             <Input
-              id="ful-days"
+              id="ful-qty"
               type="number"
-              min="0.5"
-              step="0.5"
-              max={remainingDays}
-              value={days}
-              onChange={e => setDays(e.target.value)}
-              placeholder={`e.g. 5  (max ${remainingDays})`}
+              min={min}
+              step={step}
+              max={remainingQty}
+              value={qty}
+              onChange={e => setQty(e.target.value)}
+              placeholder={`e.g. ${isService ? '5' : '10'}  (max ${remainingQty})`}
               className={overBudget ? 'border-red-400' : ''}
             />
             {overBudget && (
               <p className="text-xs text-red-500">
-                Only {remainingDays} day{remainingDays !== 1 ? 's' : ''} remain in this budget
+                Only {remainingQty} {unit} remain in this budget
               </p>
             )}
           </div>
 
-          {/* Invoice document */}
           <div className="space-y-1.5">
             <Label className="text-sm font-medium">Vendor Invoice</Label>
             <p className="text-xs text-gray-500">
-              Attach the vendor invoice for this delivery period (recommended).
+              Attach the vendor invoice for this delivery (recommended).
             </p>
             <div className="flex gap-2">
               <Select value={invoiceDocId} onValueChange={setInvoiceDocId}>
@@ -184,8 +190,8 @@ const LogFulfillmentDialog = ({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleConfirm} disabled={!validDays}>
-            Log {validDays ? `${daysNum}d` : ''}
+          <Button onClick={handleConfirm} disabled={!validQty}>
+            Log {validQty ? `${qtyNum} ${unit}` : ''}
           </Button>
         </DialogFooter>
       </DialogContent>

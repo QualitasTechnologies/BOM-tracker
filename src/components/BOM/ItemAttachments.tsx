@@ -36,11 +36,21 @@ const ItemAttachments = ({
         (d) => d.type === 'vendor-po' && d.linkedBOMItems?.includes(item.id)
       );
 
-  const invoiceDoc = item.linkedInvoiceDocumentId
+  // For services with tranche invoices, aggregate all unique invoice docs
+  const trancheInvoiceDocs: ProjectDocument[] = item.fulfillmentTranches
+    ? [...new Set(item.fulfillmentTranches.map(t => t.invoiceDocId).filter(Boolean) as string[])]
+        .map(id => documents.find(d => d.id === id))
+        .filter((d): d is ProjectDocument => !!d)
+    : [];
+
+  const invoiceDoc = trancheInvoiceDocs.length > 0
+    ? trancheInvoiceDocs[0]
+    : item.linkedInvoiceDocumentId
     ? documents.find((d) => d.id === item.linkedInvoiceDocumentId)
     : documents.find(
         (d) => d.type === 'vendor-invoice' && d.linkedBOMItems?.includes(item.id)
       );
+  const invoiceCount = trancheInvoiceDocs.length > 1 ? trancheInvoiceDocs.length : 1;
 
   const hasPhoto = !!item.receivedPhotoUrl;
 
@@ -76,8 +86,9 @@ const ItemAttachments = ({
       icon: Receipt,
       color: 'text-purple-600 hover:text-purple-700',
       bgColor: 'bg-purple-50',
-      label: 'Invoice',
+      label: invoiceCount > 1 ? `Invoices ×${invoiceCount}` : 'Invoice',
       url: invoiceDoc?.url,
+      count: invoiceCount > 1 ? invoiceCount : undefined,
     },
     {
       key: 'photo',
@@ -135,9 +146,14 @@ const ItemAttachments = ({
                       onPhotoClick();
                     }
                   }}
-                  className={`inline-flex items-center justify-center p-1 rounded ${attachment.bgColor} ${attachment.color} hover:opacity-80 transition-opacity`}
+                  className={`relative inline-flex items-center justify-center p-1 rounded ${attachment.bgColor} ${attachment.color} hover:opacity-80 transition-opacity`}
                 >
                   <Icon size={iconSize} />
+                  {'count' in attachment && attachment.count && (
+                    <span className="absolute -top-1 -right-1 bg-purple-600 text-white text-[9px] leading-none rounded-full px-1 py-0.5 font-bold">
+                      {attachment.count}
+                    </span>
+                  )}
                 </a>
               </TooltipTrigger>
               <TooltipContent side="top" className="text-xs">

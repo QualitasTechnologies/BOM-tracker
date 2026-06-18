@@ -64,10 +64,10 @@ interface BOMItem {
   // Specification sheet fields
   specificationUrl?: string;
   linkedSpecDocumentId?: string;
-  // Service fulfillment tracking
-  serviceTranches?: Array<{
+  // Partial fulfillment tracking
+  fulfillmentTranches?: Array<{
     id: string;
-    days: number;
+    quantity: number;
     invoiceDocId?: string;
     loggedAt: string;
   }>;
@@ -280,17 +280,17 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
     setDialogOpen(false);
   };
 
-  const handleLogFulfillmentConfirm = (data: { days: number; invoiceDocId?: string }) => {
+  const handleLogFulfillmentConfirm = (data: { quantity: number; invoiceDocId?: string }) => {
     const newTranche = {
       id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      days: data.days,
+      quantity: data.quantity,
       invoiceDocId: data.invoiceDocId,
       loggedAt: new Date().toISOString().split('T')[0],
     };
-    const updatedTranches = [...(part.serviceTranches ?? []), newTranche];
-    const consumedDays = updatedTranches.reduce((s, t) => s + t.days, 0);
-    const updates: Partial<BOMItem> = { serviceTranches: updatedTranches };
-    if (consumedDays >= part.quantity && part.status !== 'received') {
+    const updatedTranches = [...(part.fulfillmentTranches ?? []), newTranche];
+    const consumed = updatedTranches.reduce((s, t) => s + t.quantity, 0);
+    const updates: Partial<BOMItem> = { fulfillmentTranches: updatedTranches };
+    if (consumed >= part.quantity && part.status !== 'received') {
       updates.status = 'received';
     }
     onEdit?.(part.id, updates);
@@ -608,25 +608,27 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                   </span>
                 )}
               </div>
-              {/* Service fulfillment consumption bar */}
-              {itemType === 'service' && part.status !== 'not-ordered' && (() => {
-                const tranches = part.serviceTranches ?? [];
-                const consumedDays = tranches.reduce((s, t) => s + t.days, 0);
-                const remainingDays = part.quantity - consumedDays;
-                const pct = part.quantity > 0 ? Math.min(100, (consumedDays / part.quantity) * 100) : 0;
+              {/* Fulfillment consumption bar (components and services when ordered) */}
+              {part.status !== 'not-ordered' && (() => {
+                const tranches = part.fulfillmentTranches ?? [];
+                const consumed = tranches.reduce((s, t) => s + t.quantity, 0);
+                const remaining = part.quantity - consumed;
+                const pct = part.quantity > 0 ? Math.min(100, (consumed / part.quantity) * 100) : 0;
+                const unitLabel = itemType === 'service' ? 'days' : 'units';
+                if (tranches.length === 0 && part.status === 'received') return null;
                 return (
                   <div className="mt-2 space-y-1" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center gap-2 flex-wrap">
                       <Progress
                         value={pct}
-                        className={`flex-1 h-1.5 min-w-[80px] ${consumedDays >= part.quantity ? '[&>div]:bg-green-500' : '[&>div]:bg-indigo-500'}`}
+                        className={`flex-1 h-1.5 min-w-[80px] ${consumed >= part.quantity ? '[&>div]:bg-green-500' : '[&>div]:bg-indigo-500'}`}
                       />
                       <span className="text-xs text-gray-600 whitespace-nowrap">
-                        {consumedDays} / {part.quantity} days
+                        {consumed} / {part.quantity} {unitLabel}
                       </span>
-                      {remainingDays > 0 && (
+                      {remaining > 0 && (
                         <span className="text-xs text-gray-400 whitespace-nowrap">
-                          • {remainingDays} remaining
+                          • {remaining} remaining
                         </span>
                       )}
                       {part.status !== 'received' && (
@@ -653,18 +655,36 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                     )}
                     {showTranches && (
                       <div className="bg-gray-50 rounded border divide-y text-xs mt-1">
-                        {tranches.map(t => (
-                          <div key={t.id} className="flex items-center gap-3 px-2 py-1.5 text-gray-600">
-                            <span className="font-medium">{t.days}d</span>
-                            <span className="text-gray-400">{t.loggedAt}</span>
-                            {t.invoiceDocId && (
-                              <span className="flex items-center gap-1 text-purple-600">
-                                <FileText size={10} />
-                                <span>Invoice</span>
-                              </span>
-                            )}
-                          </div>
-                        ))}
+                        {tranches.map(t => {
+                          const invoiceDoc = t.invoiceDocId
+                            ? projectDocuments.find(d => d.id === t.invoiceDocId)
+                            : undefined;
+                          return (
+                            <div key={t.id} className="flex items-center gap-3 px-2 py-1.5 text-gray-600">
+                              <span className="font-medium">{t.quantity}{itemType === 'service' ? 'd' : ' units'}</span>
+                              <span className="text-gray-400">{t.loggedAt}</span>
+                              {t.invoiceDocId && (
+                                invoiceDoc ? (
+                                  <a
+                                    href={invoiceDoc.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-1 text-purple-600 hover:text-purple-800 hover:underline"
+                                    onClick={e => e.stopPropagation()}
+                                  >
+                                    <FileText size={10} />
+                                    <span className="truncate max-w-[180px]">{invoiceDoc.name}</span>
+                                  </a>
+                                ) : (
+                                  <span className="flex items-center gap-1 text-purple-400">
+                                    <FileText size={10} />
+                                    <span>Invoice</span>
+                                  </span>
+                                )
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -791,18 +811,19 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
         </div>
       </div>
       
-      {/* Log Fulfillment Dialog - service items only */}
-      {itemType === 'service' && projectId && fulfillmentDialogOpen && (() => {
-        const tranches = part.serviceTranches ?? [];
-        const consumedDays = tranches.reduce((s, t) => s + t.days, 0);
-        const remainingDays = part.quantity - consumedDays;
+      {/* Log Fulfillment Dialog */}
+      {projectId && fulfillmentDialogOpen && (() => {
+        const tranches = part.fulfillmentTranches ?? [];
+        const consumed = tranches.reduce((s, t) => s + t.quantity, 0);
+        const remaining = part.quantity - consumed;
         return (
           <LogFulfillmentDialog
             open={fulfillmentDialogOpen}
             onOpenChange={setFulfillmentDialogOpen}
+            itemType={itemType}
             itemName={part.name}
-            budgetedDays={part.quantity}
-            remainingDays={remainingDays}
+            budgetedQty={part.quantity}
+            remainingQty={remaining}
             projectId={projectId}
             projectDocuments={projectDocuments}
             onConfirm={handleLogFulfillmentConfirm}
