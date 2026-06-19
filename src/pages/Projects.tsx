@@ -18,6 +18,7 @@ import type { EditableProjectInput, FirestoreProject, NewProjectFormData, Projec
 import type { BOMCategory, BOMItem } from "@/types/bom";
 import { TranscriptPasteDialog } from "@/components/Transcripts";
 import { useAuth } from "@/hooks/useAuth";
+import { isInternalUser } from "@/utils/accessControl";
 
 const Projects = () => {
   const { user, isAdmin } = useAuth();
@@ -329,10 +330,12 @@ const Projects = () => {
               </div>
 
               <div className="flex items-center gap-3">
-                <Button onClick={() => setIsAddProjectDialogOpen(true)}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add New Project
-                </Button>
+                {(isAdmin || isInternalUser(user?.email ?? '')) && (
+                  <Button onClick={() => setIsAddProjectDialogOpen(true)}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add New Project
+                  </Button>
+                )}
                 <Button variant="outline" onClick={() => setTranscriptPasteOpen(true)}>
                   <ClipboardList className="h-4 w-4 mr-2" />
                   Paste Transcript
