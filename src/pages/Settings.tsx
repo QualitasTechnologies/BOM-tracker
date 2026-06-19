@@ -2598,206 +2598,207 @@ const Settings = () => {
                     <p className="text-gray-500">No users found</p>
                     <p className="text-gray-400 text-sm">Click Refresh to load users</p>
                   </div>
-                ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>User</TableHead>
-                        <TableHead>Email</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Role</TableHead>
-                        <TableHead>Admin</TableHead>
-                        <TableHead className="text-right">Rate (₹/hr)</TableHead>
-                        <TableHead>Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {appUsers.map((appUser) => (
-                        <TableRow key={appUser.uid}>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <User size={16} className="text-gray-400" />
-                              <span className="font-medium">
-                                {appUser.displayName || 'No name'}
-                              </span>
-                              {appUser.uid === user?.uid && (
-                                <Badge variant="outline" className="text-xs">You</Badge>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <span className="text-sm text-gray-600">{appUser.email}</span>
-                          </TableCell>
-                          <TableCell>
-                            <Badge
-                              variant={appUser.status === 'approved' ? 'default' : 'secondary'}
-                              className={
-                                appUser.status === 'approved'
-                                  ? 'bg-green-100 text-green-800'
-                                  : appUser.status === 'rejected'
-                                  ? 'bg-red-100 text-red-800'
-                                  : 'bg-yellow-100 text-yellow-800'
-                              }
-                            >
-                              {appUser.status || 'pending'}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <Badge
-                              variant={appUser.role === 'admin' ? 'default' : 'outline'}
-                              className={appUser.role === 'admin' ? 'bg-blue-600' : ''}
-                            >
-                              {appUser.role || 'user'}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <Switch
-                                checked={appUser.role === 'admin'}
-                                onCheckedChange={() => handleToggleAdmin(appUser.uid, appUser.role)}
-                                disabled={
-                                  updatingUserId === appUser.uid ||
-                                  appUser.uid === user?.uid // Prevent self-demotion
-                                }
-                              />
-                              {updatingUserId === appUser.uid && (
-                                <Loader2 size={14} className="animate-spin" />
-                              )}
-                              {appUser.uid === user?.uid && (
-                                <span className="text-xs text-gray-400">Can't modify self</span>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {(() => {
-                              const isQualitas = validateEngineerEmail(appUser.email);
-                              if (!isQualitas) {
-                                return <span className="text-xs text-gray-400">—</span>;
-                              }
-                              const rate = engineerRates[appUser.email.toLowerCase()];
-                              const isEditing = editingRateEmail === appUser.email;
-                              const isSaving = savingRateEmail === appUser.email;
-                              if (isEditing) {
-                                return (
-                                  <div className="flex items-center gap-1 justify-end">
-                                    <Input
-                                      type="number"
-                                      min="0"
-                                      autoFocus
-                                      className="h-7 w-24 text-right"
-                                      value={rateDraft}
-                                      onChange={(e) => setRateDraft(e.target.value)}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter') handleSaveRate(appUser);
-                                        if (e.key === 'Escape') cancelEditRate();
-                                      }}
-                                      disabled={isSaving}
-                                    />
-                                    <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => handleSaveRate(appUser)} disabled={isSaving}>
-                                      {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-                                    </Button>
-                                    <Button size="sm" variant="ghost" className="h-7 px-2" onClick={cancelEditRate} disabled={isSaving}>
-                                      <X size={14} />
-                                    </Button>
-                                  </div>
-                                );
-                              }
-                              return (
-                                <button
-                                  type="button"
-                                  className="text-sm hover:underline"
-                                  onClick={() => startEditRate(appUser.email)}
-                                  title="Click to edit rate (leave blank to remove)"
-                                >
-                                  {rate ? `₹${rate.hourlyRate.toLocaleString('en-IN')}` : <span className="text-gray-400">— set</span>}
-                                </button>
-                              );
-                            })()}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              {appUser.status === 'pending' && appUser.uid !== user?.uid && (
-                                <>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-2 text-green-600 border-green-600 hover:bg-green-50"
-                                    onClick={() => handleApproveUser(appUser.uid)}
-                                    disabled={updatingUserId === appUser.uid}
-                                  >
-                                    <Check size={14} className="mr-1" />
-                                    Approve
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-2 text-red-600 border-red-600 hover:bg-red-50"
-                                    onClick={() => handleRejectUser(appUser.uid)}
-                                    disabled={updatingUserId === appUser.uid}
-                                  >
-                                    <X size={14} className="mr-1" />
-                                    Reject
-                                  </Button>
-                                </>
-                              )}
-                              {appUser.status === 'approved' && appUser.uid !== user?.uid && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-7 px-2 text-red-600 hover:bg-red-50"
-                                  onClick={() => handleDeleteUser(appUser.uid, appUser.email)}
-                                  disabled={updatingUserId === appUser.uid}
-                                >
-                                  <Trash2 size={14} className="mr-1" />
-                                  Delete
-                                </Button>
-                              )}
-                              {appUser.status === 'rejected' && appUser.uid !== user?.uid && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-7 px-2 text-red-600 hover:bg-red-50"
-                                  onClick={() => handleDeleteUser(appUser.uid, appUser.email)}
-                                  disabled={updatingUserId === appUser.uid}
-                                >
-                                  <Trash2 size={14} className="mr-1" />
-                                  Delete
-                                </Button>
-                              )}
-                              {!appUser.status && appUser.uid !== user?.uid && (
-                                <>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-2 text-green-600 border-green-600 hover:bg-green-50"
-                                    onClick={() => handleApproveUser(appUser.uid)}
-                                    disabled={updatingUserId === appUser.uid}
-                                  >
-                                    <Check size={14} className="mr-1" />
-                                    Approve
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="h-7 px-2 text-red-600 hover:bg-red-50"
-                                    onClick={() => handleDeleteUser(appUser.uid, appUser.email)}
-                                    disabled={updatingUserId === appUser.uid}
-                                  >
-                                    <Trash2 size={14} className="mr-1" />
-                                    Delete
-                                  </Button>
-                                </>
-                              )}
-                              {appUser.uid === user?.uid && (
-                                <span className="text-xs text-gray-400">You</span>
-                              )}
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                )}
+                ) : (() => {
+                  const internalUsers = appUsers.filter(u => validateEngineerEmail(u.email));
+                  const externalPartners = appUsers.filter(u => !validateEngineerEmail(u.email));
+
+                  const renderStatusBadge = (appUser: AppUser) => (
+                    <Badge
+                      variant={appUser.status === 'approved' ? 'default' : 'secondary'}
+                      className={
+                        appUser.status === 'approved'
+                          ? 'bg-green-100 text-green-800'
+                          : appUser.status === 'rejected'
+                          ? 'bg-red-100 text-red-800'
+                          : 'bg-yellow-100 text-yellow-800'
+                      }
+                    >
+                      {appUser.status || 'pending'}
+                    </Badge>
+                  );
+
+                  const renderActions = (appUser: AppUser) => (
+                    <div className="flex items-center gap-2">
+                      {(appUser.status === 'pending' || !appUser.status) && appUser.uid !== user?.uid && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 text-green-600 border-green-600 hover:bg-green-50"
+                            onClick={() => handleApproveUser(appUser.uid)}
+                            disabled={updatingUserId === appUser.uid}
+                          >
+                            <Check size={14} className="mr-1" />
+                            Approve
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 text-red-600 border-red-600 hover:bg-red-50"
+                            onClick={() => handleRejectUser(appUser.uid)}
+                            disabled={updatingUserId === appUser.uid}
+                          >
+                            <X size={14} className="mr-1" />
+                            Reject
+                          </Button>
+                        </>
+                      )}
+                      {(appUser.status === 'approved' || appUser.status === 'rejected') && appUser.uid !== user?.uid && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-red-600 hover:bg-red-50"
+                          onClick={() => handleDeleteUser(appUser.uid, appUser.email)}
+                          disabled={updatingUserId === appUser.uid}
+                        >
+                          <Trash2 size={14} className="mr-1" />
+                          Delete
+                        </Button>
+                      )}
+                      {appUser.uid === user?.uid && (
+                        <span className="text-xs text-gray-400">You</span>
+                      )}
+                    </div>
+                  );
+
+                  return (
+                    <div className="space-y-8">
+                      {/* Internal Team */}
+                      {internalUsers.length > 0 && (
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <Building size={15} className="text-gray-500" />
+                            <span className="text-sm font-semibold text-gray-700">Internal Team</span>
+                            <Badge variant="outline" className="text-xs">{internalUsers.length}</Badge>
+                          </div>
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>User</TableHead>
+                                <TableHead>Email</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead>Role</TableHead>
+                                <TableHead>Admin</TableHead>
+                                <TableHead className="text-right">Rate (₹/hr)</TableHead>
+                                <TableHead>Actions</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {internalUsers.map((appUser) => (
+                                <TableRow key={appUser.uid}>
+                                  <TableCell>
+                                    <div className="flex items-center gap-2">
+                                      <User size={16} className="text-gray-400" />
+                                      <span className="font-medium">{appUser.displayName || 'No name'}</span>
+                                      {appUser.uid === user?.uid && <Badge variant="outline" className="text-xs">You</Badge>}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell><span className="text-sm text-gray-600">{appUser.email}</span></TableCell>
+                                  <TableCell>{renderStatusBadge(appUser)}</TableCell>
+                                  <TableCell>
+                                    <Badge variant={appUser.role === 'admin' ? 'default' : 'outline'} className={appUser.role === 'admin' ? 'bg-blue-600' : ''}>
+                                      {appUser.role === 'admin' ? 'admin' : 'internal'}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell>
+                                    <div className="flex items-center gap-2">
+                                      <Switch
+                                        checked={appUser.role === 'admin'}
+                                        onCheckedChange={() => handleToggleAdmin(appUser.uid, appUser.role)}
+                                        disabled={updatingUserId === appUser.uid || appUser.uid === user?.uid}
+                                      />
+                                      {updatingUserId === appUser.uid && <Loader2 size={14} className="animate-spin" />}
+                                      {appUser.uid === user?.uid && <span className="text-xs text-gray-400">Can't modify self</span>}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    {(() => {
+                                      const rate = engineerRates[appUser.email.toLowerCase()];
+                                      const isEditing = editingRateEmail === appUser.email;
+                                      const isSaving = savingRateEmail === appUser.email;
+                                      if (isEditing) {
+                                        return (
+                                          <div className="flex items-center gap-1 justify-end">
+                                            <Input
+                                              type="number"
+                                              min="0"
+                                              autoFocus
+                                              className="h-7 w-24 text-right"
+                                              value={rateDraft}
+                                              onChange={(e) => setRateDraft(e.target.value)}
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') handleSaveRate(appUser);
+                                                if (e.key === 'Escape') cancelEditRate();
+                                              }}
+                                              disabled={isSaving}
+                                            />
+                                            <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => handleSaveRate(appUser)} disabled={isSaving}>
+                                              {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                                            </Button>
+                                            <Button size="sm" variant="ghost" className="h-7 px-2" onClick={cancelEditRate} disabled={isSaving}>
+                                              <X size={14} />
+                                            </Button>
+                                          </div>
+                                        );
+                                      }
+                                      return (
+                                        <button type="button" className="text-sm hover:underline" onClick={() => startEditRate(appUser.email)} title="Click to edit rate">
+                                          {rate ? `₹${rate.hourlyRate.toLocaleString('en-IN')}` : <span className="text-gray-400">— set</span>}
+                                        </button>
+                                      );
+                                    })()}
+                                  </TableCell>
+                                  <TableCell>{renderActions(appUser)}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      )}
+
+                      {/* External Partners */}
+                      {externalPartners.length > 0 && (
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <Users size={15} className="text-purple-500" />
+                            <span className="text-sm font-semibold text-purple-700">External Partners</span>
+                            <Badge variant="outline" className="text-xs border-purple-300 text-purple-700">{externalPartners.length}</Badge>
+                          </div>
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Partner</TableHead>
+                                <TableHead>Email</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead>Role</TableHead>
+                                <TableHead>Actions</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {externalPartners.map((appUser) => (
+                                <TableRow key={appUser.uid}>
+                                  <TableCell>
+                                    <div className="flex items-center gap-2">
+                                      <User size={16} className="text-purple-400" />
+                                      <span className="font-medium">{appUser.displayName || 'No name'}</span>
+                                      {appUser.uid === user?.uid && <Badge variant="outline" className="text-xs">You</Badge>}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell><span className="text-sm text-gray-600">{appUser.email}</span></TableCell>
+                                  <TableCell>{renderStatusBadge(appUser)}</TableCell>
+                                  <TableCell>
+                                    <Badge variant="outline" className="border-purple-300 text-purple-700">partner</Badge>
+                                  </TableCell>
+                                  <TableCell>{renderActions(appUser)}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 <Alert className="mt-4">
                   <Shield className="h-4 w-4" />
