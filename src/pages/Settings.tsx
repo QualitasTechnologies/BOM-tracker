@@ -2585,20 +2585,6 @@ const Settings = () => {
                       'Refresh'
                     )}
                   </Button>
-                  <Button
-                    variant="outline"
-                    onClick={async () => {
-                      try {
-                        const migrate = httpsCallable(functions, 'migrateProjectMembership');
-                        const result = await migrate();
-                        toast({ title: 'Migration complete', description: (result.data as { message: string }).message });
-                      } catch (err: any) {
-                        toast({ title: 'Migration failed', description: err.message, variant: 'destructive' });
-                      }
-                    }}
-                  >
-                    Run Migration
-                  </Button>
                 </div>
               </CardHeader>
               <CardContent>
