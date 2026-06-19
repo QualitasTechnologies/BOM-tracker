@@ -695,7 +695,7 @@ const BOM = () => {
 
             {/* Tab-based Layout */}
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-              <TabsList className="grid w-full grid-cols-7 mb-4">
+              <TabsList className={`grid w-full mb-4 ${isPartner ? 'grid-cols-3' : 'grid-cols-7'}`}>
                 <TabsTrigger value="bom-items" className="flex items-center gap-2">
                   <Package size={16} />
                   BOM Items
@@ -714,10 +714,6 @@ const BOM = () => {
                     ) : null;
                   })()}
                 </TabsTrigger>
-                <TabsTrigger value="milestones" className="flex items-center gap-2">
-                  <Milestone size={16} />
-                  Milestones
-                </TabsTrigger>
                 <TabsTrigger value="documents" className="flex items-center gap-2">
                   <FileText size={16} />
                   Documents
@@ -725,21 +721,33 @@ const BOM = () => {
                     {projectDocuments.length}
                   </Badge>
                 </TabsTrigger>
-                <TabsTrigger value="stakeholders" className="flex items-center gap-2">
-                  <Users size={16} />
-                  Stakeholders
-                </TabsTrigger>
-                <TabsTrigger value="context" className="flex items-center gap-2">
-                  <Brain size={16} />
-                  Context
-                </TabsTrigger>
-                <TabsTrigger value="members" className="flex items-center gap-2">
-                  <UserCheck size={16} />
-                  Members
-                  <Badge variant="secondary" className="ml-1 text-xs">
-                    {fullProject?.members?.length ?? 0}
-                  </Badge>
-                </TabsTrigger>
+                {!isPartner && (
+                  <TabsTrigger value="milestones" className="flex items-center gap-2">
+                    <Milestone size={16} />
+                    Milestones
+                  </TabsTrigger>
+                )}
+                {!isPartner && (
+                  <TabsTrigger value="stakeholders" className="flex items-center gap-2">
+                    <Users size={16} />
+                    Stakeholders
+                  </TabsTrigger>
+                )}
+                {!isPartner && (
+                  <TabsTrigger value="context" className="flex items-center gap-2">
+                    <Brain size={16} />
+                    Context
+                  </TabsTrigger>
+                )}
+                {!isPartner && (
+                  <TabsTrigger value="members" className="flex items-center gap-2">
+                    <UserCheck size={16} />
+                    Members
+                    <Badge variant="secondary" className="ml-1 text-xs">
+                      {fullProject?.members?.length ?? 0}
+                    </Badge>
+                  </TabsTrigger>
+                )}
               </TabsList>
 
               {/* BOM Items Tab */}

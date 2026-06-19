@@ -22,6 +22,7 @@ import { isInternalUser } from "@/utils/accessControl";
 
 const Projects = () => {
   const { user, isAdmin } = useAuth();
+  const isPartner = !!user && !isAdmin && !isInternalUser(user.email ?? '');
   const [viewMode, setViewMode] = useState<ProjectViewMode>("cards");
   const [searchQuery, setSearchQuery] = useState("");
   const [clientFilter, setClientFilter] = useState("all");
@@ -219,25 +220,27 @@ const Projects = () => {
               </p>
             )}
           </div>
-          <div className="flex items-center gap-1.5 flex-shrink-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => handleEditClick(project)}
-              className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-            >
-              <Edit className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => handleArchiveClick(project)}
-              className="h-8 w-8 p-0 text-amber-600 hover:text-amber-700 hover:bg-amber-50"
-              title="Archive project"
-            >
-              <Archive className="h-4 w-4" />
-            </Button>
-          </div>
+          {!isPartner && (
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleEditClick(project)}
+                className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+              >
+                <Edit className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleArchiveClick(project)}
+                className="h-8 w-8 p-0 text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+                title="Archive project"
+              >
+                <Archive className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
         </div>
         <div className="flex items-center">
           {getStatusBadge(project.status)}
@@ -456,24 +459,28 @@ const Projects = () => {
                               <Target className="h-4 w-4 text-blue-600" />
                             </Link>
                           </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleEditClick(project)}
-                            title="Edit"
-                            className="text-blue-600 hover:text-blue-700"
-                          >
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleArchiveClick(project)}
-                            title="Archive"
-                            className="text-amber-600 hover:text-amber-700"
-                          >
-                            <Archive className="h-4 w-4" />
-                          </Button>
+                          {!isPartner && (
+                            <>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleEditClick(project)}
+                                title="Edit"
+                                className="text-blue-600 hover:text-blue-700"
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleArchiveClick(project)}
+                                title="Archive"
+                                className="text-amber-600 hover:text-amber-700"
+                              >
+                                <Archive className="h-4 w-4" />
+                              </Button>
+                            </>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
