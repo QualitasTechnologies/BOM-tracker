@@ -519,6 +519,8 @@ const BOM = () => {
     : categories;
   // Partners are non-admin, non-internal users — hide write actions outside their scope
   const isPartner = !!user && !isAdmin && !user.email?.toLowerCase().endsWith('@qualitastech.com');
+  // IDs of BOM items that are within this partner's visible categories (used to scope Documents tab)
+  const visibleItemIds = visibleCategories.flatMap(cat => cat.items.map(item => item.id));
 
   // Filtered categories based on search and filter selections
   const filteredCategories = visibleCategories
@@ -1069,7 +1071,8 @@ const BOM = () => {
                 {projectId && (
                   <ProjectDocuments
                     projectId={projectId}
-                    bomItems={categories.flatMap(cat => cat.items)}
+                    bomItems={visibleCategories.flatMap(cat => cat.items)}
+                    filterItemIds={isPartner ? visibleItemIds : undefined}
                     onDocumentsChange={() => {
                       // Reload documents when they change
                       getProjectDocuments(projectId).then(setProjectDocuments);

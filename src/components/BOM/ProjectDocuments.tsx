@@ -21,15 +21,16 @@ import { BOMItem } from '@/types/bom';
 
 interface ProjectDocumentsProps {
   projectId: string;
-  bomItems: BOMItem[]; // All BOM items for linking
+  bomItems: BOMItem[]; // BOM items for linking (pass only visible items for partners)
   onDocumentsChange?: () => void;
   onBOMItemUpdate?: (itemId: string, updates: Partial<BOMItem>) => Promise<void>; // Callback to update BOM items
   fullPage?: boolean; // When true, renders without collapsible wrapper for tab view
   sections?: DocumentTypeSection[]; // Document sections to show (defaults to BOM_DOCUMENT_SECTIONS)
   renderAfterSection?: { sectionType: DocumentType; content: React.ReactNode }; // Render content after specific section
+  filterItemIds?: string[]; // When set, only show documents linked to these BOM item IDs (used for partner scoping)
 }
 
-const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate, fullPage = false, sections = BOM_DOCUMENT_SECTIONS, renderAfterSection }: ProjectDocumentsProps) => {
+const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate, fullPage = false, sections = BOM_DOCUMENT_SECTIONS, renderAfterSection, filterItemIds }: ProjectDocumentsProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -188,7 +189,11 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
   };
 
   const getDocumentsByType = (type: DocumentType) => {
-    return documents.filter(doc => doc.type === type);
+    const byType = documents.filter(doc => doc.type === type);
+    if (!filterItemIds) return byType;
+    return byType.filter(doc =>
+      doc.linkedBOMItems?.some(id => filterItemIds.includes(id))
+    );
   };
 
   const formatFileSize = (bytes?: number) => {
