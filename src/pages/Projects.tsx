@@ -35,7 +35,8 @@ const Projects = () => {
   const [clients, setClients] = useState<Client[]>([]);
 
   useEffect(() => {
-    // Subscribe to Firestore projects (filtered by membership for non-admins)
+    // Subscribe to Firestore projects (filtered by membership for non-admins).
+    // Re-run when auth state changes so the query gets the correct membership filter.
     const unsubscribeProjects = subscribeToProjects(
       (fetchedProjects) => { setProjects(fetchedProjects); },
       user ? { uid: user.uid, isAdmin } : undefined
@@ -48,7 +49,7 @@ const Projects = () => {
       unsubscribeProjects();
       unsubscribeClients();
     };
-  }, []);
+  }, [user?.uid, isAdmin]);
 
   // Get client logo by company name
   const getClientLogo = (clientName: string): string | undefined => {

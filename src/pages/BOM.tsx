@@ -517,6 +517,8 @@ const BOM = () => {
   const visibleCategories = user
     ? getVisibleCategories(user.email || '', user.claims?.role || 'user', currentMember, categories)
     : categories;
+  // Partners are non-admin, non-internal users — hide write actions outside their scope
+  const isPartner = !!user && !isAdmin && !user.email?.toLowerCase().endsWith('@qualitastech.com');
 
   // Filtered categories based on search and filter selections
   const filteredCategories = visibleCategories
@@ -755,14 +757,18 @@ const BOM = () => {
                         className="pl-10"
                       />
                     </div>
-                    <Button variant="outline" onClick={() => setAddPartOpen(true)}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      Add Part
-                    </Button>
-                    <Button variant="outline" onClick={() => setImportBOMOpen(true)}>
-                      <Upload className="mr-2 h-4 w-4" />
-                      Import BOM
-                    </Button>
+                    {!isPartner && (
+                      <Button variant="outline" onClick={() => setAddPartOpen(true)}>
+                        <Plus className="mr-2 h-4 w-4" />
+                        Add Part
+                      </Button>
+                    )}
+                    {!isPartner && (
+                      <Button variant="outline" onClick={() => setImportBOMOpen(true)}>
+                        <Upload className="mr-2 h-4 w-4" />
+                        Import BOM
+                      </Button>
+                    )}
                   </div>
 
                   <div className="flex gap-2">
@@ -770,20 +776,24 @@ const BOM = () => {
                       <Filter className="mr-2 h-4 w-4" />
                       Filter
                     </Button>
-                    <Button variant="outline" onClick={handleExportCSV}>
-                      <Download className="mr-2 h-4 w-4" />
-                      Export
-                    </Button>
+                    {!isPartner && (
+                      <Button variant="outline" onClick={handleExportCSV}>
+                        <Download className="mr-2 h-4 w-4" />
+                        Export
+                      </Button>
+                    )}
                     <Button variant="outline" onClick={handleCreatePurchaseOrder}>
                       Create PR
                     </Button>
-                    <Button variant="outline" onClick={() => setPODialogOpen(true)}>
-                      <FileText className="mr-2 h-4 w-4" />
-                      Create PO
-                    </Button>
-                    <ComplianceChecker
+                    {!isPartner && (
+                      <Button variant="outline" onClick={() => setPODialogOpen(true)}>
+                        <FileText className="mr-2 h-4 w-4" />
+                        Create PO
+                      </Button>
+                    )}
+                    {!isPartner && <ComplianceChecker
                       projectId={projectId || ''}
-                      categories={categories}
+                      categories={visibleCategories}
                       vendorQuotes={projectDocuments.filter(d => d.type === 'vendor-quote')}
                       existingMakes={availableMakes}
                       existingCategories={canonicalCategoryNames}
@@ -791,7 +801,7 @@ const BOM = () => {
                         if (!projectId) return;
                         await updateBOMItem(projectId, categories, itemId, updates);
                       }}
-                    />
+                    />}
                   </div>
                 </div>
                 {emailStatus && <div className="mt-2 text-sm">{emailStatus}</div>}
