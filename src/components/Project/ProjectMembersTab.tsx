@@ -292,10 +292,12 @@ const ProjectMembersTab = ({
       <div className="flex items-center justify-between">
         <h3 className="text-base font-semibold">Members & Notifications</h3>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleSendDigestNow} disabled={sendingDigest}>
-            <Send className="h-3.5 w-3.5 mr-1.5" />
-            {sendingDigest ? 'Sending…' : 'Send Update Now'}
-          </Button>
+          {isAdmin && (
+            <Button variant="outline" size="sm" onClick={handleSendDigestNow} disabled={sendingDigest}>
+              <Send className="h-3.5 w-3.5 mr-1.5" />
+              {sendingDigest ? 'Sending…' : 'Send Update Now'}
+            </Button>
+          )}
           {isAdmin && (
             <Button size="sm" onClick={handleAddOpen}>
               <UserPlus className="h-4 w-4 mr-1.5" />

@@ -265,9 +265,10 @@ export const addExternalRecipient = async (
   recipient: Omit<ExternalRecipient, 'notificationsEnabled'>
 ): Promise<void> => {
   const existing = project.externalRecipients || [];
-  const already = existing.some(r => r.email.toLowerCase() === recipient.email.toLowerCase());
+  const normalizedEmail = recipient.email.toLowerCase();
+  const already = existing.some(r => r.email.toLowerCase() === normalizedEmail);
   if (already) throw new Error('This email is already a recipient');
-  const updated = [...existing, { ...recipient, notificationsEnabled: true }];
+  const updated = [...existing, { ...recipient, email: normalizedEmail, notificationsEnabled: true }];
   await updateDoc(doc(projectsCol, projectId), { externalRecipients: updated });
 };
 
@@ -302,8 +303,8 @@ export const getNotificationRecipients = (project: Project): NotificationRecipie
   const recipients: NotificationRecipient[] = [];
 
   for (const m of project.members || []) {
-    if (m.notificationsEnabled !== false) {
-      recipients.push({ email: m.email, name: m.displayName });
+    if (m.notificationsEnabled !== false && m.email) {
+      recipients.push({ email: m.email, name: m.displayName || m.email });
     }
   }
 

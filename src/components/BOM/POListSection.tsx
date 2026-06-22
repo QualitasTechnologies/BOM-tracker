@@ -55,8 +55,7 @@ import {
   PurchaseOrder
 } from '@/utils/poFirestore';
 import { getCompanySettings } from '@/utils/settingsFirestore';
-import { getStakeholders } from '@/utils/stakeholderFirestore';
-import type { Stakeholder } from '@/types/stakeholder';
+import { getProject, getNotificationRecipients, NotificationRecipient } from '@/utils/projectFirestore';
 import { auth } from '@/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import EditPODialog from './EditPODialog';
@@ -103,8 +102,8 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
   const [deleting, setDeleting] = useState(false);
   const [generatingPDF, setGeneratingPDF] = useState<string | null>(null);
   const [sendingEmail, setSendingEmail] = useState(false);
-  const [stakeholders, setStakeholders] = useState<Stakeholder[]>([]);
-  const [loadingStakeholders, setLoadingStakeholders] = useState(false);
+  const [ccRecipients, setCcRecipients] = useState<NotificationRecipient[]>([]);
+  const [loadingCcRecipients, setLoadingCcRecipients] = useState(false);
   const [selectedCCStakeholderEmails, setSelectedCCStakeholderEmails] = useState<string[]>([]);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [poToEdit, setPOToEdit] = useState<PurchaseOrder | null>(null);
@@ -233,23 +232,20 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
     setSendMode(mode);
     setSendDialogOpen(true);
 
-    // Fetch stakeholders for this project
-    setLoadingStakeholders(true);
+    // Fetch project members + external recipients for CC list
+    setLoadingCcRecipients(true);
     try {
-      const projectStakeholders = await getStakeholders(projectId);
-      setStakeholders(projectStakeholders);
-      // Default CC selection: stakeholders with notifications enabled.
-      setSelectedCCStakeholderEmails(
-        projectStakeholders
-          .filter((s) => s.notificationsEnabled && !!s.email)
-          .map((s) => s.email.trim())
-      );
+      const project = await getProject(projectId);
+      const recipients = project ? getNotificationRecipients(project) : [];
+      setCcRecipients(recipients);
+      // Default: select all enabled recipients for CC
+      setSelectedCCStakeholderEmails(recipients.map((r) => r.email.trim()));
     } catch (error) {
-      console.error('Error fetching stakeholders:', error);
-      setStakeholders([]);
+      console.error('Error fetching CC recipients:', error);
+      setCcRecipients([]);
       setSelectedCCStakeholderEmails([]);
     } finally {
-      setLoadingStakeholders(false);
+      setLoadingCcRecipients(false);
     }
   };
 
@@ -773,59 +769,50 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
               </p>
             </div>
 
-            {/* Stakeholders CC Section - only show for email mode */}
+            {/* Members CC Section - only show for email mode */}
             {sendMode === 'email' && (
               <div className="space-y-2">
                 <Label className="flex items-center gap-2">
                   <Users size={14} />
-                  CC: Select Stakeholders
+                  CC: Select Members
                 </Label>
-                {loadingStakeholders ? (
+                {loadingCcRecipients ? (
                   <div className="flex items-center gap-2 text-sm text-gray-500">
                     <Loader2 size={14} className="animate-spin" />
-                    Loading stakeholders...
+                    Loading recipients...
                   </div>
                 ) : (
                   <div className="bg-gray-50 border rounded p-3">
-                    {stakeholders.length === 0 ? (
+                    {ccRecipients.length === 0 ? (
                       <p className="text-sm text-gray-500 italic">
-                        No stakeholders found. Add stakeholders in the Stakeholders tab.
+                        No recipients found. Add members in the Members tab.
                       </p>
                     ) : (
                       <div className="space-y-2">
-                        {stakeholders
-                          .filter((s) => !!s.email)
-                          .map((s) => {
-                            const email = s.email.trim();
+                        {ccRecipients.map((r) => {
+                            const email = r.email.trim();
                             const isChecked = selectedCCStakeholderEmails.includes(email);
                             return (
-                              <div key={s.id} className="flex items-center justify-between gap-2 text-sm">
+                              <div key={email} className="flex items-center justify-between gap-2 text-sm">
                                 <div className="min-w-0">
-                                  <div className="font-medium truncate">{s.name}</div>
+                                  <div className="font-medium truncate">{r.name}</div>
                                   <div className="text-gray-500 truncate">{email}</div>
                                 </div>
-                                <div className="flex items-center gap-2 flex-shrink-0">
-                                  {!s.notificationsEnabled && (
-                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
-                                      Notifications Off
-                                    </span>
-                                  )}
-                                  <Checkbox
-                                    checked={isChecked}
-                                    onCheckedChange={(checked) => {
-                                      setSelectedCCStakeholderEmails((prev) =>
-                                        checked
-                                          ? Array.from(new Set([...prev, email]))
-                                          : prev.filter((e) => e !== email)
-                                      );
-                                    }}
-                                  />
-                                </div>
+                                <Checkbox
+                                  checked={isChecked}
+                                  onCheckedChange={(checked) => {
+                                    setSelectedCCStakeholderEmails((prev) =>
+                                      checked
+                                        ? Array.from(new Set([...prev, email]))
+                                        : prev.filter((e) => e !== email)
+                                    );
+                                  }}
+                                />
                               </div>
                             );
                           })}
                         <p className="text-xs text-gray-500 mt-2">
-                          {selectedCCStakeholderEmails.length} stakeholder{selectedCCStakeholderEmails.length !== 1 ? 's' : ''} selected for CC.
+                          {selectedCCStakeholderEmails.length} member{selectedCCStakeholderEmails.length !== 1 ? 's' : ''} selected for CC.
                         </p>
                       </div>
                     )}

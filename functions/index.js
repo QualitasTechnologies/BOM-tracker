@@ -2916,12 +2916,12 @@ const calculateBOMDigestData = (categories, lastNotificationSentAt) => {
 const getNotificationRecipientsFromProjectData = (projectData) => {
   const recipients = [];
   for (const m of projectData.members || []) {
-    if (m.notificationsEnabled !== false) {
+    if (m.notificationsEnabled !== false && m.email) {
       recipients.push({ email: m.email, name: m.displayName || m.email });
     }
   }
   for (const r of projectData.externalRecipients || []) {
-    if (r.notificationsEnabled !== false) {
+    if (r.notificationsEnabled !== false && r.email) {
       recipients.push({ email: r.email, name: r.name || r.email });
     }
   }
@@ -2987,18 +2987,16 @@ const sendProjectDigest = async (projectId, projectData, prSettings, resendApiKe
     }
   }
 
-  // Calculate digest data once for all stakeholders (summary is same for all)
-  // Note: recentChanges will still use per-stakeholder lastNotificationSentAt
-  const baseDigestData = calculateBOMDigestData(categories, null);
+  // Calculate digest data once — same content for all recipients
+  const digestData = calculateBOMDigestData(categories, null);
 
   // Calculate delta from last week
-  const delta = calculateDelta(baseDigestData.summary, lastWeekSummary);
+  const delta = calculateDelta(digestData.summary, lastWeekSummary);
 
   // Save this week's snapshot (do this once per project, not per stakeholder)
   let snapshotSaved = false;
 
-  // Generate digest HTML once — same content for all recipients
-  const digestData = calculateBOMDigestData(categories, null);
+  // Generate digest HTML
   const htmlContent = generateBOMDigestEmailHTML({
     projectName: projectData.projectName,
     clientName: projectData.clientName,
@@ -5085,15 +5083,9 @@ exports.migrateProjectMembership = onCall(async (request) => {
  * Must be called by an admin user.
  */
 exports.migrateStakeholdersToMembers = onCall(async (request) => {
-  if (!request.auth) throw new Error('Authentication required');
+  requireAdminContext(request);
 
   const db = admin.firestore();
-
-  // Verify admin
-  const callerDoc = await db.collection('users').doc(request.auth.uid).get();
-  if (!callerDoc.exists || callerDoc.data().role !== 'admin') {
-    throw new Error('Admin access required');
-  }
 
   const projectsSnap = await db.collection('projects').get();
   const results = { processed: 0, skipped: 0, errors: [] };
