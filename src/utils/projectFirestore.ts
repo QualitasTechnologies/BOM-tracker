@@ -26,6 +26,20 @@ export interface ProjectMember {
   addedAt: string;      // ISO date YYYY-MM-DD
   addedBy: string;      // UID of admin who added them (or 'migration' / 'self')
   categoryScope?: string[]; // undefined = all categories (internal); [] = none; ['Mech'] = scoped
+  notificationsEnabled?: boolean; // default true — receives BOM change emails
+}
+
+/** Email-only contact: not a registered app user, receives BOM notification emails only */
+export interface ExternalRecipient {
+  email: string;
+  name: string;
+  notificationsEnabled: boolean;
+}
+
+/** Resolved notification target used by Firebase functions and tests */
+export interface NotificationRecipient {
+  email: string;
+  name: string;
 }
 
 export interface Project {
@@ -64,6 +78,9 @@ export interface Project {
   // Membership — used in Firestore security rules and client queries
   memberIds?: string[];    // UIDs of all members (optional for backward compat during migration)
   members?: ProjectMember[]; // Full member records for UI display
+
+  // Notification recipients who are not registered app users
+  externalRecipients?: ExternalRecipient[];
 }
 
 const projectsCol = collection(db, "projects");
@@ -84,6 +101,7 @@ export const addProject = async (
           displayName: creator.displayName || creator.email,
           addedAt: today,
           addedBy: creator.uid,
+          notificationsEnabled: true,
         }],
       }
     : project;
@@ -222,10 +240,80 @@ export const updateProjectMemberScope = async (
   userId: string,
   categoryScope: string[]
 ): Promise<void> => {
+  // Spread existing member fields (including notificationsEnabled) before overwriting scope
   const updatedMembers = (project.members || []).map(m =>
     m.userId === userId ? { ...m, categoryScope } : m
   );
   await updateDoc(doc(projectsCol, projectId), { members: updatedMembers });
+};
+
+export const toggleMemberNotifications = async (
+  projectId: string,
+  project: Project,
+  userId: string,
+  enabled: boolean
+): Promise<void> => {
+  const updatedMembers = (project.members || []).map(m =>
+    m.userId === userId ? { ...m, notificationsEnabled: enabled } : m
+  );
+  await updateDoc(doc(projectsCol, projectId), { members: updatedMembers });
+};
+
+export const addExternalRecipient = async (
+  projectId: string,
+  project: Project,
+  recipient: Omit<ExternalRecipient, 'notificationsEnabled'>
+): Promise<void> => {
+  const existing = project.externalRecipients || [];
+  const already = existing.some(r => r.email.toLowerCase() === recipient.email.toLowerCase());
+  if (already) throw new Error('This email is already a recipient');
+  const updated = [...existing, { ...recipient, notificationsEnabled: true }];
+  await updateDoc(doc(projectsCol, projectId), { externalRecipients: updated });
+};
+
+export const removeExternalRecipient = async (
+  projectId: string,
+  project: Project,
+  email: string
+): Promise<void> => {
+  const updated = (project.externalRecipients || []).filter(
+    r => r.email.toLowerCase() !== email.toLowerCase()
+  );
+  await updateDoc(doc(projectsCol, projectId), { externalRecipients: updated });
+};
+
+export const toggleExternalRecipientNotifications = async (
+  projectId: string,
+  project: Project,
+  email: string,
+  enabled: boolean
+): Promise<void> => {
+  const updated = (project.externalRecipients || []).map(r =>
+    r.email.toLowerCase() === email.toLowerCase() ? { ...r, notificationsEnabled: enabled } : r
+  );
+  await updateDoc(doc(projectsCol, projectId), { externalRecipients: updated });
+};
+
+/**
+ * Pure function: collect all email recipients that should receive BOM notifications.
+ * Exported so it can be unit tested without Firebase.
+ */
+export const getNotificationRecipients = (project: Project): NotificationRecipient[] => {
+  const recipients: NotificationRecipient[] = [];
+
+  for (const m of project.members || []) {
+    if (m.notificationsEnabled !== false) {
+      recipients.push({ email: m.email, name: m.displayName });
+    }
+  }
+
+  for (const r of project.externalRecipients || []) {
+    if (r.notificationsEnabled !== false) {
+      recipients.push({ email: r.email, name: r.name });
+    }
+  }
+
+  return recipients;
 };
 
 // BOM Functions

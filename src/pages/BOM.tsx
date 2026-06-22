@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import { Search, Plus, Download, Filter, X, Upload, Package, FileText, Users, ChevronDown, ChevronUp, Milestone, Brain, UserCheck } from 'lucide-react';
+import { Search, Plus, Download, Filter, X, Upload, Package, FileText, ChevronDown, ChevronUp, Milestone, Brain, UserCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -23,7 +23,6 @@ import InwardTracking from '@/components/BOM/InwardTracking';
 import ProjectDocuments from '@/components/BOM/ProjectDocuments';
 import POListSection from '@/components/BOM/POListSection';
 import ComplianceChecker from '@/components/BOM/ComplianceChecker';
-import StakeholderList from '@/components/Stakeholders/StakeholderList';
 import { MilestoneList } from '@/components/Milestones';
 import { ProjectActivityTimeline } from '@/components/Transcripts';
 import ProjectContextEditor from '@/components/Project/ProjectContextEditor';
@@ -730,12 +729,6 @@ const BOM = () => {
                   </TabsTrigger>
                 )}
                 {!isPartner && (
-                  <TabsTrigger value="stakeholders" className="flex items-center gap-2">
-                    <Users size={16} />
-                    Stakeholders
-                  </TabsTrigger>
-                )}
-                {!isPartner && (
                   <TabsTrigger value="context" className="flex items-center gap-2">
                     <Brain size={16} />
                     Context
@@ -1105,16 +1098,6 @@ const BOM = () => {
                         />
                       )
                     }}
-                  />
-                )}
-              </TabsContent>
-
-              {/* Stakeholders Tab */}
-              <TabsContent value="stakeholders" className="mt-0">
-                {projectId && projectDetails && (
-                  <StakeholderList
-                    projectId={projectId}
-                    projectName={projectDetails.projectName}
                   />
                 )}
               </TabsContent>

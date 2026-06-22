@@ -2909,20 +2909,34 @@ const calculateBOMDigestData = (categories, lastNotificationSentAt) => {
 /**
  * Send BOM digest for a single project to all enabled stakeholders
  */
+/**
+ * Collect all notification recipients from the project document (members + externalRecipients).
+ * Mirrors the pure frontend helper getNotificationRecipients in projectFirestore.ts.
+ */
+const getNotificationRecipientsFromProjectData = (projectData) => {
+  const recipients = [];
+  for (const m of projectData.members || []) {
+    if (m.notificationsEnabled !== false) {
+      recipients.push({ email: m.email, name: m.displayName || m.email });
+    }
+  }
+  for (const r of projectData.externalRecipients || []) {
+    if (r.notificationsEnabled !== false) {
+      recipients.push({ email: r.email, name: r.name || r.email });
+    }
+  }
+  return recipients;
+};
+
 const sendProjectDigest = async (projectId, projectData, prSettings, resendApiKeyValue) => {
   const db = admin.firestore();
   const results = { sent: 0, failed: 0, skipped: 0 };
 
-  // Get stakeholders with notifications enabled
-  const stakeholdersSnapshot = await db
-    .collection('projects')
-    .doc(projectId)
-    .collection('stakeholders')
-    .where('notificationsEnabled', '==', true)
-    .get();
+  // Collect recipients from project document (replaces stakeholders subcollection)
+  const recipients = getNotificationRecipientsFromProjectData(projectData);
 
-  if (stakeholdersSnapshot.empty) {
-    logger.info('No enabled stakeholders for project', { projectId });
+  if (recipients.length === 0) {
+    logger.info('No enabled notification recipients for project', { projectId });
     return results;
   }
 
@@ -2983,53 +2997,38 @@ const sendProjectDigest = async (projectId, projectData, prSettings, resendApiKe
   // Save this week's snapshot (do this once per project, not per stakeholder)
   let snapshotSaved = false;
 
-  // Send email to each stakeholder
-  for (const stakeholderDoc of stakeholdersSnapshot.docs) {
-    const stakeholder = stakeholderDoc.data();
+  // Generate digest HTML once — same content for all recipients
+  const digestData = calculateBOMDigestData(categories, null);
+  const htmlContent = generateBOMDigestEmailHTML({
+    projectName: projectData.projectName,
+    clientName: projectData.clientName,
+    clientLogo: clientLogo,
+    companyName: prSettings.companyName || 'Qualitas Technologies Pvt Ltd',
+    reportDate,
+    weekOf,
+    delta,
+    ...digestData
+  });
 
+  const resend = new Resend(resendApiKeyValue);
+
+  // Send email to each recipient
+  for (const recipient of recipients) {
     try {
-      // Calculate digest data for this stakeholder (uses their lastNotificationSentAt for recent changes)
-      const digestData = calculateBOMDigestData(
-        categories,
-        stakeholder.lastNotificationSentAt
-      );
-
-      // Generate email HTML with delta comparison
-      const htmlContent = generateBOMDigestEmailHTML({
-        projectName: projectData.projectName,
-        clientName: projectData.clientName,
-        clientLogo: clientLogo,
-        companyName: prSettings.companyName || 'Qualitas Technologies Pvt Ltd',
-        reportDate,
-        weekOf,
-        delta,
-        ...digestData
-      });
-
-      // Initialize Resend
-      const resend = new Resend(resendApiKeyValue);
-
-      // Prepare email
       const emailData = {
         from: prSettings.fromEmail || 'info@qualitastech.com',
-        to: stakeholder.email,
+        to: recipient.email,
         subject: `[${projectData.projectName}] - Weekly BOM Status Update (${weekOf})`,
         html: htmlContent,
         text: stripHtml(htmlContent)
       };
 
-      // Send email
       await resend.emails.send(emailData);
 
-      // Update lastNotificationSentAt
-      await stakeholderDoc.ref.update({
-        lastNotificationSentAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-      // Save this week's snapshot (only once per project after first successful email)
+      // Save this week's snapshot once after the first successful send
       if (!snapshotSaved) {
         try {
-          await saveWeeklySnapshot(db, projectId, baseDigestData.summary);
+          await saveWeeklySnapshot(db, projectId, digestData.summary);
           snapshotSaved = true;
           logger.info('Saved weekly snapshot', { projectId, weekOf });
         } catch (snapshotError) {
@@ -3038,26 +3037,17 @@ const sendProjectDigest = async (projectId, projectData, prSettings, resendApiKe
       }
 
       results.sent++;
-
-      logger.info('Weekly digest sent to stakeholder', {
-        projectId,
-        stakeholderEmail: stakeholder.email,
-        itemsTotal: digestData.summary.total,
-        hasDelta: !!delta
-      });
+      logger.info('Weekly digest sent', { projectId, recipientEmail: recipient.email, itemsTotal: digestData.summary.total });
 
     } catch (error) {
-      // Log detailed error for debugging
-      logger.error('Failed to send digest to stakeholder', {
+      logger.error('Failed to send digest', {
         projectId,
-        stakeholderEmail: stakeholder.email,
+        recipientEmail: recipient.email,
         errorMessage: error.message,
         errorCode: error.code,
-        resendResponse: error.message,
         stack: error.stack
       });
 
-      // Track specific error types for reporting
       if (error.code === 401 || error.message?.includes('Unauthorized') || error.message?.includes('Invalid API key')) {
         results.authError = 'Resend API key invalid or expired';
       } else if (error.code === 403 || error.message?.includes('Forbidden') || error.message?.includes('Domain not verified')) {
@@ -3189,14 +3179,14 @@ exports.sendBOMDigestNow = onCall(
       if (results.sent === 0 && results.failed > 0) {
         return {
           success: false,
-          message: `Failed to send to ${results.failed} stakeholder(s). ${results.lastError || ''}`,
+          message: `Failed to send to ${results.failed} recipient(s). ${results.lastError || ''}`,
           ...results
         };
       }
 
       return {
         success: true,
-        message: `Digest sent to ${results.sent} stakeholder(s)`,
+        message: `Digest sent to ${results.sent} recipient(s)`,
         ...results
       };
 
@@ -3215,8 +3205,8 @@ exports.sendBOMDigestNow = onCall(
         userMessage = 'Email service authentication failed. The Resend API key may be invalid or expired.';
       } else if (error.message?.includes('Project not found')) {
         userMessage = 'Project not found. Please refresh and try again.';
-      } else if (error.message?.includes('No enabled stakeholders')) {
-        userMessage = 'No stakeholders with notifications enabled. Add stakeholders first.';
+      } else if (error.message?.includes('No enabled notification recipients')) {
+        userMessage = 'No recipients with notifications enabled. Add members or email recipients first.';
       }
 
       throw new Error(`${userMessage}`);
@@ -3489,16 +3479,11 @@ exports.onBOMUpdate = onDocumentWritten(
       }
       const projectData = projectDoc.data();
 
-      // Get stakeholders with notifications enabled
-      const stakeholdersSnapshot = await db
-        .collection('projects')
-        .doc(projectId)
-        .collection('stakeholders')
-        .where('notificationsEnabled', '==', true)
-        .get();
+      // Collect recipients from project document
+      const notifRecipients = getNotificationRecipientsFromProjectData(projectData);
 
-      if (stakeholdersSnapshot.empty) {
-        logger.info('No enabled stakeholders for BOM update notification', { projectId });
+      if (notifRecipients.length === 0) {
+        logger.info('No enabled notification recipients for BOM update', { projectId });
         return;
       }
 
@@ -3541,14 +3526,12 @@ exports.onBOMUpdate = onDocumentWritten(
       let sentCount = 0;
       let failedCount = 0;
 
-      // Send email to each stakeholder
-      for (const stakeholderDoc of stakeholdersSnapshot.docs) {
-        const stakeholder = stakeholderDoc.data();
-
+      // Send email to each recipient
+      for (const recipient of notifRecipients) {
         try {
           const emailData = {
             from: fromEmail,
-            to: stakeholder.email,
+            to: recipient.email,
             subject: `[${projectData.projectName}] BOM ${changeTypeSummary} - ${changes.length} change(s)`,
             html: htmlContent,
             text: stripHtml(htmlContent)
@@ -3559,14 +3542,14 @@ exports.onBOMUpdate = onDocumentWritten(
 
           logger.info('BOM update notification sent', {
             projectId,
-            stakeholderEmail: stakeholder.email,
+            recipientEmail: recipient.email,
             changeCount: changes.length
           });
 
         } catch (error) {
           logger.error('Failed to send BOM update notification', {
             projectId,
-            stakeholderEmail: stakeholder.email,
+            recipientEmail: recipient.email,
             error: error.message
           });
           failedCount++;
@@ -5087,5 +5070,95 @@ exports.migrateProjectMembership = onCall(async (request) => {
     migrated: unmigrated.length,
     totalUsers: approvedUsers.length,
     message: `Migrated ${unmigrated.length} project(s) with ${approvedUsers.length} user(s).`,
+  };
+});
+
+/**
+ * One-time migration: move per-project stakeholders subcollection into the project document.
+ *
+ * For each project:
+ *   - Internal stakeholders (userId present) whose email matches a member → set notificationsEnabled=true on the member entry
+ *   - Internal stakeholders with no matching member, and all external stakeholders → append to externalRecipients[]
+ *   - Leaves the old subcollection in place (harmless; the app no longer reads it)
+ *
+ * Idempotent: re-running skips projects that have no stakeholders subcollection entries.
+ * Must be called by an admin user.
+ */
+exports.migrateStakeholdersToMembers = onCall(async (request) => {
+  if (!request.auth) throw new Error('Authentication required');
+
+  const db = admin.firestore();
+
+  // Verify admin
+  const callerDoc = await db.collection('users').doc(request.auth.uid).get();
+  if (!callerDoc.exists || callerDoc.data().role !== 'admin') {
+    throw new Error('Admin access required');
+  }
+
+  const projectsSnap = await db.collection('projects').get();
+  const results = { processed: 0, skipped: 0, errors: [] };
+
+  for (const projectDoc of projectsSnap.docs) {
+    const projectId = projectDoc.id;
+    const projectData = projectDoc.data();
+
+    try {
+      const stakeholdersSnap = await db
+        .collection('projects').doc(projectId)
+        .collection('stakeholders')
+        .get();
+
+      if (stakeholdersSnap.empty) {
+        results.skipped++;
+        continue;
+      }
+
+      const existingMembers = projectData.members || [];
+      const existingExternal = projectData.externalRecipients || [];
+      const existingExternalEmails = new Set(existingExternal.map(r => r.email.toLowerCase()));
+
+      let updatedMembers = existingMembers.map(m => ({ ...m }));
+      const newExternalRecipients = [...existingExternal];
+
+      for (const stDoc of stakeholdersSnap.docs) {
+        const st = stDoc.data();
+        const stEmail = (st.email || '').toLowerCase();
+        if (!stEmail) continue;
+
+        const matchingMemberIdx = updatedMembers.findIndex(m => m.email.toLowerCase() === stEmail);
+
+        if (matchingMemberIdx !== -1) {
+          // Already a member — propagate notificationsEnabled
+          if (updatedMembers[matchingMemberIdx].notificationsEnabled === undefined) {
+            updatedMembers[matchingMemberIdx].notificationsEnabled = st.notificationsEnabled !== false;
+          }
+        } else if (!existingExternalEmails.has(stEmail)) {
+          // Not a member and not already in externalRecipients — add as email-only recipient
+          newExternalRecipients.push({
+            email: st.email,
+            name: st.name || st.email,
+            notificationsEnabled: st.notificationsEnabled !== false,
+          });
+          existingExternalEmails.add(stEmail);
+        }
+      }
+
+      await db.collection('projects').doc(projectId).update({
+        members: updatedMembers,
+        externalRecipients: newExternalRecipients,
+      });
+
+      results.processed++;
+      logger.info('Migrated stakeholders for project', { projectId, stakeholderCount: stakeholdersSnap.size });
+
+    } catch (err) {
+      logger.error('Failed to migrate stakeholders for project', { projectId, error: err.message });
+      results.errors.push({ projectId, error: err.message });
+    }
+  }
+
+  return {
+    ...results,
+    message: `Processed ${results.processed} project(s), skipped ${results.skipped} with no stakeholders. Errors: ${results.errors.length}`,
   };
 });

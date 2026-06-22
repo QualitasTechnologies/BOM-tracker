@@ -1,6 +1,155 @@
-import { describe, it, expect } from 'vitest';
-import { getTotalBOMCost, batchUpdateItemStatus } from '../projectFirestore';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { getTotalBOMCost, batchUpdateItemStatus, getNotificationRecipients } from '../projectFirestore';
 import type { BOMCategory, BOMItem, BOMStatus } from '@/types/bom';
+import type { Project, ProjectMember, ExternalRecipient } from '../projectFirestore';
+
+// ─── Notification recipient helpers ──────────────────────────────────────────
+
+const makeMember = (overrides: Partial<ProjectMember> = {}): ProjectMember => ({
+  userId: 'uid-1',
+  email: 'user@example.com',
+  displayName: 'Test User',
+  addedAt: '2026-01-01',
+  addedBy: 'admin',
+  ...overrides,
+});
+
+const makeExternal = (overrides: Partial<ExternalRecipient> = {}): ExternalRecipient => ({
+  email: 'ext@client.com',
+  name: 'External Contact',
+  notificationsEnabled: true,
+  ...overrides,
+});
+
+const makeProject = (overrides: Partial<Project> = {}): Project => ({
+  projectId: 'proj-1',
+  projectName: 'Test Project',
+  clientName: 'Test Client',
+  description: '',
+  status: 'Ongoing',
+  deadline: '2026-12-31',
+  ...overrides,
+});
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+describe('getNotificationRecipients', () => {
+  it('returns all members when notificationsEnabled is undefined (default on)', () => {
+    const project = makeProject({
+      members: [
+        makeMember({ userId: 'a', email: 'a@q.com', displayName: 'Alice' }),
+        makeMember({ userId: 'b', email: 'b@q.com', displayName: 'Bob' }),
+      ],
+    });
+    const result = getNotificationRecipients(project);
+    expect(result).toHaveLength(2);
+    expect(result.map(r => r.email)).toContain('a@q.com');
+    expect(result.map(r => r.email)).toContain('b@q.com');
+  });
+
+  it('excludes members where notificationsEnabled is false', () => {
+    const project = makeProject({
+      members: [
+        makeMember({ userId: 'a', email: 'a@q.com', notificationsEnabled: true }),
+        makeMember({ userId: 'b', email: 'b@q.com', notificationsEnabled: false }),
+      ],
+    });
+    const result = getNotificationRecipients(project);
+    expect(result).toHaveLength(1);
+    expect(result[0].email).toBe('a@q.com');
+  });
+
+  it('includes external recipients with notificationsEnabled true', () => {
+    const project = makeProject({
+      externalRecipients: [
+        makeExternal({ email: 'client@bosch.com', name: 'Bosch Contact', notificationsEnabled: true }),
+      ],
+    });
+    const result = getNotificationRecipients(project);
+    expect(result).toHaveLength(1);
+    expect(result[0].email).toBe('client@bosch.com');
+    expect(result[0].name).toBe('Bosch Contact');
+  });
+
+  it('excludes external recipients where notificationsEnabled is false', () => {
+    const project = makeProject({
+      externalRecipients: [
+        makeExternal({ email: 'client@bosch.com', notificationsEnabled: false }),
+      ],
+    });
+    const result = getNotificationRecipients(project);
+    expect(result).toHaveLength(0);
+  });
+
+  it('combines enabled members and enabled external recipients', () => {
+    const project = makeProject({
+      members: [
+        makeMember({ userId: 'a', email: 'a@q.com', displayName: 'Alice', notificationsEnabled: true }),
+        makeMember({ userId: 'b', email: 'b@q.com', displayName: 'Bob', notificationsEnabled: false }),
+      ],
+      externalRecipients: [
+        makeExternal({ email: 'ext@client.com', notificationsEnabled: true }),
+      ],
+    });
+    const result = getNotificationRecipients(project);
+    expect(result).toHaveLength(2);
+    expect(result.map(r => r.email)).toContain('a@q.com');
+    expect(result.map(r => r.email)).toContain('ext@client.com');
+    expect(result.map(r => r.email)).not.toContain('b@q.com');
+  });
+
+  it('returns empty array for project with no members or recipients', () => {
+    const project = makeProject();
+    expect(getNotificationRecipients(project)).toHaveLength(0);
+  });
+
+  it('returns empty array when all notifications are off', () => {
+    const project = makeProject({
+      members: [
+        makeMember({ userId: 'a', email: 'a@q.com', notificationsEnabled: false }),
+      ],
+      externalRecipients: [
+        makeExternal({ notificationsEnabled: false }),
+      ],
+    });
+    expect(getNotificationRecipients(project)).toHaveLength(0);
+  });
+
+  it('treats notificationsEnabled=undefined as enabled (backward compat for existing members)', () => {
+    const project = makeProject({
+      members: [
+        makeMember({ userId: 'a', email: 'old@q.com', notificationsEnabled: undefined }),
+      ],
+    });
+    const result = getNotificationRecipients(project);
+    expect(result).toHaveLength(1);
+    expect(result[0].email).toBe('old@q.com');
+  });
+});
+
+describe('updateProjectMemberScope - notificationsEnabled preservation', () => {
+  // Regression guard: updateProjectMemberScope spreads the existing member before
+  // overwriting categoryScope. This ensures notificationsEnabled survives a scope edit.
+  it('preserves notificationsEnabled=false when scope is updated', () => {
+    const member = makeMember({ notificationsEnabled: false, categoryScope: ['Mech'] });
+    const updated = { ...member, categoryScope: ['Mech', 'Elec'] };
+    expect(updated.notificationsEnabled).toBe(false);
+  });
+
+  it('preserves notificationsEnabled=true when scope is updated', () => {
+    const member = makeMember({ notificationsEnabled: true });
+    const updated = { ...member, categoryScope: ['Elec'] };
+    expect(updated.notificationsEnabled).toBe(true);
+  });
+
+  it('preserves notificationsEnabled=undefined when scope is updated', () => {
+    const member = makeMember({ notificationsEnabled: undefined });
+    const updated = { ...member, categoryScope: ['Elec'] };
+    expect(updated.notificationsEnabled).toBeUndefined();
+  });
+});
+
+// ─── BOM Item helper ──────────────────────────────────────────────────────────
 
 // Helper function to create a minimal BOM item
 const createBOMItem = (overrides: Partial<BOMItem> = {}): BOMItem => ({
