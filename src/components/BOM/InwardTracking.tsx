@@ -10,7 +10,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
-import { BOMItem, BOMCategory, getInwardStatus, InwardStatus } from '@/types/bom';
+import { BOMItem, BOMCategory, getInwardStatus, getTotalReceivedQty, InwardStatus } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
 import ItemAttachments from './ItemAttachments';
 
@@ -19,7 +19,8 @@ interface InwardTrackingProps {
   documents: ProjectDocument[];
   onItemClick?: (item: BOMItem) => void;
   onUpdatePONumber?: (itemId: string, poNumber: string) => void;
-  fullPage?: boolean; // When true, renders without collapsible wrapper for tab view
+  fullPage?: boolean;
+  projectId?: string;
 }
 
 // Helper to format dates
@@ -56,6 +57,11 @@ const StatusBadge = ({ status, days }: { status: InwardStatus; days: number | nu
       icon: <Package size={12} />,
       className: 'bg-gray-100 text-gray-700 border-gray-200',
       label: days !== null ? `${days}d` : 'On track'
+    },
+    'partial': {
+      icon: <CheckCircle2 size={12} />,
+      className: 'bg-amber-100 text-amber-700 border-amber-200',
+      label: 'Partial'
     },
     'received': {
       icon: <CheckCircle2 size={12} />,
@@ -140,6 +146,7 @@ const InwardTracking = ({ categories, documents, onItemClick, onUpdatePONumber, 
     let ordered = 0;
     let arrivingSoon = 0;
     let overdue = 0;
+    let partial = 0;
     let received = 0;
     let notOrdered = 0;
 
@@ -148,13 +155,17 @@ const InwardTracking = ({ categories, documents, onItemClick, onUpdatePONumber, 
       switch (status) {
         case 'overdue':
           overdue++;
-          ordered++; // Also count as ordered
+          ordered++;
           break;
         case 'arriving-soon':
           arrivingSoon++;
-          ordered++; // Also count as ordered
+          ordered++;
           break;
         case 'on-track':
+          ordered++;
+          break;
+        case 'partial':
+          partial++;
           ordered++;
           break;
         case 'received':
@@ -166,7 +177,7 @@ const InwardTracking = ({ categories, documents, onItemClick, onUpdatePONumber, 
       }
     });
 
-    return { ordered, arrivingSoon, overdue, received, notOrdered, total: allItems.length };
+    return { ordered, arrivingSoon, overdue, partial, received, notOrdered, total: allItems.length };
   }, [allItems]);
 
   // Filter items for table
@@ -204,7 +215,7 @@ const InwardTracking = ({ categories, documents, onItemClick, onUpdatePONumber, 
 
 
   // If no ordered items, show empty state in full page mode
-  if (stats.ordered + stats.received === 0) {
+  if (stats.ordered + stats.received + stats.partial === 0) {
     if (fullPage) {
       return (
         <div className="flex flex-col items-center justify-center py-12 text-gray-500">
@@ -221,7 +232,7 @@ const InwardTracking = ({ categories, documents, onItemClick, onUpdatePONumber, 
   const TrackingContent = () => (
     <>
       {/* Summary Cards */}
-      <div className={`grid grid-cols-4 gap-${fullPage ? '4' : '2'} mb-${fullPage ? '6' : '3'}`}>
+      <div className={`grid grid-cols-5 gap-${fullPage ? '4' : '2'} mb-${fullPage ? '6' : '3'}`}>
         <div className={`bg-gray-50 rounded p-${fullPage ? '4' : '2'} text-center`}>
           <div className={`${fullPage ? 'text-2xl' : 'text-lg'} font-semibold text-gray-900`}>{stats.ordered}</div>
           <div className={`${fullPage ? 'text-sm' : 'text-xs'} text-gray-500`}>Ordered</div>
@@ -233,6 +244,10 @@ const InwardTracking = ({ categories, documents, onItemClick, onUpdatePONumber, 
         <div className={`bg-red-50 rounded p-${fullPage ? '4' : '2'} text-center`}>
           <div className={`${fullPage ? 'text-2xl' : 'text-lg'} font-semibold text-red-700`}>{stats.overdue}</div>
           <div className={`${fullPage ? 'text-sm' : 'text-xs'} text-red-600`}>Overdue</div>
+        </div>
+        <div className={`bg-amber-50 rounded p-${fullPage ? '4' : '2'} text-center`}>
+          <div className={`${fullPage ? 'text-2xl' : 'text-lg'} font-semibold text-amber-700`}>{stats.partial}</div>
+          <div className={`${fullPage ? 'text-sm' : 'text-xs'} text-amber-600`}>Partial</div>
         </div>
         <div className={`bg-green-50 rounded p-${fullPage ? '4' : '2'} text-center`}>
           <div className={`${fullPage ? 'text-2xl' : 'text-lg'} font-semibold text-green-700`}>{stats.received}</div>
@@ -252,6 +267,7 @@ const InwardTracking = ({ categories, documents, onItemClick, onUpdatePONumber, 
             <SelectItem value="overdue">Overdue</SelectItem>
             <SelectItem value="arriving-soon">Arriving Soon</SelectItem>
             <SelectItem value="on-track">On Track</SelectItem>
+            <SelectItem value="partial">Partial</SelectItem>
             <SelectItem value="received">Received</SelectItem>
           </SelectContent>
         </Select>
@@ -290,7 +306,9 @@ const InwardTracking = ({ categories, documents, onItemClick, onUpdatePONumber, 
                       </div>
                     </td>
                     <td className={`p-${fullPage ? '3' : '2'} text-center text-gray-600`}>
-                      {item.quantity}
+                      {status === 'partial'
+                        ? <span className="text-amber-700 font-medium">{getTotalReceivedQty(item)}/{item.quantity}</span>
+                        : item.quantity}
                     </td>
                     <td className={`p-${fullPage ? '3' : '2'} text-gray-600 hidden sm:table-cell`}>
                       {item.finalizedVendor?.name || item.vendors?.[0]?.name || '-'}
@@ -332,6 +350,11 @@ const InwardTracking = ({ categories, documents, onItemClick, onUpdatePONumber, 
                       {item.actualArrival && status === 'received' && (
                         <div className="text-green-600">
                           Rcvd: {formatDate(item.actualArrival)}
+                        </div>
+                      )}
+                      {item.actualArrival && status === 'partial' && (
+                        <div className="text-amber-600">
+                          1st: {formatDate(item.actualArrival)}
                         </div>
                       )}
                     </td>

@@ -28,7 +28,7 @@ import { getActiveBrands } from '@/utils/brandFirestore';
 import { Brand } from '@/types/brand';
 import QuantityControl from './QuantityControl';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { getInwardStatus, InwardStatus } from '@/types/bom';
+import { getInwardStatus, getTotalReceivedQty, InwardStatus } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
 import ItemAttachments from './ItemAttachments';
 
@@ -128,7 +128,9 @@ const InwardStatusBadge = ({ part }: { part: BOMItem }) => {
   const inwardStatus = getInwardStatus(part);
   const daysUntil = getDaysUntilArrival(part.expectedArrival);
 
-  if (inwardStatus === 'not-ordered' || !part.expectedArrival) return null;
+  if (inwardStatus === 'not-ordered') return null;
+  // Show partial badge even without expectedArrival
+  if (inwardStatus !== 'partial' && !part.expectedArrival) return null;
 
   const statusConfig: Record<InwardStatus, { icon: React.ReactNode; className: string; label: string }> = {
     'overdue': {
@@ -145,6 +147,11 @@ const InwardStatusBadge = ({ part }: { part: BOMItem }) => {
       icon: <Package size={10} />,
       className: 'text-gray-600 bg-gray-100',
       label: `${daysUntil}d`
+    },
+    'partial': {
+      icon: <CheckCircle2 size={10} />,
+      className: 'text-amber-600 bg-amber-50',
+      label: `${getTotalReceivedQty(part)}/${part.quantity} rcvd`
     },
     'received': {
       icon: <CheckCircle2 size={10} />,
@@ -171,7 +178,10 @@ const InwardStatusBadge = ({ part }: { part: BOMItem }) => {
       </TooltipTrigger>
       <TooltipContent>
         <div className="text-xs">
-          <div>Expected: {formatDateShort(part.expectedArrival)}</div>
+          {inwardStatus === 'partial' && (
+            <div>{getTotalReceivedQty(part)} of {part.quantity} units received</div>
+          )}
+          {part.expectedArrival && <div>Expected: {formatDateShort(part.expectedArrival)}</div>}
           {part.orderDate && <div>Ordered: {formatDateShort(part.orderDate)}</div>}
         </div>
       </TooltipContent>

@@ -18,7 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useToast } from '@/components/ui/use-toast';
-import { BOMItem } from '@/types/bom';
+import { BOMItem, getTotalReceivedQty } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
 import { uploadProjectDocument } from '@/utils/projectDocumentFirestore';
 import { auth, storage } from '@/firebase';
@@ -30,7 +30,7 @@ interface ReceiveItemDialogProps {
   item: BOMItem | null;
   projectId: string;
   availableVendorQuotes: ProjectDocument[]; // Vendor quotes that can serve as invoices
-  onConfirm: (data: { actualArrival: string; linkedInvoiceDocumentId: string; receivedPhotoUrl: string }) => void;
+  onConfirm: (data: { actualArrival: string; linkedInvoiceDocumentId: string; receivedPhotoUrl: string; receivedQty: number }) => void;
   onDocumentUploaded?: (doc: ProjectDocument) => void;
 }
 
@@ -46,6 +46,7 @@ const ReceiveItemDialog = ({
   const [actualArrival, setActualArrival] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
+  const [receivedQty, setReceivedQty] = useState<number>(1);
   const [linkedInvoiceDocumentId, setLinkedInvoiceDocumentId] = useState<string>('');
   const [uploading, setUploading] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -105,6 +106,8 @@ const ReceiveItemDialog = ({
   useEffect(() => {
     if (open && item) {
       setActualArrival(new Date().toISOString().split('T')[0]);
+      const alreadyReceived = getTotalReceivedQty(item);
+      setReceivedQty(Math.max(1, item.quantity - alreadyReceived));
 
       // Check for existing invoice linkage - either on the item OR via document's linkedBOMItems
       let existingInvoiceId = item.linkedInvoiceDocumentId || '';
@@ -230,7 +233,7 @@ const ReceiveItemDialog = ({
 
   const handleConfirm = () => {
     if (!canSubmit) return;
-    onConfirm({ actualArrival, linkedInvoiceDocumentId, receivedPhotoUrl: photoUrl });
+    onConfirm({ actualArrival, linkedInvoiceDocumentId, receivedPhotoUrl: photoUrl, receivedQty });
     onOpenChange(false);
   };
 
@@ -321,6 +324,38 @@ const ReceiveItemDialog = ({
               </div>
             )}
           </div>
+
+          {/* Quantity Received */}
+          {(() => {
+            const alreadyReceived = getTotalReceivedQty(item);
+            const remaining = Math.max(1, item.quantity - alreadyReceived);
+            return (
+              <div className="space-y-1.5">
+                <Label htmlFor="receivedQty" className="text-sm font-medium">
+                  Units Received <span className="text-red-500">*</span>
+                </Label>
+                {alreadyReceived > 0 && (
+                  <p className="text-xs text-amber-600">
+                    Already received: {alreadyReceived} of {item.quantity} — {remaining} remaining
+                  </p>
+                )}
+                <Input
+                  id="receivedQty"
+                  type="number"
+                  min={1}
+                  max={remaining}
+                  value={receivedQty}
+                  onChange={(e) => setReceivedQty(Math.min(remaining, Math.max(1, parseInt(e.target.value) || 1)))}
+                  className="h-9"
+                />
+                {receivedQty < item.quantity - alreadyReceived && (
+                  <p className="text-xs text-amber-600">
+                    Partial receipt — item will stay in "Ordered" until all {item.quantity} units arrive.
+                  </p>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Actual Arrival Date */}
           <div className="space-y-1.5">

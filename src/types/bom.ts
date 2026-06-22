@@ -70,12 +70,30 @@ export interface BOMItem {
 }
 
 // Helper type for inward tracking status
-export type InwardStatus = 'not-ordered' | 'on-track' | 'arriving-soon' | 'overdue' | 'received';
+export type InwardStatus = 'not-ordered' | 'on-track' | 'arriving-soon' | 'overdue' | 'partial' | 'received';
+
+// Returns the total qty received across all fulfillment tranches (backward-compat: fully-received items with no tranches return full qty)
+export function getTotalReceivedQty(item: BOMItem): number {
+  if (item.fulfillmentTranches?.length) {
+    return item.fulfillmentTranches.reduce((sum, t) => sum + t.quantity, 0);
+  }
+  return item.status === 'received' ? item.quantity : 0;
+}
+
+// Returns the qty still pending (total - received)
+export function getRemainingQty(item: BOMItem): number {
+  return Math.max(0, item.quantity - getTotalReceivedQty(item));
+}
 
 // Helper function to calculate inward status
 export function getInwardStatus(item: BOMItem): InwardStatus {
   if (item.status === 'not-ordered') return 'not-ordered';
   if (item.status === 'received') return 'received';
+
+  // Partial: some tranches logged but not fully received
+  const totalReceived = getTotalReceivedQty(item);
+  if (totalReceived > 0 && totalReceived < item.quantity) return 'partial';
+
   if (!item.expectedArrival) return 'on-track';
 
   const today = new Date();

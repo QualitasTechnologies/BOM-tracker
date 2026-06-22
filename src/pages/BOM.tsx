@@ -42,7 +42,7 @@ import { fetchAllUsers } from '@/utils/userService';
 import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
 import { getBrands } from '@/utils/brandFirestore';
 import type { Vendor, BOMCategory as SettingsCategory } from '@/utils/settingsFirestore';
-import { BOMItem, BOMCategory, BOMStatus } from '@/types/bom';
+import { BOMItem, BOMCategory, BOMStatus, FulfillmentTranche } from '@/types/bom';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { getProjectDocuments, linkDocumentToBOMItems } from '@/utils/projectDocumentFirestore';
@@ -1482,11 +1482,21 @@ const BOM = () => {
           availableVendorQuotes={projectDocuments.filter(doc => doc.type === 'vendor-invoice')}
           onConfirm={(data) => {
             if (selectedItemForReceive && projectId) {
-              updateBOMItem(projectId, categories, selectedItemForReceive.id, {
-                status: 'received',
-                actualArrival: data.actualArrival,
+              const item = selectedItemForReceive;
+              const newTranche: FulfillmentTranche = {
+                id: `tranche-${Date.now()}`,
+                quantity: data.receivedQty,
+                invoiceDocId: data.linkedInvoiceDocumentId,
+                loggedAt: data.actualArrival,
+              };
+              const allTranches = [...(item.fulfillmentTranches || []), newTranche];
+              const totalReceived = allTranches.reduce((sum, t) => sum + t.quantity, 0);
+              updateBOMItem(projectId, categories, item.id, {
+                status: totalReceived >= item.quantity ? 'received' : 'ordered',
+                actualArrival: item.actualArrival || data.actualArrival,
                 linkedInvoiceDocumentId: data.linkedInvoiceDocumentId,
                 receivedPhotoUrl: data.receivedPhotoUrl,
+                fulfillmentTranches: allTranches,
               });
             }
             setSelectedItemForReceive(null);
