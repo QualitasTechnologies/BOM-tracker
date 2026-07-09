@@ -33,11 +33,14 @@ import {
   updateBOMData,
   updateBOMItem,
   deleteBOMItem,
+  updateProject,
   Project,
 } from '@/utils/projectFirestore';
 import { useAuth } from '@/hooks/useAuth';
 import { getVisibleCategories } from '@/utils/accessControl';
 import ProjectMembersTab from '@/components/Project/ProjectMembersTab';
+import OverheadsTab from '@/components/BOM/OverheadsTab';
+import ProjectCostBar from '@/components/BOM/ProjectCostBar';
 import { fetchAllUsers } from '@/utils/userService';
 import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
 import { getBrands } from '@/utils/brandFirestore';
@@ -73,7 +76,7 @@ interface OrderDialogData {
 
 const BOM = () => {
   const [searchParams] = useSearchParams();
-  const initialTab = searchParams.get('tab') || 'bom-items';
+  const initialTab = searchParams.get('tab') || 'costs';
 
   const [searchTerm, setSearchTerm] = useState('');
   const [categories, setCategories] = useState<BOMCategory[]>([]);
@@ -131,6 +134,7 @@ const BOM = () => {
   const [availableMakes, setAvailableMakes] = useState<string[]>([]);
   const [canonicalCategories, setCanonicalCategories] = useState<SettingsCategory[]>([]);
   const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([]);
+  const [overheadTotal, setOverheadTotal] = useState(0);
   const { user, isAdmin } = useAuth();
   const [fullProject, setFullProject] = useState<Project | null>(null);
   const [approvedUsers, setApprovedUsers] = useState<Array<{ uid: string; email: string; displayName: string }>>([]);
@@ -647,6 +651,12 @@ const BOM = () => {
     };
   };
 
+  const handleUpdateBudget = async (budget: number | undefined) => {
+    if (!projectId) return;
+    await updateProject(projectId, { internalBudget: budget });
+    setFullProject(prev => prev ? { ...prev, internalBudget: budget } : prev);
+  };
+
   const handleOrderDialogConfirm = async (data: OrderDialogData) => {
     if (!projectId || !selectedItemForOrder) {
       return;
@@ -696,10 +706,10 @@ const BOM = () => {
 
             {/* Tab-based Layout */}
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-              <TabsList className={`grid w-full mb-4 ${isPartner ? 'grid-cols-3' : 'grid-cols-7'}`}>
-                <TabsTrigger value="bom-items" className="flex items-center gap-2">
+              <TabsList className={`grid w-full mb-4 ${isPartner ? 'grid-cols-3' : 'grid-cols-6'}`}>
+                <TabsTrigger value="costs" className="flex items-center gap-2">
                   <Package size={16} />
-                  BOM Items
+                  Costs
                   <Badge variant="secondary" className="ml-1 text-xs">
                     {visibleCategories.flatMap(cat => cat.items).length}
                   </Badge>
@@ -745,8 +755,18 @@ const BOM = () => {
                 )}
               </TabsList>
 
-              {/* BOM Items Tab */}
-              <TabsContent value="bom-items" className="mt-0">
+              {/* Costs Tab (BOM Items + Overheads) */}
+              <TabsContent value="costs" className="mt-0">
+                {/* Budget bar */}
+                {projectId && !isPartner && (
+                  <ProjectCostBar
+                    budget={fullProject?.internalBudget}
+                    bomCost={calculateBOMMetrics().totalCost}
+                    overheadCost={overheadTotal}
+                    canEdit={isAdmin}
+                    onUpdateBudget={handleUpdateBudget}
+                  />
+                )}
                 {/* Search and Actions Bar */}
                 <div className="flex flex-col sm:flex-row gap-3 mb-4">
                   <div className="relative flex-1 flex items-center gap-2">
@@ -1025,6 +1045,20 @@ const BOM = () => {
                     </>
                   )}
                 </div>
+
+                {/* Overheads section (inside Costs tab) */}
+                {projectId && user && !isPartner && (
+                  <div className="mt-6 border-t pt-6">
+                    <OverheadsTab
+                      projectId={projectId}
+                      projectName={fullProject?.projectName ?? ''}
+                      members={fullProject?.members ?? []}
+                      currentUserId={user.uid}
+                      isAdmin={isAdmin}
+                      onTotalChange={setOverheadTotal}
+                    />
+                  </div>
+                )}
               </TabsContent>
 
               {/* Inward Tracking Tab */}

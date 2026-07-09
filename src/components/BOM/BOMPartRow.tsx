@@ -1,5 +1,5 @@
 
-import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText, Clock, AlertTriangle, CheckCircle2, Package, Unlink } from 'lucide-react';
+import { Calendar, ChevronDown, Building2, Link as LinkIcon, MoreHorizontal, Trash2, Edit, Check, X, FileText, Clock, AlertTriangle, CheckCircle2, Package, Unlink, Image } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import LogFulfillmentDialog from './LogFulfillmentDialog';
 import { SpecSearchButton } from './SpecSearchButton';
@@ -69,6 +69,7 @@ interface BOMItem {
     id: string;
     quantity: number;
     invoiceDocId?: string;
+    photoUrl?: string;
     loggedAt: string;
   }>;
 }
@@ -290,11 +291,12 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
     setDialogOpen(false);
   };
 
-  const handleLogFulfillmentConfirm = (data: { quantity: number; invoiceDocId?: string }) => {
+  const handleLogFulfillmentConfirm = (data: { quantity: number; invoiceDocId?: string; photoUrl?: string }) => {
     const newTranche = {
       id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       quantity: data.quantity,
       invoiceDocId: data.invoiceDocId,
+      photoUrl: data.photoUrl,
       loggedAt: new Date().toISOString().split('T')[0],
     };
     const updatedTranches = [...(part.fulfillmentTranches ?? []), newTranche];
@@ -670,7 +672,7 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                             ? projectDocuments.find(d => d.id === t.invoiceDocId)
                             : undefined;
                           return (
-                            <div key={t.id} className="flex items-center gap-3 px-2 py-1.5 text-gray-600">
+                            <div key={t.id} className="flex items-center gap-3 px-2 py-1.5 text-gray-600 flex-wrap">
                               <span className="font-medium">{t.quantity}{itemType === 'service' ? 'd' : ' units'}</span>
                               <span className="text-gray-400">{t.loggedAt}</span>
                               {t.invoiceDocId && (
@@ -683,7 +685,7 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                                     onClick={e => e.stopPropagation()}
                                   >
                                     <FileText size={10} />
-                                    <span className="truncate max-w-[180px]">{invoiceDoc.name}</span>
+                                    <span className="truncate max-w-[120px]">{invoiceDoc.name}</span>
                                   </a>
                                 ) : (
                                   <span className="flex items-center gap-1 text-purple-400">
@@ -691,6 +693,19 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                                     <span>Invoice</span>
                                   </span>
                                 )
+                              )}
+                              {t.photoUrl && (
+                                <a
+                                  href={t.photoUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-green-600 hover:text-green-800 hover:underline"
+                                  onClick={e => e.stopPropagation()}
+                                  title="View receipt photo"
+                                >
+                                  <Image size={10} />
+                                  <span>Photo</span>
+                                </a>
                               )}
                             </div>
                           );

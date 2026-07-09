@@ -5,6 +5,7 @@ export interface FulfillmentTranche {
   id: string;
   quantity: number;      // units received (components) OR days consumed (services)
   invoiceDocId?: string; // reference to ProjectDocument.id
+  photoUrl?: string;     // photo proof of this delivery
   loggedAt: string;      // ISO date YYYY-MM-DD
 }
 

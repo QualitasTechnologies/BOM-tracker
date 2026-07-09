@@ -49,7 +49,8 @@ export interface Project {
   description: string;
   status: "Planning" | "Procurement" | "Ongoing" | "Delayed" | "Completed" | "Archived";
   deadline: string; // ISO string - treated as CURRENT deadline
-  poValue?: number; // Purchase Order value from customer
+  poValue?: number;          // Purchase Order value from customer
+  internalBudget?: number;   // Internal cost budget for the project
   bomSnapshot?: any[]; // Snapshot of BOM when status changed to 'Ongoing' (order won)
   bomSnapshotDate?: string; // ISO string - when snapshot was taken
   archivedAt?: string; // ISO string - when project was archived

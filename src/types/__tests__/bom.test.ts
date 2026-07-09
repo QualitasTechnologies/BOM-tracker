@@ -44,16 +44,16 @@ describe('getInwardStatus', () => {
       expect(result).toBe('not-ordered');
     });
 
-    it('returns not-ordered for service items regardless of status', () => {
+    it('returns overdue for service items past expected arrival', () => {
       const item = createBOMItem({
         itemType: 'service',
         status: 'ordered',
-        expectedArrival: '2025-11-25' // Would be overdue
+        expectedArrival: '2025-11-25' // Past date → overdue
       });
 
       const result = getInwardStatus(item);
 
-      expect(result).toBe('not-ordered');
+      expect(result).toBe('overdue');
     });
   });
 
@@ -417,8 +417,7 @@ describe('sanitizeBOMItemForFirestore', () => {
         category: 'Test',
         status: 'not-ordered',
         vendors: [],
-        // @ts-expect-error - testing null handling
-        price: null,
+        price: null as unknown as number,
       };
 
       const result = sanitizeBOMItemForFirestore(item);
