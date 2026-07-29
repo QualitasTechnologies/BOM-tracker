@@ -3,39 +3,38 @@ import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
+import {
+  Tooltip,
   ResponsiveContainer,
   PieChart,
   Pie,
   Cell,
-  LineChart,
-  Line,
-  Legend
 } from "recharts";
-import { 
-  TrendingUp, 
-  TrendingDown, 
-  DollarSign, 
-  Package, 
-  Clock, 
-  Users, 
+import {
+  TrendingUp,
+  DollarSign,
+  Package,
+  Clock,
+  Users,
   AlertTriangle,
   CheckCircle,
   Activity,
   BarChart3,
   Calendar,
-  FileText
+  FileText,
+  Receipt,
+  UserCheck,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { doc, getDoc, collection, getDocs, query, orderBy, limit } from "firebase/firestore";
 import { db } from "@/firebase";
-import { getBOMData, getTotalBOMCost } from "@/utils/projectFirestore";
+import { getBOMData, type ProjectMember } from "@/utils/projectFirestore";
+import { getProjectCosts } from "@/utils/pulseProxyFirestore";
+import { computeDashboardCostTotals, type DashboardCostTotals } from "@/utils/dashboardCostTotals";
+import { extractPendingClaims, type PendingClaimsSummary, type ProjectVisits } from "@/utils/pendingApprovals";
+import { getOverheads } from "@/utils/overheadFirestore";
+import { weekRangeFromDate } from "@/components/CostAnalysis/WeekNavigator";
+import { fetchPendingUsers } from "@/utils/userService";
 
 const KPI = () => {
   const navigate = useNavigate();
@@ -46,44 +45,70 @@ const KPI = () => {
   const [activeProjects, setActiveProjects] = useState(0);
   const [completedProjects, setCompletedProjects] = useState(0);
   const [overdueProjects, setOverdueProjects] = useState(0);
-  const [totalCost, setTotalCost] = useState(0);
   const [totalBudget, setTotalBudget] = useState(0);
-  const [totalManHours, setTotalManHours] = useState(0);
   const [totalParts, setTotalParts] = useState(0);
   const [vendorCount, setVendorCount] = useState(0);
+  const [dashboardCosts, setDashboardCosts] = useState<DashboardCostTotals>({
+    totalMaterialCost: 0,
+    totalTimeCost: 0,
+    totalTimeHours: 0,
+    totalCost: 0,
+  });
+  const [costsError, setCostsError] = useState<string | null>(null);
+  const [pendingClaims, setPendingClaims] = useState<PendingClaimsSummary>({
+    claims: [],
+    count: 0,
+    totalAmount: 0,
+  });
+  const [pendingUsers, setPendingUsers] = useState<{ id?: string; uid?: string; email?: string; displayName?: string }[]>([]);
 
   useEffect(() => {
     const fetchKPIData = async () => {
       if (!user) return;
-      
+
       try {
         // Fetch projects
         const projectsRef = collection(db, 'projects');
         const projectsQuery = query(projectsRef, orderBy('createdAt', 'desc'));
         const projectsSnapshot = await getDocs(projectsQuery);
-        
+
         const projectsData = [];
-        let totalBOMCost = 0;
         let totalBOMParts = 0;
-        
-        for (const doc of projectsSnapshot.docs) {
-          const projectData = { id: doc.id, ...doc.data() };
+        const projectVisits: ProjectVisits[] = [];
+
+        for (const projectDoc of projectsSnapshot.docs) {
+          const projectData = { id: projectDoc.id, ...projectDoc.data() } as {
+            id: string;
+            projectName?: string;
+            members?: ProjectMember[];
+            [key: string]: unknown;
+          };
           projectsData.push(projectData);
-          
-          // Get BOM data for cost calculation
+
+          // Get BOM data for part count
           try {
-            const bomData = await getBOMData(doc.id);
-            totalBOMCost += getTotalBOMCost(bomData);
-            
-            // Count parts
+            const bomData = await getBOMData(projectDoc.id);
             bomData.forEach(category => {
               totalBOMParts += category.parts.length;
             });
           } catch (error) {
-            console.log(`No BOM data for project ${doc.id}`);
+            console.log(`No BOM data for project ${projectDoc.id}`);
+          }
+
+          // Get overheads for pending expense-claim detection
+          try {
+            const overheads = await getOverheads(projectDoc.id);
+            projectVisits.push({
+              projectId: projectDoc.id,
+              projectName: projectData.projectName || projectDoc.id,
+              members: projectData.members ?? [],
+              visits: overheads.travelVisits,
+            });
+          } catch (error) {
+            console.log(`No overheads data for project ${projectDoc.id}`);
           }
         }
-        
+
         setProjects(projectsData);
         setTotalProjects(projectsData.length);
         setActiveProjects(projectsData.filter(p => p.status === 'Ongoing').length);
@@ -97,21 +122,38 @@ const KPI = () => {
           return new Date(p.deadline) < today;
         }).length;
         setOverdueProjects(overdue);
-        
+
         // Calculate total budget
         const totalBudgetAmount = projectsData.reduce((sum, p) => sum + (p.estimatedBudget || 0), 0);
         setTotalBudget(totalBudgetAmount);
-        setTotalCost(totalBOMCost);
         setTotalParts(totalBOMParts);
-        
+
+        setPendingClaims(extractPendingClaims(projectVisits));
+
         // Fetch vendor count
         const vendorsRef = collection(db, 'vendors');
         const vendorsSnapshot = await getDocs(vendorsRef);
         setVendorCount(vendorsSnapshot.size);
-        
-        // Time tracking removed — man hours not tracked in this app
-        setTotalManHours(0);
-        
+
+        // Real hours/cost data from Pulse (via getProjectCosts roll-up)
+        try {
+          const range = weekRangeFromDate(new Date());
+          const costsRes = await getProjectCosts(range.start, range.end);
+          setDashboardCosts(computeDashboardCostTotals(costsRes.projects));
+          setCostsError(null);
+        } catch (error) {
+          console.error('Error fetching project costs from Pulse:', error);
+          setCostsError('Could not load hours/cost data from Pulse.');
+        }
+
+        // Pending user account approvals
+        try {
+          const pendingRes = await fetchPendingUsers() as { users: { id?: string; uid?: string; email?: string; displayName?: string }[] };
+          setPendingUsers(pendingRes.users ?? []);
+        } catch (error) {
+          console.error('Error fetching pending users:', error);
+        }
+
       } catch (error) {
         console.error('Error fetching KPI data:', error);
       } finally {
@@ -173,21 +215,6 @@ const KPI = () => {
     { name: 'Overdue', value: overdueProjects, color: '#EF4444' },
   ];
 
-  const costTrendData = [
-    { month: 'Jan', budget: 2500000, actual: 2100000 },
-    { month: 'Feb', budget: 2800000, actual: 2400000 },
-    { month: 'Mar', budget: 3200000, actual: 2900000 },
-    { month: 'Apr', budget: 3000000, actual: 2700000 },
-    { month: 'May', budget: 3500000, actual: totalCost },
-  ];
-
-  const productivityData = [
-    { project: 'ITC Vision', hours: 120, parts: 45 },
-    { project: 'Inventory Portal', hours: 80, parts: 32 },
-    { project: 'DevOps Pipeline', hours: 95, parts: 28 },
-    { project: 'ERP Integration', hours: 150, parts: 67 },
-  ];
-
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -242,7 +269,7 @@ const KPI = () => {
             <CardContent>
               <div className="text-3xl font-bold">{formatCurrency(totalBudget)}</div>
               <p className="text-xs text-muted-foreground mt-1">
-                {formatCurrency(totalCost)} spent
+                {formatCurrency(dashboardCosts.totalCost)} spent
               </p>
             </CardContent>
           </Card>
@@ -255,9 +282,9 @@ const KPI = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold">{totalManHours.toLocaleString()}</div>
+              <div className="text-3xl font-bold">{Math.round(dashboardCosts.totalTimeHours).toLocaleString()}</div>
               <p className="text-xs text-muted-foreground mt-1">
-                Engineering hours logged
+                {costsError ? costsError : 'Logged in Pulse, all projects'}
               </p>
             </CardContent>
           </Card>
@@ -315,72 +342,79 @@ const KPI = () => {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <TrendingUp className="h-5 w-5" />
-                Cost Trend Analysis
+                <AlertTriangle className="h-5 w-5" />
+                Needs Attention
               </CardTitle>
               <CardDescription>
-                Budget vs actual costs over time
+                Items waiting on your approval
               </CardDescription>
             </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={costTrendData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis tickFormatter={(value) => `₹${(value / 1000000).toFixed(1)}M`} />
-                  <Tooltip 
-                    formatter={(value) => formatCurrency(value as number)}
-                    labelStyle={{ color: '#374151' }}
-                  />
-                  <Legend />
-                  <Line 
-                    type="monotone" 
-                    dataKey="budget" 
-                    stroke="#3B82F6" 
-                    strokeWidth={2}
-                    name="Budget"
-                  />
-                  <Line 
-                    type="monotone" 
-                    dataKey="actual" 
-                    stroke="#10B981" 
-                    strokeWidth={2}
-                    name="Actual"
-                  />
-                </LineChart>
-              </ResponsiveContainer>
+            <CardContent className="space-y-4">
+              {pendingClaims.count === 0 && pendingUsers.length === 0 ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground py-6 justify-center">
+                  <CheckCircle className="h-4 w-4 text-green-500" />
+                  All caught up
+                </div>
+              ) : (
+                <>
+                  {pendingClaims.count > 0 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          <Receipt className="h-4 w-4 text-amber-600" />
+                          Pending Expense Claims
+                        </div>
+                        <Badge variant="outline" className="bg-amber-50 text-amber-700">
+                          {pendingClaims.count} · {formatCurrency(pendingClaims.totalAmount)}
+                        </Badge>
+                      </div>
+                      <div className="space-y-1">
+                        {pendingClaims.claims.map(claim => (
+                          <button
+                            key={claim.visitId}
+                            onClick={() => navigate(`/project/${claim.projectId}/bom`)}
+                            className="w-full flex items-center justify-between text-sm px-2 py-1.5 rounded hover:bg-muted/50 text-left"
+                          >
+                            <span className="truncate">{claim.projectName} — {claim.claimantName}</span>
+                            <span className="font-medium ml-2 shrink-0">{formatCurrency(claim.amount)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {pendingUsers.length > 0 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          <UserCheck className="h-4 w-4 text-blue-600" />
+                          Pending User Approvals
+                        </div>
+                        <Badge variant="outline" className="bg-blue-50 text-blue-700">
+                          {pendingUsers.length}
+                        </Badge>
+                      </div>
+                      <div className="space-y-1">
+                        {pendingUsers.map(u => (
+                          <button
+                            key={u.id ?? u.uid ?? u.email}
+                            onClick={() => navigate('/settings')}
+                            className="w-full flex items-center text-sm px-2 py-1.5 rounded hover:bg-muted/50 text-left truncate"
+                          >
+                            {u.displayName || u.email}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
             </CardContent>
           </Card>
         </div>
 
         {/* Productivity & Performance */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Users className="h-5 w-5" />
-                Project Productivity
-              </CardTitle>
-              <CardDescription>
-                Hours vs parts delivered by project
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={productivityData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="project" />
-                  <YAxis yAxisId="left" orientation="left" />
-                  <YAxis yAxisId="right" orientation="right" />
-                  <Tooltip />
-                  <Legend />
-                  <Bar yAxisId="left" dataKey="hours" fill="#8B5CF6" name="Hours" />
-                  <Bar yAxisId="right" dataKey="parts" fill="#06B6D4" name="Parts" />
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-
+        <div className="grid grid-cols-1 gap-6">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -408,7 +442,7 @@ const KPI = () => {
                   <span className="text-sm">Budget Utilization</span>
                 </div>
                 <Badge variant="outline" className="bg-blue-50 text-blue-700">
-                  {totalBudget > 0 ? Math.round((totalCost / totalBudget) * 100) : 0}%
+                  {totalBudget > 0 ? Math.round((dashboardCosts.totalCost / totalBudget) * 100) : 0}%
                 </Badge>
               </div>
               
@@ -428,7 +462,7 @@ const KPI = () => {
                   <span className="text-sm">Avg Hours per Project</span>
                 </div>
                 <Badge variant="outline" className="bg-orange-50 text-orange-700">
-                  {totalProjects > 0 ? Math.round(totalManHours / totalProjects) : 0}h
+                  {totalProjects > 0 ? Math.round(dashboardCosts.totalTimeHours / totalProjects) : 0}h
                 </Badge>
               </div>
             </CardContent>
