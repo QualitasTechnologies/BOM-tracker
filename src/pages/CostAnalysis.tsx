@@ -10,6 +10,8 @@ import Sidebar from "@/components/Sidebar";
 import { doc, getDoc } from "firebase/firestore";
 import { db, auth } from "@/firebase";
 import { getBOMData, getTotalBOMCost, updateProject, subscribeToProjects } from "@/utils/projectFirestore";
+import { getProjectCosts, type ProjectCostRow } from "@/utils/pulseProxyFirestore";
+import { weekRangeFromDate, type WeekRange } from "@/components/CostAnalysis/WeekNavigator";
 import { subscribeToClients, Client } from "@/utils/settingsFirestore";
 import { uploadProjectDocument, getProjectDocuments, deleteProjectDocument } from "@/utils/projectDocumentFirestore";
 import { useAuth } from "@/hooks/useAuth";
@@ -44,6 +46,8 @@ const CostAnalysisSummary = ({
   const [clients, setClients] = useState<Client[]>([]);
   const [projectCosts, setProjectCosts] = useState<Map<string, ProjectCostData>>(new Map());
   const [loading, setLoading] = useState(true);
+  const [costsError, setCostsError] = useState<string | null>(null);
+  const [range] = useState<WeekRange>(() => weekRangeFromDate(new Date()));
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['Ongoing', 'Delayed', 'Planning', 'Completed']));
 
   // Subscribe to projects and clients
@@ -62,7 +66,7 @@ const CostAnalysisSummary = ({
     };
   }, []);
 
-  // Fetch cost data for all projects
+  // Fetch cost data for all projects — real Pulse hours/cost via getProjectCosts roll-up
   useEffect(() => {
     const fetchAllCosts = async () => {
       if (projects.length === 0) {
@@ -70,56 +74,38 @@ const CostAnalysisSummary = ({
         return;
       }
 
-      const costsMap = new Map<string, ProjectCostData>();
+      try {
+        const res = await getProjectCosts(range.start, range.end);
+        const rowsById = new Map<string, ProjectCostRow>(res.projects.map(r => [r.projectId, r]));
 
-      await Promise.all(
-        projects.map(async (project) => {
-          try {
-            // Get project details for costPerHour and miscCost
-            const projectRef = doc(db, 'projects', project.projectId);
-            const projectSnap = await getDoc(projectRef);
-            const projectData = projectSnap.exists() ? projectSnap.data() : {};
-
-            const costPerHour = projectData.costPerHour || 0;
-            const miscCost = projectData.miscCost || 0;
-            const poValue = projectData.poValue || project.poValue || 0;
-
-            // Get BOM cost
-            const bomCategories = await getBOMData(project.projectId);
-            const materialCost = getTotalBOMCost(bomCategories);
-
-            // Engineering cost not tracked (time tracking removed)
-            const totalManHours = 0;
-            const engineerCost = totalManHours * costPerHour;
-
-            // Calculate totals
-            const totalCost = materialCost + engineerCost + miscCost;
-            const grossProfit = poValue - totalCost;
-            const profitMargin = poValue ? ((grossProfit / poValue) * 100) : 0;
-
-            costsMap.set(project.projectId, {
-              project,
-              materialCost,
-              engineerCost,
-              miscCost,
-              totalCost,
-              poValue,
-              grossProfit,
-              profitMargin,
-              isProfit: grossProfit >= 0,
-            });
-          } catch (error) {
-            console.error(`Error fetching costs for project ${project.projectId}:`, error);
-          }
-        })
-      );
-
-      setProjectCosts(costsMap);
-      setLoading(false);
+        const costsMap = new Map<string, ProjectCostData>();
+        for (const project of projects) {
+          const row = rowsById.get(project.projectId);
+          if (!row) continue;
+          costsMap.set(project.projectId, {
+            project,
+            materialCost: row.cumulative.materialCost,
+            engineerCost: row.cumulative.timeCost,
+            miscCost: row.cumulative.miscCost,
+            totalCost: row.cumulative.total,
+            poValue: row.cumulative.poValue,
+            grossProfit: row.cumulative.grossProfit,
+            profitMargin: row.cumulative.profitMargin ?? 0,
+            isProfit: row.cumulative.grossProfit >= 0,
+          });
+        }
+        setProjectCosts(costsMap);
+        setCostsError(null);
+      } catch (error) {
+        console.error('Error fetching project costs from Pulse:', error);
+        setCostsError('Could not load cost data from Pulse. Showing project list without cost figures.');
+      } finally {
+        setLoading(false);
+      }
     };
 
     fetchAllCosts();
-  }, [projects]);
+  }, [projects, range.start, range.end]);
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-IN', {
@@ -189,6 +175,11 @@ const CostAnalysisSummary = ({
         </div>
 
         <div className="container mx-auto px-4 py-6 space-y-4">
+          {costsError && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+              {costsError}
+            </div>
+          )}
           {loading ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-center">
