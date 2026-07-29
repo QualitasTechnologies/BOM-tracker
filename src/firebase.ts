@@ -1,6 +1,6 @@
 // src/firebase.ts
 import { initializeApp } from "firebase/app";
-import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
+import { initializeFirestore, connectFirestoreEmulator } from "firebase/firestore";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getAnalytics } from "firebase/analytics";
 import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
@@ -22,7 +22,10 @@ const app = initializeApp(firebaseConfig);
 const analytics = getAnalytics(app);
 
 // Initialize Firebase services
-export const db = getFirestore(app);
+// ignoreUndefinedProperties: many forms build optional fields as `value || undefined`
+// (e.g. LogTravelVisitDialog's location/purpose/notes) — without this, setDoc/addDoc
+// throw synchronously on any undefined field value.
+export const db = initializeFirestore(app, { ignoreUndefinedProperties: true });
 export const auth = getAuth(app);
 export const functions = getFunctions(app);
 export const storage = getStorage(app);
