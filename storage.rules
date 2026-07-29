@@ -87,6 +87,15 @@ service firebase.storage {
       allow delete: if isAuthenticated();
     }
 
+    // Travel expense receipts (images or PDFs)
+    match /projects/{projectId}/receipts/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && (request.resource.contentType.matches('image/.*') || request.resource.contentType == 'application/pdf')
+                   && isReasonableSize();
+      allow delete: if isAuthenticated();
+    }
+
     // Default: deny all other access
     match /{allPaths=**} {
       allow read, write: if false;

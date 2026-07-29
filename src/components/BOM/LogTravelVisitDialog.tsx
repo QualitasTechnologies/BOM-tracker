@@ -16,6 +16,7 @@ import {
 import { cn } from '@/lib/utils';
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { storage } from '@/firebase';
+import { useToast } from '@/components/ui/use-toast';
 import {
   TravelVisit, TravelExpenseItem, ExpenseCategory,
   EXPENSE_CATEGORIES, MealType, MEAL_TYPES,
@@ -134,6 +135,7 @@ interface Props {
 const LogTravelVisitDialog = ({
   open, onOpenChange, projectId, members, currentUserId, editVisit, onSave,
 }: Props) => {
+  const { toast } = useToast();
   const today = new Date().toISOString().split('T')[0];
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(today);
@@ -215,8 +217,13 @@ const LogTravelVisitDialog = ({
       const snap = await uploadBytes(storageRef(storage, path), file);
       const url = await getDownloadURL(snap.ref);
       updateRow(rowId, { receiptUrl: url, receiptName: file.name, uploading: false });
-    } catch {
+    } catch (err) {
       updateRow(rowId, { uploading: false });
+      toast({
+        variant: 'destructive',
+        title: 'Receipt upload failed',
+        description: err instanceof Error ? err.message : 'Could not upload the receipt. Please try again.',
+      });
     }
   };
 
