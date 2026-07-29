@@ -31,6 +31,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { getInwardStatus, getTotalReceivedQty, InwardStatus } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
 import ItemAttachments from './ItemAttachments';
+import { useToast } from '@/components/ui/use-toast';
 
 interface BOMItem {
   id: string;
@@ -211,6 +212,7 @@ const statusStyles: Record<
 const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [], onDelete, onStatusChange, onEdit, onCategoryChange, availableCategories = [], linkedDocumentsCount = 0, linkedDocuments = [], onUnlinkDocument, globalVendors = [], projectDocuments = [] }: BOMPartRowProps) => {
   // Backward compatibility: default to 'component' if itemType is missing
   const itemType = part.itemType || 'component';
+  const { toast } = useToast();
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [vendors, setVendors] = useState(part.vendors);
@@ -728,11 +730,20 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                 className="h-6 w-6 p-0"
                 onClick={(e) => {
                   e.stopPropagation();
-                  console.log('Saving part changes:', { 
-                    partId: part.id, 
-                    originalCategory: part.category, 
+                  const receivedQty = getTotalReceivedQty(part);
+                  if (editForm.quantity < receivedQty) {
+                    toast({
+                      title: `Can't reduce ${itemType === 'service' ? 'duration' : 'quantity'} below what's already received`,
+                      description: `${receivedQty} ${itemType === 'service' ? 'days' : 'units'} already logged against this item. Adjust or remove those fulfillment entries first.`,
+                      variant: 'destructive',
+                    });
+                    return;
+                  }
+                  console.log('Saving part changes:', {
+                    partId: part.id,
+                    originalCategory: part.category,
                     newCategory: editForm.category,
-                    availableCategories 
+                    availableCategories
                   });
                   onEdit?.(part.id, editForm);
                   if (editForm.category !== part.category) {
