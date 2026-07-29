@@ -11,7 +11,7 @@ import { doc, getDoc } from "firebase/firestore";
 import { db, auth } from "@/firebase";
 import { getBOMData, getTotalBOMCost, updateProject, subscribeToProjects } from "@/utils/projectFirestore";
 import { getProjectCosts, type ProjectCostRow } from "@/utils/pulseProxyFirestore";
-import { weekRangeFromDate, type WeekRange } from "@/components/CostAnalysis/WeekNavigator";
+import { WeekNavigator, weekRangeFromDate, type WeekRange } from "@/components/CostAnalysis/WeekNavigator";
 import { subscribeToClients, Client } from "@/utils/settingsFirestore";
 import { uploadProjectDocument, getProjectDocuments, deleteProjectDocument } from "@/utils/projectDocumentFirestore";
 import { useAuth } from "@/hooks/useAuth";
@@ -321,8 +321,10 @@ const CostAnalysisDetail = ({
   const [isEditingPO, setIsEditingPO] = useState(false);
 
   const [materialCost, setMaterialCost] = useState(0);
-  const [totalManHours, setTotalManHours] = useState(0);
   const [currentBOM, setCurrentBOM] = useState<any[]>([]);
+  const [costRow, setCostRow] = useState<ProjectCostRow | null>(null);
+  const [costsError, setCostsError] = useState<string | null>(null);
+  const [range, setRange] = useState<WeekRange>(() => weekRangeFromDate(new Date()));
 
   const [projectDetails, setProjectDetails] = useState<{ projectName: string; projectId: string; clientName: string; deadline: string; status: string; bomSnapshot?: any[]; bomSnapshotDate?: string } | null>(null);
 
@@ -425,8 +427,6 @@ const CostAnalysisDetail = ({
       const bomItems = bomCategories.flatMap(cat => cat.items);
       setCurrentBOM(bomItems);
       setMaterialCost(getTotalBOMCost(bomCategories));
-      // Time tracking removed — man hours not tracked in this app
-      setTotalManHours(0);
 
       // Fetch Customer PO documents
       const docs = await getProjectDocuments(projectIdParam);
@@ -434,6 +434,21 @@ const CostAnalysisDetail = ({
     };
     fetchAllData();
   }, [projectIdParam]);
+
+  useEffect(() => {
+    const fetchCosts = async () => {
+      if (!projectIdParam) return;
+      try {
+        const res = await getProjectCosts(range.start, range.end);
+        setCostRow(res.projects.find(p => p.projectId === projectIdParam) ?? null);
+        setCostsError(null);
+      } catch (error) {
+        console.error('Error fetching project costs from Pulse:', error);
+        setCostsError('Could not load hours/cost data from Pulse.');
+      }
+    };
+    fetchCosts();
+  }, [projectIdParam, range.start, range.end]);
 
   // Update cost per hour in Firestore
   const handleCostPerHourBlur = async () => {
@@ -463,7 +478,8 @@ const CostAnalysisDetail = ({
     setIsEditingPO(false);
   };
 
-  const engineerCost = totalManHours * costPerHour;
+  const totalManHours = costRow?.cumulative.timeHours ?? 0;
+  const engineerCost = costRow?.cumulative.timeCost ?? 0;
   const totalCost = materialCost + engineerCost + miscCost;
   const grossProfit = poValue - totalCost;
   const isProfit = grossProfit > 0;
@@ -488,20 +504,20 @@ const CostAnalysisDetail = ({
   // Editable descriptions for cost items
   const [costDescriptions, setCostDescriptions] = useState([
     "Material and component costs",
-    `${totalManHours} hrs @ ₹${costPerHour}/hr`,
+    `${totalManHours} hrs logged in Pulse`,
     "Transport, overhead",
   ]);
   const [editingDescIdx, setEditingDescIdx] = useState<number | null>(null);
   const descInputRef = useRef<HTMLInputElement>(null);
 
-  // Update engineer description if hours or rate changes
+  // Update engineer description when Pulse hours change
   useEffect(() => {
     setCostDescriptions((prev) => [
       prev[0],
-      `${totalManHours} hrs @ ₹${costPerHour}/hr`,
+      `${totalManHours} hrs logged in Pulse`,
       prev[2],
     ]);
-  }, [totalManHours, costPerHour]);
+  }, [totalManHours]);
 
   const handleDescChange = (idx: number, value: string) => {
     setCostDescriptions((prev) => prev.map((desc, i) => (i === idx ? value : desc)));
@@ -562,6 +578,34 @@ const CostAnalysisDetail = ({
         </div>
 
         <div className="container mx-auto px-4 py-6 space-y-6">
+          {/* This Week (Pulse) */}
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-muted-foreground">This Week (Pulse)</h3>
+                <WeekNavigator range={range} onChange={setRange} />
+              </div>
+              {costsError ? (
+                <p className="text-sm text-amber-600">{costsError}</p>
+              ) : (
+                <div className="grid grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <p className="text-muted-foreground">Hours</p>
+                    <p className="font-semibold">{costRow?.thisWeek.timeHours ?? 0}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Time Cost</p>
+                    <p className="font-semibold">{formatCurrency(costRow?.thisWeek.timeCost ?? 0)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Material Cost</p>
+                    <p className="font-semibold">{formatCurrency(costRow?.thisWeek.materialCost ?? 0)}</p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Project Snapshot */}
           <Card>
             <CardHeader>
@@ -670,6 +714,14 @@ const CostAnalysisDetail = ({
                     <span className="text-sm font-medium">Engineering Cost</span>
                     <span className="font-semibold">{formatCurrency(engineerCost)}</span>
                   </div>
+                  {(costRow?.usingFallbackHours || (costRow?.warnings?.length ?? 0) > 0) && (
+                    <div className="text-xs text-amber-600 space-y-0.5">
+                      {costRow?.usingFallbackHours && (
+                        <p>Not linked to Pulse — using manually-logged hours as a fallback. Link this project to Pulse from the Edit Project dialog for live data.</p>
+                      )}
+                      {costRow?.warnings?.map((w, i) => <p key={i}>{w}</p>)}
+                    </div>
+                  )}
                 </div>
                 <div className="bg-muted p-6 rounded-lg text-center">
                   <p className="text-sm text-muted-foreground mb-2">Total Project Cost</p>
