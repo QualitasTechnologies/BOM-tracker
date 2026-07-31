@@ -985,7 +985,7 @@ exports.notifyExpenseApproval = onCall(
         BOM Tracker — Qualitas Technologies Pvt Ltd
       </div>`;
 
-    const projectUrl = `https://visionbomtracker.web.app/project/${projectId}/bom`;
+    const projectUrl = `https://visionbomtracker.web.app/project/${esc(projectId)}/bom`;
     const ctaBtn = (label, href = projectUrl) =>
       `<a href="${href}" style="display:inline-block;margin-top:16px;padding:10px 22px;background:#0066cc;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:600;">${label} →</a>`;
 

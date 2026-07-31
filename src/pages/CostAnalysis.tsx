@@ -435,26 +435,31 @@ const CostAnalysisDetail = ({
     fetchAllData();
   }, [projectIdParam]);
 
+  const fetchCosts = async () => {
+    if (!projectIdParam) return;
+    try {
+      const res = await getProjectCosts(range.start, range.end);
+      setCostRow(res.projects.find(p => p.projectId === projectIdParam) ?? null);
+      setCostsError(null);
+    } catch (error) {
+      console.error('Error fetching project costs from Pulse:', error);
+      setCostsError('Could not load hours/cost data from Pulse.');
+    }
+  };
+
   useEffect(() => {
-    const fetchCosts = async () => {
-      if (!projectIdParam) return;
-      try {
-        const res = await getProjectCosts(range.start, range.end);
-        setCostRow(res.projects.find(p => p.projectId === projectIdParam) ?? null);
-        setCostsError(null);
-      } catch (error) {
-        console.error('Error fetching project costs from Pulse:', error);
-        setCostsError('Could not load hours/cost data from Pulse.');
-      }
-    };
     fetchCosts();
   }, [projectIdParam, range.start, range.end]);
 
-  // Update cost per hour in Firestore
+  // Update cost per hour in Firestore, then refetch so Engineering Cost
+  // reflects the new fallback rate immediately (it only applies to
+  // engineers without an individually configured rate — see
+  // functions/index.js resolveRate()).
   const handleCostPerHourBlur = async () => {
     if (!projectIdParam) return;
     await updateProject(projectIdParam, { costPerHour });
     setIsEditingRate(false);
+    await fetchCosts();
   };
 
   // Update misc cost in Firestore
