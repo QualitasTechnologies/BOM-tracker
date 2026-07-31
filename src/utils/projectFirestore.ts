@@ -16,6 +16,7 @@ import {
 } from "firebase/firestore";
 import type { BOMItem, BOMCategory, BOMStatus } from "@/types/bom";
 import { sanitizeBOMItemForFirestore } from "@/types/bom";
+import type { SupportProjectProfile } from "@/types/support";
 
 export type { BOMItem, BOMCategory, BOMStatus };
 
@@ -82,6 +83,9 @@ export interface Project {
 
   // Notification recipients who are not registered app users
   externalRecipients?: ExternalRecipient[];
+
+  // Post-commissioning service and support configuration
+  supportProfile?: SupportProjectProfile;
 }
 
 const projectsCol = collection(db, "projects");
@@ -443,4 +447,4 @@ export const getTotalBOMCost = (categories: BOMCategory[]): number => {
       }, 0)
     );
   }, 0);
-}; 
+};

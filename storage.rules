@@ -46,6 +46,14 @@ service firebase.storage {
       allow delete: if isAuthenticated();
     }
 
+    // Post-commissioning support documents (manuals, drawings, logs, quotes, RCA)
+    match /projects/{projectId}/support/{scope}/{docType}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && isReasonableSize();
+      allow delete: if isAuthenticated();
+    }
+
     // Vendor logos
     match /vendor-logos/{fileName} {
       allow read: if isAuthenticated();

@@ -4599,6 +4599,221 @@ exports.sendPurchaseOrder = onCall(
   }
 );
 
+// ==================== SUPPORT TICKET COMMUNICATIONS ====================
+
+/**
+ * Sends a customer-facing support acknowledgement, quotation, or closure note.
+ * The linked support ticket remains the system of record and receives an
+ * immutable communication activity entry after a successful send.
+ */
+exports.sendSupportCommunication = onCall(
+  { secrets: [resendApiKey] },
+  async (request) => {
+    const { auth, data } = request;
+    if (!auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+    }
+
+    const {
+      projectId,
+      ticketId,
+      kind,
+      to,
+      cc = [],
+      message = '',
+      documentUrl,
+    } = data || {};
+
+    if (!projectId || !ticketId || !kind || !to) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'projectId, ticketId, kind, and recipient email are required',
+      );
+    }
+    if (!['acknowledgement', 'quotation', 'resolution'].includes(kind)) {
+      throw new functions.https.HttpsError('invalid-argument', 'Unsupported communication type');
+    }
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (
+      !emailPattern.test(to) ||
+      !Array.isArray(cc) ||
+      !cc.every((email) => emailPattern.test(email))
+    ) {
+      throw new functions.https.HttpsError('invalid-argument', 'A recipient email is invalid');
+    }
+
+    const firestore = admin.firestore();
+    const projectRef = firestore.collection('projects').doc(projectId);
+    const ticketRef = projectRef.collection('supportTickets').doc(ticketId);
+    const [projectSnapshot, ticketSnapshot, userRecord] = await Promise.all([
+      projectRef.get(),
+      ticketRef.get(),
+      admin.auth().getUser(auth.uid),
+    ]);
+
+    if (!projectSnapshot.exists || !ticketSnapshot.exists) {
+      throw new functions.https.HttpsError('not-found', 'Project or support ticket not found');
+    }
+
+    const project = projectSnapshot.data();
+    const ticket = ticketSnapshot.data();
+    const isAdmin = auth.token.role === 'admin' && auth.token.status === 'approved';
+    const isMember = !project.memberIds || project.memberIds.includes(auth.uid);
+    if (auth.token.status !== 'approved' || (!isAdmin && !isMember)) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'You do not have access to this support ticket',
+      );
+    }
+
+    const escapeHtml = (value) =>
+      String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    const paragraph = (value) =>
+      escapeHtml(value).replace(/\n/g, '<br/>');
+    const ticketNumber = escapeHtml(ticket.ticketNumber || ticketId);
+    const projectName = escapeHtml(project.projectName || ticket.projectName || projectId);
+    const clientName = escapeHtml(project.clientName || ticket.clientName || '');
+    const recipientName = escapeHtml(ticket.reportedByName || 'Customer');
+    const senderName = escapeHtml(userRecord.displayName || userRecord.email || 'Support team');
+    const supportUrl = `https://visionbomtracker.web.app/project/${encodeURIComponent(projectId)}/support/${encodeURIComponent(ticketId)}`;
+
+    const templates = {
+      acknowledgement: {
+        subject: `[${ticketNumber}] Support request acknowledged - ${projectName}`,
+        heading: 'Support request acknowledged',
+        intro: `We have registered your support request for ${projectName}.`,
+        body: `
+          <p style="margin:0 0 12px;">Our team is reviewing the reported issue and will coordinate the next diagnostic step with you.</p>
+          <table style="width:100%;border-collapse:collapse;margin:18px 0;font-size:14px;">
+            <tr><td style="padding:8px;border:1px solid #e2e8f0;color:#64748b;width:150px;">Ticket</td><td style="padding:8px;border:1px solid #e2e8f0;font-weight:600;">${ticketNumber}</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e2e8f0;color:#64748b;">Issue</td><td style="padding:8px;border:1px solid #e2e8f0;">${escapeHtml(ticket.title)}</td></tr>
+            <tr><td style="padding:8px;border:1px solid #e2e8f0;color:#64748b;">Priority</td><td style="padding:8px;border:1px solid #e2e8f0;">${escapeHtml(ticket.priority)}</td></tr>
+          </table>`,
+      },
+      quotation: {
+        subject: `[${ticketNumber}] Support quotation - ${projectName}`,
+        heading: 'Support quotation',
+        intro: `Please find the support quotation for ${projectName}.`,
+        body: `
+          <p style="margin:0 0 12px;">Work will be scheduled after written acceptance or receipt of the applicable customer purchase order.</p>
+          ${ticket.quotationNumber ? `<p><strong>Quotation:</strong> ${escapeHtml(ticket.quotationNumber)}</p>` : ''}
+          ${ticket.estimatedAmount ? `<p><strong>Estimated amount:</strong> ₹${Number(ticket.estimatedAmount).toLocaleString('en-IN')}</p>` : ''}`,
+      },
+      resolution: {
+        subject: `[${ticketNumber}] RCA and solution report - ${projectName}`,
+        heading: 'RCA and solution report',
+        intro: `The support work for ${projectName} has been completed.`,
+        body: `
+          <div style="margin:18px 0;padding:16px;background:#f8fafc;border-radius:8px;">
+            <p style="margin:0 0 6px;color:#64748b;font-size:12px;text-transform:uppercase;font-weight:700;">Root cause</p>
+            <p style="margin:0 0 16px;">${paragraph(ticket.rootCause || 'See attached report')}</p>
+            <p style="margin:0 0 6px;color:#64748b;font-size:12px;text-transform:uppercase;font-weight:700;">Corrective action</p>
+            <p style="margin:0 0 16px;">${paragraph(ticket.correctiveAction || 'See attached report')}</p>
+            <p style="margin:0 0 6px;color:#64748b;font-size:12px;text-transform:uppercase;font-weight:700;">Solution / validation</p>
+            <p style="margin:0;">${paragraph(ticket.resolutionSummary || 'See attached report')}</p>
+          </div>
+          <p>Please confirm that the machine is operating satisfactorily so the ticket can be formally closed.</p>`,
+      },
+    };
+    const template = templates[kind];
+    const documentButton = documentUrl
+      ? `<a href="${escapeHtml(documentUrl)}" style="display:inline-block;margin:8px 0 18px;padding:11px 18px;background:#0f766e;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">Open ${kind === 'quotation' ? 'quotation' : 'report'}</a>`
+      : '';
+    const customMessage = message
+      ? `<div style="margin:18px 0;padding:14px;border-left:3px solid #0891b2;background:#ecfeff;">${paragraph(message)}</div>`
+      : '';
+
+    const html = `<!doctype html>
+<html>
+<body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#1e293b;">
+  <div style="max-width:640px;margin:24px auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 2px 10px rgba(15,23,42,.08);">
+    <div style="padding:26px 30px;background:#0f172a;color:#fff;">
+      <div style="font-size:12px;color:#67e8f9;text-transform:uppercase;letter-spacing:.08em;font-weight:700;">Qualitas Service &amp; Support</div>
+      <h1 style="margin:8px 0 0;font-size:23px;">${template.heading}</h1>
+    </div>
+    <div style="padding:28px 30px;">
+      <p>Dear ${recipientName},</p>
+      <p>${template.intro}</p>
+      ${template.body}
+      ${customMessage}
+      ${documentButton}
+      <p style="margin-top:22px;">Regards,<br/><strong>${senderName}</strong><br/>Qualitas Technologies</p>
+    </div>
+    <div style="padding:14px 30px;background:#f8fafc;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;">
+      ${ticketNumber} · ${clientName} · This communication is recorded in the support system.
+    </div>
+  </div>
+</body>
+</html>`;
+
+    try {
+      const resend = new Resend(getResendApiKey());
+      const response = await resend.emails.send({
+        from: 'Qualitas Service & Support <info@qualitastech.com>',
+        to,
+        cc,
+        subject: template.subject,
+        html,
+        text: stripHtml(html),
+      });
+      if (response?.error) {
+        throw new Error(response.error.message || 'Email provider rejected the message');
+      }
+
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      const updates = { updatedAt: now };
+      if (kind === 'acknowledgement' && !ticket.firstResponseAt) {
+        updates.firstResponseAt = now;
+      }
+      if (kind === 'quotation') {
+        updates.commercialStatus = 'quotation-sent';
+        updates.quotationSentAt = now;
+        updates.status = ticket.status === 'open' ? 'waiting' : ticket.status;
+      }
+      await ticketRef.update(updates);
+      await ticketRef.collection('activities').add({
+        type: 'communication',
+        message: `${template.heading} sent to ${to}`,
+        createdAt: now,
+        createdBy: auth.uid,
+        createdByName: userRecord.displayName || userRecord.email || 'Support user',
+        metadata: {
+          kind,
+          to,
+          messageId: response?.data?.id || response?.id || null,
+          supportUrl,
+        },
+      });
+
+      logger.info('Support communication sent', {
+        projectId,
+        ticketId,
+        ticketNumber: ticket.ticketNumber,
+        kind,
+        to,
+        sentBy: auth.uid,
+      });
+      return { success: true, messageId: response?.data?.id || response?.id };
+    } catch (error) {
+      logger.error('Support communication failed', {
+        projectId,
+        ticketId,
+        kind,
+        error: error.message,
+      });
+      throw new functions.https.HttpsError(
+        'internal',
+        `Support email could not be sent. ${error.message}`,
+      );
+    }
+  },
+);
+
 // ==================== TRANSCRIPT EXTRACTION FUNCTIONS ====================
 
 /**

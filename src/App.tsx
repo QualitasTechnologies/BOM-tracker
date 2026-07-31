@@ -15,6 +15,8 @@ import CostAnalysis from "./pages/CostAnalysis";
 import NotFound from "./pages/NotFound";
 import Settings from "./pages/Settings";
 import ReceivedPhotosGallery from "./pages/ReceivedPhotosGallery";
+import Support from "./pages/Support";
+import SupportTicket from "./pages/SupportTicket";
 import KPI from "./pages/Index"; // Using Index as KPI dashboard
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { subscribeToCompanySettings, CompanySettings } from '@/utils/settingsFirestore';
@@ -106,6 +108,8 @@ const AppLayout: React.FC = () => {
             <Route path="/project/:projectId/bom" element={<BOM />} />
             <Route path="/project/:projectId/received-photos" element={<ReceivedPhotosGallery />} />
             <Route path="/cost-analysis" element={<CostAnalysis />} />
+            <Route path="/support" element={<Support />} />
+            <Route path="/project/:projectId/support/:ticketId" element={<SupportTicket />} />
             <Route path="/settings" element={<Settings />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />

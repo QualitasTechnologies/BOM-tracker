@@ -71,6 +71,17 @@ For admins, a KPI dashboard shows:
 - Cost trends over time
 - Project status distribution
 
+### Service & Support
+
+Manage post-commissioning support for live machines and completed projects:
+
+- Priority-based ticket queue with response and resolution targets
+- Installed-machine register with warranty and AMC coverage
+- Project document packs for manuals, drawings, backups, and contracts
+- Chargeable-support quotation, sending, and acceptance tracking
+- Ticket evidence, activity history, assignment, and customer communication
+- RCA, corrective action, solution report, and customer-confirmed closure
+
 ---
 
 ## Getting Started
