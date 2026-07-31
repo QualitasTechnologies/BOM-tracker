@@ -6,6 +6,10 @@ import {
   getCategoriesFlat,
   buildCategoryTree,
   validateEmail,
+  createClientContact,
+  getClientContacts,
+  getPrimaryClientContact,
+  clientContactFieldsForWrite,
   type BOMCategory
 } from '../settingsFirestore';
 
@@ -92,6 +96,64 @@ describe('validateClient', () => {
 
       expect(errors).toEqual([]);
     });
+  });
+});
+
+describe('client CRM contacts', () => {
+  it('adapts the legacy single contact without losing existing data', () => {
+    const contacts = getClientContacts({
+      contactPerson: 'Anita Rao',
+      email: 'anita@example.com',
+      phone: '9876543210',
+    });
+
+    expect(contacts).toHaveLength(1);
+    expect(contacts[0]).toMatchObject({
+      id: 'legacy-primary',
+      name: 'Anita Rao',
+      email: 'anita@example.com',
+      isPrimary: true,
+    });
+  });
+
+  it('keeps exactly one primary contact and mirrors it to legacy fields', () => {
+    const technical = createClientContact({
+      id: 'technical',
+      name: 'Tech Contact',
+      email: 'tech@example.com',
+      isPrimary: false,
+    });
+    const commercial = createClientContact({
+      id: 'commercial',
+      name: 'Commercial Contact',
+      email: 'commercial@example.com',
+      isPrimary: true,
+      role: 'commercial',
+    });
+
+    const fields = clientContactFieldsForWrite({
+      contacts: [technical, commercial],
+    });
+
+    expect(fields.contacts.filter((contact) => contact.isPrimary)).toHaveLength(1);
+    expect(fields.contactPerson).toBe('Commercial Contact');
+    expect(fields.email).toBe('commercial@example.com');
+    expect(getPrimaryClientContact(fields)?.id).toBe('commercial');
+  });
+
+  it('validates every populated CRM contact email', () => {
+    const errors = validateClient({
+      company: 'Acme',
+      contacts: [
+        createClientContact({
+          name: 'Maintenance',
+          email: 'not-an-email',
+          isPrimary: true,
+        }),
+      ],
+    });
+
+    expect(errors).toContain('Contact 1: invalid email format');
   });
 });
 

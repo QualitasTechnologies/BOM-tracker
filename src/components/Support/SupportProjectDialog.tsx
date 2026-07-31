@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -23,44 +23,71 @@ import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import type { SupportProjectProfile } from '@/types/support';
 import { updateProject, type Project } from '@/utils/projectFirestore';
+import {
+  getClientContacts,
+  getPrimaryClientContact,
+  type Client,
+  type ClientContact,
+} from '@/utils/settingsFirestore';
+import { AddClientContactDialog } from './AddClientContactDialog';
 import { SupportDocuments } from './SupportDocuments';
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   project: Project | null;
+  client: Client | null;
   userId: string;
   userName: string;
 }
 
 const emptyProfile: SupportProjectProfile = {
   amcStatus: 'none',
-  supportContacts: [{ name: '', email: '', phone: '', designation: '' }],
 };
 
 export function SupportProjectDialog({
   open,
   onOpenChange,
   project,
+  client,
   userId,
   userName,
 }: Props) {
   const { toast } = useToast();
   const [profile, setProfile] = useState<SupportProjectProfile>(emptyProfile);
   const [saving, setSaving] = useState(false);
+  const activeProjectIdRef = useRef('');
+  const contacts = useMemo(() => getClientContacts(client), [client]);
 
   useEffect(() => {
     if (project) {
-      setProfile({
-        ...emptyProfile,
-        ...project.supportProfile,
-        supportContacts:
-          project.supportProfile?.supportContacts?.length
-            ? project.supportProfile.supportContacts
-            : emptyProfile.supportContacts,
+      const projectChanged = activeProjectIdRef.current !== project.projectId;
+      const { supportContacts: _legacyContacts, ...storedProfile } =
+        project.supportProfile || {};
+      setProfile((current) => {
+        const currentContact = contacts.find(
+          (contact) => contact.id === current.supportContactId,
+        );
+        if (!projectChanged && currentContact) return current;
+
+        const selectedContact =
+          contacts.find(
+            (contact) => contact.id === project.supportProfile?.supportContactId,
+          ) || getPrimaryClientContact(client);
+        return projectChanged
+          ? {
+              ...emptyProfile,
+              ...storedProfile,
+              supportContactId: selectedContact?.id,
+            }
+          : {
+              ...current,
+              supportContactId: selectedContact?.id,
+            };
       });
+      activeProjectIdRef.current = project.projectId;
     }
-  }, [project]);
+  }, [client, contacts, project]);
 
   if (!project) return null;
 
@@ -69,15 +96,11 @@ export function SupportProjectDialog({
     value: SupportProjectProfile[K],
   ) => setProfile((current) => ({ ...current, [key]: value }));
 
-  const setContact = (key: 'name' | 'email' | 'phone' | 'designation', value: string) => {
-    const existing = profile.supportContacts?.[0] || { name: '' };
-    setField('supportContacts', [{ ...existing, [key]: value }]);
-  };
-
   const handleSave = async () => {
     setSaving(true);
     try {
-      await updateProject(project.projectId, { supportProfile: profile });
+      const { supportContacts: _legacyContacts, ...canonicalProfile } = profile;
+      await updateProject(project.projectId, { supportProfile: canonicalProfile });
       toast({ title: 'Support profile saved' });
     } catch (error) {
       toast({
@@ -90,7 +113,7 @@ export function SupportProjectDialog({
     }
   };
 
-  const contact = profile.supportContacts?.[0] || { name: '', email: '', phone: '', designation: '' };
+  const contact = contacts.find((item) => item.id === profile.supportContactId);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -171,12 +194,46 @@ export function SupportProjectDialog({
             </div>
 
             <div className="rounded-lg border bg-slate-50 p-4">
-              <h3 className="mb-3 font-medium">Primary customer support contact</h3>
-              <div className="grid gap-4 md:grid-cols-4">
-                <div className="grid gap-2"><Label>Name</Label><Input value={contact.name} onChange={(e) => setContact('name', e.target.value)} /></div>
-                <div className="grid gap-2"><Label>Designation</Label><Input value={contact.designation || ''} onChange={(e) => setContact('designation', e.target.value)} /></div>
-                <div className="grid gap-2"><Label>Email</Label><Input type="email" value={contact.email || ''} onChange={(e) => setContact('email', e.target.value)} /></div>
-                <div className="grid gap-2"><Label>Phone</Label><Input value={contact.phone || ''} onChange={(e) => setContact('phone', e.target.value)} /></div>
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h3 className="font-medium">Primary customer support contact</h3>
+                <AddClientContactDialog
+                  projectId={project.projectId}
+                  client={client}
+                  onAdded={(newContact: ClientContact) =>
+                    setField('supportContactId', newContact.id)
+                  }
+                />
+              </div>
+              <div className="grid gap-3">
+                <Select
+                  value={profile.supportContactId || ''}
+                  onValueChange={(value) => setField('supportContactId', value)}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select a contact from the client CRM" /></SelectTrigger>
+                  <SelectContent>
+                    {contacts.map((item) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        {item.name}
+                        {item.designation ? ` · ${item.designation}` : ''}
+                        {item.email ? ` · ${item.email}` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {contact ? (
+                  <div className="grid gap-3 rounded-md border bg-white p-3 text-sm md:grid-cols-3">
+                    <div><span className="text-muted-foreground">Name:</span> {contact.name}</div>
+                    <div><span className="text-muted-foreground">Email:</span> {contact.email || 'Not provided'}</div>
+                    <div><span className="text-muted-foreground">Phone:</span> {contact.phone || 'Not provided'}</div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-amber-700">
+                    No client CRM contact is available. Use Add CRM contact above to create one.
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  New contacts are saved centrally for this client. Save the support profile to keep this contact as the project's default.
+                </p>
               </div>
             </div>
 
@@ -204,4 +261,3 @@ export function SupportProjectDialog({
     </Dialog>
   );
 }
-

@@ -80,6 +80,7 @@ const Projects = () => {
       projectId: newProject.id,
       projectName: newProject.name,
       clientName: newProject.client,
+      clientId: newProject.clientId,
       description: newProject.description,
       status: newProject.status,
       deadline: newProject.deadline,

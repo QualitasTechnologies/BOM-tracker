@@ -79,6 +79,7 @@ Before a commissioned project is considered support-ready, the recommended minim
 
 ## Data placement
 
+- Canonical customer contacts: `clients/{clientId}.contacts[]`
 - Project support profile: `projects/{projectId}.supportProfile`
 - Tickets: `projects/{projectId}/supportTickets/{ticketId}`
 - Ticket activity: `projects/{projectId}/supportTickets/{ticketId}/activities/{activityId}`
@@ -86,6 +87,18 @@ Before a commissioned project is considered support-ready, the recommended minim
 - Files: `projects/{projectId}/support/{ticket-or-project-scope}/{category}/{fileName}`
 
 Keeping operational records below the project reuses the existing project membership rules.
+
+### CRM contact ownership
+
+The client record is the single source of truth for customer contacts. Admins retain full CRM management in Settings. Approved project members can add a contact from ticket creation, ticket detail, or support readiness; the scoped server action writes that contact to the same client CRM record without granting access to the rest of Settings.
+
+- A project support profile stores `supportContactId`, which points to the preferred contact in the client CRM.
+- A ticket stores `reportedByContactId` and `clientId`.
+- The ticket also stores reporter name/email/phone as an incident-time snapshot. This is audit history, not a second editable contact database.
+- Selecting an existing contact on a ticket immediately updates the ticket association; there is no separate "Save customer contact" action.
+- Adding a contact inline creates it centrally and selects it in the current support workflow.
+- Customer emails resolve the current address from the client CRM on the server. Legacy tickets without a contact reference fall back to their stored reporter snapshot.
+- Existing clients with the legacy `contactPerson`, `email`, and `phone` fields are automatically presented as one primary CRM contact. The next client save writes the contacts array and keeps those legacy fields synchronized for older screens.
 
 ## Recommended next phases
 

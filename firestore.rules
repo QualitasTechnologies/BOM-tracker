@@ -36,7 +36,13 @@ service cloud.firestore {
     }
 
     match /clients/{document=**} {
-      allow read, write: if request.auth != null;
+      allow read: if request.auth != null
+        && request.auth.token.status == 'approved';
+      // Client master data is admin-managed. Approved project members add
+      // contacts through the scoped addClientCRMContact callable.
+      allow write: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && request.auth.token.role == 'admin';
     }
 
     match /vendors/{document=**} {

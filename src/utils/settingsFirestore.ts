@@ -26,6 +26,23 @@ const cleanFirestoreData = <T extends Record<string, any>>(data: T): Partial<T> 
 // Client types and interfaces
 export type ClientSegment = 'enterprise' | 'mid-market' | 'smb';
 export type ClientCRMStatus = 'prospect' | 'active' | 'inactive';
+export type ClientContactRole =
+  | 'technical'
+  | 'commercial'
+  | 'operations'
+  | 'management'
+  | 'other';
+
+export interface ClientContact {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  designation?: string;
+  role: ClientContactRole;
+  isPrimary: boolean;
+  isActive: boolean;
+}
 
 export interface Client {
   id: string;
@@ -34,6 +51,7 @@ export interface Client {
   phone: string;
   address: string;
   contactPerson: string;  // Legacy - single contact (preserved for backward compatibility)
+  contacts?: ClientContact[]; // Canonical CRM contacts
   notes?: string;
   logo?: string;
   logoPath?: string;
@@ -58,6 +76,96 @@ export interface Client {
   wonDeals?: number;
   totalRevenue?: number;
 }
+
+const legacyContactId = 'legacy-primary';
+
+export const createClientContact = (
+  overrides: Partial<ClientContact> = {},
+): ClientContact => ({
+  id: overrides.id || `contact-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  name: overrides.name || '',
+  email: overrides.email || '',
+  phone: overrides.phone || '',
+  designation: overrides.designation || '',
+  role: overrides.role || 'technical',
+  isPrimary: overrides.isPrimary ?? false,
+  isActive: overrides.isActive ?? true,
+});
+
+/**
+ * Canonical CRM contact adapter.
+ * Existing clients are exposed as a single contact until they are next saved,
+ * so this change does not require a destructive data migration.
+ */
+export const getClientContacts = (
+  client?: Partial<Client> | null,
+  includeInactive = false,
+): ClientContact[] => {
+  if (!client) return [];
+
+  const stored = (client.contacts || []).map((contact) => createClientContact(contact));
+  const contacts = stored.length
+    ? stored
+    : client.contactPerson || client.email || client.phone
+      ? [
+          createClientContact({
+            id: legacyContactId,
+            name: client.contactPerson || 'Primary contact',
+            email: client.email || '',
+            phone: client.phone || '',
+            role: 'technical',
+            isPrimary: true,
+          }),
+        ]
+      : [];
+
+  return includeInactive ? contacts : contacts.filter((contact) => contact.isActive);
+};
+
+export const getPrimaryClientContact = (
+  client?: Partial<Client> | null,
+): ClientContact | undefined => {
+  const contacts = getClientContacts(client);
+  return contacts.find((contact) => contact.isPrimary) || contacts[0];
+};
+
+export const normalizeClientContacts = (contacts: ClientContact[]): ClientContact[] => {
+  const populated = contacts
+    .map((contact) =>
+      createClientContact({
+        ...contact,
+        name: contact.name.trim(),
+        email: contact.email.trim(),
+        phone: contact.phone.trim(),
+        designation: contact.designation?.trim() || '',
+      }),
+    )
+    .filter((contact) => contact.name || contact.email || contact.phone);
+
+  if (!populated.length) return [];
+  const requestedPrimary = populated.findIndex(
+    (contact) => contact.isPrimary && contact.isActive,
+  );
+  const firstActive = populated.findIndex((contact) => contact.isActive);
+  const primaryIndex =
+    requestedPrimary >= 0 ? requestedPrimary : firstActive >= 0 ? firstActive : 0;
+  return populated.map((contact, index) => ({
+    ...contact,
+    isPrimary: index === primaryIndex,
+  }));
+};
+
+export const clientContactFieldsForWrite = (client: Partial<Client>) => {
+  const contacts = normalizeClientContacts(getClientContacts(client, true));
+  const primary = contacts.find((contact) => contact.isPrimary) || contacts[0];
+  return {
+    contacts,
+    // Keep legacy fields synchronized while older screens still consume them.
+    contactPerson: primary?.name || '',
+    email: primary?.email || '',
+    phone: primary?.phone || '',
+  };
+};
 
 // Vendor types and interfaces
 export interface Vendor {
@@ -383,6 +491,14 @@ export const validateClient = (client: Partial<Client>): string[] => {
   const errors: string[] = [];
   if (!client.company?.trim()) errors.push('Company name is required');
   if (client.email && !isValidEmail(client.email)) errors.push('Invalid email format');
+  getClientContacts(client, true).forEach((contact, index) => {
+    if ((contact.email || contact.phone || contact.designation) && !contact.name.trim()) {
+      errors.push(`Contact ${index + 1}: name is required`);
+    }
+    if (contact.email && !isValidEmail(contact.email)) {
+      errors.push(`Contact ${index + 1}: invalid email format`);
+    }
+  });
   return errors;
 };
 

@@ -109,6 +109,7 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
             id,
             name,
             client,
+            clientId: clients.find((clientItem) => clientItem.company === client)?.id,
             description,
             status,
             deadline,
@@ -279,4 +280,4 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
   );
 };
 
-export default AddProjectDialog; 
+export default AddProjectDialog;

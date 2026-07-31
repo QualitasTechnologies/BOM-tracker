@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -21,6 +21,12 @@ import {
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import type { Project } from '@/utils/projectFirestore';
+import {
+  getClientContacts,
+  getPrimaryClientContact,
+  type Client,
+  type ClientContact,
+} from '@/utils/settingsFirestore';
 import type {
   CoverageType,
   CreateSupportTicketInput,
@@ -29,6 +35,7 @@ import type {
   SupportPriority,
 } from '@/types/support';
 import { defaultCommercialStatus, determineCoverage } from '@/utils/supportLogic';
+import { AddClientContactDialog } from './AddClientContactDialog';
 
 const categories: Array<{ value: SupportIssueCategory; label: string }> = [
   { value: 'vision-performance', label: 'Vision performance / inspection' },
@@ -47,6 +54,7 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   projects: Project[];
+  clients: Client[];
   onCreate: (input: CreateSupportTicketInput) => Promise<void>;
   preferredProjectId?: string;
 }
@@ -55,6 +63,7 @@ export function CreateSupportTicketDialog({
   open,
   onOpenChange,
   projects,
+  clients,
   onCreate,
   preferredProjectId,
 }: Props) {
@@ -66,16 +75,37 @@ export function CreateSupportTicketDialog({
   const [category, setCategory] = useState<SupportIssueCategory>('vision-performance');
   const [channel, setChannel] = useState<SupportChannel>('email');
   const [reportedByName, setReportedByName] = useState('');
+  const [reportedByContactId, setReportedByContactId] = useState('');
   const [reportedByEmail, setReportedByEmail] = useState('');
   const [reportedByPhone, setReportedByPhone] = useState('');
   const [coverageType, setCoverageType] = useState<CoverageType>('undetermined');
   const [machineStopped, setMachineStopped] = useState(false);
   const [downtime, setDowntime] = useState(false);
   const [siteVisitRequired, setSiteVisitRequired] = useState(false);
+  const activeProjectIdRef = useRef('');
+  const selectedContactIdRef = useRef('');
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.projectId === projectId),
     [projectId, projects],
+  );
+
+  const selectedClient = useMemo(
+    () =>
+      selectedProject
+        ? clients.find(
+            (client) =>
+              client.id === selectedProject.clientId ||
+              client.company.trim().toLowerCase() ===
+                selectedProject.clientName.trim().toLowerCase(),
+          )
+        : undefined,
+    [clients, selectedProject],
+  );
+
+  const clientContacts = useMemo(
+    () => getClientContacts(selectedClient),
+    [selectedClient],
   );
 
   useEffect(() => {
@@ -86,12 +116,36 @@ export function CreateSupportTicketDialog({
 
   useEffect(() => {
     if (!selectedProject) return;
-    const contact = selectedProject.supportProfile?.supportContacts?.[0];
-    setCoverageType(determineCoverage(selectedProject.supportProfile));
+    const projectChanged = activeProjectIdRef.current !== selectedProject.projectId;
+    const currentContact = clientContacts.find(
+      (item) => item.id === selectedContactIdRef.current,
+    );
+    if (!projectChanged && currentContact) return;
+
+    const preferredContactId = selectedProject.supportProfile?.supportContactId;
+    const contact =
+      clientContacts.find((item) => item.id === preferredContactId) ||
+      getPrimaryClientContact(selectedClient);
+    activeProjectIdRef.current = selectedProject.projectId;
+    selectedContactIdRef.current = contact?.id || '';
+    if (projectChanged) setCoverageType(determineCoverage(selectedProject.supportProfile));
+    setReportedByContactId(contact?.id || '');
     setReportedByName(contact?.name || '');
     setReportedByEmail(contact?.email || '');
     setReportedByPhone(contact?.phone || '');
-  }, [selectedProject]);
+  }, [clientContacts, selectedClient, selectedProject]);
+
+  const applyContact = (contact?: ClientContact) => {
+    selectedContactIdRef.current = contact?.id || '';
+    setReportedByContactId(contact?.id || '');
+    setReportedByName(contact?.name || '');
+    setReportedByEmail(contact?.email || '');
+    setReportedByPhone(contact?.phone || '');
+  };
+
+  const handleContactChange = (contactId: string) => {
+    applyContact(clientContacts.find((item) => item.id === contactId));
+  };
 
   const reset = () => {
     setTitle('');
@@ -105,19 +159,27 @@ export function CreateSupportTicketDialog({
   };
 
   const handleCreate = async () => {
-    if (!selectedProject || !title.trim() || !description.trim() || !reportedByName.trim()) return;
+    if (
+      !selectedProject ||
+      !title.trim() ||
+      !description.trim() ||
+      !reportedByContactId ||
+      !reportedByName.trim()
+    ) return;
     setSaving(true);
     try {
       await onCreate({
         projectId: selectedProject.projectId,
         projectName: selectedProject.projectName,
         clientName: selectedProject.clientName,
+        clientId: selectedClient?.id,
         title: title.trim(),
         description: description.trim(),
         priority,
         category,
         channel,
         reportedByName: reportedByName.trim(),
+        reportedByContactId: reportedByContactId || undefined,
         reportedByEmail: reportedByEmail.trim() || undefined,
         reportedByPhone: reportedByPhone.trim() || undefined,
         coverageType,
@@ -134,7 +196,11 @@ export function CreateSupportTicketDialog({
   };
 
   const valid = Boolean(
-    selectedProject && title.trim() && description.trim() && reportedByName.trim(),
+    selectedProject &&
+      title.trim() &&
+      description.trim() &&
+      reportedByContactId &&
+      reportedByName.trim(),
   );
 
   return (
@@ -230,18 +296,41 @@ export function CreateSupportTicketDialog({
             </div>
           </div>
 
-          <div className="grid gap-4 rounded-lg border bg-slate-50 p-4 md:grid-cols-3">
+          <div className="rounded-lg border bg-slate-50 p-4">
             <div className="grid gap-2">
-              <Label htmlFor="reported-name">Customer contact <span className="text-red-500">*</span></Label>
-              <Input id="reported-name" value={reportedByName} onChange={(e) => setReportedByName(e.target.value)} />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="reported-email">Email</Label>
-              <Input id="reported-email" type="email" value={reportedByEmail} onChange={(e) => setReportedByEmail(e.target.value)} />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="reported-phone">Phone</Label>
-              <Input id="reported-phone" value={reportedByPhone} onChange={(e) => setReportedByPhone(e.target.value)} />
+              <div className="flex items-center justify-between gap-3">
+                <Label>Customer contact <span className="text-red-500">*</span></Label>
+                <AddClientContactDialog
+                  projectId={selectedProject?.projectId || ''}
+                  client={selectedClient}
+                  onAdded={applyContact}
+                />
+              </div>
+              <Select value={reportedByContactId} onValueChange={handleContactChange}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a contact from the client CRM" />
+                </SelectTrigger>
+                <SelectContent>
+                  {clientContacts.map((contact) => (
+                    <SelectItem key={contact.id} value={contact.id}>
+                      {contact.name}
+                      {contact.designation ? ` · ${contact.designation}` : ''}
+                      {contact.email ? ` · ${contact.email}` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {clientContacts.length === 0 ? (
+                <p className="text-xs text-amber-700">
+                  No CRM contacts are configured for {selectedProject?.clientName}. Use Add CRM contact to create one without leaving this ticket.
+                </p>
+              ) : (
+                <div className="mt-2 grid gap-3 text-sm md:grid-cols-3">
+                  <div><span className="text-muted-foreground">Name:</span> {reportedByName}</div>
+                  <div><span className="text-muted-foreground">Email:</span> {reportedByEmail || 'Not provided'}</div>
+                  <div><span className="text-muted-foreground">Phone:</span> {reportedByPhone || 'Not provided'}</div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -297,4 +386,3 @@ export function CreateSupportTicketDialog({
     </Dialog>
   );
 }
-

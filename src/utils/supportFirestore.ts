@@ -24,6 +24,7 @@ import type {
   SupportDocumentCategory,
   SupportTicket,
 } from '@/types/support';
+import type { ClientContact, ClientContactRole } from './settingsFirestore';
 import { calculateSupportTargets } from './supportLogic';
 
 const asDate = (value: unknown, fallback = new Date()): Date => {
@@ -275,10 +276,9 @@ export async function sendSupportCommunication(input: {
   projectId: string;
   ticketId: string;
   kind: SupportCommunicationKind;
-  to: string;
   cc?: string[];
   message?: string;
-  documentUrl?: string;
+  documentId?: string;
 }) {
   const callable = httpsCallable<typeof input, { success: boolean; messageId?: string }>(
     functions,
@@ -288,3 +288,19 @@ export async function sendSupportCommunication(input: {
   return result.data;
 }
 
+export async function addClientCRMContact(input: {
+  projectId: string;
+  clientId: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  designation?: string;
+  role: ClientContactRole;
+}): Promise<ClientContact> {
+  const callable = httpsCallable<typeof input, { contact: ClientContact }>(
+    functions,
+    'addClientCRMContact',
+  );
+  const result = await callable(input);
+  return result.data.contact;
+}

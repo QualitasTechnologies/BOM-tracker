@@ -8,6 +8,7 @@ export interface NewProjectFormData {
   id: string;
   name: string;
   client: string;
+  clientId?: string;
   description: string;
   status: FirestoreProject["status"];
   deadline: string;
@@ -18,6 +19,7 @@ export interface EditableProjectInput {
   projectId: string;
   projectName: string;
   clientName: string;
+  clientId?: string;
   description: string;
   status: FirestoreProject["status"];
   deadline: string;

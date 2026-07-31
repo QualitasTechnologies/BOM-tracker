@@ -62,6 +62,14 @@ import {
   SUPPORT_STATUS_ORDER,
 } from '@/utils/supportLogic';
 import { getProject, type Project } from '@/utils/projectFirestore';
+import {
+  getClientContacts,
+  getPrimaryClientContact,
+  subscribeToClients,
+  type Client,
+  type ClientContact,
+} from '@/utils/settingsFirestore';
+import { AddClientContactDialog } from '@/components/Support/AddClientContactDialog';
 
 const formatDateTime = (date?: Date) =>
   date
@@ -78,6 +86,7 @@ export default function SupportTicket() {
   const { toast } = useToast();
   const [ticket, setTicket] = useState<SupportTicketType | null>(null);
   const [project, setProject] = useState<Project | null>(null);
+  const [clients, setClients] = useState<Client[]>([]);
   const [activities, setActivities] = useState<SupportActivity[]>([]);
   const [documents, setDocuments] = useState<SupportDocument[]>([]);
   const [loading, setLoading] = useState(true);
@@ -94,9 +103,7 @@ export default function SupportTicket() {
   const [estimatedAmount, setEstimatedAmount] = useState('');
   const [quotationNumber, setQuotationNumber] = useState('');
   const [acceptanceReference, setAcceptanceReference] = useState('');
-  const [contactName, setContactName] = useState('');
-  const [contactEmail, setContactEmail] = useState('');
-  const [contactPhone, setContactPhone] = useState('');
+  const [contactId, setContactId] = useState('');
 
   const actor = useMemo(
     () => ({
@@ -114,11 +121,13 @@ export default function SupportTicket() {
     });
     const unsubscribeActivities = subscribeToSupportActivities(projectId, ticketId, setActivities);
     const unsubscribeDocuments = subscribeToSupportDocuments(projectId, setDocuments);
+    const unsubscribeClients = subscribeToClients(setClients);
     getProject(projectId).then(setProject);
     return () => {
       unsubscribeTicket();
       unsubscribeActivities();
       unsubscribeDocuments();
+      unsubscribeClients();
     };
   }, [projectId, ticketId]);
 
@@ -134,10 +143,39 @@ export default function SupportTicket() {
     setEstimatedAmount(ticket.estimatedAmount?.toString() || '');
     setQuotationNumber(ticket.quotationNumber || '');
     setAcceptanceReference(ticket.acceptanceReference || '');
-    setContactName(ticket.reportedByName || '');
-    setContactEmail(ticket.reportedByEmail || '');
-    setContactPhone(ticket.reportedByPhone || '');
   }, [ticket]);
+
+  const client = useMemo(
+    () =>
+      project
+        ? clients.find(
+            (item) =>
+              item.id === project.clientId ||
+              item.id === ticket?.clientId ||
+              item.company.trim().toLowerCase() ===
+                project.clientName.trim().toLowerCase(),
+          )
+        : undefined,
+    [clients, project, ticket?.clientId],
+  );
+  const clientContacts = useMemo(() => getClientContacts(client), [client]);
+  const selectedContact = useMemo(
+    () => clientContacts.find((contact) => contact.id === contactId),
+    [clientContacts, contactId],
+  );
+
+  useEffect(() => {
+    if (!ticket) return;
+    const matchedContact =
+      clientContacts.find(
+        (contact) =>
+          contact.id === ticket.reportedByContactId ||
+          (!!ticket.reportedByEmail &&
+            contact.email.toLowerCase() === ticket.reportedByEmail.toLowerCase()) ||
+          contact.name.toLowerCase() === ticket.reportedByName.toLowerCase(),
+      ) || getPrimaryClientContact(client);
+    setContactId(matchedContact?.id || '');
+  }, [client, clientContacts, ticket]);
 
   const ticketDocuments = useMemo(
     () => documents.filter((document) => document.ticketId === ticketId),
@@ -260,8 +298,16 @@ export default function SupportTicket() {
   const handleCommunication = async (
     kind: 'acknowledgement' | 'quotation' | 'resolution',
   ) => {
-    if (!ticket.reportedByEmail) {
+    if (!selectedContact?.email) {
       toast({ title: 'Customer email is missing', description: 'Add an email before sending.', variant: 'destructive' });
+      return;
+    }
+    if (ticket.reportedByContactId !== selectedContact.id) {
+      toast({
+        title: 'Save the CRM contact first',
+        description: 'The selected recipient has not been saved to this ticket.',
+        variant: 'destructive',
+      });
       return;
     }
     if (kind === 'quotation' && !quotationDocument) {
@@ -278,12 +324,11 @@ export default function SupportTicket() {
         projectId,
         ticketId,
         kind,
-        to: ticket.reportedByEmail,
-        documentUrl:
+        documentId:
           kind === 'quotation'
-            ? quotationDocument?.url
+            ? quotationDocument?.id
             : kind === 'resolution'
-              ? resolutionDocument?.url
+              ? resolutionDocument?.id
               : undefined,
       });
       toast({ title: `${kind === 'acknowledgement' ? 'Acknowledgement' : kind === 'quotation' ? 'Quotation' : 'Resolution report'} sent` });
@@ -298,23 +343,33 @@ export default function SupportTicket() {
     }
   };
 
-  const handleSaveContact = async () => {
-    if (!contactName.trim()) {
-      toast({ title: 'Customer contact name is required', variant: 'destructive' });
-      return;
-    }
+  const applyTicketContact = async (contact: ClientContact) => {
+    setContactId(contact.id);
     setSaving(true);
     try {
       await updateSupportTicket(projectId, ticketId, {
-        reportedByName: contactName.trim(),
-        reportedByEmail: contactEmail.trim() || undefined,
-        reportedByPhone: contactPhone.trim() || undefined,
+        clientId: client?.id,
+        reportedByContactId: contact.id,
+        reportedByName: contact.name,
+        reportedByEmail: contact.email,
+        reportedByPhone: contact.phone,
       });
-      await log('note', 'Customer contact details updated');
-      toast({ title: 'Customer contact saved' });
+      await log('note', 'Ticket contact set to ' + contact.name + ' from the client CRM');
+      toast({ title: 'Ticket contact updated', description: contact.name });
+    } catch (error) {
+      toast({
+        title: 'Could not update ticket contact',
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'destructive',
+      });
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleContactChange = (nextContactId: string) => {
+    const contact = clientContacts.find((item) => item.id === nextContactId);
+    if (contact) void applyTicketContact(contact);
   };
 
   const handleDocumentUploaded = async (document: SupportDocument) => {
@@ -548,14 +603,41 @@ export default function SupportTicket() {
             <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Mail className="h-4 w-4" />Customer communication</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               <p className="text-xs text-muted-foreground">
-                Messages are sent to {ticket.reportedByEmail || 'the customer email once added'} and recorded in the activity trail.
+                Messages use the selected client CRM contact and are recorded in the activity trail.
               </p>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-2"><Label>Contact name</Label><Input value={contactName} onChange={(e) => setContactName(e.target.value)} /></div>
-                <div className="grid gap-2"><Label>Email</Label><Input type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} /></div>
+              <div className="grid gap-2">
+                <div className="flex items-center justify-between gap-3">
+                  <Label>CRM contact for this ticket</Label>
+                  <AddClientContactDialog
+                    projectId={projectId}
+                    client={client}
+                    onAdded={(contact) => void applyTicketContact(contact)}
+                  />
+                </div>
+                <Select value={contactId} onValueChange={handleContactChange} disabled={saving}>
+                  <SelectTrigger><SelectValue placeholder="Choose a client contact" /></SelectTrigger>
+                  <SelectContent>
+                    {clientContacts.map((contact) => (
+                      <SelectItem key={contact.id} value={contact.id}>
+                        {contact.name}
+                        {contact.designation ? ` · ${contact.designation}` : ''}
+                        {contact.email ? ` · ${contact.email}` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedContact ? (
+                  <div className="grid gap-1 rounded-md border bg-slate-50 p-3 text-sm">
+                    <div><span className="text-muted-foreground">Email:</span> {selectedContact.email || 'Not provided'}</div>
+                    <div><span className="text-muted-foreground">Phone:</span> {selectedContact.phone || 'Not provided'}</div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-amber-700">Use Add CRM contact to create a contact for this client.</p>
+                )}
               </div>
-              <div className="grid gap-2"><Label>Phone</Label><Input value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} /></div>
-              <Button className="w-full" variant="outline" onClick={handleSaveContact} disabled={saving}><Save className="mr-2 h-4 w-4" />Save customer contact</Button>
+              <p className="text-xs text-muted-foreground">
+                Selecting a contact immediately associates it with this ticket. New contacts are saved to the client CRM.
+              </p>
               <div className="border-t pt-3 space-y-2">
                 <CommunicationButton label="Send acknowledgement" loading={sending === 'acknowledgement'} onClick={() => handleCommunication('acknowledgement')} />
                 <CommunicationButton label="Send quotation" loading={sending === 'quotation'} onClick={() => handleCommunication('quotation')} />

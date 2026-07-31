@@ -51,6 +51,7 @@ import {
 } from '@/components/ui/table';
 import {
   Client,
+  ClientContact,
   Vendor,
   BOMSettings,
   BOMCategory,
@@ -73,7 +74,10 @@ import {
   getPRSettings,
   updatePRSettings,
   validatePRSettings,
-  validateEmail
+  validateEmail,
+  createClientContact,
+  getClientContacts,
+  clientContactFieldsForWrite,
 } from '@/utils/settingsFirestore';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { exportVendorsToCSV, parseVendorCSV, validateVendorData, CSVImportResult } from '@/utils/csvImport';
@@ -459,8 +463,57 @@ const Settings = () => {
   };
 
   // Client management functions
+  const setCRMContacts = (contacts: ClientContact[]) => {
+    setClientForm((current) => ({ ...current, contacts }));
+  };
+
+  const updateCRMContact = (
+    contactId: string,
+    updates: Partial<ClientContact>,
+  ) => {
+    const contacts = getClientContacts(clientForm, true).map((contact) =>
+      contact.id === contactId ? { ...contact, ...updates } : contact,
+    );
+    setCRMContacts(contacts);
+  };
+
+  const addCRMContact = () => {
+    const contacts = getClientContacts(clientForm, true);
+    setCRMContacts([
+      ...contacts,
+      createClientContact({ isPrimary: contacts.length === 0 }),
+    ]);
+  };
+
+  const removeCRMContact = (contactId: string) => {
+    const remaining = getClientContacts(clientForm, true).filter(
+      (contact) => contact.id !== contactId,
+    );
+    if (remaining.length && !remaining.some((contact) => contact.isPrimary)) {
+      remaining[0] = { ...remaining[0], isPrimary: true };
+    }
+    setCRMContacts(remaining);
+  };
+
+  const setPrimaryCRMContact = (contactId: string) => {
+    setCRMContacts(
+      getClientContacts(clientForm, true).map((contact) => ({
+        ...contact,
+        isPrimary: contact.id === contactId,
+      })),
+    );
+  };
+
   const handleAddClient = async () => {
     if (!user) return;
+
+    const contactFields = clientContactFieldsForWrite(clientForm);
+    const clientToValidate = { ...clientForm, ...contactFields };
+    const errors = validateClient(clientToValidate);
+    if (errors.length > 0) {
+      setFormErrors(errors);
+      return;
+    }
 
     try {
       setLoading(true);
@@ -479,10 +532,8 @@ const Settings = () => {
 
       await addClient({
         company: clientForm.company || '',
-        email: clientForm.email || '',
-        phone: clientForm.phone || '',
+        ...contactFields,
         address: clientForm.address || '',
-        contactPerson: clientForm.contactPerson || '',
         notes: clientForm.notes || '',
         logo: logoUrl,
         logoPath: logoPath,
@@ -491,10 +542,8 @@ const Settings = () => {
       // Reset form
       setClientForm({
         company: '',
-        email: '',
-        phone: '',
+        contacts: [createClientContact({ isPrimary: true })],
         address: '',
-        contactPerson: '',
         notes: ''
       });
       setClientLogoFile(null);
@@ -520,7 +569,7 @@ const Settings = () => {
 
   const handleEditClient = (client: Client) => {
     setEditingClient(client);
-    setClientForm(client);
+    setClientForm({ ...client, contacts: getClientContacts(client, true) });
     setFormErrors([]);
     // Set logo preview if client has logo
     if (client.logo) {
@@ -544,7 +593,10 @@ const Settings = () => {
 
     setSaving(true);
     try {
-      let updatedClientForm = { ...clientForm };
+      let updatedClientForm = {
+        ...clientForm,
+        ...clientContactFieldsForWrite(clientForm),
+      };
 
       // Upload new logo if selected
       if (clientLogoFile) {
@@ -1297,7 +1349,9 @@ const Settings = () => {
                     <DialogTrigger asChild>
                       <Button onClick={() => {
                         setEditingClient(null);
-                        setClientForm({});
+                        setClientForm({
+                          contacts: [createClientContact({ isPrimary: true })],
+                        });
                         setFormErrors([]);
                       }}>
                         <Plus size={16} className="mr-2" />
@@ -1337,33 +1391,84 @@ const Settings = () => {
                               placeholder="Enter company name"
                             />
                           </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="email">Email</Label>
-                          <Input
-                            id="email"
-                            type="email"
-                            value={clientForm.email || ''}
-                            onChange={(e) => setClientForm({...clientForm, email: e.target.value})}
-                            placeholder="Enter email address"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="phone">Phone</Label>
-                          <Input
-                            id="phone"
-                            value={clientForm.phone || ''}
-                            onChange={(e) => setClientForm({...clientForm, phone: e.target.value})}
-                            placeholder="Enter phone number"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="contactPerson">Contact Person</Label>
-                          <Input
-                            id="contactPerson"
-                            value={clientForm.contactPerson || ''}
-                            onChange={(e) => setClientForm({...clientForm, contactPerson: e.target.value})}
-                            placeholder="Enter contact person name"
-                          />
+                        <div className="col-span-2 space-y-3 rounded-lg border bg-slate-50 p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <Label>CRM contacts</Label>
+                              <p className="text-xs text-muted-foreground">
+                                These contacts are shared by projects, support tickets, and customer communication.
+                              </p>
+                            </div>
+                            <Button type="button" variant="outline" size="sm" onClick={addCRMContact}>
+                              <Plus className="mr-2 h-4 w-4" />
+                              Add contact
+                            </Button>
+                          </div>
+                          {getClientContacts(clientForm, true).length === 0 ? (
+                            <div className="rounded-md border border-dashed bg-white p-4 text-center text-sm text-muted-foreground">
+                              No contacts yet. Add a technical, commercial, or operations contact.
+                            </div>
+                          ) : (
+                            <div className="space-y-3">
+                              {getClientContacts(clientForm, true).map((contact, index) => (
+                                <div key={contact.id} className="rounded-lg border bg-white p-3">
+                                  <div className="mb-3 flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-sm font-medium">Contact {index + 1}</span>
+                                      {contact.isPrimary && <Badge>Primary</Badge>}
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      {!contact.isPrimary && (
+                                        <Button type="button" variant="ghost" size="sm" onClick={() => setPrimaryCRMContact(contact.id)}>
+                                          Make primary
+                                        </Button>
+                                      )}
+                                      <Button type="button" variant="ghost" size="icon" onClick={() => removeCRMContact(contact.id)} aria-label={`Remove ${contact.name || `contact ${index + 1}`}`}>
+                                        <Trash2 className="h-4 w-4 text-red-500" />
+                                      </Button>
+                                    </div>
+                                  </div>
+                                  <div className="grid gap-3 md:grid-cols-2">
+                                    <div className="space-y-1">
+                                      <Label>Name</Label>
+                                      <Input value={contact.name} onChange={(e) => updateCRMContact(contact.id, { name: e.target.value })} placeholder="Contact name" />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <Label>Designation</Label>
+                                      <Input value={contact.designation || ''} onChange={(e) => updateCRMContact(contact.id, { designation: e.target.value })} placeholder="Plant manager, maintenance engineer…" />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <Label>Email</Label>
+                                      <Input type="email" value={contact.email} onChange={(e) => updateCRMContact(contact.id, { email: e.target.value })} placeholder="name@customer.com" />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <Label>Phone</Label>
+                                      <Input value={contact.phone} onChange={(e) => updateCRMContact(contact.id, { phone: e.target.value })} placeholder="Phone number" />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <Label>Relationship</Label>
+                                      <Select value={contact.role} onValueChange={(value) => updateCRMContact(contact.id, { role: value as ClientContact['role'] })}>
+                                        <SelectTrigger><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                          <SelectItem value="technical">Technical</SelectItem>
+                                          <SelectItem value="commercial">Commercial</SelectItem>
+                                          <SelectItem value="operations">Operations</SelectItem>
+                                          <SelectItem value="management">Management</SelectItem>
+                                          <SelectItem value="other">Other</SelectItem>
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                    <div className="flex items-end">
+                                      <div className="flex items-center gap-2 pb-2">
+                                        <Switch checked={contact.isActive} onCheckedChange={(checked) => updateCRMContact(contact.id, { isActive: checked })} />
+                                        <Label>Active contact</Label>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                                                   <div className="col-span-2 space-y-2">
                             <Label htmlFor="address">Address</Label>
@@ -1454,7 +1559,12 @@ const Settings = () => {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {clients.map((client) => (
+                      {clients.map((client) => {
+                        const crmContacts = getClientContacts(client);
+                        const primaryContact =
+                          crmContacts.find((contact) => contact.isPrimary) ||
+                          crmContacts[0];
+                        return (
                         <TableRow key={client.id}>
                           <TableCell>
                             <div className="flex items-center space-x-3">
@@ -1473,16 +1583,24 @@ const Settings = () => {
                           </TableCell>
                           <TableCell>
                             <div className="space-y-1">
-                              {client.email && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium">
+                                  {primaryContact?.name || 'No primary contact'}
+                                </span>
+                                <Badge variant="secondary">
+                                  {crmContacts.length} {crmContacts.length === 1 ? 'contact' : 'contacts'}
+                                </Badge>
+                              </div>
+                              {primaryContact?.email && (
                                 <div className="flex items-center gap-1 text-sm">
                                   <Mail size={12} />
-                                  {client.email}
+                                  {primaryContact.email}
                                 </div>
                               )}
-                              {client.phone && (
+                              {primaryContact?.phone && (
                                 <div className="flex items-center gap-1 text-sm">
                                   <Phone size={12} />
-                                  {client.phone}
+                                  {primaryContact.phone}
                                 </div>
                               )}
                             </div>
@@ -1506,7 +1624,7 @@ const Settings = () => {
                             </div>
                           </TableCell>
                         </TableRow>
-                      ))}
+                      )})}
                     </TableBody>
                   </Table>
                 )}

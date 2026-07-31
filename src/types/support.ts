@@ -71,6 +71,8 @@ export interface SupportProjectProfile {
   amcEndDate?: string;
   amcContractNumber?: string;
   responseCommitmentHours?: number;
+  supportContactId?: string;
+  /** @deprecated Contacts now belong to the client CRM. Kept for reading legacy data only. */
   supportContacts?: SupportContact[];
   internalNotes?: string;
 }
@@ -87,6 +89,7 @@ export interface SupportTicket {
   projectId: string;
   projectName: string;
   clientName: string;
+  clientId?: string;
   title: string;
   description: string;
   category: SupportIssueCategory;
@@ -94,6 +97,7 @@ export interface SupportTicket {
   status: SupportTicketStatus;
   channel: SupportChannel;
   reportedByName: string;
+  reportedByContactId?: string;
   reportedByEmail?: string;
   reportedByPhone?: string;
   reportedAt: Date;
@@ -167,12 +171,14 @@ export interface CreateSupportTicketInput {
   projectId: string;
   projectName: string;
   clientName: string;
+  clientId?: string;
   title: string;
   description: string;
   category: SupportIssueCategory;
   priority: SupportPriority;
   channel: SupportChannel;
   reportedByName: string;
+  reportedByContactId?: string;
   reportedByEmail?: string;
   reportedByPhone?: string;
   reportedAt?: Date;
@@ -184,4 +190,3 @@ export interface CreateSupportTicketInput {
   downtime: boolean;
   machineStopped: boolean;
 }
-

@@ -47,6 +47,7 @@ export interface Project {
   projectId: string;
   projectName: string;
   clientName: string;
+  clientId?: string;
   description: string;
   status: "Planning" | "Procurement" | "Ongoing" | "Delayed" | "Completed" | "Archived";
   deadline: string; // ISO string - treated as CURRENT deadline

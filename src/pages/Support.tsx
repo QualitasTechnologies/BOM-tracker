@@ -61,6 +61,7 @@ import {
   isTicketOpen,
 } from '@/utils/supportLogic';
 import { subscribeToProjects, type Project } from '@/utils/projectFirestore';
+import { subscribeToClients, type Client } from '@/utils/settingsFirestore';
 
 const formatDateTime = (date: Date) =>
   new Intl.DateTimeFormat('en-IN', {
@@ -76,6 +77,7 @@ export default function Support() {
   const { user, isAdmin } = useAuth();
   const { toast } = useToast();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
   const [documentCounts, setDocumentCounts] = useState<Record<string, number>>({});
   const [createOpen, setCreateOpen] = useState(false);
@@ -94,6 +96,8 @@ export default function Support() {
       ),
     [isAdmin, user?.uid],
   );
+
+  useEffect(() => subscribeToClients(setClients), []);
 
   const serviceProjects = useMemo(
     () =>
@@ -391,12 +395,23 @@ export default function Support() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         projects={serviceProjects}
+        clients={clients}
         onCreate={handleCreate}
       />
       <SupportProjectDialog
         open={projectDialogOpen}
         onOpenChange={setProjectDialogOpen}
         project={selectedProject}
+        client={
+          selectedProject
+            ? clients.find(
+                (client) =>
+                  client.id === selectedProject.clientId ||
+                  client.company.trim().toLowerCase() ===
+                    selectedProject.clientName.trim().toLowerCase(),
+              ) || null
+            : null
+        }
         userId={user?.uid || ''}
         userName={userName}
       />

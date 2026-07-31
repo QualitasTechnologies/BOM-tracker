@@ -154,6 +154,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
             projectId,
             projectName,
             clientName,
+            clientId: clients.find((clientItem) => clientItem.company === clientName)?.id,
             description,
             status,
             deadline,
@@ -165,6 +166,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
             projectId,
             projectName,
             clientName,
+            clientId: clients.find((clientItem) => clientItem.company === clientName)?.id,
             description,
             status,
             deadline,
@@ -347,4 +349,4 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
   );
 };
 
-export default EditProjectDialog; 
+export default EditProjectDialog;

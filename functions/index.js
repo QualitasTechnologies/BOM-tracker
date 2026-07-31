@@ -4602,6 +4602,143 @@ exports.sendPurchaseOrder = onCall(
 // ==================== SUPPORT TICKET COMMUNICATIONS ====================
 
 /**
+ * Allows an approved project member to add a contact to the linked client CRM
+ * without granting access to the broader Settings workspace.
+ */
+exports.addClientCRMContact = onCall(async (request) => {
+  const { auth, data } = request;
+  if (!auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+  }
+  if (auth.token.status !== 'approved') {
+    throw new functions.https.HttpsError('permission-denied', 'Approved access is required');
+  }
+
+  const {
+    projectId,
+    clientId,
+    name,
+    email = '',
+    phone = '',
+    designation = '',
+    role = 'technical',
+  } = data || {};
+  const allowedRoles = ['technical', 'commercial', 'operations', 'management', 'other'];
+  const trimmedName = String(name || '').trim();
+  const trimmedEmail = String(email || '').trim().toLowerCase();
+  const trimmedPhone = String(phone || '').trim();
+  const trimmedDesignation = String(designation || '').trim();
+
+  if (!projectId || !clientId || !trimmedName) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'Project, client, and contact name are required',
+    );
+  }
+  if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Contact email is invalid');
+  }
+  if (!allowedRoles.includes(role)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Contact relationship is invalid');
+  }
+
+  const firestore = admin.firestore();
+  const projectRef = firestore.collection('projects').doc(projectId);
+  const clientRef = firestore.collection('clients').doc(clientId);
+  const [projectSnapshot, clientSnapshot] = await Promise.all([
+    projectRef.get(),
+    clientRef.get(),
+  ]);
+  if (!projectSnapshot.exists || !clientSnapshot.exists) {
+    throw new functions.https.HttpsError('not-found', 'Project or client not found');
+  }
+
+  const project = projectSnapshot.data();
+  const client = clientSnapshot.data();
+  const isAdmin = auth.token.role === 'admin';
+  const isMember = !project.memberIds || project.memberIds.includes(auth.uid);
+  const clientMatchesProject =
+    project.clientId === clientId ||
+    (!project.clientId &&
+      String(project.clientName || '').trim().toLowerCase() ===
+        String(client.company || '').trim().toLowerCase());
+
+  if ((!isAdmin && !isMember) || !clientMatchesProject) {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'You cannot add contacts for this project client',
+    );
+  }
+
+  const contactId = clientRef.collection('_contactIds').doc().id;
+  const newContact = await firestore.runTransaction(async (transaction) => {
+    const currentSnapshot = await transaction.get(clientRef);
+    const currentClient = currentSnapshot.data();
+    const existingContacts =
+      Array.isArray(currentClient.contacts) && currentClient.contacts.length
+        ? currentClient.contacts
+        : (currentClient.contactPerson || currentClient.email || currentClient.phone)
+          ? [{
+              id: 'legacy-primary',
+              name: currentClient.contactPerson || 'Primary contact',
+              email: currentClient.email || '',
+              phone: currentClient.phone || '',
+              designation: '',
+              role: 'technical',
+              isPrimary: true,
+              isActive: true,
+            }]
+          : [];
+
+    const duplicate = existingContacts.find((contact) => {
+      const sameEmail =
+        trimmedEmail &&
+        String(contact.email || '').trim().toLowerCase() === trimmedEmail;
+      const sameNameAndPhone =
+        trimmedPhone &&
+        String(contact.name || '').trim().toLowerCase() === trimmedName.toLowerCase() &&
+        String(contact.phone || '').trim() === trimmedPhone;
+      return sameEmail || sameNameAndPhone;
+    });
+    if (duplicate) {
+      throw new functions.https.HttpsError(
+        'already-exists',
+        'This CRM contact already exists',
+      );
+    }
+
+    const contact = {
+      id: contactId,
+      name: trimmedName,
+      email: trimmedEmail,
+      phone: trimmedPhone,
+      designation: trimmedDesignation,
+      role,
+      isPrimary: existingContacts.length === 0,
+      isActive: true,
+    };
+    const contacts = [...existingContacts, contact];
+    const primary = contacts.find((item) => item.isPrimary) || contacts[0];
+    transaction.update(clientRef, {
+      contacts,
+      contactPerson: primary?.name || '',
+      email: primary?.email || '',
+      phone: primary?.phone || '',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return contact;
+  });
+
+  logger.info('Client CRM contact added from support', {
+    projectId,
+    clientId,
+    contactId: newContact.id,
+    addedBy: auth.uid,
+  });
+  return { contact: newContact };
+});
+
+/**
  * Sends a customer-facing support acknowledgement, quotation, or closure note.
  * The linked support ticket remains the system of record and receives an
  * immutable communication activity entry after a successful send.
@@ -4618,30 +4755,19 @@ exports.sendSupportCommunication = onCall(
       projectId,
       ticketId,
       kind,
-      to,
-      cc = [],
       message = '',
-      documentUrl,
+      documentId,
     } = data || {};
 
-    if (!projectId || !ticketId || !kind || !to) {
+    if (!projectId || !ticketId || !kind) {
       throw new functions.https.HttpsError(
         'invalid-argument',
-        'projectId, ticketId, kind, and recipient email are required',
+        'projectId, ticketId, and kind are required',
       );
     }
     if (!['acknowledgement', 'quotation', 'resolution'].includes(kind)) {
       throw new functions.https.HttpsError('invalid-argument', 'Unsupported communication type');
     }
-    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (
-      !emailPattern.test(to) ||
-      !Array.isArray(cc) ||
-      !cc.every((email) => emailPattern.test(email))
-    ) {
-      throw new functions.https.HttpsError('invalid-argument', 'A recipient email is invalid');
-    }
-
     const firestore = admin.firestore();
     const projectRef = firestore.collection('projects').doc(projectId);
     const ticketRef = projectRef.collection('supportTickets').doc(ticketId);
@@ -4666,6 +4792,62 @@ exports.sendSupportCommunication = onCall(
       );
     }
 
+    // The CRM is the source of truth for recipients. Ticket contact fields are
+    // retained only as an immutable incident snapshot and legacy fallback.
+    let crmContact = null;
+    const clientId = ticket.clientId || project.clientId;
+    if (clientId && ticket.reportedByContactId) {
+      const clientSnapshot = await firestore.collection('clients').doc(clientId).get();
+      if (clientSnapshot.exists) {
+        const client = clientSnapshot.data();
+        const contacts = Array.isArray(client.contacts) && client.contacts.length
+          ? client.contacts
+          : (client.contactPerson || client.email || client.phone)
+            ? [{
+                id: 'legacy-primary',
+                name: client.contactPerson || 'Primary contact',
+                email: client.email || '',
+                phone: client.phone || '',
+                isActive: true,
+              }]
+            : [];
+        crmContact = contacts.find(
+          (contact) =>
+            contact.id === ticket.reportedByContactId &&
+            contact.isActive !== false,
+        ) || null;
+      }
+    }
+
+    const recipientEmail = crmContact?.email || ticket.reportedByEmail;
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!recipientEmail || !emailPattern.test(recipientEmail)) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'The selected client CRM contact does not have a valid email address',
+      );
+    }
+
+    let documentUrl = '';
+    if (documentId) {
+      const documentSnapshot = await projectRef
+        .collection('supportDocuments')
+        .doc(documentId)
+        .get();
+      const supportDocument = documentSnapshot.data();
+      if (
+        !documentSnapshot.exists ||
+        supportDocument.ticketId !== ticketId ||
+        !supportDocument.url
+      ) {
+        throw new functions.https.HttpsError(
+          'invalid-argument',
+          'The selected document is not linked to this support ticket',
+        );
+      }
+      documentUrl = supportDocument.url;
+    }
+
     const escapeHtml = (value) =>
       String(value || '')
         .replace(/&/g, '&amp;')
@@ -4678,7 +4860,7 @@ exports.sendSupportCommunication = onCall(
     const ticketNumber = escapeHtml(ticket.ticketNumber || ticketId);
     const projectName = escapeHtml(project.projectName || ticket.projectName || projectId);
     const clientName = escapeHtml(project.clientName || ticket.clientName || '');
-    const recipientName = escapeHtml(ticket.reportedByName || 'Customer');
+    const recipientName = escapeHtml(crmContact?.name || ticket.reportedByName || 'Customer');
     const senderName = escapeHtml(userRecord.displayName || userRecord.email || 'Support team');
     const supportUrl = `https://visionbomtracker.web.app/project/${encodeURIComponent(projectId)}/support/${encodeURIComponent(ticketId)}`;
 
@@ -4755,8 +4937,7 @@ exports.sendSupportCommunication = onCall(
       const resend = new Resend(getResendApiKey());
       const response = await resend.emails.send({
         from: 'Qualitas Service & Support <info@qualitastech.com>',
-        to,
-        cc,
+        to: recipientEmail,
         subject: template.subject,
         html,
         text: stripHtml(html),
@@ -4778,13 +4959,13 @@ exports.sendSupportCommunication = onCall(
       await ticketRef.update(updates);
       await ticketRef.collection('activities').add({
         type: 'communication',
-        message: `${template.heading} sent to ${to}`,
+        message: `${template.heading} sent to ${recipientEmail}`,
         createdAt: now,
         createdBy: auth.uid,
         createdByName: userRecord.displayName || userRecord.email || 'Support user',
         metadata: {
           kind,
-          to,
+          to: recipientEmail,
           messageId: response?.data?.id || response?.id || null,
           supportUrl,
         },
@@ -4795,7 +4976,7 @@ exports.sendSupportCommunication = onCall(
         ticketId,
         ticketNumber: ticket.ticketNumber,
         kind,
-        to,
+        to: recipientEmail,
         sentBy: auth.uid,
       });
       return { success: true, messageId: response?.data?.id || response?.id };
