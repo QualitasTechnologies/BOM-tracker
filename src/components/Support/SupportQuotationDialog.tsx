@@ -154,6 +154,10 @@ export function SupportQuotationDialog({ open, onOpenChange, project, ticket, cl
               <Label>Valid for (days)</Label>
               <Input type="number" min="1" max="365" value={validityDays} onChange={(event) => setValidityDays(Number(event.target.value) || 30)} />
             </div>
+            <div className="text-xs text-muted-foreground md:col-span-3">
+              Customer GSTIN: {client?.gstin || 'Not recorded in the client CRM'}
+              {client?.stateName ? ` · ${client.stateName}${client.stateCode ? ` (${client.stateCode})` : ''}` : ''}
+            </div>
           </div>
 
           <div className="rounded-lg border">
@@ -169,13 +173,14 @@ export function SupportQuotationDialog({ open, onOpenChange, project, ticket, cl
               </div>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[780px] text-sm">
-                <thead className="bg-slate-50 text-left text-xs text-muted-foreground"><tr><th className="p-3">Type</th><th className="p-3">Description</th><th className="p-3 w-24">Qty</th><th className="p-3 w-24">Unit</th><th className="p-3 w-32">Rate</th><th className="p-3 w-32 text-right">Amount</th><th className="w-12" /></tr></thead>
+              <table className="w-full min-w-[900px] text-sm">
+                <thead className="bg-slate-50 text-left text-xs text-muted-foreground"><tr><th className="p-3">Type</th><th className="p-3">Description</th><th className="p-3 w-28">HSN / SAC</th><th className="p-3 w-24">Qty</th><th className="p-3 w-24">Unit</th><th className="p-3 w-32">Rate</th><th className="p-3 w-32 text-right">Amount</th><th className="w-12" /></tr></thead>
                 <tbody>
                   {totals.lines.map((line) => (
                     <tr key={line.id} className="border-t align-top">
                       <td className="p-3 capitalize">{line.category}</td>
                       <td className="p-3"><Input value={line.description} onChange={(event) => updateLine(line.id, 'description', event.target.value)} /></td>
+                      <td className="p-3"><Input value={line.hsnSac || ''} onChange={(event) => updateLine(line.id, 'hsnSac', event.target.value.toUpperCase())} placeholder="Optional" /></td>
                       <td className="p-3"><Input type="number" min="0" step="0.25" value={line.quantity} onChange={(event) => updateLine(line.id, 'quantity', Number(event.target.value))} /></td>
                       <td className="p-3"><Input value={line.unit} onChange={(event) => updateLine(line.id, 'unit', event.target.value)} /></td>
                       <td className="p-3"><Input type="number" min="0" step="0.01" value={line.unitRate} onChange={(event) => updateLine(line.id, 'unitRate', Number(event.target.value))} /></td>
@@ -200,11 +205,14 @@ export function SupportQuotationDialog({ open, onOpenChange, project, ticket, cl
                 {taxType !== 'none' && <div className="grid gap-2"><Label>GST %</Label><Input type="number" min="0" max="100" value={taxPercent} onChange={(event) => setTaxPercent(Number(event.target.value) || 0)} /></div>}
                 <div className="mt-2 space-y-2 border-t pt-3 text-sm">
                   <SummaryRow label="Subtotal" value={money(totals.subtotal)} />
-                  <SummaryRow label={taxType === 'none' ? 'Tax' : `GST ${taxPercent}%`} value={money(totals.taxAmount)} />
+                  <SummaryRow label={taxType === 'none' ? 'Tax' : `Estimated GST ${taxPercent}%`} value={money(totals.taxAmount)} />
                   <div className="flex justify-between border-t pt-3 text-base font-semibold"><span>Total</span><span>{money(totals.total)}</span></div>
                 </div>
               </div>
             </div>
+          </div>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+            This is a commercial quotation, not a tax invoice. GST is indicative; the final tax invoice will be issued separately through the e-invoicing system with the applicable IRN and signed QR code.
           </div>
         </div>
 

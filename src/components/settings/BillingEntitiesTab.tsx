@@ -35,9 +35,14 @@ const emptyEntity = (): Omit<BillingEntity, 'id' | 'updatedAt'> => ({
   stateCode: '',
   stateName: '',
   pan: '',
+  cin: '',
+  udyamRegistrationNumber: '',
   phone: '',
   email: '',
   website: '',
+  fax: '',
+  authorizedSignatoryName: '',
+  authorizedSignatoryDesignation: '',
   logo: '',
   logoPath: '',
   quotationPrefix: 'SVC',
@@ -91,6 +96,18 @@ export default function BillingEntitiesTab() {
   const handleSave = async () => {
     if (!form.legalName.trim() || !form.companyAddress.trim() || !form.gstin.trim()) {
       toast({ title: 'Legal name, address and GSTIN are required', variant: 'destructive' });
+      return;
+    }
+    if (!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(form.gstin.trim().toUpperCase())) {
+      toast({ title: 'Enter a valid 15-character GSTIN', variant: 'destructive' });
+      return;
+    }
+    if (form.pan && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(form.pan.trim().toUpperCase())) {
+      toast({ title: 'Enter a valid 10-character PAN', variant: 'destructive' });
+      return;
+    }
+    if (form.cin && !/^[A-Z][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6}$/.test(form.cin.trim().toUpperCase())) {
+      toast({ title: 'Enter a valid 21-character CIN', variant: 'destructive' });
       return;
     }
     setSaving(true);
@@ -204,16 +221,21 @@ export default function BillingEntitiesTab() {
               <Field label="Display name" value={form.displayName} onChange={(value) => setField('displayName', value)} />
             </div>
             <div className="grid gap-2"><Label>Registered address *</Label><Textarea value={form.companyAddress} onChange={(event) => setField('companyAddress', event.target.value)} /></div>
-            <div className="grid gap-4 md:grid-cols-4">
+            <div className="grid gap-4 md:grid-cols-3">
               <Field label="GSTIN *" value={form.gstin} onChange={(value) => setField('gstin', value.toUpperCase())} />
               <Field label="PAN" value={form.pan} onChange={(value) => setField('pan', value.toUpperCase())} />
-              <Field label="State code" value={form.stateCode} onChange={(value) => setField('stateCode', value)} />
-              <Field label="State" value={form.stateName} onChange={(value) => setField('stateName', value)} />
+              <Field label="CIN" value={form.cin || ''} onChange={(value) => setField('cin', value.toUpperCase())} />
             </div>
             <div className="grid gap-4 md:grid-cols-3">
+              <Field label="State code" value={form.stateCode} onChange={(value) => setField('stateCode', value)} />
+              <Field label="State" value={form.stateName} onChange={(value) => setField('stateName', value)} />
+              <Field label="Udyam / MSME registration" value={form.udyamRegistrationNumber || ''} onChange={(value) => setField('udyamRegistrationNumber', value.toUpperCase())} />
+            </div>
+            <div className="grid gap-4 md:grid-cols-4">
               <Field label="Email" value={form.email || ''} onChange={(value) => setField('email', value)} type="email" />
               <Field label="Phone" value={form.phone || ''} onChange={(value) => setField('phone', value)} />
               <Field label="Website" value={form.website || ''} onChange={(value) => setField('website', value)} />
+              <Field label="Fax" value={form.fax || ''} onChange={(value) => setField('fax', value)} />
             </div>
             <div className="rounded-lg border p-4">
               <div className="mb-3 font-medium">Quotation defaults</div>
@@ -252,6 +274,13 @@ export default function BillingEntitiesTab() {
                 <Field label="IFSC" value={form.bankIfsc || ''} onChange={(value) => setField('bankIfsc', value.toUpperCase())} />
               </div>
               <div className="mt-4"><Field label="Branch" value={form.bankBranch || ''} onChange={(value) => setField('bankBranch', value)} /></div>
+            </div>
+            <div className="rounded-lg border p-4">
+              <div className="mb-3 font-medium">Authorised signatory</div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="Name" value={form.authorizedSignatoryName || ''} onChange={(value) => setField('authorizedSignatoryName', value)} />
+                <Field label="Designation" value={form.authorizedSignatoryDesignation || ''} onChange={(value) => setField('authorizedSignatoryDesignation', value)} />
+              </div>
             </div>
             <div className="grid gap-2">
               <Label>Logo</Label>

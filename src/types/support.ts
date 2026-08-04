@@ -49,6 +49,7 @@ export interface SupportQuotationLine {
   id: string;
   category: SupportQuotationLineCategory;
   description: string;
+  hsnSac?: string;
   quantity: number;
   unit: string;
   unitRate: number;
@@ -62,6 +63,14 @@ export interface SupportQuotation {
   validUntil: string;
   billingEntityId: string;
   billingEntityName: string;
+  supplierGstin?: string;
+  supplierPan?: string;
+  supplierCin?: string;
+  customerGstin?: string;
+  customerPan?: string;
+  customerStateCode?: string;
+  customerStateName?: string;
+  isTaxInvoice?: false;
   lines: SupportQuotationLine[];
   subtotal: number;
   taxType: 'igst' | 'cgst-sgst' | 'none';

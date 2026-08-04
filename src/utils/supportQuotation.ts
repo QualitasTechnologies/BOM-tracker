@@ -26,6 +26,7 @@ export const createQuotationLine = (
 ): SupportQuotationLine => ({
   id: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
   category,
+  hsnSac: '',
   description:
     category === 'engineering'
       ? 'Engineering support services'

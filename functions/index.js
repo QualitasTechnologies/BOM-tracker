@@ -4811,9 +4811,14 @@ exports.prepareSupportQuotation = onCall(async (request) => {
           stateCode: stored.stateCode,
           stateName: stored.stateName,
           pan: stored.pan,
+          cin: stored.cin,
+          udyamRegistrationNumber: stored.udyamRegistrationNumber,
           phone: stored.phone,
           email: stored.email,
           website: stored.website,
+          fax: stored.fax,
+          authorizedSignatoryName: stored.authorizedSignatoryName,
+          authorizedSignatoryDesignation: stored.authorizedSignatoryDesignation,
           logo: stored.logo,
           logoPath: stored.logoPath,
           quotationPrefix: stored.quotationPrefix || 'SVC',
@@ -4853,6 +4858,7 @@ exports.prepareSupportQuotation = onCall(async (request) => {
       id: String(line.id || `line-${index + 1}`),
       category: ['engineering', 'travel', 'material'].includes(line.category) ? line.category : 'material',
       description,
+      hsnSac: String(line.hsnSac || '').trim().toUpperCase(),
       quantity,
       unit: String(line.unit || 'nos').trim(),
       unitRate,
@@ -4872,6 +4878,12 @@ exports.prepareSupportQuotation = onCall(async (request) => {
   if (clientId) {
     const clientSnapshot = await firestore.collection('clients').doc(clientId).get();
     if (clientSnapshot.exists) client = clientSnapshot.data();
+  } else if (project.clientName) {
+    const clientQuery = await firestore.collection('clients')
+      .where('company', '==', project.clientName)
+      .limit(1)
+      .get();
+    if (!clientQuery.empty) client = clientQuery.docs[0].data();
   }
   const quotationDate = new Date();
   const validUntilDate = new Date(quotationDate);
@@ -4902,44 +4914,69 @@ exports.prepareSupportQuotation = onCall(async (request) => {
     .text(billingEntity.legalName, logoBuffer ? 175 : 42, 42, { width: logoBuffer ? 378 : pageWidth, align: logoBuffer ? 'right' : 'left' });
   doc.font('Helvetica').fontSize(8).fillColor('#475569')
     .text(billingEntity.companyAddress || '', logoBuffer ? 175 : 42, 66, { width: logoBuffer ? 378 : pageWidth, align: logoBuffer ? 'right' : 'left' });
-  doc.text(`GSTIN: ${billingEntity.gstin}${billingEntity.pan ? `  |  PAN: ${billingEntity.pan}` : ''}`, 42, 96, { width: pageWidth, align: 'right' });
-  doc.moveTo(42, 112).lineTo(553, 112).strokeColor('#cbd5e1').stroke();
+  const legalIdentifiers = [
+    `GSTIN: ${billingEntity.gstin}`,
+    billingEntity.pan ? `PAN: ${billingEntity.pan}` : '',
+    billingEntity.cin ? `CIN: ${billingEntity.cin}` : '',
+    billingEntity.udyamRegistrationNumber ? `Udyam: ${billingEntity.udyamRegistrationNumber}` : '',
+  ].filter(Boolean);
+  const contactIdentifiers = [
+    billingEntity.stateName ? `State: ${billingEntity.stateName}${billingEntity.stateCode ? ` (${billingEntity.stateCode})` : ''}` : '',
+    billingEntity.phone ? `Tel: ${billingEntity.phone}` : '',
+    billingEntity.fax ? `Fax: ${billingEntity.fax}` : '',
+    billingEntity.email ? `Email: ${billingEntity.email}` : '',
+    billingEntity.website ? `Web: ${billingEntity.website}` : '',
+  ].filter(Boolean);
+  doc.text(legalIdentifiers.join('  |  '), 42, 94, { width: pageWidth, align: 'right' });
+  if (contactIdentifiers.length) {
+    doc.text(contactIdentifiers.join('  |  '), 42, 105, { width: pageWidth, align: 'right' });
+  }
+  doc.moveTo(42, 121).lineTo(553, 121).strokeColor('#cbd5e1').stroke();
 
-  doc.font('Helvetica-Bold').fontSize(22).fillColor('#0f172a').text('SERVICE QUOTATION', 42, 128);
-  doc.fontSize(10).text(quotationNumber, 42, 157);
+  doc.font('Helvetica-Bold').fontSize(22).fillColor('#0f172a').text('SERVICE QUOTATION', 42, 137);
+  doc.fontSize(10).text(quotationNumber, 42, 166);
   doc.font('Helvetica').fontSize(9).fillColor('#475569')
-    .text(`Date: ${toIsoDate(quotationDate)}`, 393, 132, { width: 160, align: 'right' })
-    .text(`Valid until: ${toIsoDate(validUntilDate)}`, 393, 148, { width: 160, align: 'right' });
+    .text(`Date: ${toIsoDate(quotationDate)}`, 393, 141, { width: 160, align: 'right' })
+    .text(`Valid until: ${toIsoDate(validUntilDate)}`, 393, 157, { width: 160, align: 'right' });
 
-  doc.roundedRect(42, 180, 511, 82, 4).fillAndStroke('#f8fafc', '#e2e8f0');
-  doc.font('Helvetica-Bold').fontSize(8).fillColor('#64748b').text('QUOTATION TO', 54, 192);
-  doc.fontSize(11).fillColor('#0f172a').text(project.clientName || client.company || ticket.clientName || 'Customer', 54, 208);
-  doc.font('Helvetica').fontSize(8).fillColor('#475569').text(client.address || '', 54, 226, { width: 235 });
-  doc.font('Helvetica-Bold').fontSize(8).fillColor('#64748b').text('SUPPORT REFERENCE', 310, 192);
+  doc.roundedRect(42, 189, 511, 94, 4).fillAndStroke('#f8fafc', '#e2e8f0');
+  doc.font('Helvetica-Bold').fontSize(8).fillColor('#64748b').text('QUOTATION TO', 54, 201);
+  doc.fontSize(11).fillColor('#0f172a').text(project.clientName || client.company || ticket.clientName || 'Customer', 54, 217);
+  doc.font('Helvetica').fontSize(8).fillColor('#475569').text(client.address || '', 54, 235, { width: 235, height: 22 });
+  const clientIdentifiers = [
+    client.gstin ? `GSTIN: ${client.gstin}` : '',
+    client.pan ? `PAN: ${client.pan}` : '',
+  ].filter(Boolean).join('  |  ');
+  doc.text(clientIdentifiers || 'GSTIN: Not provided', 54, 258, { width: 235 });
+  if (client.stateName) {
+    doc.text(`State: ${client.stateName}${client.stateCode ? ` (${client.stateCode})` : ''}`, 54, 269, { width: 235 });
+  }
+  doc.font('Helvetica-Bold').fontSize(8).fillColor('#64748b').text('SUPPORT REFERENCE', 310, 201);
   doc.font('Helvetica').fontSize(9).fillColor('#0f172a')
-    .text(`${ticket.ticketNumber || ticketId} · ${project.projectName || projectId}`, 310, 208, { width: 230 })
-    .text(`${ticket.machineName || 'Machine not tagged'}${ticket.machineSerialNumber ? ` · S/N ${ticket.machineSerialNumber}` : ''}`, 310, 226, { width: 230 });
+    .text(`${ticket.ticketNumber || ticketId} · ${project.projectName || projectId}`, 310, 217, { width: 230 })
+    .text(`${ticket.machineName || 'Machine not tagged'}${ticket.machineSerialNumber ? ` · S/N ${ticket.machineSerialNumber}` : ''}`, 310, 235, { width: 230 });
 
-  let y = 282;
+  let y = 300;
   const drawHeader = () => {
     doc.rect(42, y, 511, 24).fill('#0f172a');
     doc.font('Helvetica-Bold').fontSize(8).fillColor('#ffffff');
-    doc.text('#', 48, y + 8); doc.text('Description', 84, y + 8); doc.text('Qty', 319, y + 8);
-    doc.text('Unit', 379, y + 8); doc.text('Rate', 437, y + 8, { width: 52, align: 'right' });
+    doc.text('#', 48, y + 8); doc.text('Description', 75, y + 8); doc.text('HSN/SAC', 255, y + 8); doc.text('Qty', 319, y + 8);
+    doc.text('Unit', 369, y + 8); doc.text('Rate', 421, y + 8, { width: 62, align: 'right' });
     doc.text('Amount', 492, y + 8, { width: 55, align: 'right' });
     y += 24;
   };
   drawHeader();
   normalizedLines.forEach((line, index) => {
     if (y > 680) { doc.addPage(); y = 42; drawHeader(); }
-    const rowHeight = Math.max(30, doc.heightOfString(line.description, { width: 220 }) + 14);
+    const rowHeight = Math.max(30, doc.heightOfString(line.description, { width: 165 }) + 14);
     if (index % 2 === 0) doc.rect(42, y, 511, rowHeight).fill('#f8fafc');
     doc.font('Helvetica').fontSize(8).fillColor('#0f172a');
     doc.text(String(index + 1), 48, y + 9);
-    doc.text(line.description, 84, y + 8, { width: 220 });
+    doc.text(line.description, 75, y + 8, { width: 165 });
+    doc.text(line.hsnSac || '-', 255, y + 9, { width: 52 });
     doc.text(String(line.quantity), 319, y + 9, { width: 45, align: 'right' });
-    doc.text(line.unit, 379, y + 9, { width: 45 });
-    doc.text(money(line.unitRate), 421, y + 9, { width: 70, align: 'right' });
+    doc.text(line.unit, 369, y + 9, { width: 42 });
+    doc.text(money(line.unitRate), 414, y + 9, { width: 70, align: 'right' });
     doc.text(money(line.amount), 482, y + 9, { width: 65, align: 'right' });
     doc.moveTo(42, y + rowHeight).lineTo(553, y + rowHeight).strokeColor('#e2e8f0').stroke();
     y += rowHeight;
@@ -4950,14 +4987,20 @@ exports.prepareSupportQuotation = onCall(async (request) => {
   doc.font('Helvetica').fontSize(9).fillColor('#475569').text('Subtotal', totalsX, y, { width: 90 });
   doc.fillColor('#0f172a').text(money(subtotal), 443, y, { width: 110, align: 'right' }); y += 18;
   if (taxType === 'cgst-sgst') {
-    doc.fillColor('#475569').text(`CGST ${safeTaxPercent / 2}%`, totalsX, y, { width: 90 }); doc.fillColor('#0f172a').text(money(taxAmount / 2), 443, y, { width: 110, align: 'right' }); y += 18;
-    doc.fillColor('#475569').text(`SGST ${safeTaxPercent / 2}%`, totalsX, y, { width: 90 }); doc.fillColor('#0f172a').text(money(taxAmount / 2), 443, y, { width: 110, align: 'right' }); y += 18;
+    doc.fillColor('#475569').text(`Est. CGST ${safeTaxPercent / 2}%`, totalsX, y, { width: 90 }); doc.fillColor('#0f172a').text(money(taxAmount / 2), 443, y, { width: 110, align: 'right' }); y += 18;
+    doc.fillColor('#475569').text(`Est. SGST ${safeTaxPercent / 2}%`, totalsX, y, { width: 90 }); doc.fillColor('#0f172a').text(money(taxAmount / 2), 443, y, { width: 110, align: 'right' }); y += 18;
   } else if (taxType === 'igst') {
-    doc.fillColor('#475569').text(`IGST ${safeTaxPercent}%`, totalsX, y, { width: 90 }); doc.fillColor('#0f172a').text(money(taxAmount), 443, y, { width: 110, align: 'right' }); y += 18;
+    doc.fillColor('#475569').text(`Est. IGST ${safeTaxPercent}%`, totalsX, y, { width: 90 }); doc.fillColor('#0f172a').text(money(taxAmount), 443, y, { width: 110, align: 'right' }); y += 18;
   }
   doc.rect(totalsX - 8, y - 4, 208, 26).fill('#0f172a');
   doc.font('Helvetica-Bold').fontSize(10).fillColor('#ffffff').text('TOTAL', totalsX, y + 4).text(money(total), 443, y + 4, { width: 102, align: 'right' });
   y += 42;
+  if (y > 620) { doc.addPage(); y = 42; }
+  const quotationDisclaimer = 'COMMERCIAL QUOTATION - NOT A TAX INVOICE. GST shown is indicative and will be charged at the applicable rate. The final tax invoice will be issued separately through the e-invoicing system and will carry the IRN and signed QR code where applicable.';
+  const disclaimerHeight = Math.max(42, doc.heightOfString(quotationDisclaimer, { width: 487 }) + 18);
+  doc.roundedRect(42, y, 511, disclaimerHeight, 4).fillAndStroke('#eff6ff', '#bfdbfe');
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#1e3a8a').text(quotationDisclaimer, 54, y + 9, { width: 487 });
+  y += disclaimerHeight + 16;
   if (y > 650) { doc.addPage(); y = 42; }
   const finalPaymentTerms = String(paymentTerms || billingEntity.defaultPaymentTerms || '').trim();
   const finalTerms = String(termsAndConditions || billingEntity.defaultTermsAndConditions || '').trim();
@@ -4980,6 +5023,14 @@ exports.prepareSupportQuotation = onCall(async (request) => {
   if (notes) {
     doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f172a').text('Notes', 42, y);
     doc.font('Helvetica').fontSize(8).fillColor('#475569').text(String(notes), 42, y + 15, { width: 511 });
+    y += doc.heightOfString(String(notes), { width: 511 }) + 28;
+  }
+  if (y > 690) { doc.addPage(); y = 42; }
+  doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f172a').text(`For ${billingEntity.legalName}`, 353, y, { width: 200, align: 'right' });
+  doc.font('Helvetica').fontSize(8).fillColor('#475569')
+    .text(billingEntity.authorizedSignatoryName || 'Authorised signatory', 353, y + 28, { width: 200, align: 'right' });
+  if (billingEntity.authorizedSignatoryDesignation) {
+    doc.text(billingEntity.authorizedSignatoryDesignation, 353, y + 40, { width: 200, align: 'right' });
   }
   doc.end();
   const pdfBuffer = await new Promise((resolve, reject) => {
@@ -5009,6 +5060,14 @@ exports.prepareSupportQuotation = onCall(async (request) => {
     validUntil: toIsoDate(validUntilDate),
     billingEntityId,
     billingEntityName: billingEntity.displayName || billingEntity.legalName,
+    supplierGstin: billingEntity.gstin,
+    supplierPan: billingEntity.pan || '',
+    supplierCin: billingEntity.cin || '',
+    customerGstin: client.gstin || '',
+    customerPan: client.pan || '',
+    customerStateCode: client.stateCode || '',
+    customerStateName: client.stateName || '',
+    isTaxInvoice: false,
     lines: normalizedLines,
     subtotal,
     taxType,

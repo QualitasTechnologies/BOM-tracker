@@ -55,6 +55,10 @@ export interface Client {
   notes?: string;
   logo?: string;
   logoPath?: string;
+  gstin?: string;
+  pan?: string;
+  stateCode?: string;
+  stateName?: string;
   createdAt: Date;
   updatedAt: Date;
 
@@ -491,6 +495,12 @@ export const validateClient = (client: Partial<Client>): string[] => {
   const errors: string[] = [];
   if (!client.company?.trim()) errors.push('Company name is required');
   if (client.email && !isValidEmail(client.email)) errors.push('Invalid email format');
+  if (client.gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(client.gstin.trim().toUpperCase())) {
+    errors.push('Invalid client GSTIN format');
+  }
+  if (client.pan && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(client.pan.trim().toUpperCase())) {
+    errors.push('Invalid client PAN format');
+  }
   getClientContacts(client, true).forEach((contact, index) => {
     if ((contact.email || contact.phone || contact.designation) && !contact.name.trim()) {
       errors.push(`Contact ${index + 1}: name is required`);
@@ -759,11 +769,16 @@ export interface CompanySettings {
   stateCode: string;             // "29" for Karnataka
   stateName: string;             // "Karnataka"
   pan: string;
+  cin?: string;
+  udyamRegistrationNumber?: string;
 
   // Contact
   phone?: string;
   email?: string;
   website?: string;
+  fax?: string;
+  authorizedSignatoryName?: string;
+  authorizedSignatoryDesignation?: string;
 
   // PO Settings
   poNumberPrefix: string;        // "PO-QT" or "PO/QT"
@@ -803,9 +818,14 @@ export interface BillingEntity {
   stateCode: string;
   stateName: string;
   pan: string;
+  cin?: string;
+  udyamRegistrationNumber?: string;
   phone?: string;
   email?: string;
   website?: string;
+  fax?: string;
+  authorizedSignatoryName?: string;
+  authorizedSignatoryDesignation?: string;
   logo?: string;
   logoPath?: string;
   quotationPrefix: string;
@@ -839,9 +859,14 @@ const companyAsBillingEntity = (settings: CompanySettings): BillingEntity => ({
   stateCode: settings.stateCode,
   stateName: settings.stateName,
   pan: settings.pan,
+  cin: settings.cin,
+  udyamRegistrationNumber: settings.udyamRegistrationNumber,
   phone: settings.phone,
   email: settings.email,
   website: settings.website,
+  fax: settings.fax,
+  authorizedSignatoryName: settings.authorizedSignatoryName,
+  authorizedSignatoryDesignation: settings.authorizedSignatoryDesignation,
   logo: settings.logo,
   logoPath: settings.logoPath,
   quotationPrefix: settings.quotationPrefix || 'SVC',
@@ -893,9 +918,14 @@ export const billingEntityToCompanySettings = (
   stateCode: entity.stateCode,
   stateName: entity.stateName,
   pan: entity.pan,
+  cin: entity.cin,
+  udyamRegistrationNumber: entity.udyamRegistrationNumber,
   phone: entity.phone,
   email: entity.email,
   website: entity.website,
+  fax: entity.fax,
+  authorizedSignatoryName: entity.authorizedSignatoryName,
+  authorizedSignatoryDesignation: entity.authorizedSignatoryDesignation,
   poNumberPrefix: entity.poNumberPrefix || 'PO',
   poNumberFormat: entity.poNumberFormat || 'simple',
   nextPoNumber: entity.nextPoNumber || 1,
@@ -1024,9 +1054,14 @@ export const updateBillingEntity = async (
       stateCode: updates.stateCode,
       stateName: updates.stateName,
       pan: updates.pan,
+      cin: updates.cin,
+      udyamRegistrationNumber: updates.udyamRegistrationNumber,
       phone: updates.phone,
       email: updates.email,
       website: updates.website,
+      fax: updates.fax,
+      authorizedSignatoryName: updates.authorizedSignatoryName,
+      authorizedSignatoryDesignation: updates.authorizedSignatoryDesignation,
       logo: updates.logo,
       logoPath: updates.logoPath,
       defaultPaymentTerms: updates.defaultPaymentTerms,

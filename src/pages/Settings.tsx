@@ -535,6 +535,10 @@ const Settings = () => {
         company: clientForm.company || '',
         ...contactFields,
         address: clientForm.address || '',
+        gstin: clientForm.gstin?.trim().toUpperCase() || '',
+        pan: clientForm.pan?.trim().toUpperCase() || '',
+        stateCode: clientForm.stateCode || '',
+        stateName: clientForm.stateName || '',
         notes: clientForm.notes || '',
         logo: logoUrl,
         logoPath: logoPath,
@@ -545,6 +549,10 @@ const Settings = () => {
         company: '',
         contacts: [createClientContact({ isPrimary: true })],
         address: '',
+        gstin: '',
+        pan: '',
+        stateCode: '',
+        stateName: '',
         notes: ''
       });
       setClientLogoFile(null);
@@ -597,6 +605,8 @@ const Settings = () => {
       let updatedClientForm = {
         ...clientForm,
         ...clientContactFieldsForWrite(clientForm),
+        gstin: clientForm.gstin?.trim().toUpperCase() || '',
+        pan: clientForm.pan?.trim().toUpperCase() || '',
       };
 
       // Upload new logo if selected
@@ -1391,6 +1401,46 @@ const Settings = () => {
                               placeholder="Enter company name"
                             />
                           </div>
+                          <div className="col-span-2 space-y-3 rounded-lg border bg-slate-50 p-4">
+                            <div>
+                              <Label>Commercial and GST details</Label>
+                              <p className="text-xs text-muted-foreground">
+                                Used on quotations and other customer-facing commercial documents.
+                              </p>
+                            </div>
+                            <div className="grid gap-3 md:grid-cols-2">
+                              <div className="space-y-1">
+                                <Label>GSTIN</Label>
+                                <Input value={clientForm.gstin || ''} onChange={(e) => setClientForm({ ...clientForm, gstin: e.target.value.toUpperCase() })} placeholder="15-character GSTIN" maxLength={15} />
+                              </div>
+                              <div className="space-y-1">
+                                <Label>PAN</Label>
+                                <Input value={clientForm.pan || ''} onChange={(e) => setClientForm({ ...clientForm, pan: e.target.value.toUpperCase() })} placeholder="10-character PAN" maxLength={10} />
+                              </div>
+                              <div className="space-y-1">
+                                <Label>State</Label>
+                                <Select
+                                  value={clientForm.stateCode || ''}
+                                  onValueChange={(stateCode) => setClientForm({
+                                    ...clientForm,
+                                    stateCode,
+                                    stateName: INDIAN_STATE_CODES[stateCode] || '',
+                                  })}
+                                >
+                                  <SelectTrigger><SelectValue placeholder="Select state" /></SelectTrigger>
+                                  <SelectContent>
+                                    {Object.entries(INDIAN_STATE_CODES).map(([code, name]) => (
+                                      <SelectItem key={code} value={code}>{code} - {name}</SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div className="space-y-1">
+                                <Label>State code</Label>
+                                <Input value={clientForm.stateCode || ''} readOnly placeholder="Auto-filled" />
+                              </div>
+                            </div>
+                          </div>
                         <div className="col-span-2 space-y-3 rounded-lg border bg-slate-50 p-4">
                           <div className="flex items-center justify-between gap-3">
                             <div>
@@ -1471,7 +1521,7 @@ const Settings = () => {
                           )}
                         </div>
                                                   <div className="col-span-2 space-y-2">
-                            <Label htmlFor="address">Address</Label>
+                            <Label htmlFor="address">Registered / billing address</Label>
                             <Input
                               id="address"
                               value={clientForm.address || ''}

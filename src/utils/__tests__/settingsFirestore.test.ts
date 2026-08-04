@@ -14,6 +14,17 @@ import {
 } from '../settingsFirestore';
 
 describe('validateClient', () => {
+  it('validates optional client GST and PAN identifiers', () => {
+    expect(validateClient({ company: 'Acme', gstin: 'invalid', pan: 'invalid' })).toEqual([
+      'Invalid client GSTIN format',
+      'Invalid client PAN format',
+    ]);
+    expect(validateClient({
+      company: 'Acme',
+      gstin: '29AAACQ1872F1ZE',
+      pan: 'AAACQ1872F',
+    })).toEqual([]);
+  });
   describe('company name validation', () => {
     it('returns error when company is missing', () => {
       const errors = validateClient({});
