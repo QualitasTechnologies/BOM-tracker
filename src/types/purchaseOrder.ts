@@ -50,6 +50,7 @@ export interface POWarning {
 export interface PurchaseOrder {
   id: string;
   projectId: string;
+  billingEntityId?: string;
   poNumber: string;              // "PO-QT-2025-001"
 
   // Vendor (single vendor per PO)

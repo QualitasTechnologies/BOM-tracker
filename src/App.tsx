@@ -19,7 +19,7 @@ import Support from "./pages/Support";
 import SupportTicket from "./pages/SupportTicket";
 import KPI from "./pages/Index"; // Using Index as KPI dashboard
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { subscribeToCompanySettings, CompanySettings } from '@/utils/settingsFirestore';
+import { getDefaultBillingEntity, subscribeToBillingEntities } from '@/utils/settingsFirestore';
 
 const queryClient = new QueryClient();
 
@@ -48,19 +48,20 @@ const AppLayout: React.FC = () => {
   const isBOMPage = location.pathname.includes('/bom') || location.pathname.includes('/received-photos');
   const showSidebar = !isBOMPage;
 
-  // Subscribe to company settings to get logo
+  // Use the default billing entity for the app identity.
   useEffect(() => {
-    const unsubscribe = subscribeToCompanySettings((settings: CompanySettings | null) => {
-      if (settings) {
+    const unsubscribe = subscribeToBillingEntities((entities) => {
+      const entity = getDefaultBillingEntity(entities);
+      if (entity) {
         // Use logo from settings if available, otherwise fallback to default
-        if (settings.logo) {
-          setCompanyLogo(settings.logo);
+        if (entity.logo) {
+          setCompanyLogo(entity.logo);
         } else {
           setCompanyLogo('/qualitas-logo.png');
         }
         // Update company name for alt text
-        if (settings.companyName) {
-          setCompanyName(settings.companyName);
+        if (entity.displayName) {
+          setCompanyName(entity.displayName);
         }
       }
     });

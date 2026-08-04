@@ -775,6 +775,17 @@ export interface CompanySettings {
   defaultDeliveryTerms?: string;
   defaultTermsAndConditions?: string;
 
+  // Support quotation settings (kept on the legacy primary entity record)
+  quotationPrefix?: string;
+  nextQuotationNumber?: number;
+  defaultValidityDays?: number;
+  bankName?: string;
+  bankAccountName?: string;
+  bankAccountNumber?: string;
+  bankIfsc?: string;
+  bankBranch?: string;
+  isDefault?: boolean;
+
   // Logo
   logo?: string;
   logoPath?: string;
@@ -801,27 +812,23 @@ export interface BillingEntity {
   nextQuotationNumber: number;
   defaultValidityDays: number;
   defaultPaymentTerms?: string;
+  defaultDeliveryTerms?: string;
   defaultTermsAndConditions?: string;
-
-  // Support quotation settings for the primary/legacy billing entity
-  quotationPrefix?: string;
-  nextQuotationNumber?: number;
-  defaultValidityDays?: number;
+  poNumberPrefix: string;
+  poNumberFormat: 'simple' | 'financial-year';
+  nextPoNumber: number;
   bankName?: string;
   bankAccountName?: string;
   bankAccountNumber?: string;
   bankIfsc?: string;
   bankBranch?: string;
-  bankName?: string;
-  bankAccountName?: string;
-  bankAccountNumber?: string;
-  bankIfsc?: string;
-  bankBranch?: string;
+  isDefault?: boolean;
   isActive: boolean;
   updatedAt?: Date;
 }
 
 const billingEntitiesCol = collection(db, 'billingEntities');
+const companySettingsRef = doc(db, "settings", "company");
 
 const companyAsBillingEntity = (settings: CompanySettings): BillingEntity => ({
   id: 'company',
@@ -841,14 +848,72 @@ const companyAsBillingEntity = (settings: CompanySettings): BillingEntity => ({
   nextQuotationNumber: settings.nextQuotationNumber || 1,
   defaultValidityDays: settings.defaultValidityDays || 30,
   defaultPaymentTerms: settings.defaultPaymentTerms,
+  defaultDeliveryTerms: settings.defaultDeliveryTerms,
   defaultTermsAndConditions: settings.defaultTermsAndConditions,
+  poNumberPrefix: settings.poNumberPrefix || 'PO-DS',
+  poNumberFormat: settings.poNumberFormat || 'simple',
+  nextPoNumber: settings.nextPoNumber || 1,
   bankName: settings.bankName,
   bankAccountName: settings.bankAccountName,
   bankAccountNumber: settings.bankAccountNumber,
   bankIfsc: settings.bankIfsc,
   bankBranch: settings.bankBranch,
+  isDefault: settings.isDefault,
   isActive: true,
   updatedAt: settings.updatedAt,
+});
+
+const entityMatchesDatasensor = (entity: BillingEntity) =>
+  /data\s*sensor/i.test(`${entity.displayName} ${entity.legalName}`);
+
+export const getDefaultBillingEntity = (
+  entities: BillingEntity[],
+): BillingEntity | undefined =>
+  entities.find((entity) => entity.isDefault) ||
+  entities.find(entityMatchesDatasensor) ||
+  entities.find((entity) => entity.id === 'company') ||
+  entities[0];
+
+const sortBillingEntities = (entities: BillingEntity[]) => {
+  const defaultEntity = getDefaultBillingEntity(entities);
+  return [...entities].sort((left, right) => {
+    if (left.id === defaultEntity?.id) return -1;
+    if (right.id === defaultEntity?.id) return 1;
+    return left.displayName.localeCompare(right.displayName);
+  });
+};
+
+export const billingEntityToCompanySettings = (
+  entity: BillingEntity,
+): CompanySettings => ({
+  id: entity.id,
+  companyName: entity.legalName,
+  companyAddress: entity.companyAddress,
+  gstin: entity.gstin,
+  stateCode: entity.stateCode,
+  stateName: entity.stateName,
+  pan: entity.pan,
+  phone: entity.phone,
+  email: entity.email,
+  website: entity.website,
+  poNumberPrefix: entity.poNumberPrefix || 'PO',
+  poNumberFormat: entity.poNumberFormat || 'simple',
+  nextPoNumber: entity.nextPoNumber || 1,
+  defaultPaymentTerms: entity.defaultPaymentTerms,
+  defaultDeliveryTerms: entity.defaultDeliveryTerms,
+  defaultTermsAndConditions: entity.defaultTermsAndConditions,
+  quotationPrefix: entity.quotationPrefix,
+  nextQuotationNumber: entity.nextQuotationNumber,
+  defaultValidityDays: entity.defaultValidityDays,
+  bankName: entity.bankName,
+  bankAccountName: entity.bankAccountName,
+  bankAccountNumber: entity.bankAccountNumber,
+  bankIfsc: entity.bankIfsc,
+  bankBranch: entity.bankBranch,
+  isDefault: entity.isDefault,
+  logo: entity.logo,
+  logoPath: entity.logoPath,
+  updatedAt: entity.updatedAt || new Date(),
 });
 
 export const subscribeToBillingEntities = (
@@ -858,7 +923,9 @@ export const subscribeToBillingEntities = (
   let entities: BillingEntity[] = [];
   const emit = () => {
     const legacy = company ? [companyAsBillingEntity(company)] : [];
-    callback([...legacy, ...entities].filter((entity) => entity.isActive !== false));
+    callback(sortBillingEntities(
+      [...legacy, ...entities].filter((entity) => entity.isActive !== false),
+    ));
   };
   const unsubscribeCompany = subscribeToCompanySettings((settings) => {
     company = settings;
@@ -887,6 +954,64 @@ export const addBillingEntity = async (
   return entityRef.id;
 };
 
+export const getBillingEntities = async (): Promise<BillingEntity[]> => {
+  const [company, snapshot] = await Promise.all([
+    getCompanySettings(),
+    getDocs(billingEntitiesCol),
+  ]);
+  const entities = snapshot.docs.map((entityDoc) => ({
+    id: entityDoc.id,
+    ...entityDoc.data(),
+  } as BillingEntity));
+  return sortBillingEntities([
+    ...(company ? [companyAsBillingEntity(company)] : []),
+    ...entities,
+  ].filter((entity) => entity.isActive !== false));
+};
+
+export const getBillingEntity = async (
+  entityId?: string,
+): Promise<BillingEntity | null> => {
+  if (entityId === 'company') {
+    const company = await getCompanySettings();
+    return company ? companyAsBillingEntity(company) : null;
+  }
+  if (entityId) {
+    const entitySnapshot = await getDoc(doc(billingEntitiesCol, entityId));
+    return entitySnapshot.exists()
+      ? ({ id: entitySnapshot.id, ...entitySnapshot.data() } as BillingEntity)
+      : null;
+  }
+  return getDefaultBillingEntity(await getBillingEntities()) || null;
+};
+
+export const setDefaultBillingEntity = async (entityId: string) => {
+  const snapshot = await getDocs(billingEntitiesCol);
+  await Promise.all([
+    updateCompanySettings({ isDefault: entityId === 'company' }),
+    ...snapshot.docs.map((entityDoc) =>
+      updateDoc(entityDoc.ref, {
+        isDefault: entityDoc.id === entityId,
+        updatedAt: new Date(),
+      }),
+    ),
+  ]);
+};
+
+export const incrementBillingEntityPONumber = async (
+  entityId: string,
+  nextPoNumber: number,
+) => {
+  if (entityId === 'company') {
+    await updateCompanySettings({ nextPoNumber });
+    return;
+  }
+  await updateDoc(doc(billingEntitiesCol, entityId), {
+    nextPoNumber,
+    updatedAt: new Date(),
+  });
+};
+
 export const updateBillingEntity = async (
   entityId: string,
   updates: Partial<Omit<BillingEntity, 'id' | 'updatedAt'>>,
@@ -905,7 +1030,11 @@ export const updateBillingEntity = async (
       logo: updates.logo,
       logoPath: updates.logoPath,
       defaultPaymentTerms: updates.defaultPaymentTerms,
+      defaultDeliveryTerms: updates.defaultDeliveryTerms,
       defaultTermsAndConditions: updates.defaultTermsAndConditions,
+      poNumberPrefix: updates.poNumberPrefix,
+      poNumberFormat: updates.poNumberFormat,
+      nextPoNumber: updates.nextPoNumber,
       quotationPrefix: updates.quotationPrefix,
       nextQuotationNumber: updates.nextQuotationNumber,
       defaultValidityDays: updates.defaultValidityDays,
@@ -914,6 +1043,7 @@ export const updateBillingEntity = async (
       bankAccountNumber: updates.bankAccountNumber,
       bankIfsc: updates.bankIfsc,
       bankBranch: updates.bankBranch,
+      isDefault: updates.isDefault,
     });
     return;
   }
@@ -927,8 +1057,6 @@ export const deleteBillingEntity = async (entityId: string) => {
   if (entityId === 'company') throw new Error('The primary company entity cannot be deleted.');
   await deleteDoc(doc(billingEntitiesCol, entityId));
 };
-
-const companySettingsRef = doc(db, "settings", "company");
 
 export const getCompanySettings = async (): Promise<CompanySettings | null> => {
   try {

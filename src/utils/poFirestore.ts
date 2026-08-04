@@ -28,7 +28,11 @@ import {
   determineTaxType,
   numberToWords,
 } from "@/types/purchaseOrder";
-import { getCompanySettings, updateCompanySettings } from "./settingsFirestore";
+import {
+  billingEntityToCompanySettings,
+  getBillingEntity,
+  incrementBillingEntityPONumber,
+} from "./settingsFirestore";
 
 // Re-export types for convenience
 export type { PurchaseOrder, POStatus, POItem, POWarning, TaxType };
@@ -100,6 +104,7 @@ const getPOCollectionRef = (projectId: string) => {
 export interface CreatePOInput {
   projectId: string;
   projectReference: string;
+  billingEntityId: string;
 
   // Vendor info
   vendorId: string;
@@ -139,11 +144,14 @@ export interface CreatePOInput {
 }
 
 export const createPurchaseOrder = async (input: CreatePOInput): Promise<string> => {
-  // Get company settings for invoice details and PO numbering
-  const companySettings = await getCompanySettings();
+  // Resolve the entity issuing this PO and snapshot its legal details on the PO.
+  const billingEntity = await getBillingEntity(input.billingEntityId);
+  const companySettings = billingEntity
+    ? billingEntityToCompanySettings(billingEntity)
+    : null;
 
   if (!companySettings) {
-    throw new Error("Company settings not configured. Please set up company details in Settings.");
+    throw new Error("Billing entity not configured. Please complete it in Settings.");
   }
 
   // Validate company settings
@@ -175,6 +183,7 @@ export const createPurchaseOrder = async (input: CreatePOInput): Promise<string>
   const now = new Date();
   const po: Omit<PurchaseOrder, 'id'> = {
     projectId: input.projectId,
+    billingEntityId: input.billingEntityId,
     poNumber,
 
     // Vendor
@@ -258,10 +267,11 @@ export const createPurchaseOrder = async (input: CreatePOInput): Promise<string>
   const collectionRef = getPOCollectionRef(input.projectId);
   const docRef = await addDoc(collectionRef, firestorePO);
 
-  // Increment PO number in company settings
-  await updateCompanySettings({
-    nextPoNumber: companySettings.nextPoNumber + 1,
-  });
+  // Keep independent PO sequences for each legal entity.
+  await incrementBillingEntityPONumber(
+    input.billingEntityId,
+    companySettings.nextPoNumber + 1,
+  );
 
   return docRef.id;
 };

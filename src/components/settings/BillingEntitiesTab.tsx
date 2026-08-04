@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Building2, Edit, Image as ImageIcon, Loader2, Plus, Trash2 } from 'lucide-react';
+import { Building2, Edit, Image as ImageIcon, Loader2, Plus, Star, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,11 +14,14 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { uploadCompanyLogo } from '@/utils/imageUpload';
 import {
   addBillingEntity,
   deleteBillingEntity,
+  getDefaultBillingEntity,
+  setDefaultBillingEntity,
   subscribeToBillingEntities,
   updateBillingEntity,
   type BillingEntity,
@@ -41,12 +44,17 @@ const emptyEntity = (): Omit<BillingEntity, 'id' | 'updatedAt'> => ({
   nextQuotationNumber: 1,
   defaultValidityDays: 30,
   defaultPaymentTerms: '100% payable against invoice',
+  defaultDeliveryTerms: '',
   defaultTermsAndConditions: '',
+  poNumberPrefix: 'PO-DS',
+  poNumberFormat: 'simple',
+  nextPoNumber: 1,
   bankName: '',
   bankAccountName: '',
   bankAccountNumber: '',
   bankIfsc: '',
   bankBranch: '',
+  isDefault: false,
   isActive: true,
 });
 
@@ -58,6 +66,7 @@ export default function BillingEntitiesTab() {
   const [form, setForm] = useState(emptyEntity());
   const [saving, setSaving] = useState(false);
   const [logoFile, setLogoFile] = useState<File | null>(null);
+  const defaultEntity = getDefaultBillingEntity(entities);
 
   useEffect(() => subscribeToBillingEntities(setEntities), []);
 
@@ -130,6 +139,19 @@ export default function BillingEntitiesTab() {
     }
   };
 
+  const handleSetDefault = async (entity: BillingEntity) => {
+    try {
+      await setDefaultBillingEntity(entity.id);
+      toast({ title: `${entity.displayName} is now the default billing entity` });
+    } catch (error) {
+      toast({
+        title: 'Could not change the default billing entity',
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'destructive',
+      });
+    }
+  };
+
   return (
     <div className="space-y-5">
       <Card>
@@ -137,7 +159,7 @@ export default function BillingEntitiesTab() {
           <div>
             <CardTitle>Billing entities</CardTitle>
             <CardDescription>
-              Legal entities that can issue customer support quotations. The existing Company record is included automatically.
+              One source of truth for legal details, logos, quotations and purchase orders. Datasensor is the default unless you choose another entity.
             </CardDescription>
           </div>
           <Button onClick={startAdd}><Plus className="mr-2 h-4 w-4" />Add entity</Button>
@@ -157,9 +179,10 @@ export default function BillingEntitiesTab() {
                       <div className="mt-1 text-xs text-muted-foreground">GSTIN {entity.gstin || 'not configured'} · Quote prefix {entity.quotationPrefix}</div>
                     </div>
                   </div>
-                  {entity.id === 'company' && <Badge variant="secondary">Existing company</Badge>}
+                  {entity.id === defaultEntity?.id && <Badge><Star className="mr-1 h-3 w-3" />Default</Badge>}
                 </div>
                 <div className="mt-4 flex justify-end gap-2">
+                  {entity.id !== defaultEntity?.id && <Button size="sm" variant="ghost" onClick={() => handleSetDefault(entity)}><Star className="mr-2 h-3.5 w-3.5" />Set default</Button>}
                   <Button size="sm" variant="outline" onClick={() => startEdit(entity)}><Edit className="mr-2 h-3.5 w-3.5" />Edit</Button>
                   {entity.id !== 'company' && <Button size="sm" variant="ghost" className="text-red-600" onClick={() => handleDelete(entity)}><Trash2 className="h-3.5 w-3.5" /></Button>}
                 </div>
@@ -173,7 +196,7 @@ export default function BillingEntitiesTab() {
         <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingId ? 'Edit billing entity' : 'Add billing entity'}</DialogTitle>
-            <DialogDescription>These details and logo appear on generated support quotations.</DialogDescription>
+            <DialogDescription>These details and logo are used on documents issued by this legal entity.</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2">
             <div className="grid gap-4 md:grid-cols-2">
@@ -201,6 +224,24 @@ export default function BillingEntitiesTab() {
               </div>
               <div className="mt-4 grid gap-2"><Label>Default payment terms</Label><Textarea value={form.defaultPaymentTerms || ''} onChange={(event) => setField('defaultPaymentTerms', event.target.value)} /></div>
               <div className="mt-4 grid gap-2"><Label>Terms and conditions</Label><Textarea value={form.defaultTermsAndConditions || ''} onChange={(event) => setField('defaultTermsAndConditions', event.target.value)} /></div>
+            </div>
+            <div className="rounded-lg border p-4">
+              <div className="mb-3 font-medium">Purchase order defaults</div>
+              <div className="grid gap-4 md:grid-cols-3">
+                <Field label="PO number prefix" value={form.poNumberPrefix} onChange={(value) => setField('poNumberPrefix', value.toUpperCase())} />
+                <div className="grid gap-2">
+                  <Label>PO number format</Label>
+                  <Select value={form.poNumberFormat} onValueChange={(value: 'simple' | 'financial-year') => setField('poNumberFormat', value)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="simple">Calendar year</SelectItem>
+                      <SelectItem value="financial-year">Financial year</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Field label="Next PO number" value={String(form.nextPoNumber)} onChange={(value) => setField('nextPoNumber', Number(value) || 1)} type="number" />
+              </div>
+              <div className="mt-4 grid gap-2"><Label>Default delivery terms</Label><Textarea value={form.defaultDeliveryTerms || ''} onChange={(event) => setField('defaultDeliveryTerms', event.target.value)} /></div>
             </div>
             <div className="rounded-lg border p-4">
               <div className="mb-3 font-medium">Bank details</div>

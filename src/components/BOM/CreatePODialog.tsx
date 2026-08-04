@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   Dialog,
   DialogContent,
@@ -45,7 +46,13 @@ import {
 } from '@/components/ui/command';
 import { Separator } from '@/components/ui/separator';
 import { BOMCategory, BOMItem } from '@/types/bom';
-import { Vendor, getCompanySettings, CompanySettings } from '@/utils/settingsFirestore';
+import {
+  billingEntityToCompanySettings,
+  getDefaultBillingEntity,
+  subscribeToBillingEntities,
+  type BillingEntity,
+  type Vendor,
+} from '@/utils/settingsFirestore';
 import {
   POItem,
   calculatePOTotals,
@@ -64,6 +71,7 @@ interface CreatePODialogProps {
   onOpenChange: (open: boolean) => void;
   projectId: string;
   projectName: string;
+  projectBillingEntityId?: string;
   categories: BOMCategory[];
   vendors: Vendor[];
 }
@@ -220,6 +228,7 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
   onOpenChange,
   projectId,
   projectName,
+  projectBillingEntityId,
   categories,
   vendors,
 }) => {
@@ -238,49 +247,44 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
   const [useCustomShipTo, setUseCustomShipTo] = useState(false);
   const [shipToAddress, setShipToAddress] = useState('');
 
-  const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
+  const [billingEntities, setBillingEntities] = useState<BillingEntity[]>([]);
+  const [billingEntityId, setBillingEntityId] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Load company settings
+  const selectedBillingEntity = billingEntities.find((entity) => entity.id === billingEntityId);
+  const companySettings = selectedBillingEntity
+    ? billingEntityToCompanySettings(selectedBillingEntity)
+    : null;
+
+  // Load the legal entities that can issue this purchase order.
   useEffect(() => {
-    const loadSettings = async () => {
-      if (!open) return;
-
-      setLoadingSettings(true);
-      try {
-        const settings = await getCompanySettings();
-        setCompanySettings(settings);
-
-        if (!settings) {
-          setError('Company settings not configured. Please set up company details in Settings.');
-        } else if (!settings.gstin || !settings.stateCode) {
-          setError('Company GSTIN and State Code must be configured in Settings.');
-        } else {
-          setError(null);
+    if (!open) return;
+    setLoadingSettings(true);
+    return subscribeToBillingEntities((entities) => {
+      setBillingEntities(entities);
+      setBillingEntityId(() => {
+        if (projectBillingEntityId && entities.some((entity) => entity.id === projectBillingEntityId)) {
+          return projectBillingEntityId;
         }
+        return getDefaultBillingEntity(entities)?.id || '';
+      });
+      setLoadingSettings(false);
+    });
+  }, [open, projectBillingEntityId]);
 
-        // Set default terms from company settings
-        if (settings?.defaultPaymentTerms) {
-          setPaymentTerms(settings.defaultPaymentTerms);
-        }
-        if (settings?.defaultDeliveryTerms) {
-          setDeliveryTerms(settings.defaultDeliveryTerms);
-        }
-        if (settings?.defaultTermsAndConditions) {
-          setTermsAndConditions(settings.defaultTermsAndConditions);
-        }
-      } catch (err) {
-        console.error('Error loading company settings:', err);
-        setError('Failed to load company settings');
-      } finally {
-        setLoadingSettings(false);
-      }
-    };
-
-    loadSettings();
-  }, [open]);
+  useEffect(() => {
+    if (!open || !selectedBillingEntity) return;
+    if (!selectedBillingEntity.gstin || !selectedBillingEntity.stateCode) {
+      setError('GSTIN and State Code must be configured for the selected billing entity.');
+    } else {
+      setError(null);
+    }
+    setPaymentTerms(selectedBillingEntity.defaultPaymentTerms || '');
+    setDeliveryTerms(selectedBillingEntity.defaultDeliveryTerms || '');
+    setTermsAndConditions(selectedBillingEntity.defaultTermsAndConditions || DEFAULT_TERMS_AND_CONDITIONS);
+  }, [open, selectedBillingEntity?.id]);
 
   // Get vendors that have at least one BOM item assigned
   const vendorsWithItems = useMemo(() => {
@@ -447,6 +451,7 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
       const input: CreatePOInput = {
         projectId,
         projectReference: projectName,
+        billingEntityId,
 
         vendorId: selectedVendor.id,
         vendorName: selectedVendor.company,
@@ -541,16 +546,37 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
           </div>
-        ) : !companySettings || !companySettings.gstin ? (
+        ) : !companySettings ? (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertDescription>
-              Company settings not configured. Please set up company details (GSTIN, Address, State)
-              in Settings → Company before creating POs.
+              No billing entity is available. Add one in Settings &gt; Billing Entities before creating POs.
             </AlertDescription>
           </Alert>
         ) : (
           <div className="flex-1 overflow-y-auto space-y-4">
+            <Card>
+              <CardHeader className="py-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Building2 className="h-4 w-4" />
+                  Issuing billing entity
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Defaults to the entity assigned to this project. You can override it for this PO.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <Select value={billingEntityId} onValueChange={setBillingEntityId}>
+                  <SelectTrigger><SelectValue placeholder="Select billing entity" /></SelectTrigger>
+                  <SelectContent>
+                    {billingEntities.map((entity) => (
+                      <SelectItem key={entity.id} value={entity.id}>{entity.displayName}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </CardContent>
+            </Card>
+
             {/* Vendor Selection */}
             <Card>
               <CardHeader className="py-3">
@@ -982,7 +1008,8 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
               selectedCount === 0 ||
               !paymentTerms.trim() ||
               !deliveryTerms.trim() ||
-              !companySettings?.gstin
+              !companySettings?.gstin ||
+              !companySettings?.stateCode
             }
           >
             {loading ? (

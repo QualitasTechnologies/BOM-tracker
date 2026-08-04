@@ -10,7 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { deleteField, doc, updateDoc } from "firebase/firestore";
 import { db } from "@/firebase";
 import { subscribeToProjects, getBOMData, updateProject } from "@/utils/projectFirestore";
-import { subscribeToClients, Client, subscribeToBillingEntities, type BillingEntity } from "@/utils/settingsFirestore";
+import { subscribeToClients, Client, subscribeToBillingEntities, getDefaultBillingEntity, type BillingEntity } from "@/utils/settingsFirestore";
 import { getProjectDocuments } from "@/utils/projectDocumentFirestore";
 import { listPulseProjects, type PulseProjectOption } from "@/utils/pulseProxyFirestore";
 import type { EditableProjectInput, FirestoreProject } from "@/types/project";
@@ -86,8 +86,8 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
     setStatus(project.status);
     setDeadline(project.deadline);
     setPulseProjectId(project.pulseProjectId);
-    setBillingEntityId(project.billingEntityId || 'company');
-  }, [project, open]);
+    setBillingEntityId(project.billingEntityId || getDefaultBillingEntity(billingEntities)?.id || 'company');
+  }, [project, open, billingEntities]);
 
   // Set clientName after clients are loaded to ensure exact match
   useEffect(() => {

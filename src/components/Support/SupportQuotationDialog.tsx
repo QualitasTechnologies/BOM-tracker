@@ -24,7 +24,7 @@ import type { SupportQuotation, SupportQuotationLine, SupportTicket } from '@/ty
 import { updateProject, type Project } from '@/utils/projectFirestore';
 import { prepareSupportQuotation } from '@/utils/supportFirestore';
 import { calculateQuotationTotals, createQuotationLine } from '@/utils/supportQuotation';
-import { subscribeToBillingEntities, type BillingEntity, type Client } from '@/utils/settingsFirestore';
+import { getDefaultBillingEntity, subscribeToBillingEntities, type BillingEntity, type Client } from '@/utils/settingsFirestore';
 
 interface Props {
   open: boolean;
@@ -56,7 +56,7 @@ export function SupportQuotationDialog({ open, onOpenChange, project, ticket, cl
   useEffect(() => {
     if (!open) return;
     const quote = ticket.quotation;
-    setBillingEntityId(project.billingEntityId || quote?.billingEntityId || entities[0]?.id || 'company');
+    setBillingEntityId(project.billingEntityId || quote?.billingEntityId || getDefaultBillingEntity(entities)?.id || 'company');
     setLines(quote?.lines?.length ? quote.lines : [createQuotationLine('engineering')]);
     setTaxType(quote?.taxType || 'igst');
     setTaxPercent(quote?.taxPercent ?? 18);

@@ -10,7 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { FileText } from "lucide-react";
 import { subscribeToProjects } from "@/utils/projectFirestore";
-import { subscribeToClients, Client, subscribeToTemplates, subscribeToBillingEntities, type BillingEntity } from "@/utils/settingsFirestore";
+import { subscribeToClients, Client, subscribeToTemplates, subscribeToBillingEntities, getDefaultBillingEntity, type BillingEntity } from "@/utils/settingsFirestore";
 import type { FirestoreProject, NewProjectFormData } from "@/types/project";
 import type { BOMTemplate } from "@/types/bom";
 import { useAuth } from "@/hooks/useAuth";
@@ -69,7 +69,7 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
     const unsubscribeClients = subscribeToClients(setClients);
     const unsubscribeBillingEntities = subscribeToBillingEntities((entities) => {
       setBillingEntities(entities);
-      setBillingEntityId((current) => current || entities[0]?.id || '');
+      setBillingEntityId((current) => current || getDefaultBillingEntity(entities)?.id || '');
     });
     const unsubscribeTemplates = subscribeToTemplates((fetchedTemplates) => {
       setTemplates(fetchedTemplates);

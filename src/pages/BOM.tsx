@@ -1484,6 +1484,7 @@ const BOM = () => {
           onOpenChange={setPODialogOpen}
           projectId={projectId!}
           projectName={projectDetails.projectName}
+          projectBillingEntityId={projectDetails.billingEntityId}
           categories={categories}
           vendors={vendors}
         />

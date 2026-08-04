@@ -54,7 +54,7 @@ import {
   sendPOEmail,
   PurchaseOrder
 } from '@/utils/poFirestore';
-import { getCompanySettings } from '@/utils/settingsFirestore';
+import { billingEntityToCompanySettings, getBillingEntity } from '@/utils/settingsFirestore';
 import { getProject, getNotificationRecipients, NotificationRecipient } from '@/utils/projectFirestore';
 import { auth } from '@/firebase';
 import { useAuth } from '@/hooks/useAuth';
@@ -109,6 +109,12 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
   const [poToEdit, setPOToEdit] = useState<PurchaseOrder | null>(null);
   const { toast } = useToast();
   const { isAdmin } = useAuth();
+
+  const resolvePOCompanySettings = async (po: PurchaseOrder) => {
+    const project = po.billingEntityId ? null : await getProject(projectId);
+    const entity = await getBillingEntity(po.billingEntityId || project?.billingEntityId);
+    return entity ? billingEntityToCompanySettings(entity) : null;
+  };
 
   const handleEditClick = (po: PurchaseOrder) => {
     setPOToEdit(po);
@@ -301,9 +307,9 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
   const handleGeneratePDF = async (po: PurchaseOrder) => {
     setGeneratingPDF(po.id);
     try {
-      const companySettings = await getCompanySettings();
+      const companySettings = await resolvePOCompanySettings(po);
       if (!companySettings) {
-        throw new Error('Company settings not configured');
+        throw new Error('Billing entity not configured');
       }
 
       const result = await generatePOPDF({
@@ -348,9 +354,9 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
 
     setSendingEmail(true);
     try {
-      const companySettings = await getCompanySettings();
+      const companySettings = await resolvePOCompanySettings(poToSend);
       if (!companySettings) {
-        throw new Error('Company settings not configured');
+        throw new Error('Billing entity not configured');
       }
 
       const user = auth.currentUser;

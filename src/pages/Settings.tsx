@@ -87,7 +87,6 @@ import { useAuth } from '@/hooks/useAuth';
 import { toast } from '@/components/ui/use-toast';
 import BrandsTab from '@/components/settings/BrandsTab';
 import BOMTemplatesTab from '@/components/settings/BOMTemplatesTab';
-import CompanySettingsTab from '@/components/settings/CompanySettingsTab';
 import BillingEntitiesTab from '@/components/settings/BillingEntitiesTab';
 import { Brand } from '@/types/brand';
 import {
@@ -1293,11 +1292,7 @@ const Settings = () => {
         )}
 
         <Tabs defaultValue="clients" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-9">
-            <TabsTrigger value="company" className="flex items-center gap-2">
-              <Building size={16} />
-              Company
-            </TabsTrigger>
+          <TabsList className="grid w-full grid-cols-8">
             <TabsTrigger value="billing-entities" className="flex items-center gap-2">
               <Landmark size={16} />
               Billing Entities
@@ -1336,11 +1331,6 @@ const Settings = () => {
               General
             </TabsTrigger>
           </TabsList>
-
-          {/* Company Tab */}
-          <TabsContent value="company">
-            <CompanySettingsTab />
-          </TabsContent>
 
           <TabsContent value="billing-entities">
             <BillingEntitiesTab />
