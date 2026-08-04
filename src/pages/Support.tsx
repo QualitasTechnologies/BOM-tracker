@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
   CalendarClock,
@@ -59,6 +59,7 @@ import {
   determineCoverage,
   isOverdue,
   isTicketOpen,
+  getInstalledMachines,
 } from '@/utils/supportLogic';
 import { subscribeToProjects, type Project } from '@/utils/projectFirestore';
 import { subscribeToClients, type Client } from '@/utils/settingsFirestore';
@@ -87,6 +88,7 @@ export default function Support() {
   const [statusFilter, setStatusFilter] = useState<'all' | SupportTicketStatus>('all');
   const [priorityFilter, setPriorityFilter] = useState<'all' | SupportPriority>('all');
   const [coverageFilter, setCoverageFilter] = useState<'all' | CoverageType>('all');
+  const [activeTab, setActiveTab] = useState('tickets');
 
   useEffect(
     () =>
@@ -107,6 +109,25 @@ export default function Support() {
     [projects],
   );
 
+  const installedAssets = useMemo(
+    () => serviceProjects.flatMap((project) => {
+      const machines = getInstalledMachines(project.supportProfile);
+      return machines.length
+        ? machines.map((machine) => ({ project, machine }))
+        : [{ project, machine: undefined }];
+    }),
+    [serviceProjects],
+  );
+
+  useEffect(() => {
+    const projectFilter = searchParams.get('project');
+    const machineFilter = searchParams.get('machine');
+    if (projectFilter) {
+      setSearch(machineFilter || projectFilter);
+      setActiveTab('tickets');
+    }
+  }, [searchParams]);
+
   useEffect(() => {
     const projectIds = serviceProjects.map((project) => project.projectId);
     const unsubscribe = subscribeToSupportTickets(projectIds, setTickets);
@@ -126,6 +147,8 @@ export default function Support() {
           ticket.projectId,
           ticket.clientName,
           ticket.reportedByName,
+          ticket.machineName,
+          ticket.machineSerialNumber,
         ].some((value) => value?.toLowerCase().includes(needle));
       return (
         matchesSearch &&
@@ -217,7 +240,7 @@ export default function Support() {
         <MetricCard icon={CheckCircle2} label="Resolved this month" value={metrics.resolvedThisMonth} />
       </div>
 
-      <Tabs defaultValue="tickets" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>
           <TabsTrigger value="tickets">Ticket queue</TabsTrigger>
           <TabsTrigger value="installations">Installed machines</TabsTrigger>
@@ -343,16 +366,20 @@ export default function Support() {
             </CardHeader>
             <CardContent>
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {serviceProjects.map((project) => {
-                  const coverage = determineCoverage(project.supportProfile);
-                  const ticketCount = tickets.filter((ticket) => ticket.projectId === project.projectId).length;
+                {installedAssets.map(({ project, machine }) => {
+                  const coverage = determineCoverage(project.supportProfile, new Date(), machine);
+                  const ticketCount = tickets.filter((ticket) =>
+                    ticket.projectId === project.projectId &&
+                    (!machine || ticket.machineId === machine.id || (!ticket.machineId && machine.id === 'legacy-primary-machine'))
+                  ).length;
                   return (
-                    <Card key={project.projectId} className="shadow-none">
+                    <Card key={`${project.projectId}-${machine?.id || 'unconfigured'}`} className="shadow-none">
                       <CardContent className="space-y-4 p-5">
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <h3 className="font-semibold">{project.projectName}</h3>
-                            <p className="text-sm text-muted-foreground">{project.clientName} · {project.projectId}</p>
+                            <h3 className="font-semibold">{machine?.name || project.projectName}</h3>
+                            <p className="text-sm text-muted-foreground">{project.projectName} · {project.clientName}</p>
+                            <p className="mt-1 font-mono text-xs text-muted-foreground">{machine ? `S/N ${machine.serialNumber}` : 'Machine not configured'}</p>
                           </div>
                           <CoverageBadge coverage={coverage} />
                         </div>
@@ -368,18 +395,22 @@ export default function Support() {
                         </div>
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
                           <ShieldCheck className="h-4 w-4" />
-                          {coverageExpiryLabel(project.supportProfile)}
+                          {coverageExpiryLabel(project.supportProfile, new Date(), machine)}
                         </div>
                         <div className="flex gap-2">
                           <Button variant="outline" className="flex-1" onClick={() => openProject(project)}>
                             <Settings2 className="mr-2 h-4 w-4" />
                             Coverage & docs
                           </Button>
-                          <Button asChild variant="secondary">
-                            <Link to={`/support?project=${encodeURIComponent(project.projectId)}`}>
-                              View tickets
-                            </Link>
-                          </Button>
+                          <Button
+                            variant="secondary"
+                            onClick={() => {
+                              const filter = machine?.serialNumber || machine?.name || project.projectId;
+                              setSearch(filter);
+                              setActiveTab('tickets');
+                              navigate(`/support?project=${encodeURIComponent(project.projectId)}${machine ? `&machine=${encodeURIComponent(filter)}` : ''}`);
+                            }}
+                          >View tickets</Button>
                         </div>
                       </CardContent>
                     </Card>

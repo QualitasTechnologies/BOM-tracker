@@ -10,7 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { deleteField, doc, updateDoc } from "firebase/firestore";
 import { db } from "@/firebase";
 import { subscribeToProjects, getBOMData, updateProject } from "@/utils/projectFirestore";
-import { subscribeToClients, Client } from "@/utils/settingsFirestore";
+import { subscribeToClients, Client, subscribeToBillingEntities, type BillingEntity } from "@/utils/settingsFirestore";
 import { getProjectDocuments } from "@/utils/projectDocumentFirestore";
 import { listPulseProjects, type PulseProjectOption } from "@/utils/pulseProxyFirestore";
 import type { EditableProjectInput, FirestoreProject } from "@/types/project";
@@ -28,11 +28,13 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState("");
   const [clientName, setClientName] = useState("");
+  const [billingEntityId, setBillingEntityId] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<FirestoreProject["status"]>("Ongoing");
   const [deadline, setDeadline] = useState("");
   const [error, setError] = useState("");
   const [clients, setClients] = useState<Client[]>([]);
+  const [billingEntities, setBillingEntities] = useState<BillingEntity[]>([]);
   const [pulseOptions, setPulseOptions] = useState<PulseProjectOption[]>([]);
   const [pulseFilter, setPulseFilter] = useState('');
   const [pulseProjectId, setPulseProjectId] = useState<number | undefined>(undefined);
@@ -41,7 +43,11 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
   useEffect(() => {
     if (!open) return;
     const unsubscribeClients = subscribeToClients(setClients);
-    return () => unsubscribeClients();
+    const unsubscribeBillingEntities = subscribeToBillingEntities(setBillingEntities);
+    return () => {
+      unsubscribeClients();
+      unsubscribeBillingEntities();
+    };
   }, [open]);
 
   // Load Pulse projects once when dialog opens
@@ -60,6 +66,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
       setProjectId("");
       setProjectName("");
       setClientName("");
+      setBillingEntityId("");
       setDescription("");
       setStatus("Ongoing");
       setDeadline("");
@@ -79,6 +86,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
     setStatus(project.status);
     setDeadline(project.deadline);
     setPulseProjectId(project.pulseProjectId);
+    setBillingEntityId(project.billingEntityId || 'company');
   }, [project, open]);
 
   // Set clientName after clients are loaded to ensure exact match
@@ -155,6 +163,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
             projectName,
             clientName,
             clientId: clients.find((clientItem) => clientItem.company === clientName)?.id,
+            billingEntityId: billingEntityId || undefined,
             description,
             status,
             deadline,
@@ -167,6 +176,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
             projectName,
             clientName,
             clientId: clients.find((clientItem) => clientItem.company === clientName)?.id,
+            billingEntityId: billingEntityId || undefined,
             description,
             status,
             deadline,
@@ -255,6 +265,18 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
             {selectableClients.length === 0 && (
               <p className="text-xs text-muted-foreground">No clients available. Add clients in Settings first.</p>
             )}
+          </div>
+          <div className="space-y-1">
+            <Label>Billing entity</Label>
+            <Select value={billingEntityId} onValueChange={setBillingEntityId}>
+              <SelectTrigger className="h-8"><SelectValue placeholder="Select billing entity" /></SelectTrigger>
+              <SelectContent>
+                {billingEntities.map((entity) => (
+                  <SelectItem key={entity.id} value={entity.id}>{entity.displayName}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">This entity issues support quotations for the project.</p>
           </div>
           <div className="space-y-1">
             <Label htmlFor="description">Description</Label>

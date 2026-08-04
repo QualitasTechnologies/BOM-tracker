@@ -4,6 +4,7 @@ import {
   calculateSupportTargets,
   defaultCommercialStatus,
   determineCoverage,
+  getInstalledMachines,
   getTransitionBlocker,
 } from '../supportLogic';
 
@@ -27,6 +28,19 @@ describe('support coverage', () => {
     expect(defaultCommercialStatus('amc')).toBe('not-required');
     expect(defaultCommercialStatus('chargeable')).toBe('quotation-required');
     expect(defaultCommercialStatus('undetermined')).toBe('assessment-required');
+  });
+
+  it('uses machine-specific coverage and adapts legacy machine fields', () => {
+    const machine = {
+      id: 'line-1',
+      name: 'Line 1',
+      serialNumber: 'BVS4-001',
+      warrantyStartDate: '2026-01-01',
+      warrantyEndDate: '2026-06-30',
+    };
+    expect(determineCoverage(profile, new Date('2026-07-01'), machine)).toBe('chargeable');
+    expect(getInstalledMachines({ machineModel: 'Legacy system', machineSerialNumber: 'LEG-1' }))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ serialNumber: 'LEG-1' })]));
   });
 });
 
@@ -64,4 +78,3 @@ describe('support workflow', () => {
     expect(getTransitionBlocker(documented, 'closed')).toMatch(/customer confirmation/i);
   });
 });
-

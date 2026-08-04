@@ -12,7 +12,7 @@ The module is deliberately a light SOP. It imposes a small number of gates that 
 - Manual ticket intake from email, phone, WhatsApp, site observations, or internal reports.
 - Installed-machine profile with commissioning, warranty, AMC, location, serial number, and customer contact.
 - Project support document pack: manuals, drawings, software/configuration backups, acceptance documents, AMC contracts, and photos.
-- Ticket evidence: diagnostic logs, photos, quotation, acceptance/PO, RCA report, and solution report.
+- Ticket evidence: diagnostic logs, photos, generated quotation, acceptance/PO, RCA report, and solution report.
 - Priority-based first-response and resolution targets.
 - Assignment to a project member and a complete activity history.
 - Warranty/AMC/chargeable/goodwill assessment.
@@ -20,7 +20,7 @@ The module is deliberately a light SOP. It imposes a small number of gates that 
 - RCA, corrective action, preventive action, solution summary, and customer confirmation.
 - Customer email for acknowledgement, quotation, and resolution.
 
-Customer login, email-to-ticket automation, a public support form, inventory/spares consumption, field-service expense billing, and generated quotation PDFs are intentionally left for later phases.
+Customer login, email-to-ticket automation, a public support form, and inventory/spares consumption are intentionally left for later phases.
 
 ## Ticket lifecycle
 
@@ -76,14 +76,19 @@ Before a commissioned project is considered support-ready, the recommended minim
 - Machine and installed-site identifiers
 - Warranty or AMC dates
 - Primary customer support contact
+- One or more installed machines/lines, each with its own name, serial/asset number, site, commissioning date and coverage dates
+- Project billing entity (for example Datasensor or Qualitas)
 
 ## Data placement
 
 - Canonical customer contacts: `clients/{clientId}.contacts[]`
 - Project support profile: `projects/{projectId}.supportProfile`
+- Installed machines: `projects/{projectId}.supportProfile.machines[]`
 - Tickets: `projects/{projectId}/supportTickets/{ticketId}`
 - Ticket activity: `projects/{projectId}/supportTickets/{ticketId}/activities/{activityId}`
 - Project/ticket support documents: `projects/{projectId}/supportDocuments/{documentId}`
+- Support quotations: `projects/{projectId}/supportQuotations/{quotationId}`
+- Billing entities: `billingEntities/{billingEntityId}` plus the existing `settings/company` entity
 - Files: `projects/{projectId}/support/{ticket-or-project-scope}/{category}/{fileName}`
 
 Keeping operational records below the project reuses the existing project membership rules.
@@ -105,6 +110,6 @@ The client record is the single source of truth for customer contacts. Admins re
 1. Inbound support mailbox that creates tickets and threads replies into activity.
 2. Customer portal or signed one-time links for ticket creation, evidence upload, quotation acceptance, and closure confirmation.
 3. Configurable SLAs by AMC tier, business hours, escalation rules, and reminders.
-4. Generated support quotation PDF, service report PDF, and digital acceptance.
+4. Generated service report PDF and digital acceptance.
 5. Spares consumption, engineer time, travel, invoicing, and support profitability.
 6. Searchable solution knowledge base built from approved closed-ticket RCAs.

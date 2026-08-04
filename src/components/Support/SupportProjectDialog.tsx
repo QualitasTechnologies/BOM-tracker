@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -21,7 +21,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
-import type { SupportProjectProfile } from '@/types/support';
+import type { InstalledMachine, SupportProjectProfile } from '@/types/support';
 import { updateProject, type Project } from '@/utils/projectFirestore';
 import {
   getClientContacts,
@@ -31,6 +31,7 @@ import {
 } from '@/utils/settingsFirestore';
 import { AddClientContactDialog } from './AddClientContactDialog';
 import { SupportDocuments } from './SupportDocuments';
+import { getInstalledMachines } from '@/utils/supportLogic';
 
 interface Props {
   open: boolean;
@@ -43,6 +44,7 @@ interface Props {
 
 const emptyProfile: SupportProjectProfile = {
   amcStatus: 'none',
+  machines: [],
 };
 
 export function SupportProjectDialog({
@@ -78,6 +80,7 @@ export function SupportProjectDialog({
           ? {
               ...emptyProfile,
               ...storedProfile,
+              machines: getInstalledMachines(storedProfile),
               supportContactId: selectedContact?.id,
             }
           : {
@@ -97,6 +100,17 @@ export function SupportProjectDialog({
   ) => setProfile((current) => ({ ...current, [key]: value }));
 
   const handleSave = async () => {
+    const incompleteMachine = (profile.machines || []).find(
+      (machine) => !machine.name.trim() || !machine.serialNumber.trim(),
+    );
+    if (incompleteMachine) {
+      toast({
+        title: 'Complete the machine register',
+        description: 'Every machine needs a name and serial / asset number.',
+        variant: 'destructive',
+      });
+      return;
+    }
     setSaving(true);
     try {
       const { supportContacts: _legacyContacts, ...canonicalProfile } = profile;
@@ -112,6 +126,31 @@ export function SupportProjectDialog({
       setSaving(false);
     }
   };
+
+  const addMachine = () => {
+    const machine: InstalledMachine = {
+      id: `machine-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: `Machine ${(profile.machines?.length || 0) + 1}`,
+      serialNumber: '',
+      amcStatus: 'none',
+      status: 'active',
+    };
+    setField('machines', [...(profile.machines || []), machine]);
+  };
+
+  const updateMachine = <K extends keyof InstalledMachine>(
+    machineId: string,
+    key: K,
+    value: InstalledMachine[K],
+  ) => setField(
+    'machines',
+    (profile.machines || []).map((machine) =>
+      machine.id === machineId ? { ...machine, [key]: value } : machine,
+    ),
+  );
+
+  const removeMachine = (machineId: string) =>
+    setField('machines', (profile.machines || []).filter((machine) => machine.id !== machineId));
 
   const contact = contacts.find((item) => item.id === profile.supportContactId);
 
@@ -131,66 +170,50 @@ export function SupportProjectDialog({
             <TabsTrigger value="documents">Document pack</TabsTrigger>
           </TabsList>
           <TabsContent value="coverage" className="space-y-5 pt-4">
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="grid gap-2">
-                <Label>Commissioning date</Label>
-                <Input type="date" value={profile.commissioningDate || ''} onChange={(e) => setField('commissioningDate', e.target.value)} />
-              </div>
-              <div className="grid gap-2">
-                <Label>Machine / system model</Label>
-                <Input value={profile.machineModel || ''} onChange={(e) => setField('machineModel', e.target.value)} />
-              </div>
-              <div className="grid gap-2">
-                <Label>Serial / asset number</Label>
-                <Input value={profile.machineSerialNumber || ''} onChange={(e) => setField('machineSerialNumber', e.target.value)} />
-              </div>
-            </div>
-            <div className="grid gap-2">
-              <Label>Installed site / line</Label>
-              <Input value={profile.siteLocation || ''} onChange={(e) => setField('siteLocation', e.target.value)} placeholder="Plant, city, line or machine location" />
-            </div>
-
             <div className="rounded-lg border p-4">
-              <h3 className="mb-3 font-medium">Warranty</h3>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label>Warranty start</Label>
-                  <Input type="date" value={profile.warrantyStartDate || ''} onChange={(e) => setField('warrantyStartDate', e.target.value)} />
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="font-medium">Installed machines / lines</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">Each support ticket can be tagged to one machine and serial number.</p>
                 </div>
-                <div className="grid gap-2">
-                  <Label>Warranty end</Label>
-                  <Input type="date" value={profile.warrantyEndDate || ''} onChange={(e) => setField('warrantyEndDate', e.target.value)} />
-                </div>
+                <Button type="button" size="sm" variant="outline" onClick={addMachine}><Plus className="mr-2 h-4 w-4" />Add machine</Button>
               </div>
-            </div>
-
-            <div className="rounded-lg border p-4">
-              <h3 className="mb-3 font-medium">Annual maintenance contract</h3>
-              <div className="grid gap-4 md:grid-cols-4">
-                <div className="grid gap-2">
-                  <Label>AMC status</Label>
-                  <Select value={profile.amcStatus || 'none'} onValueChange={(value) => setField('amcStatus', value as SupportProjectProfile['amcStatus'])}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No AMC</SelectItem>
-                      <SelectItem value="active">Active</SelectItem>
-                      <SelectItem value="expired">Expired</SelectItem>
-                    </SelectContent>
-                  </Select>
+              {(profile.machines || []).length === 0 ? (
+                <div className="rounded-md bg-slate-50 p-5 text-center text-sm text-muted-foreground">No machines configured yet.</div>
+              ) : (
+                <div className="space-y-4">
+                  {(profile.machines || []).map((machine, index) => (
+                    <div key={machine.id} className="rounded-md border bg-slate-50 p-4">
+                      <div className="mb-3 flex items-center justify-between">
+                        <div className="font-medium">Machine {index + 1}</div>
+                        <Button type="button" size="icon" variant="ghost" className="h-8 w-8 text-red-600" onClick={() => removeMachine(machine.id)}><Trash2 className="h-4 w-4" /></Button>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-4">
+                        <MachineField label="Machine name *" value={machine.name} onChange={(value) => updateMachine(machine.id, 'name', value)} />
+                        <MachineField label="Line / cell" value={machine.lineName || ''} onChange={(value) => updateMachine(machine.id, 'lineName', value)} />
+                        <MachineField label="Model" value={machine.model || ''} onChange={(value) => updateMachine(machine.id, 'model', value)} />
+                        <MachineField label="Serial / asset number *" value={machine.serialNumber} onChange={(value) => updateMachine(machine.id, 'serialNumber', value)} />
+                        <MachineField label="Installed site" value={machine.siteLocation || ''} onChange={(value) => updateMachine(machine.id, 'siteLocation', value)} />
+                        <MachineField label="Commissioning date" value={machine.commissioningDate || ''} onChange={(value) => updateMachine(machine.id, 'commissioningDate', value)} type="date" />
+                        <MachineField label="Warranty start" value={machine.warrantyStartDate || ''} onChange={(value) => updateMachine(machine.id, 'warrantyStartDate', value)} type="date" />
+                        <MachineField label="Warranty end" value={machine.warrantyEndDate || ''} onChange={(value) => updateMachine(machine.id, 'warrantyEndDate', value)} type="date" />
+                      </div>
+                      <div className="mt-3 grid gap-3 md:grid-cols-4">
+                        <div className="grid gap-2">
+                          <Label>AMC status</Label>
+                          <Select value={machine.amcStatus || 'none'} onValueChange={(value) => updateMachine(machine.id, 'amcStatus', value as InstalledMachine['amcStatus'])}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent><SelectItem value="none">No AMC</SelectItem><SelectItem value="active">Active</SelectItem><SelectItem value="expired">Expired</SelectItem></SelectContent>
+                          </Select>
+                        </div>
+                        <MachineField label="AMC start" value={machine.amcStartDate || ''} onChange={(value) => updateMachine(machine.id, 'amcStartDate', value)} type="date" />
+                        <MachineField label="AMC end" value={machine.amcEndDate || ''} onChange={(value) => updateMachine(machine.id, 'amcEndDate', value)} type="date" />
+                        <MachineField label="AMC contract" value={machine.amcContractNumber || ''} onChange={(value) => updateMachine(machine.id, 'amcContractNumber', value)} />
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div className="grid gap-2">
-                  <Label>AMC start</Label>
-                  <Input type="date" value={profile.amcStartDate || ''} onChange={(e) => setField('amcStartDate', e.target.value)} />
-                </div>
-                <div className="grid gap-2">
-                  <Label>AMC end</Label>
-                  <Input type="date" value={profile.amcEndDate || ''} onChange={(e) => setField('amcEndDate', e.target.value)} />
-                </div>
-                <div className="grid gap-2">
-                  <Label>Contract number</Label>
-                  <Input value={profile.amcContractNumber || ''} onChange={(e) => setField('amcContractNumber', e.target.value)} />
-                </div>
-              </div>
+              )}
             </div>
 
             <div className="rounded-lg border bg-slate-50 p-4">
@@ -260,4 +283,8 @@ export function SupportProjectDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function MachineField({ label, value, onChange, type = 'text' }: { label: string; value: string; onChange: (value: string) => void; type?: string }) {
+  return <div className="grid gap-2"><Label>{label}</Label><Input type={type} value={value} onChange={(event) => onChange(event.target.value)} /></div>;
 }

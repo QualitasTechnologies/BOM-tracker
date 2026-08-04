@@ -36,6 +36,49 @@ export type CommercialStatus =
 
 export type CustomerConfirmation = 'pending' | 'confirmed' | 'not-required';
 
+export type SupportPaymentStatus =
+  | 'not-invoiced'
+  | 'invoice-raised'
+  | 'partially-paid'
+  | 'paid'
+  | 'waived';
+
+export type SupportQuotationLineCategory = 'engineering' | 'travel' | 'material';
+
+export interface SupportQuotationLine {
+  id: string;
+  category: SupportQuotationLineCategory;
+  description: string;
+  quantity: number;
+  unit: string;
+  unitRate: number;
+  amount: number;
+}
+
+export interface SupportQuotation {
+  id: string;
+  quotationNumber: string;
+  quotationDate: string;
+  validUntil: string;
+  billingEntityId: string;
+  billingEntityName: string;
+  lines: SupportQuotationLine[];
+  subtotal: number;
+  taxType: 'igst' | 'cgst-sgst' | 'none';
+  taxPercent: number;
+  taxAmount: number;
+  total: number;
+  paymentTerms?: string;
+  termsAndConditions?: string;
+  notes?: string;
+  documentId: string;
+  pdfUrl: string;
+  storagePath: string;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+}
+
 export type SupportDocumentCategory =
   | 'manual'
   | 'drawing'
@@ -59,7 +102,26 @@ export interface SupportContact {
   designation?: string;
 }
 
+export interface InstalledMachine {
+  id: string;
+  name: string;
+  lineName?: string;
+  model?: string;
+  serialNumber: string;
+  siteLocation?: string;
+  commissioningDate?: string;
+  warrantyStartDate?: string;
+  warrantyEndDate?: string;
+  amcStatus?: 'none' | 'active' | 'expired';
+  amcStartDate?: string;
+  amcEndDate?: string;
+  amcContractNumber?: string;
+  status?: 'active' | 'inactive' | 'decommissioned';
+  notes?: string;
+}
+
 export interface SupportProjectProfile {
+  machines?: InstalledMachine[];
   commissioningDate?: string;
   machineSerialNumber?: string;
   machineModel?: string;
@@ -90,6 +152,9 @@ export interface SupportTicket {
   projectName: string;
   clientName: string;
   clientId?: string;
+  machineId?: string;
+  machineName?: string;
+  machineSerialNumber?: string;
   title: string;
   description: string;
   category: SupportIssueCategory;
@@ -115,6 +180,13 @@ export interface SupportTicket {
   quotationSentAt?: Date;
   quotationAcceptedAt?: Date;
   acceptanceReference?: string;
+  quotation?: SupportQuotation;
+  paymentStatus?: SupportPaymentStatus;
+  invoiceNumber?: string;
+  invoiceDate?: string;
+  amountReceived?: number;
+  paymentReceivedDate?: string;
+  paymentReference?: string;
   firstResponseTargetAt: Date;
   resolutionTargetAt: Date;
   firstResponseAt?: Date;
@@ -172,6 +244,9 @@ export interface CreateSupportTicketInput {
   projectName: string;
   clientName: string;
   clientId?: string;
+  machineId?: string;
+  machineName?: string;
+  machineSerialNumber?: string;
   title: string;
   description: string;
   category: SupportIssueCategory;

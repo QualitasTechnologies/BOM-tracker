@@ -34,7 +34,7 @@ import type {
   SupportIssueCategory,
   SupportPriority,
 } from '@/types/support';
-import { defaultCommercialStatus, determineCoverage } from '@/utils/supportLogic';
+import { defaultCommercialStatus, determineCoverage, getInstalledMachines } from '@/utils/supportLogic';
 import { AddClientContactDialog } from './AddClientContactDialog';
 
 const categories: Array<{ value: SupportIssueCategory; label: string }> = [
@@ -57,6 +57,7 @@ interface Props {
   clients: Client[];
   onCreate: (input: CreateSupportTicketInput) => Promise<void>;
   preferredProjectId?: string;
+  preferredMachineId?: string;
 }
 
 export function CreateSupportTicketDialog({
@@ -66,9 +67,11 @@ export function CreateSupportTicketDialog({
   clients,
   onCreate,
   preferredProjectId,
+  preferredMachineId,
 }: Props) {
   const [saving, setSaving] = useState(false);
   const [projectId, setProjectId] = useState('');
+  const [machineId, setMachineId] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<SupportPriority>('medium');
@@ -103,6 +106,15 @@ export function CreateSupportTicketDialog({
     [clients, selectedProject],
   );
 
+  const installedMachines = useMemo(
+    () => getInstalledMachines(selectedProject?.supportProfile),
+    [selectedProject],
+  );
+  const selectedMachine = useMemo(
+    () => installedMachines.find((machine) => machine.id === machineId),
+    [installedMachines, machineId],
+  );
+
   const clientContacts = useMemo(
     () => getClientContacts(selectedClient),
     [selectedClient],
@@ -117,6 +129,13 @@ export function CreateSupportTicketDialog({
   useEffect(() => {
     if (!selectedProject) return;
     const projectChanged = activeProjectIdRef.current !== selectedProject.projectId;
+    if (projectChanged) {
+      const initialMachine =
+        installedMachines.find((machine) => machine.id === preferredMachineId) ||
+        installedMachines[0];
+      setMachineId(initialMachine?.id || '');
+      setCoverageType(determineCoverage(selectedProject.supportProfile, new Date(), initialMachine));
+    }
     const currentContact = clientContacts.find(
       (item) => item.id === selectedContactIdRef.current,
     );
@@ -128,12 +147,17 @@ export function CreateSupportTicketDialog({
       getPrimaryClientContact(selectedClient);
     activeProjectIdRef.current = selectedProject.projectId;
     selectedContactIdRef.current = contact?.id || '';
-    if (projectChanged) setCoverageType(determineCoverage(selectedProject.supportProfile));
     setReportedByContactId(contact?.id || '');
     setReportedByName(contact?.name || '');
     setReportedByEmail(contact?.email || '');
     setReportedByPhone(contact?.phone || '');
-  }, [clientContacts, selectedClient, selectedProject]);
+  }, [clientContacts, installedMachines, preferredMachineId, selectedClient, selectedProject]);
+
+  const handleMachineChange = (nextMachineId: string) => {
+    const machine = installedMachines.find((item) => item.id === nextMachineId);
+    setMachineId(nextMachineId);
+    setCoverageType(determineCoverage(selectedProject?.supportProfile, new Date(), machine));
+  };
 
   const applyContact = (contact?: ClientContact) => {
     selectedContactIdRef.current = contact?.id || '';
@@ -153,6 +177,7 @@ export function CreateSupportTicketDialog({
     setPriority('medium');
     setCategory('vision-performance');
     setChannel('email');
+    setMachineId('');
     setMachineStopped(false);
     setDowntime(false);
     setSiteVisitRequired(false);
@@ -164,7 +189,8 @@ export function CreateSupportTicketDialog({
       !title.trim() ||
       !description.trim() ||
       !reportedByContactId ||
-      !reportedByName.trim()
+      !reportedByName.trim() ||
+      (installedMachines.length > 0 && !selectedMachine)
     ) return;
     setSaving(true);
     try {
@@ -173,6 +199,9 @@ export function CreateSupportTicketDialog({
         projectName: selectedProject.projectName,
         clientName: selectedProject.clientName,
         clientId: selectedClient?.id,
+        machineId: selectedMachine?.id,
+        machineName: selectedMachine?.name,
+        machineSerialNumber: selectedMachine?.serialNumber,
         title: title.trim(),
         description: description.trim(),
         priority,
@@ -200,7 +229,8 @@ export function CreateSupportTicketDialog({
       title.trim() &&
       description.trim() &&
       reportedByContactId &&
-      reportedByName.trim(),
+      reportedByName.trim() &&
+      (!installedMachines.length || machineId),
   );
 
   return (
@@ -215,7 +245,7 @@ export function CreateSupportTicketDialog({
 
         <div className="grid gap-5 py-2">
           <div className="grid gap-2">
-            <Label>Project / installed machine</Label>
+            <Label>Project</Label>
             <Select value={projectId} onValueChange={setProjectId}>
               <SelectTrigger>
                 <SelectValue placeholder="Choose a project" />
@@ -228,6 +258,21 @@ export function CreateSupportTicketDialog({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="grid gap-2">
+            <Label>Machine / line {installedMachines.length > 0 && <span className="text-red-500">*</span>}</Label>
+            <Select value={machineId} onValueChange={handleMachineChange} disabled={!installedMachines.length}>
+              <SelectTrigger><SelectValue placeholder={installedMachines.length ? 'Choose the affected machine' : 'Configure machines in Coverage & docs'} /></SelectTrigger>
+              <SelectContent>
+                {installedMachines.map((machine) => (
+                  <SelectItem key={machine.id} value={machine.id}>
+                    {machine.name}{machine.lineName ? ` · ${machine.lineName}` : ''} · S/N {machine.serialNumber}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!installedMachines.length && <p className="text-xs text-amber-700">This project has no machine assets yet. The ticket can still be created and tagged later.</p>}
           </div>
 
           <div className="grid gap-2">
@@ -350,7 +395,9 @@ export function CreateSupportTicketDialog({
                   <SelectItem value="undetermined">To be assessed</SelectItem>
                 </SelectContent>
               </Select>
-              {!selectedProject?.supportProfile?.warrantyEndDate &&
+              {!selectedMachine?.warrantyEndDate &&
+                !selectedMachine?.amcEndDate &&
+                !selectedProject?.supportProfile?.warrantyEndDate &&
                 !selectedProject?.supportProfile?.amcEndDate && (
                   <p className="flex items-center gap-1 text-xs text-amber-700">
                     <AlertTriangle className="h-3.5 w-3.5" />

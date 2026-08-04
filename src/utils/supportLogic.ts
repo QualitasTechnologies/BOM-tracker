@@ -2,6 +2,7 @@ import type {
   CommercialStatus,
   CoverageType,
   SupportPriority,
+  InstalledMachine,
   SupportProjectProfile,
   SupportTicket,
   SupportTicketStatus,
@@ -68,17 +69,46 @@ const isWithin = (date: Date, start?: string, end?: string) => {
 export function determineCoverage(
   profile: SupportProjectProfile | undefined,
   reportedAt = new Date(),
+  machine?: InstalledMachine,
 ): CoverageType {
-  if (!profile) return 'undetermined';
-  if (isWithin(reportedAt, profile.warrantyStartDate, profile.warrantyEndDate)) return 'warranty';
+  if (!profile && !machine) return 'undetermined';
+  const coverage = machine || profile;
+  if (isWithin(reportedAt, coverage?.warrantyStartDate, coverage?.warrantyEndDate)) return 'warranty';
   if (
-    profile.amcStatus === 'active' &&
-    isWithin(reportedAt, profile.amcStartDate, profile.amcEndDate)
+    coverage?.amcStatus === 'active' &&
+    isWithin(reportedAt, coverage.amcStartDate, coverage.amcEndDate)
   ) {
     return 'amc';
   }
-  if (profile.warrantyEndDate || profile.amcEndDate) return 'chargeable';
+  if (coverage?.warrantyEndDate || coverage?.amcEndDate) return 'chargeable';
   return 'undetermined';
+}
+
+export function getInstalledMachines(profile?: SupportProjectProfile): InstalledMachine[] {
+  if (Array.isArray(profile?.machines)) return profile.machines;
+  if (
+    profile?.machineSerialNumber ||
+    profile?.machineModel ||
+    profile?.siteLocation ||
+    profile?.commissioningDate
+  ) {
+    return [{
+      id: 'legacy-primary-machine',
+      name: profile.machineModel || 'Primary machine',
+      model: profile.machineModel,
+      serialNumber: profile.machineSerialNumber || 'Not recorded',
+      siteLocation: profile.siteLocation,
+      commissioningDate: profile.commissioningDate,
+      warrantyStartDate: profile.warrantyStartDate,
+      warrantyEndDate: profile.warrantyEndDate,
+      amcStatus: profile.amcStatus,
+      amcStartDate: profile.amcStartDate,
+      amcEndDate: profile.amcEndDate,
+      amcContractNumber: profile.amcContractNumber,
+      status: 'active',
+    }];
+  }
+  return [];
 }
 
 export function defaultCommercialStatus(coverage: CoverageType): CommercialStatus {
@@ -135,10 +165,15 @@ export function getTransitionBlocker(
   return null;
 }
 
-export function coverageExpiryLabel(profile?: SupportProjectProfile, now = new Date()) {
-  const coverage = determineCoverage(profile, now);
-  if (coverage === 'warranty') return `Warranty until ${profile?.warrantyEndDate}`;
-  if (coverage === 'amc') return `AMC until ${profile?.amcEndDate}`;
+export function coverageExpiryLabel(
+  profile?: SupportProjectProfile,
+  now = new Date(),
+  machine?: InstalledMachine,
+) {
+  const coverage = determineCoverage(profile, now, machine);
+  const source = machine || profile;
+  if (coverage === 'warranty') return `Warranty until ${source?.warrantyEndDate}`;
+  if (coverage === 'amc') return `AMC until ${source?.amcEndDate}`;
   if (coverage === 'chargeable') return 'Out of warranty / AMC';
   return 'Coverage not configured';
 }

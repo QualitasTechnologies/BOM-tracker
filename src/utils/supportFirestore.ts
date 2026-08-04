@@ -23,6 +23,8 @@ import type {
   SupportDocument,
   SupportDocumentCategory,
   SupportTicket,
+  SupportQuotation,
+  SupportQuotationLine,
 } from '@/types/support';
 import type { ClientContact, ClientContactRole } from './settingsFirestore';
 import { calculateSupportTargets } from './supportLogic';
@@ -286,6 +288,26 @@ export async function sendSupportCommunication(input: {
   );
   const result = await callable(input);
   return result.data;
+}
+
+export async function prepareSupportQuotation(input: {
+  projectId: string;
+  ticketId: string;
+  billingEntityId: string;
+  lines: SupportQuotationLine[];
+  taxType: SupportQuotation['taxType'];
+  taxPercent: number;
+  validityDays: number;
+  paymentTerms?: string;
+  termsAndConditions?: string;
+  notes?: string;
+}): Promise<SupportQuotation> {
+  const callable = httpsCallable<typeof input, { quotation: SupportQuotation }>(
+    functions,
+    'prepareSupportQuotation',
+  );
+  const result = await callable(input);
+  return result.data.quotation;
 }
 
 export async function addClientCRMContact(input: {

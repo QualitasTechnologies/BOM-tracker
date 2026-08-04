@@ -4739,6 +4739,330 @@ exports.addClientCRMContact = onCall(async (request) => {
 });
 
 /**
+ * Creates a numbered, branded support quotation PDF and records it against the
+ * ticket. Amounts are recalculated server-side; the client cannot submit totals.
+ */
+exports.prepareSupportQuotation = onCall(async (request) => {
+  const { auth, data } = request;
+  if (!auth || auth.token.status !== 'approved') {
+    throw new functions.https.HttpsError('permission-denied', 'Approved access is required');
+  }
+  const {
+    projectId,
+    ticketId,
+    billingEntityId: requestedBillingEntityId,
+    lines = [],
+    taxType = 'igst',
+    taxPercent = 18,
+    validityDays = 30,
+    paymentTerms = '',
+    termsAndConditions = '',
+    notes = '',
+  } = data || {};
+  if (!projectId || !ticketId || !Array.isArray(lines) || !lines.length) {
+    throw new functions.https.HttpsError('invalid-argument', 'Project, ticket and quotation lines are required');
+  }
+  if (!['igst', 'cgst-sgst', 'none'].includes(taxType)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Invalid tax type');
+  }
+
+  const firestore = admin.firestore();
+  const projectRef = firestore.collection('projects').doc(projectId);
+  const ticketRef = projectRef.collection('supportTickets').doc(ticketId);
+  const [projectSnapshot, ticketSnapshot, userRecord] = await Promise.all([
+    projectRef.get(),
+    ticketRef.get(),
+    admin.auth().getUser(auth.uid),
+  ]);
+  if (!projectSnapshot.exists || !ticketSnapshot.exists) {
+    throw new functions.https.HttpsError('not-found', 'Project or support ticket not found');
+  }
+  const project = projectSnapshot.data();
+  const ticket = ticketSnapshot.data();
+  const isAdmin = auth.token.role === 'admin';
+  const isMember = !project.memberIds || project.memberIds.includes(auth.uid);
+  if (!isAdmin && !isMember) {
+    throw new functions.https.HttpsError('permission-denied', 'You do not have access to this ticket');
+  }
+
+  const billingEntityId = project.billingEntityId || requestedBillingEntityId || 'company';
+  if (project.billingEntityId && requestedBillingEntityId && project.billingEntityId !== requestedBillingEntityId) {
+    throw new functions.https.HttpsError('failed-precondition', 'The selected billing entity does not match the project');
+  }
+  const entityRef = billingEntityId === 'company'
+    ? firestore.collection('settings').doc('company')
+    : firestore.collection('billingEntities').doc(billingEntityId);
+
+  let billingEntity;
+  let quotationNumber;
+  await firestore.runTransaction(async (transaction) => {
+    const entitySnapshot = await transaction.get(entityRef);
+    if (!entitySnapshot.exists) {
+      throw new functions.https.HttpsError('failed-precondition', 'Configure the project billing entity before preparing a quotation');
+    }
+    const stored = entitySnapshot.data();
+    billingEntity = billingEntityId === 'company'
+      ? {
+          id: 'company',
+          legalName: stored.companyName,
+          displayName: stored.companyName,
+          companyAddress: stored.companyAddress,
+          gstin: stored.gstin,
+          stateCode: stored.stateCode,
+          stateName: stored.stateName,
+          pan: stored.pan,
+          phone: stored.phone,
+          email: stored.email,
+          website: stored.website,
+          logo: stored.logo,
+          logoPath: stored.logoPath,
+          quotationPrefix: stored.quotationPrefix || 'SVC',
+          nextQuotationNumber: stored.nextQuotationNumber || 1,
+          defaultValidityDays: stored.defaultValidityDays || 30,
+          defaultPaymentTerms: stored.defaultPaymentTerms || '',
+          defaultTermsAndConditions: stored.defaultTermsAndConditions || '',
+          bankName: stored.bankName || '',
+          bankAccountName: stored.bankAccountName || '',
+          bankAccountNumber: stored.bankAccountNumber || '',
+          bankIfsc: stored.bankIfsc || '',
+          bankBranch: stored.bankBranch || '',
+        }
+      : { id: entitySnapshot.id, ...stored };
+    if (!billingEntity.legalName || !billingEntity.companyAddress || !billingEntity.gstin) {
+      throw new functions.https.HttpsError('failed-precondition', 'The billing entity needs legal name, address and GSTIN');
+    }
+    const nextNumber = Math.max(1, Number(billingEntity.nextQuotationNumber) || 1);
+    const now = new Date();
+    const fyStart = now.getMonth() < 3 ? now.getFullYear() - 1 : now.getFullYear();
+    const fy = `${String(fyStart).slice(-2)}-${String(fyStart + 1).slice(-2)}`;
+    quotationNumber = `${billingEntity.quotationPrefix || 'SVC'}/${fy}/${String(nextNumber).padStart(4, '0')}`;
+    transaction.update(entityRef, {
+      nextQuotationNumber: nextNumber + 1,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  const normalizedLines = lines.slice(0, 50).map((line, index) => {
+    const quantity = Math.max(0, Number(line.quantity) || 0);
+    const unitRate = Math.max(0, Number(line.unitRate) || 0);
+    const description = String(line.description || '').trim();
+    if (!description || quantity <= 0) {
+      throw new functions.https.HttpsError('invalid-argument', `Quotation line ${index + 1} is incomplete`);
+    }
+    return {
+      id: String(line.id || `line-${index + 1}`),
+      category: ['engineering', 'travel', 'material'].includes(line.category) ? line.category : 'material',
+      description,
+      quantity,
+      unit: String(line.unit || 'nos').trim(),
+      unitRate,
+      amount: Math.round(quantity * unitRate * 100) / 100,
+    };
+  });
+  const subtotal = Math.round(normalizedLines.reduce((sum, line) => sum + line.amount, 0) * 100) / 100;
+  const safeTaxPercent = taxType === 'none' ? 0 : Math.min(100, Math.max(0, Number(taxPercent) || 0));
+  const taxAmount = Math.round(subtotal * safeTaxPercent) / 100;
+  const total = Math.round((subtotal + taxAmount) * 100) / 100;
+  if (subtotal <= 0) {
+    throw new functions.https.HttpsError('invalid-argument', 'Quotation total must be greater than zero');
+  }
+
+  let client = {};
+  const clientId = ticket.clientId || project.clientId;
+  if (clientId) {
+    const clientSnapshot = await firestore.collection('clients').doc(clientId).get();
+    if (clientSnapshot.exists) client = clientSnapshot.data();
+  }
+  const quotationDate = new Date();
+  const validUntilDate = new Date(quotationDate);
+  validUntilDate.setDate(validUntilDate.getDate() + Math.max(1, Math.min(365, Number(validityDays) || 30)));
+  const toIsoDate = (date) => date.toISOString().slice(0, 10);
+  const money = (value) => `INR ${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const doc = new PDFDocument({ size: 'A4', margin: 42, bufferPages: true });
+  const chunks = [];
+  doc.on('data', (chunk) => chunks.push(chunk));
+  let logoBuffer = null;
+  try {
+    if (billingEntity.logoPath) {
+      [logoBuffer] = await admin.storage().bucket().file(billingEntity.logoPath).download();
+    } else if (billingEntity.logo) {
+      const response = await fetch(billingEntity.logo);
+      if (response.ok) logoBuffer = Buffer.from(await response.arrayBuffer());
+    }
+  } catch (error) {
+    logger.warn('Support quotation logo could not be loaded', { billingEntityId, error: error.message });
+  }
+
+  const pageWidth = doc.page.width - 84;
+  if (logoBuffer) {
+    try { doc.image(logoBuffer, 42, 38, { fit: [120, 50] }); } catch (error) { logger.warn('Support quote logo render failed', { error: error.message }); }
+  }
+  doc.font('Helvetica-Bold').fontSize(17).fillColor('#0f172a')
+    .text(billingEntity.legalName, logoBuffer ? 175 : 42, 42, { width: logoBuffer ? 378 : pageWidth, align: logoBuffer ? 'right' : 'left' });
+  doc.font('Helvetica').fontSize(8).fillColor('#475569')
+    .text(billingEntity.companyAddress || '', logoBuffer ? 175 : 42, 66, { width: logoBuffer ? 378 : pageWidth, align: logoBuffer ? 'right' : 'left' });
+  doc.text(`GSTIN: ${billingEntity.gstin}${billingEntity.pan ? `  |  PAN: ${billingEntity.pan}` : ''}`, 42, 96, { width: pageWidth, align: 'right' });
+  doc.moveTo(42, 112).lineTo(553, 112).strokeColor('#cbd5e1').stroke();
+
+  doc.font('Helvetica-Bold').fontSize(22).fillColor('#0f172a').text('SERVICE QUOTATION', 42, 128);
+  doc.fontSize(10).text(quotationNumber, 42, 157);
+  doc.font('Helvetica').fontSize(9).fillColor('#475569')
+    .text(`Date: ${toIsoDate(quotationDate)}`, 393, 132, { width: 160, align: 'right' })
+    .text(`Valid until: ${toIsoDate(validUntilDate)}`, 393, 148, { width: 160, align: 'right' });
+
+  doc.roundedRect(42, 180, 511, 82, 4).fillAndStroke('#f8fafc', '#e2e8f0');
+  doc.font('Helvetica-Bold').fontSize(8).fillColor('#64748b').text('QUOTATION TO', 54, 192);
+  doc.fontSize(11).fillColor('#0f172a').text(project.clientName || client.company || ticket.clientName || 'Customer', 54, 208);
+  doc.font('Helvetica').fontSize(8).fillColor('#475569').text(client.address || '', 54, 226, { width: 235 });
+  doc.font('Helvetica-Bold').fontSize(8).fillColor('#64748b').text('SUPPORT REFERENCE', 310, 192);
+  doc.font('Helvetica').fontSize(9).fillColor('#0f172a')
+    .text(`${ticket.ticketNumber || ticketId} · ${project.projectName || projectId}`, 310, 208, { width: 230 })
+    .text(`${ticket.machineName || 'Machine not tagged'}${ticket.machineSerialNumber ? ` · S/N ${ticket.machineSerialNumber}` : ''}`, 310, 226, { width: 230 });
+
+  let y = 282;
+  const drawHeader = () => {
+    doc.rect(42, y, 511, 24).fill('#0f172a');
+    doc.font('Helvetica-Bold').fontSize(8).fillColor('#ffffff');
+    doc.text('#', 48, y + 8); doc.text('Description', 84, y + 8); doc.text('Qty', 319, y + 8);
+    doc.text('Unit', 379, y + 8); doc.text('Rate', 437, y + 8, { width: 52, align: 'right' });
+    doc.text('Amount', 492, y + 8, { width: 55, align: 'right' });
+    y += 24;
+  };
+  drawHeader();
+  normalizedLines.forEach((line, index) => {
+    if (y > 680) { doc.addPage(); y = 42; drawHeader(); }
+    const rowHeight = Math.max(30, doc.heightOfString(line.description, { width: 220 }) + 14);
+    if (index % 2 === 0) doc.rect(42, y, 511, rowHeight).fill('#f8fafc');
+    doc.font('Helvetica').fontSize(8).fillColor('#0f172a');
+    doc.text(String(index + 1), 48, y + 9);
+    doc.text(line.description, 84, y + 8, { width: 220 });
+    doc.text(String(line.quantity), 319, y + 9, { width: 45, align: 'right' });
+    doc.text(line.unit, 379, y + 9, { width: 45 });
+    doc.text(money(line.unitRate), 421, y + 9, { width: 70, align: 'right' });
+    doc.text(money(line.amount), 482, y + 9, { width: 65, align: 'right' });
+    doc.moveTo(42, y + rowHeight).lineTo(553, y + rowHeight).strokeColor('#e2e8f0').stroke();
+    y += rowHeight;
+  });
+
+  y += 12;
+  const totalsX = 353;
+  doc.font('Helvetica').fontSize(9).fillColor('#475569').text('Subtotal', totalsX, y, { width: 90 });
+  doc.fillColor('#0f172a').text(money(subtotal), 443, y, { width: 110, align: 'right' }); y += 18;
+  if (taxType === 'cgst-sgst') {
+    doc.fillColor('#475569').text(`CGST ${safeTaxPercent / 2}%`, totalsX, y, { width: 90 }); doc.fillColor('#0f172a').text(money(taxAmount / 2), 443, y, { width: 110, align: 'right' }); y += 18;
+    doc.fillColor('#475569').text(`SGST ${safeTaxPercent / 2}%`, totalsX, y, { width: 90 }); doc.fillColor('#0f172a').text(money(taxAmount / 2), 443, y, { width: 110, align: 'right' }); y += 18;
+  } else if (taxType === 'igst') {
+    doc.fillColor('#475569').text(`IGST ${safeTaxPercent}%`, totalsX, y, { width: 90 }); doc.fillColor('#0f172a').text(money(taxAmount), 443, y, { width: 110, align: 'right' }); y += 18;
+  }
+  doc.rect(totalsX - 8, y - 4, 208, 26).fill('#0f172a');
+  doc.font('Helvetica-Bold').fontSize(10).fillColor('#ffffff').text('TOTAL', totalsX, y + 4).text(money(total), 443, y + 4, { width: 102, align: 'right' });
+  y += 42;
+  if (y > 650) { doc.addPage(); y = 42; }
+  const finalPaymentTerms = String(paymentTerms || billingEntity.defaultPaymentTerms || '').trim();
+  const finalTerms = String(termsAndConditions || billingEntity.defaultTermsAndConditions || '').trim();
+  doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f172a').text('Payment terms', 42, y);
+  doc.font('Helvetica').fontSize(8).fillColor('#475569').text(finalPaymentTerms || 'As agreed', 42, y + 15, { width: 245 });
+  doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f172a').text('Bank details', 310, y);
+  doc.font('Helvetica').fontSize(8).fillColor('#475569').text([
+    billingEntity.bankName,
+    billingEntity.bankAccountName,
+    billingEntity.bankAccountNumber ? `A/c: ${billingEntity.bankAccountNumber}` : '',
+    billingEntity.bankIfsc ? `IFSC: ${billingEntity.bankIfsc}` : '',
+    billingEntity.bankBranch,
+  ].filter(Boolean).join('\n') || 'Provided on invoice', 310, y + 15, { width: 243 });
+  y += 82;
+  if (finalTerms) {
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f172a').text('Terms and conditions', 42, y);
+    doc.font('Helvetica').fontSize(8).fillColor('#475569').text(finalTerms, 42, y + 15, { width: 511 });
+    y += doc.heightOfString(finalTerms, { width: 511 }) + 28;
+  }
+  if (notes) {
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f172a').text('Notes', 42, y);
+    doc.font('Helvetica').fontSize(8).fillColor('#475569').text(String(notes), 42, y + 15, { width: 511 });
+  }
+  doc.end();
+  const pdfBuffer = await new Promise((resolve, reject) => {
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+  });
+
+  const quoteRef = projectRef.collection('supportQuotations').doc();
+  const safeNumber = quotationNumber.replace(/[^a-zA-Z0-9-]/g, '_');
+  const storagePath = `projects/${projectId}/support/${ticketId}/quotation/${safeNumber}.pdf`;
+  const bucket = admin.storage().bucket();
+  const file = bucket.file(storagePath);
+  const downloadToken = require('crypto').randomUUID();
+  await file.save(pdfBuffer, {
+    metadata: {
+      contentType: 'application/pdf',
+      metadata: { firebaseStorageDownloadTokens: downloadToken, quotationNumber, ticketId, projectId },
+    },
+  });
+  const pdfUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(storagePath)}?alt=media&token=${downloadToken}`;
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  const documentRef = projectRef.collection('supportDocuments').doc();
+  const quotation = {
+    id: quoteRef.id,
+    quotationNumber,
+    quotationDate: toIsoDate(quotationDate),
+    validUntil: toIsoDate(validUntilDate),
+    billingEntityId,
+    billingEntityName: billingEntity.displayName || billingEntity.legalName,
+    lines: normalizedLines,
+    subtotal,
+    taxType,
+    taxPercent: safeTaxPercent,
+    taxAmount,
+    total,
+    paymentTerms: finalPaymentTerms,
+    termsAndConditions: finalTerms,
+    notes: String(notes || ''),
+    documentId: documentRef.id,
+    pdfUrl,
+    storagePath,
+    createdBy: auth.uid,
+    createdByName: userRecord.displayName || userRecord.email || 'Support user',
+    createdAt: new Date().toISOString(),
+  };
+  const batch = firestore.batch();
+  batch.set(quoteRef, { ...quotation, createdAt: now, projectId, ticketId });
+  batch.set(documentRef, {
+    projectId,
+    ticketId,
+    name: `${quotationNumber}.pdf`,
+    url: pdfUrl,
+    storagePath,
+    category: 'quotation',
+    fileSize: pdfBuffer.length,
+    contentType: 'application/pdf',
+    uploadedAt: now,
+    uploadedBy: auth.uid,
+    uploadedByName: quotation.createdByName,
+  });
+  batch.update(ticketRef, {
+    quotation,
+    quotationNumber,
+    quotationDocumentId: documentRef.id,
+    estimatedAmount: total,
+    commercialStatus: 'quotation-prepared',
+    paymentStatus: ticket.paymentStatus || 'not-invoiced',
+    updatedAt: now,
+  });
+  batch.set(ticketRef.collection('activities').doc(), {
+    type: 'commercial',
+    message: `Quotation ${quotationNumber} prepared for ${money(total)}`,
+    createdAt: now,
+    createdBy: auth.uid,
+    createdByName: quotation.createdByName,
+    metadata: { quotationId: quoteRef.id, quotationNumber, total },
+  });
+  await batch.commit();
+  logger.info('Support quotation prepared', { projectId, ticketId, quotationNumber, total, billingEntityId });
+  return { quotation };
+});
+
+/**
  * Sends a customer-facing support acknowledgement, quotation, or closure note.
  * The linked support ticket remains the system of record and receives an
  * immutable communication activity entry after a successful send.
@@ -4829,6 +5153,8 @@ exports.sendSupportCommunication = onCall(
     }
 
     let documentUrl = '';
+    let documentStoragePath = '';
+    let documentName = '';
     if (documentId) {
       const documentSnapshot = await projectRef
         .collection('supportDocuments')
@@ -4846,6 +5172,21 @@ exports.sendSupportCommunication = onCall(
         );
       }
       documentUrl = supportDocument.url;
+      documentStoragePath = supportDocument.storagePath || '';
+      documentName = supportDocument.name || 'support-document.pdf';
+    }
+
+    let billingEntityName = 'Qualitas Technologies';
+    const communicationBillingEntityId = ticket.quotation?.billingEntityId || project.billingEntityId;
+    if (communicationBillingEntityId) {
+      const entityRef = communicationBillingEntityId === 'company'
+        ? firestore.collection('settings').doc('company')
+        : firestore.collection('billingEntities').doc(communicationBillingEntityId);
+      const entitySnapshot = await entityRef.get();
+      if (entitySnapshot.exists) {
+        const entity = entitySnapshot.data();
+        billingEntityName = entity.displayName || entity.legalName || entity.companyName || billingEntityName;
+      }
     }
 
     const escapeHtml = (value) =>
@@ -4884,7 +5225,7 @@ exports.sendSupportCommunication = onCall(
         body: `
           <p style="margin:0 0 12px;">Work will be scheduled after written acceptance or receipt of the applicable customer purchase order.</p>
           ${ticket.quotationNumber ? `<p><strong>Quotation:</strong> ${escapeHtml(ticket.quotationNumber)}</p>` : ''}
-          ${ticket.estimatedAmount ? `<p><strong>Estimated amount:</strong> ₹${Number(ticket.estimatedAmount).toLocaleString('en-IN')}</p>` : ''}`,
+          ${ticket.estimatedAmount ? `<p><strong>Quotation amount:</strong> INR ${Number(ticket.estimatedAmount).toLocaleString('en-IN')}</p>` : ''}`,
       },
       resolution: {
         subject: `[${ticketNumber}] RCA and solution report - ${projectName}`,
@@ -4915,7 +5256,7 @@ exports.sendSupportCommunication = onCall(
 <body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#1e293b;">
   <div style="max-width:640px;margin:24px auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 2px 10px rgba(15,23,42,.08);">
     <div style="padding:26px 30px;background:#0f172a;color:#fff;">
-      <div style="font-size:12px;color:#67e8f9;text-transform:uppercase;letter-spacing:.08em;font-weight:700;">Qualitas Service &amp; Support</div>
+      <div style="font-size:12px;color:#67e8f9;text-transform:uppercase;letter-spacing:.08em;font-weight:700;">${escapeHtml(billingEntityName)} Service &amp; Support</div>
       <h1 style="margin:8px 0 0;font-size:23px;">${template.heading}</h1>
     </div>
     <div style="padding:28px 30px;">
@@ -4924,7 +5265,7 @@ exports.sendSupportCommunication = onCall(
       ${template.body}
       ${customMessage}
       ${documentButton}
-      <p style="margin-top:22px;">Regards,<br/><strong>${senderName}</strong><br/>Qualitas Technologies</p>
+      <p style="margin-top:22px;">Regards,<br/><strong>${senderName}</strong><br/>${escapeHtml(billingEntityName)}</p>
     </div>
     <div style="padding:14px 30px;background:#f8fafc;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;">
       ${ticketNumber} · ${clientName} · This communication is recorded in the support system.
@@ -4935,12 +5276,18 @@ exports.sendSupportCommunication = onCall(
 
     try {
       const resend = new Resend(getResendApiKey());
+      let attachments;
+      if (documentStoragePath) {
+        const [documentBuffer] = await admin.storage().bucket().file(documentStoragePath).download();
+        attachments = [{ filename: documentName, content: documentBuffer }];
+      }
       const response = await resend.emails.send({
-        from: 'Qualitas Service & Support <info@qualitastech.com>',
+        from: `${billingEntityName.replace(/[<>\r\n]/g, '')} Service & Support <info@qualitastech.com>`,
         to: recipientEmail,
         subject: template.subject,
         html,
         text: stripHtml(html),
+        attachments,
       });
       if (response?.error) {
         throw new Error(response.error.message || 'Email provider rejected the message');

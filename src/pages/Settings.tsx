@@ -31,7 +31,8 @@ import {
   Search,
   Filter,
   AlertCircle,
-  Tag
+  Tag,
+  Landmark
 } from 'lucide-react';
 import { 
   Dialog, 
@@ -87,6 +88,7 @@ import { toast } from '@/components/ui/use-toast';
 import BrandsTab from '@/components/settings/BrandsTab';
 import BOMTemplatesTab from '@/components/settings/BOMTemplatesTab';
 import CompanySettingsTab from '@/components/settings/CompanySettingsTab';
+import BillingEntitiesTab from '@/components/settings/BillingEntitiesTab';
 import { Brand } from '@/types/brand';
 import {
   subscribeToEngineerRates,
@@ -1296,6 +1298,10 @@ const Settings = () => {
               <Building size={16} />
               Company
             </TabsTrigger>
+            <TabsTrigger value="billing-entities" className="flex items-center gap-2">
+              <Landmark size={16} />
+              Billing Entities
+            </TabsTrigger>
             <TabsTrigger value="clients" className="flex items-center gap-2">
               <Users size={16} />
               Clients ({clients.length})
@@ -1334,6 +1340,10 @@ const Settings = () => {
           {/* Company Tab */}
           <TabsContent value="company">
             <CompanySettingsTab />
+          </TabsContent>
+
+          <TabsContent value="billing-entities">
+            <BillingEntitiesTab />
           </TabsContent>
 
           {/* Clients Tab */}

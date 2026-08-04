@@ -81,6 +81,7 @@ const Projects = () => {
       projectName: newProject.name,
       clientName: newProject.client,
       clientId: newProject.clientId,
+      billingEntityId: newProject.billingEntityId,
       description: newProject.description,
       status: newProject.status,
       deadline: newProject.deadline,

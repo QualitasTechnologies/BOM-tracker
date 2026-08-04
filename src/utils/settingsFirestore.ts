@@ -783,6 +783,151 @@ export interface CompanySettings {
   updatedAt: Date;
 }
 
+export interface BillingEntity {
+  id: string;
+  legalName: string;
+  displayName: string;
+  companyAddress: string;
+  gstin: string;
+  stateCode: string;
+  stateName: string;
+  pan: string;
+  phone?: string;
+  email?: string;
+  website?: string;
+  logo?: string;
+  logoPath?: string;
+  quotationPrefix: string;
+  nextQuotationNumber: number;
+  defaultValidityDays: number;
+  defaultPaymentTerms?: string;
+  defaultTermsAndConditions?: string;
+
+  // Support quotation settings for the primary/legacy billing entity
+  quotationPrefix?: string;
+  nextQuotationNumber?: number;
+  defaultValidityDays?: number;
+  bankName?: string;
+  bankAccountName?: string;
+  bankAccountNumber?: string;
+  bankIfsc?: string;
+  bankBranch?: string;
+  bankName?: string;
+  bankAccountName?: string;
+  bankAccountNumber?: string;
+  bankIfsc?: string;
+  bankBranch?: string;
+  isActive: boolean;
+  updatedAt?: Date;
+}
+
+const billingEntitiesCol = collection(db, 'billingEntities');
+
+const companyAsBillingEntity = (settings: CompanySettings): BillingEntity => ({
+  id: 'company',
+  legalName: settings.companyName,
+  displayName: settings.companyName,
+  companyAddress: settings.companyAddress,
+  gstin: settings.gstin,
+  stateCode: settings.stateCode,
+  stateName: settings.stateName,
+  pan: settings.pan,
+  phone: settings.phone,
+  email: settings.email,
+  website: settings.website,
+  logo: settings.logo,
+  logoPath: settings.logoPath,
+  quotationPrefix: settings.quotationPrefix || 'SVC',
+  nextQuotationNumber: settings.nextQuotationNumber || 1,
+  defaultValidityDays: settings.defaultValidityDays || 30,
+  defaultPaymentTerms: settings.defaultPaymentTerms,
+  defaultTermsAndConditions: settings.defaultTermsAndConditions,
+  bankName: settings.bankName,
+  bankAccountName: settings.bankAccountName,
+  bankAccountNumber: settings.bankAccountNumber,
+  bankIfsc: settings.bankIfsc,
+  bankBranch: settings.bankBranch,
+  isActive: true,
+  updatedAt: settings.updatedAt,
+});
+
+export const subscribeToBillingEntities = (
+  callback: (entities: BillingEntity[]) => void,
+): Unsubscribe => {
+  let company: CompanySettings | null = null;
+  let entities: BillingEntity[] = [];
+  const emit = () => {
+    const legacy = company ? [companyAsBillingEntity(company)] : [];
+    callback([...legacy, ...entities].filter((entity) => entity.isActive !== false));
+  };
+  const unsubscribeCompany = subscribeToCompanySettings((settings) => {
+    company = settings;
+    emit();
+  });
+  const unsubscribeEntities = onSnapshot(billingEntitiesCol, (snapshot) => {
+    entities = snapshot.docs.map((entityDoc) => ({
+      id: entityDoc.id,
+      ...entityDoc.data(),
+    } as BillingEntity));
+    emit();
+  });
+  return () => {
+    unsubscribeCompany();
+    unsubscribeEntities();
+  };
+};
+
+export const addBillingEntity = async (
+  entity: Omit<BillingEntity, 'id' | 'updatedAt'>,
+) => {
+  const entityRef = await addDoc(billingEntitiesCol, {
+    ...entity,
+    updatedAt: new Date(),
+  });
+  return entityRef.id;
+};
+
+export const updateBillingEntity = async (
+  entityId: string,
+  updates: Partial<Omit<BillingEntity, 'id' | 'updatedAt'>>,
+) => {
+  if (entityId === 'company') {
+    await updateCompanySettings({
+      companyName: updates.legalName || updates.displayName,
+      companyAddress: updates.companyAddress,
+      gstin: updates.gstin,
+      stateCode: updates.stateCode,
+      stateName: updates.stateName,
+      pan: updates.pan,
+      phone: updates.phone,
+      email: updates.email,
+      website: updates.website,
+      logo: updates.logo,
+      logoPath: updates.logoPath,
+      defaultPaymentTerms: updates.defaultPaymentTerms,
+      defaultTermsAndConditions: updates.defaultTermsAndConditions,
+      quotationPrefix: updates.quotationPrefix,
+      nextQuotationNumber: updates.nextQuotationNumber,
+      defaultValidityDays: updates.defaultValidityDays,
+      bankName: updates.bankName,
+      bankAccountName: updates.bankAccountName,
+      bankAccountNumber: updates.bankAccountNumber,
+      bankIfsc: updates.bankIfsc,
+      bankBranch: updates.bankBranch,
+    });
+    return;
+  }
+  await updateDoc(doc(billingEntitiesCol, entityId), cleanFirestoreData({
+    ...updates,
+    updatedAt: new Date(),
+  }));
+};
+
+export const deleteBillingEntity = async (entityId: string) => {
+  if (entityId === 'company') throw new Error('The primary company entity cannot be deleted.');
+  await deleteDoc(doc(billingEntitiesCol, entityId));
+};
+
 const companySettingsRef = doc(db, "settings", "company");
 
 export const getCompanySettings = async (): Promise<CompanySettings | null> => {

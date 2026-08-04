@@ -11,6 +11,7 @@ import {
   Loader2,
   Mail,
   MapPin,
+  FileText,
   Save,
   Send,
   UserRound,
@@ -44,6 +45,7 @@ import type {
   SupportDocument,
   SupportTicket as SupportTicketType,
   SupportTicketStatus,
+  SupportPaymentStatus,
 } from '@/types/support';
 import {
   addSupportActivity,
@@ -60,6 +62,7 @@ import {
   isOverdue,
   SUPPORT_STATUS_LABELS,
   SUPPORT_STATUS_ORDER,
+  getInstalledMachines,
 } from '@/utils/supportLogic';
 import { getProject, type Project } from '@/utils/projectFirestore';
 import {
@@ -70,6 +73,7 @@ import {
   type ClientContact,
 } from '@/utils/settingsFirestore';
 import { AddClientContactDialog } from '@/components/Support/AddClientContactDialog';
+import { SupportQuotationDialog } from '@/components/Support/SupportQuotationDialog';
 
 const formatDateTime = (date?: Date) =>
   date
@@ -100,10 +104,15 @@ export default function SupportTicket() {
   const [coverageType, setCoverageType] = useState<CoverageType>('undetermined');
   const [coverageNotes, setCoverageNotes] = useState('');
   const [commercialStatus, setCommercialStatus] = useState<CommercialStatus>('assessment-required');
-  const [estimatedAmount, setEstimatedAmount] = useState('');
-  const [quotationNumber, setQuotationNumber] = useState('');
   const [acceptanceReference, setAcceptanceReference] = useState('');
   const [contactId, setContactId] = useState('');
+  const [quotationOpen, setQuotationOpen] = useState(false);
+  const [paymentStatus, setPaymentStatus] = useState<SupportPaymentStatus>('not-invoiced');
+  const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [invoiceDate, setInvoiceDate] = useState('');
+  const [amountReceived, setAmountReceived] = useState('');
+  const [paymentReceivedDate, setPaymentReceivedDate] = useState('');
+  const [paymentReference, setPaymentReference] = useState('');
 
   const actor = useMemo(
     () => ({
@@ -140,9 +149,13 @@ export default function SupportTicket() {
     setCoverageType(ticket.coverageType);
     setCoverageNotes(ticket.coverageNotes || '');
     setCommercialStatus(ticket.commercialStatus);
-    setEstimatedAmount(ticket.estimatedAmount?.toString() || '');
-    setQuotationNumber(ticket.quotationNumber || '');
     setAcceptanceReference(ticket.acceptanceReference || '');
+    setPaymentStatus(ticket.paymentStatus || 'not-invoiced');
+    setInvoiceNumber(ticket.invoiceNumber || '');
+    setInvoiceDate(ticket.invoiceDate || '');
+    setAmountReceived(ticket.amountReceived?.toString() || '');
+    setPaymentReceivedDate(ticket.paymentReceivedDate || '');
+    setPaymentReference(ticket.paymentReference || '');
   }, [ticket]);
 
   const client = useMemo(
@@ -182,7 +195,14 @@ export default function SupportTicket() {
     [documents, ticketId],
   );
 
-  const quotationDocument = ticketDocuments.find((document) => document.category === 'quotation');
+  const installedMachines = useMemo(
+    () => getInstalledMachines(project?.supportProfile),
+    [project],
+  );
+  const selectedMachine = installedMachines.find((machine) => machine.id === ticket?.machineId);
+
+  const quotationDocument = ticketDocuments.find((document) => document.id === ticket?.quotationDocumentId) ||
+    ticketDocuments.find((document) => document.category === 'quotation');
   const resolutionDocument = ticketDocuments.find((document) =>
     ['rca-report', 'solution-report'].includes(document.category),
   );
@@ -256,8 +276,6 @@ export default function SupportTicket() {
         coverageType,
         coverageNotes: coverageNotes.trim(),
         commercialStatus,
-        estimatedAmount: estimatedAmount ? Number(estimatedAmount) : 0,
-        quotationNumber: quotationNumber.trim(),
         acceptanceReference: acceptanceReference.trim(),
         quotationAcceptedAt:
           commercialStatus === 'accepted' && !ticket.quotationAcceptedAt
@@ -287,6 +305,47 @@ export default function SupportTicket() {
     }
   };
 
+  const handleMachineChange = async (machineId: string) => {
+    const machine = installedMachines.find((item) => item.id === machineId);
+    if (!machine) return;
+    await updateSupportTicket(projectId, ticketId, {
+      machineId: machine.id,
+      machineName: machine.name,
+      machineSerialNumber: machine.serialNumber,
+    });
+    await log('note', `Ticket tagged to ${machine.name} · S/N ${machine.serialNumber}`);
+    toast({ title: 'Machine updated', description: `${machine.name} · ${machine.serialNumber}` });
+  };
+
+  const handleSavePayment = async () => {
+    const received = Math.max(0, Number(amountReceived) || 0);
+    const quotationTotal = ticket.quotation?.total || ticket.estimatedAmount || 0;
+    if (paymentStatus === 'paid' && received < quotationTotal) {
+      toast({
+        title: 'Payment amount is below the quotation total',
+        description: 'Use Partially paid, or record the full amount received.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateSupportTicket(projectId, ticketId, {
+        paymentStatus,
+        invoiceNumber: invoiceNumber.trim(),
+        invoiceDate,
+        amountReceived: received,
+        paymentReceivedDate,
+        paymentReference: paymentReference.trim(),
+        commercialStatus: paymentStatus === 'not-invoiced' ? ticket.commercialStatus : 'invoiced',
+      });
+      await log('commercial', `Payment status updated to ${paymentStatus.replace('-', ' ')}${received ? `; INR ${received.toLocaleString('en-IN')} received` : ''}`);
+      toast({ title: 'Payment tracking updated' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleConfirmation = async (value: CustomerConfirmation) => {
     await updateSupportTicket(projectId, ticketId, {
       customerConfirmation: value,
@@ -311,7 +370,7 @@ export default function SupportTicket() {
       return;
     }
     if (kind === 'quotation' && !quotationDocument) {
-      toast({ title: 'Upload the quotation first', variant: 'destructive' });
+      toast({ title: 'Prepare the quotation first', description: 'Use Prepare quotation in Coverage & commercials.', variant: 'destructive' });
       return;
     }
     if (kind === 'resolution' && (!ticket.rootCause || !ticket.resolutionSummary)) {
@@ -384,6 +443,7 @@ export default function SupportTicket() {
 
   const overdue = isOverdue(ticket);
   const nextTarget = ticket.firstResponseAt ? ticket.resolutionTargetAt : ticket.firstResponseTargetAt;
+  const quotationBalance = Math.max(0, (ticket.quotation?.total || ticket.estimatedAmount || 0) - (Number(amountReceived) || 0));
 
   return (
     <div className="mx-auto max-w-7xl space-y-5">
@@ -543,8 +603,18 @@ export default function SupportTicket() {
               <InfoRow icon={UserRound} label="Owner" value={ticket.assignee?.name || 'Unassigned'} />
               <InfoRow icon={CalendarClock} label={ticket.firstResponseAt ? 'Resolution target' : 'First response target'} value={formatDateTime(nextTarget)} danger={overdue} />
               <InfoRow icon={Clock3} label="First response" value={formatDateTime(ticket.firstResponseAt)} />
-              <InfoRow icon={MapPin} label="Installed site" value={project?.supportProfile?.siteLocation || 'Not configured'} />
-              <InfoRow icon={Wrench} label="Machine / serial" value={[project?.supportProfile?.machineModel, project?.supportProfile?.machineSerialNumber].filter(Boolean).join(' · ') || 'Not configured'} />
+              <InfoRow icon={MapPin} label="Installed site" value={selectedMachine?.siteLocation || project?.supportProfile?.siteLocation || 'Not configured'} />
+              <div>
+                <Label>Machine / line</Label>
+                <Select value={ticket.machineId || ''} onValueChange={handleMachineChange} disabled={!installedMachines.length}>
+                  <SelectTrigger className="mt-2"><SelectValue placeholder="Tag this ticket to a machine" /></SelectTrigger>
+                  <SelectContent>
+                    {installedMachines.map((machine) => (
+                      <SelectItem key={machine.id} value={machine.id}>{machine.name}{machine.lineName ? ` · ${machine.lineName}` : ''} · S/N {machine.serialNumber}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <Separator />
               <div>
                 <Label>Assigned engineer</Label>
@@ -589,15 +659,36 @@ export default function SupportTicket() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-2"><Label>Estimate (₹)</Label><Input type="number" min="0" value={estimatedAmount} onChange={(e) => setEstimatedAmount(e.target.value)} /></div>
-                <div className="grid gap-2"><Label>Quote number</Label><Input value={quotationNumber} onChange={(e) => setQuotationNumber(e.target.value)} /></div>
-              </div>
               <div className="grid gap-2"><Label>Acceptance / customer PO</Label><Input value={acceptanceReference} onChange={(e) => setAcceptanceReference(e.target.value)} /></div>
               <div className="grid gap-2"><Label>Assessment notes</Label><Textarea value={coverageNotes} onChange={(e) => setCoverageNotes(e.target.value)} /></div>
               <Button className="w-full" variant="outline" onClick={handleSaveCoverage} disabled={saving}><Save className="mr-2 h-4 w-4" />Save commercial assessment</Button>
+              <Separator />
+              {ticket.quotation ? (
+                <div className="rounded-lg border bg-slate-50 p-3 text-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div><div className="font-semibold">{ticket.quotation.quotationNumber}</div><div className="text-xs text-muted-foreground">{ticket.quotation.billingEntityName} · Valid until {ticket.quotation.validUntil}</div></div>
+                    <div className="font-semibold">{new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(ticket.quotation.total)}</div>
+                  </div>
+                  <Button asChild size="sm" variant="link" className="mt-2 h-auto p-0"><a href={ticket.quotation.pdfUrl} target="_blank" rel="noreferrer"><FileText className="mr-1.5 h-3.5 w-3.5" />Open PDF</a></Button>
+                </div>
+              ) : <p className="text-xs text-muted-foreground">No quotation has been prepared for this ticket.</p>}
+              <Button className="w-full" onClick={() => setQuotationOpen(true)} disabled={!project || !client}><FileText className="mr-2 h-4 w-4" />{ticket.quotation ? 'Prepare revised quotation' : 'Prepare quotation'}</Button>
             </CardContent>
           </Card>
+
+          {ticket.quotation && (
+            <Card>
+              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><CircleDollarSign className="h-4 w-4" />Invoice & payment tracking</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-2"><Label>Payment status</Label><Select value={paymentStatus} onValueChange={(value) => setPaymentStatus(value as SupportPaymentStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="not-invoiced">Not invoiced</SelectItem><SelectItem value="invoice-raised">Invoice raised</SelectItem><SelectItem value="partially-paid">Partially paid</SelectItem><SelectItem value="paid">Paid</SelectItem><SelectItem value="waived">Waived</SelectItem></SelectContent></Select></div>
+                <div className="grid grid-cols-2 gap-3"><div className="grid gap-2"><Label>Invoice number</Label><Input value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} /></div><div className="grid gap-2"><Label>Invoice date</Label><Input type="date" value={invoiceDate} onChange={(event) => setInvoiceDate(event.target.value)} /></div></div>
+                <div className="grid grid-cols-2 gap-3"><div className="grid gap-2"><Label>Amount received (₹)</Label><Input type="number" min="0" value={amountReceived} onChange={(event) => setAmountReceived(event.target.value)} /></div><div className="grid gap-2"><Label>Received date</Label><Input type="date" value={paymentReceivedDate} onChange={(event) => setPaymentReceivedDate(event.target.value)} /></div></div>
+                <div className="grid gap-2"><Label>Payment reference</Label><Input value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="UTR, cheque or receipt reference" /></div>
+                <div className="flex justify-between rounded-md bg-slate-50 p-3 text-sm"><span className="text-muted-foreground">Outstanding balance</span><span className="font-semibold">{new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(quotationBalance)}</span></div>
+                <Button className="w-full" variant="outline" onClick={handleSavePayment} disabled={saving}><Save className="mr-2 h-4 w-4" />Save payment status</Button>
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Mail className="h-4 w-4" />Customer communication</CardTitle></CardHeader>
@@ -647,6 +738,15 @@ export default function SupportTicket() {
           </Card>
         </div>
       </div>
+      {project && (
+        <SupportQuotationDialog
+          open={quotationOpen}
+          onOpenChange={setQuotationOpen}
+          project={project}
+          ticket={ticket}
+          client={client || null}
+        />
+      )}
     </div>
   );
 }

@@ -10,7 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { FileText } from "lucide-react";
 import { subscribeToProjects } from "@/utils/projectFirestore";
-import { subscribeToClients, Client, subscribeToTemplates } from "@/utils/settingsFirestore";
+import { subscribeToClients, Client, subscribeToTemplates, subscribeToBillingEntities, type BillingEntity } from "@/utils/settingsFirestore";
 import type { FirestoreProject, NewProjectFormData } from "@/types/project";
 import type { BOMTemplate } from "@/types/bom";
 import { useAuth } from "@/hooks/useAuth";
@@ -26,12 +26,14 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
   const [id, setId] = useState("");
   const [name, setName] = useState("");
   const [client, setClient] = useState("");
+  const [billingEntityId, setBillingEntityId] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<FirestoreProject["status"]>("Planning");
   const [deadline, setDeadline] = useState("");
   const [poValue, setPoValue] = useState<string>("");
   const [error, setError] = useState("");
   const [clients, setClients] = useState<Client[]>([]);
+  const [billingEntities, setBillingEntities] = useState<BillingEntity[]>([]);
   const [templates, setTemplates] = useState<BOMTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [loading, setLoading] = useState(false);
@@ -65,6 +67,10 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
   useEffect(() => {
     if (!open) return;
     const unsubscribeClients = subscribeToClients(setClients);
+    const unsubscribeBillingEntities = subscribeToBillingEntities((entities) => {
+      setBillingEntities(entities);
+      setBillingEntityId((current) => current || entities[0]?.id || '');
+    });
     const unsubscribeTemplates = subscribeToTemplates((fetchedTemplates) => {
       setTemplates(fetchedTemplates);
       // Pre-select the default template if one is set
@@ -75,6 +81,7 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
     });
     return () => {
       unsubscribeClients();
+      unsubscribeBillingEntities();
       unsubscribeTemplates();
     };
   }, [open]);
@@ -110,6 +117,7 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
             name,
             client,
             clientId: clients.find((clientItem) => clientItem.company === client)?.id,
+            billingEntityId: billingEntityId || undefined,
             description,
             status,
             deadline,
@@ -118,6 +126,7 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
           setId("");
           setName("");
           setClient("");
+          setBillingEntityId("");
           setDescription("");
           setStatus("Planning");
           setDeadline("");
@@ -194,6 +203,18 @@ const AddProjectDialog = ({ open, onOpenChange, onAddProject }: AddProjectDialog
             {selectableClients.length === 0 && (
               <p className="text-xs text-muted-foreground">No clients available. Add clients in Settings first.</p>
             )}
+          </div>
+          <div className="space-y-1">
+            <Label>Billing entity</Label>
+            <Select value={billingEntityId} onValueChange={setBillingEntityId}>
+              <SelectTrigger className="h-8"><SelectValue placeholder="Select billing entity" /></SelectTrigger>
+              <SelectContent>
+                {billingEntities.map((entity) => (
+                  <SelectItem key={entity.id} value={entity.id}>{entity.displayName}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">Used for support quotations and billing documents.</p>
           </div>
           <div className="space-y-1">
             <Label htmlFor="description">Description</Label>
