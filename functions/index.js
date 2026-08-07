@@ -17,6 +17,10 @@ const admin = require("firebase-admin");
 const { Resend } = require("resend");
 const pdfParse = require("pdf-parse");
 const PDFDocument = require("pdfkit");
+const {
+  drawSupportQuotationHeader,
+  getBillingEntityDisplayName,
+} = require("./supportQuotationPdfLayout");
 
 // Use built-in fetch in Node.js 22
 const fetch = globalThis.fetch;
@@ -4906,57 +4910,23 @@ exports.prepareSupportQuotation = onCall(async (request) => {
     logger.warn('Support quotation logo could not be loaded', { billingEntityId, error: error.message });
   }
 
-  const pageWidth = doc.page.width - 84;
   if (logoBuffer) {
     try { doc.image(logoBuffer, 42, 38, { fit: [120, 50] }); } catch (error) { logger.warn('Support quote logo render failed', { error: error.message }); }
   }
-  doc.font('Helvetica-Bold').fontSize(17).fillColor('#0f172a')
-    .text(billingEntity.legalName, logoBuffer ? 175 : 42, 42, { width: logoBuffer ? 378 : pageWidth, align: logoBuffer ? 'right' : 'left' });
-  doc.font('Helvetica').fontSize(8).fillColor('#475569')
-    .text(billingEntity.companyAddress || '', logoBuffer ? 175 : 42, 66, { width: logoBuffer ? 378 : pageWidth, align: logoBuffer ? 'right' : 'left' });
-  const legalIdentifiers = [
-    `GSTIN: ${billingEntity.gstin}`,
-    billingEntity.pan ? `PAN: ${billingEntity.pan}` : '',
-    billingEntity.cin ? `CIN: ${billingEntity.cin}` : '',
-    billingEntity.udyamRegistrationNumber ? `Udyam: ${billingEntity.udyamRegistrationNumber}` : '',
-  ].filter(Boolean);
-  const contactIdentifiers = [
-    billingEntity.stateName ? `State: ${billingEntity.stateName}${billingEntity.stateCode ? ` (${billingEntity.stateCode})` : ''}` : '',
-    billingEntity.phone ? `Tel: ${billingEntity.phone}` : '',
-    billingEntity.fax ? `Fax: ${billingEntity.fax}` : '',
-    billingEntity.email ? `Email: ${billingEntity.email}` : '',
-    billingEntity.website ? `Web: ${billingEntity.website}` : '',
-  ].filter(Boolean);
-  doc.text(legalIdentifiers.join('  |  '), 42, 94, { width: pageWidth, align: 'right' });
-  if (contactIdentifiers.length) {
-    doc.text(contactIdentifiers.join('  |  '), 42, 105, { width: pageWidth, align: 'right' });
-  }
-  doc.moveTo(42, 121).lineTo(553, 121).strokeColor('#cbd5e1').stroke();
-
-  doc.font('Helvetica-Bold').fontSize(22).fillColor('#0f172a').text('SERVICE QUOTATION', 42, 137);
-  doc.fontSize(10).text(quotationNumber, 42, 166);
-  doc.font('Helvetica').fontSize(9).fillColor('#475569')
-    .text(`Date: ${toIsoDate(quotationDate)}`, 393, 141, { width: 160, align: 'right' })
-    .text(`Valid until: ${toIsoDate(validUntilDate)}`, 393, 157, { width: 160, align: 'right' });
-
-  doc.roundedRect(42, 189, 511, 94, 4).fillAndStroke('#f8fafc', '#e2e8f0');
-  doc.font('Helvetica-Bold').fontSize(8).fillColor('#64748b').text('QUOTATION TO', 54, 201);
-  doc.fontSize(11).fillColor('#0f172a').text(project.clientName || client.company || ticket.clientName || 'Customer', 54, 217);
-  doc.font('Helvetica').fontSize(8).fillColor('#475569').text(client.address || '', 54, 235, { width: 235, height: 22 });
-  const clientIdentifiers = [
-    client.gstin ? `GSTIN: ${client.gstin}` : '',
-    client.pan ? `PAN: ${client.pan}` : '',
-  ].filter(Boolean).join('  |  ');
-  doc.text(clientIdentifiers || 'GSTIN: Not provided', 54, 258, { width: 235 });
-  if (client.stateName) {
-    doc.text(`State: ${client.stateName}${client.stateCode ? ` (${client.stateCode})` : ''}`, 54, 269, { width: 235 });
-  }
-  doc.font('Helvetica-Bold').fontSize(8).fillColor('#64748b').text('SUPPORT REFERENCE', 310, 201);
-  doc.font('Helvetica').fontSize(9).fillColor('#0f172a')
-    .text(`${ticket.ticketNumber || ticketId} · ${project.projectName || projectId}`, 310, 217, { width: 230 })
-    .text(`${ticket.machineName || 'Machine not tagged'}${ticket.machineSerialNumber ? ` · S/N ${ticket.machineSerialNumber}` : ''}`, 310, 235, { width: 230 });
-
-  let y = 300;
+  const quotationEntityName = getBillingEntityDisplayName(billingEntity);
+  let y = drawSupportQuotationHeader({
+    doc,
+    billingEntity,
+    client,
+    project,
+    ticket,
+    projectId,
+    ticketId,
+    quotationNumber,
+    quotationDateText: toIsoDate(quotationDate),
+    validUntilText: toIsoDate(validUntilDate),
+    hasLogo: Boolean(logoBuffer),
+  });
   const drawHeader = () => {
     doc.rect(42, y, 511, 24).fill('#0f172a');
     doc.font('Helvetica-Bold').fontSize(8).fillColor('#ffffff');
@@ -5026,7 +4996,7 @@ exports.prepareSupportQuotation = onCall(async (request) => {
     y += doc.heightOfString(String(notes), { width: 511 }) + 28;
   }
   if (y > 690) { doc.addPage(); y = 42; }
-  doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f172a').text(`For ${billingEntity.legalName}`, 353, y, { width: 200, align: 'right' });
+  doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f172a').text(`For ${quotationEntityName}`, 353, y, { width: 200, align: 'right' });
   doc.font('Helvetica').fontSize(8).fillColor('#475569')
     .text(billingEntity.authorizedSignatoryName || 'Authorised signatory', 353, y + 28, { width: 200, align: 'right' });
   if (billingEntity.authorizedSignatoryDesignation) {
