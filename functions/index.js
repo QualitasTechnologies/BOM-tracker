@@ -5197,6 +5197,7 @@ exports.prepareSupportEngineerFollowUp = onCall(
       projectId,
       ticketId,
     });
+    const supportUrl = `https://visionbomtracker.web.app/project/${encodeURIComponent(projectId)}/support/${encodeURIComponent(ticketId)}`;
     const fallback = buildFallbackDraft({
       ticket: context.ticket,
       project: context.project,
@@ -5204,6 +5205,7 @@ exports.prepareSupportEngineerFollowUp = onCall(
       senderName: context.userRecord.displayName || context.userRecord.email || 'Support team',
       quickNote,
       missingItems: context.missingItems,
+      supportUrl,
     });
 
     let draft = fallback;
@@ -5217,6 +5219,7 @@ exports.prepareSupportEngineerFollowUp = onCall(
         assignee: context.assignee,
         quickNote: quickNote.trim(),
         missingItems: context.missingItems,
+        supportUrl,
       });
       generatedByAI = draft !== fallback;
     } catch (error) {
@@ -5269,6 +5272,9 @@ exports.sendSupportEngineerFollowUp = onCall(
     const messageHtml = escapeHtml(cleanBody).replace(/\n/g, '<br/>');
     const ticketNumber = escapeHtml(context.ticket.ticketNumber || ticketId);
     const supportUrl = `https://visionbomtracker.web.app/project/${encodeURIComponent(projectId)}/support/${encodeURIComponent(ticketId)}`;
+    const messageText = cleanBody.includes(supportUrl)
+      ? cleanBody
+      : `${cleanBody}\n\nUpdate BOM Tracker: ${supportUrl}`;
     const html = `<!doctype html>
 <html><body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#1e293b;">
   <div style="max-width:680px;margin:24px auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 2px 10px rgba(15,23,42,.08);">
@@ -5277,7 +5283,7 @@ exports.sendSupportEngineerFollowUp = onCall(
       <h1 style="margin:8px 0 0;font-size:21px;">${ticketNumber}</h1>
     </div>
     <div style="padding:28px 30px;line-height:1.55;">${messageHtml}
-      <p style="margin-top:24px;"><a href="${supportUrl}" style="display:inline-block;padding:11px 18px;background:#0f766e;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">Open support ticket</a></p>
+      <p style="margin-top:24px;"><a href="${supportUrl}" style="display:inline-block;padding:11px 18px;background:#0f766e;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">Update BOM Tracker</a></p>
     </div>
     <div style="padding:14px 30px;background:#f8fafc;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;">This internal follow-up is recorded in the support activity trail.</div>
   </div>
@@ -5291,7 +5297,7 @@ exports.sendSupportEngineerFollowUp = onCall(
         ...(context.recipients.cc.length ? { cc: context.recipients.cc } : {}),
         subject: cleanSubject,
         html,
-        text: `${cleanBody}\n\nOpen support ticket: ${supportUrl}`,
+        text: messageText,
       });
       if (response?.error) {
         throw new Error(response.error.message || 'Email provider rejected the message');
