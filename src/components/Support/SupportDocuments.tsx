@@ -38,6 +38,7 @@ const CATEGORY_LABELS: Record<SupportDocumentCategory, string> = {
   'diagnostic-log': 'Diagnostic log',
   quotation: 'Support quotation',
   'quotation-acceptance': 'Quotation acceptance / PO',
+  'tax-invoice': 'Tax invoice',
   'rca-report': 'RCA report',
   'solution-report': 'Solution report',
   other: 'Other',
@@ -60,6 +61,7 @@ const ticketCategories: SupportDocumentCategory[] = [
   'diagnostic-log',
   'quotation',
   'quotation-acceptance',
+  'tax-invoice',
   'rca-report',
   'solution-report',
   'other',
@@ -221,4 +223,3 @@ export function SupportDocuments({
     </div>
   );
 }
-

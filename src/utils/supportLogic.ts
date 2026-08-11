@@ -2,6 +2,7 @@ import type {
   CommercialStatus,
   CoverageType,
   SupportPriority,
+  SupportPaymentStatus,
   InstalledMachine,
   SupportProjectProfile,
   SupportTicket,
@@ -129,6 +130,63 @@ export function calculateSupportTargets(priority: SupportPriority, from = new Da
 
 export function isTicketOpen(status: SupportTicketStatus) {
   return !['closed', 'cancelled'].includes(status);
+}
+
+export function shouldShowInvoiceTracking(ticket: SupportTicket) {
+  if (ticket.coverageType !== 'chargeable') return false;
+  return Boolean(
+    ticket.quotation ||
+      ticket.invoiceDocumentId ||
+      ticket.invoiceNumber ||
+      (ticket.paymentStatus && ticket.paymentStatus !== 'not-invoiced') ||
+      ['accepted', 'invoiced'].includes(ticket.commercialStatus),
+  );
+}
+
+export function needsCommercialAction(ticket: SupportTicket) {
+  if (ticket.coverageType !== 'chargeable' || ticket.status === 'cancelled') return false;
+  if (ticket.commercialStatus === 'rejected') return false;
+
+  const paymentStatus = ticket.paymentStatus || 'not-invoiced';
+  if (paymentStatus === 'paid' || paymentStatus === 'waived') return false;
+  if (paymentStatus === 'invoice-raised' || paymentStatus === 'partially-paid') return true;
+  if (ticket.commercialStatus === 'invoiced') return true;
+  if (ticket.commercialStatus === 'accepted') {
+    return ['resolved', 'closed'].includes(ticket.status);
+  }
+  return true;
+}
+
+export interface PaymentTrackingInput {
+  paymentStatus: SupportPaymentStatus;
+  invoiceNumber: string;
+  invoiceDate: string;
+  invoiceDueDate: string;
+  invoiceAmount: number;
+  amountReceived: number;
+  paymentReceivedDate: string;
+  paymentReference: string;
+}
+
+export function validatePaymentTracking(input: PaymentTrackingInput): string | null {
+  if (input.paymentStatus === 'not-invoiced' || input.paymentStatus === 'waived') return null;
+  if (!input.invoiceNumber.trim()) return 'Enter the invoice number.';
+  if (!input.invoiceDate) return 'Enter the invoice date.';
+  if (!input.invoiceDueDate) return 'Enter the invoice due date.';
+  if (!(input.invoiceAmount > 0)) return 'Enter an invoice amount greater than zero.';
+
+  if (input.paymentStatus === 'partially-paid' || input.paymentStatus === 'paid') {
+    if (!(input.amountReceived > 0)) return 'Enter the amount received.';
+    if (!input.paymentReceivedDate) return 'Enter the payment received date.';
+    if (!input.paymentReference.trim()) return 'Enter the payment reference.';
+  }
+  if (input.paymentStatus === 'partially-paid' && input.amountReceived >= input.invoiceAmount) {
+    return 'Use Paid when the full invoice amount has been received.';
+  }
+  if (input.paymentStatus === 'paid' && input.amountReceived < input.invoiceAmount) {
+    return 'Payment received is below the invoice total. Use Partially paid instead.';
+  }
+  return null;
 }
 
 export function isOverdue(ticket: SupportTicket, now = new Date()) {

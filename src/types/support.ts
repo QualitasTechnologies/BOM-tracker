@@ -100,6 +100,7 @@ export type SupportDocumentCategory =
   | 'diagnostic-log'
   | 'quotation'
   | 'quotation-acceptance'
+  | 'tax-invoice'
   | 'rca-report'
   | 'solution-report'
   | 'other';
@@ -154,6 +155,23 @@ export interface SupportAssignee {
   email?: string;
 }
 
+export interface SupportFollowUpMissingItem {
+  code: string;
+  label: string;
+  action: string;
+  section?: string;
+}
+
+export interface SupportEngineerFollowUpDraft {
+  subject: string;
+  body: string;
+  to: string;
+  cc: string[];
+  missingItems: SupportFollowUpMissingItem[];
+  generatedByAI: boolean;
+  aiProvider: 'gemini' | 'fallback';
+}
+
 export interface SupportTicket {
   id: string;
   ticketNumber: string;
@@ -193,6 +211,9 @@ export interface SupportTicket {
   paymentStatus?: SupportPaymentStatus;
   invoiceNumber?: string;
   invoiceDate?: string;
+  invoiceDueDate?: string;
+  invoiceAmount?: number;
+  invoiceDocumentId?: string;
   amountReceived?: number;
   paymentReceivedDate?: string;
   paymentReference?: string;
@@ -200,6 +221,9 @@ export interface SupportTicket {
   resolutionTargetAt: Date;
   firstResponseAt?: Date;
   scheduledFor?: Date;
+  serviceStartedAt?: Date;
+  serviceCompletedAt?: Date;
+  lastEngineerFollowUpAt?: Date;
   resolvedAt?: Date;
   closedAt?: Date;
   siteVisitRequired: boolean;

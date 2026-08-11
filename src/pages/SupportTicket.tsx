@@ -60,9 +60,11 @@ import {
   COVERAGE_LABELS,
   getTransitionBlocker,
   isOverdue,
+  shouldShowInvoiceTracking,
   SUPPORT_STATUS_LABELS,
   SUPPORT_STATUS_ORDER,
   getInstalledMachines,
+  validatePaymentTracking,
 } from '@/utils/supportLogic';
 import { getProject, type Project } from '@/utils/projectFirestore';
 import {
@@ -73,6 +75,7 @@ import {
   type ClientContact,
 } from '@/utils/settingsFirestore';
 import { AddClientContactDialog } from '@/components/Support/AddClientContactDialog';
+import { SupportEngineerFollowUpDialog } from '@/components/Support/SupportEngineerFollowUpDialog';
 import { SupportQuotationDialog } from '@/components/Support/SupportQuotationDialog';
 
 const formatDateTime = (date?: Date) =>
@@ -82,6 +85,12 @@ const formatDateTime = (date?: Date) =>
         timeStyle: 'short',
       }).format(date)
     : 'Not recorded';
+
+const formatDateTimeInput = (date?: Date) => {
+  if (!date) return '';
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+};
 
 export default function SupportTicket() {
   const { projectId = '', ticketId = '' } = useParams();
@@ -105,11 +114,17 @@ export default function SupportTicket() {
   const [coverageNotes, setCoverageNotes] = useState('');
   const [commercialStatus, setCommercialStatus] = useState<CommercialStatus>('assessment-required');
   const [acceptanceReference, setAcceptanceReference] = useState('');
+  const [acceptedOrderValue, setAcceptedOrderValue] = useState('');
   const [contactId, setContactId] = useState('');
   const [quotationOpen, setQuotationOpen] = useState(false);
+  const [followUpOpen, setFollowUpOpen] = useState(false);
+  const [serviceStartedAt, setServiceStartedAt] = useState('');
+  const [serviceCompletedAt, setServiceCompletedAt] = useState('');
   const [paymentStatus, setPaymentStatus] = useState<SupportPaymentStatus>('not-invoiced');
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [invoiceDate, setInvoiceDate] = useState('');
+  const [invoiceDueDate, setInvoiceDueDate] = useState('');
+  const [invoiceAmount, setInvoiceAmount] = useState('');
   const [amountReceived, setAmountReceived] = useState('');
   const [paymentReceivedDate, setPaymentReceivedDate] = useState('');
   const [paymentReference, setPaymentReference] = useState('');
@@ -150,12 +165,22 @@ export default function SupportTicket() {
     setCoverageNotes(ticket.coverageNotes || '');
     setCommercialStatus(ticket.commercialStatus);
     setAcceptanceReference(ticket.acceptanceReference || '');
+    setAcceptedOrderValue(ticket.estimatedAmount?.toString() || ticket.quotation?.total.toString() || '');
     setPaymentStatus(ticket.paymentStatus || 'not-invoiced');
     setInvoiceNumber(ticket.invoiceNumber || '');
     setInvoiceDate(ticket.invoiceDate || '');
+    setInvoiceDueDate(ticket.invoiceDueDate || '');
+    setInvoiceAmount(
+      ticket.invoiceAmount?.toString() ||
+        ticket.quotation?.total.toString() ||
+        ticket.estimatedAmount?.toString() ||
+        '',
+    );
     setAmountReceived(ticket.amountReceived?.toString() || '');
     setPaymentReceivedDate(ticket.paymentReceivedDate || '');
     setPaymentReference(ticket.paymentReference || '');
+    setServiceStartedAt(formatDateTimeInput(ticket.serviceStartedAt));
+    setServiceCompletedAt(formatDateTimeInput(ticket.serviceCompletedAt));
   }, [ticket]);
 
   const client = useMemo(
@@ -200,9 +225,14 @@ export default function SupportTicket() {
     [project],
   );
   const selectedMachine = installedMachines.find((machine) => machine.id === ticket?.machineId);
+  const assignedEngineerEmail = ticket?.assignee?.email || project?.members?.find(
+    (member) => member.userId === ticket?.assignee?.userId,
+  )?.email;
 
   const quotationDocument = ticketDocuments.find((document) => document.id === ticket?.quotationDocumentId) ||
     ticketDocuments.find((document) => document.category === 'quotation');
+  const invoiceDocument = ticketDocuments.find((document) => document.id === ticket?.invoiceDocumentId) ||
+    ticketDocuments.find((document) => document.category === 'tax-invoice');
   const resolutionDocument = ticketDocuments.find((document) =>
     ['rca-report', 'solution-report'].includes(document.category),
   );
@@ -277,6 +307,10 @@ export default function SupportTicket() {
         coverageNotes: coverageNotes.trim(),
         commercialStatus,
         acceptanceReference: acceptanceReference.trim(),
+        estimatedAmount:
+          coverageType === 'chargeable'
+            ? Math.max(0, Number(acceptedOrderValue) || 0)
+            : ticket.estimatedAmount,
         quotationAcceptedAt:
           commercialStatus === 'accepted' && !ticket.quotationAcceptedAt
             ? new Date()
@@ -317,13 +351,50 @@ export default function SupportTicket() {
     toast({ title: 'Machine updated', description: `${machine.name} · ${machine.serialNumber}` });
   };
 
+  const handleSaveServiceDates = async () => {
+    const started = serviceStartedAt ? new Date(serviceStartedAt) : undefined;
+    const completed = serviceCompletedAt ? new Date(serviceCompletedAt) : undefined;
+    if (started && completed && completed.getTime() < started.getTime()) {
+      toast({
+        title: 'Check the service dates',
+        description: 'Service completion cannot be before service start.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateSupportTicket(projectId, ticketId, {
+        serviceStartedAt: started || (null as unknown as Date),
+        serviceCompletedAt: completed || (null as unknown as Date),
+      });
+      await log(
+        'note',
+        `Service dates updated: started ${formatDateTime(started)}; completed ${formatDateTime(completed)}`,
+      );
+      toast({ title: 'Service dates saved' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSavePayment = async () => {
     const received = Math.max(0, Number(amountReceived) || 0);
-    const quotationTotal = ticket.quotation?.total || ticket.estimatedAmount || 0;
-    if (paymentStatus === 'paid' && received < quotationTotal) {
+    const total = Math.max(0, Number(invoiceAmount) || 0);
+    const validationError = validatePaymentTracking({
+      paymentStatus,
+      invoiceNumber,
+      invoiceDate,
+      invoiceDueDate,
+      invoiceAmount: total,
+      amountReceived: received,
+      paymentReceivedDate,
+      paymentReference,
+    });
+    if (validationError) {
       toast({
-        title: 'Payment amount is below the quotation total',
-        description: 'Use Partially paid, or record the full amount received.',
+        title: 'Complete the invoice or payment details',
+        description: validationError,
         variant: 'destructive',
       });
       return;
@@ -334,12 +405,19 @@ export default function SupportTicket() {
         paymentStatus,
         invoiceNumber: invoiceNumber.trim(),
         invoiceDate,
+        invoiceDueDate,
+        invoiceAmount: total,
         amountReceived: received,
         paymentReceivedDate,
         paymentReference: paymentReference.trim(),
-        commercialStatus: paymentStatus === 'not-invoiced' ? ticket.commercialStatus : 'invoiced',
+        commercialStatus: ['invoice-raised', 'partially-paid', 'paid'].includes(paymentStatus)
+          ? 'invoiced'
+          : ticket.commercialStatus,
       });
-      await log('commercial', `Payment status updated to ${paymentStatus.replace('-', ' ')}${received ? `; INR ${received.toLocaleString('en-IN')} received` : ''}`);
+      await log(
+        'commercial',
+        `Payment status updated to ${paymentStatus.replace('-', ' ')}${invoiceNumber.trim() ? ` for invoice ${invoiceNumber.trim()}` : ''}${received ? `; INR ${received.toLocaleString('en-IN')} received` : ''}`,
+      );
       toast({ title: 'Payment tracking updated' });
     } finally {
       setSaving(false);
@@ -436,14 +514,29 @@ export default function SupportTicket() {
     if (document.category === 'quotation') {
       await updateSupportTicket(projectId, ticketId, {
         quotationDocumentId: document.id,
-        commercialStatus: 'quotation-prepared',
+        commercialStatus: ['accepted', 'invoiced'].includes(ticket.commercialStatus)
+          ? ticket.commercialStatus
+          : 'quotation-prepared',
       });
+    }
+    if (document.category === 'tax-invoice') {
+      await updateSupportTicket(projectId, ticketId, { invoiceDocumentId: document.id });
     }
   };
 
   const overdue = isOverdue(ticket);
   const nextTarget = ticket.firstResponseAt ? ticket.resolutionTargetAt : ticket.firstResponseTargetAt;
-  const quotationBalance = Math.max(0, (ticket.quotation?.total || ticket.estimatedAmount || 0) - (Number(amountReceived) || 0));
+  const invoiceTrackingVisible = shouldShowInvoiceTracking(ticket);
+  const trackedInvoiceTotal = Math.max(
+    0,
+    Number(invoiceAmount) || ticket.invoiceAmount || ticket.quotation?.total || ticket.estimatedAmount || 0,
+  );
+  const outstandingBalance = Math.max(0, trackedInvoiceTotal - (Number(amountReceived) || 0));
+  const invoiceOverdue = Boolean(
+    invoiceDueDate &&
+      outstandingBalance > 0 &&
+      new Date(`${invoiceDueDate}T23:59:59`).getTime() < Date.now(),
+  );
 
   return (
     <div className="mx-auto max-w-7xl space-y-5">
@@ -603,6 +696,7 @@ export default function SupportTicket() {
               <InfoRow icon={UserRound} label="Owner" value={ticket.assignee?.name || 'Unassigned'} />
               <InfoRow icon={CalendarClock} label={ticket.firstResponseAt ? 'Resolution target' : 'First response target'} value={formatDateTime(nextTarget)} danger={overdue} />
               <InfoRow icon={Clock3} label="First response" value={formatDateTime(ticket.firstResponseAt)} />
+              <InfoRow icon={Clock3} label="Last engineer follow-up" value={formatDateTime(ticket.lastEngineerFollowUpAt)} />
               <InfoRow icon={MapPin} label="Installed site" value={selectedMachine?.siteLocation || project?.supportProfile?.siteLocation || 'Not configured'} />
               <div>
                 <Label>Machine / line</Label>
@@ -635,6 +729,39 @@ export default function SupportTicket() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                <div className="grid gap-2">
+                  <Label>Service started</Label>
+                  <Input
+                    type="datetime-local"
+                    value={serviceStartedAt}
+                    onChange={(event) => setServiceStartedAt(event.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label>Service completed</Label>
+                  <Input
+                    type="datetime-local"
+                    value={serviceCompletedAt}
+                    min={serviceStartedAt || undefined}
+                    onChange={(event) => setServiceCompletedAt(event.target.value)}
+                  />
+                </div>
+              </div>
+              <Button className="w-full" variant="outline" onClick={handleSaveServiceDates} disabled={saving}>
+                <Save className="mr-2 h-4 w-4" />Save service dates
+              </Button>
+              <Separator />
+              <Button
+                className="w-full"
+                onClick={() => setFollowUpOpen(true)}
+                disabled={!assignedEngineerEmail}
+              >
+                <Mail className="mr-2 h-4 w-4" />Follow up with engineer
+              </Button>
+              {!assignedEngineerEmail && (
+                <p className="text-xs text-amber-700">Assign a project member with an email address before following up.</p>
+              )}
             </CardContent>
           </Card>
 
@@ -660,6 +787,13 @@ export default function SupportTicket() {
                 </Select>
               </div>
               <div className="grid gap-2"><Label>Acceptance / customer PO</Label><Input value={acceptanceReference} onChange={(e) => setAcceptanceReference(e.target.value)} /></div>
+              {coverageType === 'chargeable' && (
+                <div className="grid gap-2">
+                  <Label>Accepted order value (INR)</Label>
+                  <Input type="number" min="0" value={acceptedOrderValue} onChange={(event) => setAcceptedOrderValue(event.target.value)} />
+                  <p className="text-xs text-muted-foreground">Use the customer PO total, including tax, for external quotations.</p>
+                </div>
+              )}
               <div className="grid gap-2"><Label>Assessment notes</Label><Textarea value={coverageNotes} onChange={(e) => setCoverageNotes(e.target.value)} /></div>
               <Button className="w-full" variant="outline" onClick={handleSaveCoverage} disabled={saving}><Save className="mr-2 h-4 w-4" />Save commercial assessment</Button>
               <Separator />
@@ -671,20 +805,30 @@ export default function SupportTicket() {
                   </div>
                   <Button asChild size="sm" variant="link" className="mt-2 h-auto p-0"><a href={ticket.quotation.pdfUrl} target="_blank" rel="noreferrer"><FileText className="mr-1.5 h-3.5 w-3.5" />Open PDF</a></Button>
                 </div>
-              ) : <p className="text-xs text-muted-foreground">No quotation has been prepared for this ticket.</p>}
-              <Button className="w-full" onClick={() => setQuotationOpen(true)} disabled={!project || !client}><FileText className="mr-2 h-4 w-4" />{ticket.quotation ? 'Prepare revised quotation' : 'Prepare quotation'}</Button>
+              ) : quotationDocument || ['accepted', 'invoiced'].includes(ticket.commercialStatus) ? (
+                <div className="rounded-lg border bg-slate-50 p-3 text-sm">
+                  <div className="font-semibold">External quotation / customer PO</div>
+                  <div className="mt-1 text-xs text-muted-foreground">{acceptanceReference || 'Commercial acceptance recorded outside the app.'}</div>
+                  {ticket.estimatedAmount ? <div className="mt-2 font-semibold">{new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(ticket.estimatedAmount)}</div> : null}
+                  {quotationDocument ? <Button asChild size="sm" variant="link" className="mt-2 h-auto p-0"><a href={quotationDocument.url} target="_blank" rel="noreferrer"><FileText className="mr-1.5 h-3.5 w-3.5" />Open external quotation</a></Button> : null}
+                </div>
+              ) : <p className="text-xs text-muted-foreground">No quotation has been prepared or uploaded for this ticket.</p>}
+              <Button className="w-full" onClick={() => setQuotationOpen(true)} disabled={!project || !client}><FileText className="mr-2 h-4 w-4" />{ticket.quotation || ['accepted', 'invoiced'].includes(ticket.commercialStatus) ? 'Prepare revised quotation' : 'Prepare quotation'}</Button>
             </CardContent>
           </Card>
 
-          {ticket.quotation && (
+          {invoiceTrackingVisible && (
             <Card>
               <CardHeader><CardTitle className="flex items-center gap-2 text-base"><CircleDollarSign className="h-4 w-4" />Invoice & payment tracking</CardTitle></CardHeader>
               <CardContent className="space-y-4">
+                <p className="text-xs text-muted-foreground">Track invoices created in the accounting system, including external-quotation and customer-PO cases.</p>
                 <div className="grid gap-2"><Label>Payment status</Label><Select value={paymentStatus} onValueChange={(value) => setPaymentStatus(value as SupportPaymentStatus)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="not-invoiced">Not invoiced</SelectItem><SelectItem value="invoice-raised">Invoice raised</SelectItem><SelectItem value="partially-paid">Partially paid</SelectItem><SelectItem value="paid">Paid</SelectItem><SelectItem value="waived">Waived</SelectItem></SelectContent></Select></div>
                 <div className="grid grid-cols-2 gap-3"><div className="grid gap-2"><Label>Invoice number</Label><Input value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} /></div><div className="grid gap-2"><Label>Invoice date</Label><Input type="date" value={invoiceDate} onChange={(event) => setInvoiceDate(event.target.value)} /></div></div>
-                <div className="grid grid-cols-2 gap-3"><div className="grid gap-2"><Label>Amount received (₹)</Label><Input type="number" min="0" value={amountReceived} onChange={(event) => setAmountReceived(event.target.value)} /></div><div className="grid gap-2"><Label>Received date</Label><Input type="date" value={paymentReceivedDate} onChange={(event) => setPaymentReceivedDate(event.target.value)} /></div></div>
+                <div className="grid grid-cols-2 gap-3"><div className="grid gap-2"><Label>Invoice amount (INR)</Label><Input type="number" min="0" value={invoiceAmount} onChange={(event) => setInvoiceAmount(event.target.value)} /></div><div className="grid gap-2"><Label>Payment due date</Label><Input type="date" value={invoiceDueDate} onChange={(event) => setInvoiceDueDate(event.target.value)} /></div></div>
+                <div className="grid grid-cols-2 gap-3"><div className="grid gap-2"><Label>Amount received (INR)</Label><Input type="number" min="0" value={amountReceived} onChange={(event) => setAmountReceived(event.target.value)} /></div><div className="grid gap-2"><Label>Received date</Label><Input type="date" value={paymentReceivedDate} onChange={(event) => setPaymentReceivedDate(event.target.value)} /></div></div>
                 <div className="grid gap-2"><Label>Payment reference</Label><Input value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="UTR, cheque or receipt reference" /></div>
-                <div className="flex justify-between rounded-md bg-slate-50 p-3 text-sm"><span className="text-muted-foreground">Outstanding balance</span><span className="font-semibold">{new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(quotationBalance)}</span></div>
+                {invoiceDocument ? <Button asChild size="sm" variant="link" className="h-auto justify-start p-0"><a href={invoiceDocument.url} target="_blank" rel="noreferrer"><FileText className="mr-1.5 h-3.5 w-3.5" />Open tax invoice</a></Button> : <p className="text-xs text-amber-700">Upload the accounting-system invoice under Documents → Tax invoice.</p>}
+                <div className={`flex justify-between rounded-md p-3 text-sm ${invoiceOverdue ? 'bg-red-50 text-red-700' : 'bg-slate-50'}`}><span>{invoiceOverdue ? 'Overdue balance' : 'Outstanding balance'}</span><span className="font-semibold">{new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(outstandingBalance)}</span></div>
                 <Button className="w-full" variant="outline" onClick={handleSavePayment} disabled={saving}><Save className="mr-2 h-4 w-4" />Save payment status</Button>
               </CardContent>
             </Card>
@@ -747,6 +891,12 @@ export default function SupportTicket() {
           client={client || null}
         />
       )}
+      <SupportEngineerFollowUpDialog
+        open={followUpOpen}
+        onOpenChange={setFollowUpOpen}
+        projectId={projectId}
+        ticket={ticket}
+      />
     </div>
   );
 }

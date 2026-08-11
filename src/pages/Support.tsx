@@ -60,6 +60,7 @@ import {
   isOverdue,
   isTicketOpen,
   getInstalledMachines,
+  needsCommercialAction,
 } from '@/utils/supportLogic';
 import { subscribeToProjects, type Project } from '@/utils/projectFirestore';
 import { subscribeToClients, type Client } from '@/utils/settingsFirestore';
@@ -165,11 +166,7 @@ export default function Support() {
       open: open.length,
       overdue: open.filter((ticket) => isOverdue(ticket)).length,
       awaiting: open.filter((ticket) => ticket.status === 'waiting').length,
-      chargeable: open.filter(
-        (ticket) =>
-          ticket.coverageType === 'chargeable' &&
-          !['accepted', 'invoiced', 'rejected'].includes(ticket.commercialStatus),
-      ).length,
+      commercialAction: tickets.filter(needsCommercialAction).length,
       resolvedThisMonth: tickets.filter((ticket) => {
         if (!ticket.resolvedAt) return false;
         const now = new Date();
@@ -236,7 +233,7 @@ export default function Support() {
         <MetricCard icon={TicketCheck} label="Open tickets" value={metrics.open} />
         <MetricCard icon={AlertTriangle} label="SLA attention" value={metrics.overdue} tone={metrics.overdue ? 'danger' : 'default'} />
         <MetricCard icon={CalendarClock} label="Waiting" value={metrics.awaiting} />
-        <MetricCard icon={CircleDollarSign} label="Commercial action" value={metrics.chargeable} />
+        <MetricCard icon={CircleDollarSign} label="Commercial / collection" value={metrics.commercialAction} />
         <MetricCard icon={CheckCircle2} label="Resolved this month" value={metrics.resolvedThisMonth} />
       </div>
 

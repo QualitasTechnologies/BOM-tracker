@@ -25,6 +25,7 @@ import type {
   SupportTicket,
   SupportQuotation,
   SupportQuotationLine,
+  SupportEngineerFollowUpDraft,
 } from '@/types/support';
 import type { ClientContact, ClientContactRole } from './settingsFirestore';
 import { calculateSupportTargets } from './supportLogic';
@@ -54,6 +55,9 @@ const mapTicket = (id: string, data: DocumentData): SupportTicket => ({
   resolutionTargetAt: asDate(data.resolutionTargetAt),
   firstResponseAt: optionalDate(data.firstResponseAt),
   scheduledFor: optionalDate(data.scheduledFor),
+  serviceStartedAt: optionalDate(data.serviceStartedAt),
+  serviceCompletedAt: optionalDate(data.serviceCompletedAt),
+  lastEngineerFollowUpAt: optionalDate(data.lastEngineerFollowUpAt),
   quotationSentAt: optionalDate(data.quotationSentAt),
   quotationAcceptedAt: optionalDate(data.quotationAcceptedAt),
   resolvedAt: optionalDate(data.resolvedAt),
@@ -325,4 +329,31 @@ export async function addClientCRMContact(input: {
   );
   const result = await callable(input);
   return result.data.contact;
+}
+
+export async function prepareSupportEngineerFollowUp(input: {
+  projectId: string;
+  ticketId: string;
+  quickNote?: string;
+}): Promise<SupportEngineerFollowUpDraft> {
+  const callable = httpsCallable<typeof input, SupportEngineerFollowUpDraft>(
+    functions,
+    'prepareSupportEngineerFollowUp',
+  );
+  const result = await callable(input);
+  return result.data;
+}
+
+export async function sendSupportEngineerFollowUp(input: {
+  projectId: string;
+  ticketId: string;
+  subject: string;
+  body: string;
+}): Promise<{ success: boolean; messageId?: string; to: string; cc: string[] }> {
+  const callable = httpsCallable<
+    typeof input,
+    { success: boolean; messageId?: string; to: string; cc: string[] }
+  >(functions, 'sendSupportEngineerFollowUp');
+  const result = await callable(input);
+  return result.data;
 }

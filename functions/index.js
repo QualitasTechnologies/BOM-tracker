@@ -21,6 +21,12 @@ const {
   drawSupportQuotationHeader,
   getBillingEntityDisplayName,
 } = require("./supportQuotationPdfLayout");
+const {
+  buildFallbackDraft,
+  collectMissingRecords,
+  prepareSupportFollowUpWithGemini,
+  resolveRecipients,
+} = require('./supportEngineerFollowUp');
 
 // Use built-in fetch in Node.js 22
 const fetch = globalThis.fetch;
@@ -32,6 +38,7 @@ if (!admin.apps.length) {
 
 // Define secrets
 const openaiApiKeySecret = defineSecret('OPENAI_API_KEY');
+const geminiApiKeySecret = defineSecret('GEMINI_API_KEY');
 const resendApiKey = defineSecret('RESEND_API_KEY');
 const pulseApiKey = defineSecret('PULSE_API_KEY');
 const PULSE_BASE_URL = process.env.PULSE_BASE_URL || 'https://eagle-eye.qualitastech.com/pulse';
@@ -5055,6 +5062,9 @@ exports.prepareSupportQuotation = onCall(async (request) => {
     createdAt: new Date().toISOString(),
   };
   const batch = firestore.batch();
+  const nextCommercialStatus = ['accepted', 'invoiced'].includes(ticket.commercialStatus)
+    ? ticket.commercialStatus
+    : 'quotation-prepared';
   batch.set(quoteRef, { ...quotation, createdAt: now, projectId, ticketId });
   batch.set(documentRef, {
     projectId,
@@ -5074,7 +5084,7 @@ exports.prepareSupportQuotation = onCall(async (request) => {
     quotationNumber,
     quotationDocumentId: documentRef.id,
     estimatedAmount: total,
-    commercialStatus: 'quotation-prepared',
+    commercialStatus: nextCommercialStatus,
     paymentStatus: ticket.paymentStatus || 'not-invoiced',
     updatedAt: now,
   });
@@ -5090,6 +5100,247 @@ exports.prepareSupportQuotation = onCall(async (request) => {
   logger.info('Support quotation prepared', { projectId, ticketId, quotationNumber, total, billingEntityId });
   return { quotation };
 });
+
+const getSupportFollowUpContext = async ({ auth, projectId, ticketId }) => {
+  if (!auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+  }
+  if (!projectId || !ticketId) {
+    throw new functions.https.HttpsError('invalid-argument', 'projectId and ticketId are required');
+  }
+
+  const firestore = admin.firestore();
+  const projectRef = firestore.collection('projects').doc(projectId);
+  const ticketRef = projectRef.collection('supportTickets').doc(ticketId);
+  const [projectSnapshot, ticketSnapshot, documentsSnapshot, userRecord] = await Promise.all([
+    projectRef.get(),
+    ticketRef.get(),
+    projectRef.collection('supportDocuments').get(),
+    admin.auth().getUser(auth.uid),
+  ]);
+  if (!projectSnapshot.exists || !ticketSnapshot.exists) {
+    throw new functions.https.HttpsError('not-found', 'Project or support ticket not found');
+  }
+
+  const project = projectSnapshot.data();
+  const ticket = { id: ticketSnapshot.id, ...ticketSnapshot.data() };
+  const isAdmin = auth.token.role === 'admin' && auth.token.status === 'approved';
+  const isMember = !project.memberIds || project.memberIds.includes(auth.uid);
+  if (auth.token.status !== 'approved' || (!isAdmin && !isMember)) {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'You do not have access to this support ticket',
+    );
+  }
+
+  const members = Array.isArray(project.members) ? project.members : [];
+  const assigneeMember = members.find((member) => member.userId === ticket.assignee?.userId);
+  const assignee = ticket.assignee
+    ? {
+        ...ticket.assignee,
+        name: ticket.assignee.name || assigneeMember?.displayName || assigneeMember?.email,
+        email: ticket.assignee.email || assigneeMember?.email,
+      }
+    : null;
+  if (!assignee) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Assign an engineer before preparing a follow-up',
+    );
+  }
+
+  let recipients;
+  try {
+    recipients = resolveRecipients({
+      assignee,
+      members,
+      senderEmail: userRecord.email || auth.token.email || '',
+    });
+  } catch (error) {
+    throw new functions.https.HttpsError('failed-precondition', error.message);
+  }
+
+  const documents = documentsSnapshot.docs.map((document) => ({
+    id: document.id,
+    ...document.data(),
+  }));
+  const missingItems = collectMissingRecords({ ticket, documents, project });
+  return {
+    firestore,
+    projectRef,
+    ticketRef,
+    project,
+    ticket,
+    userRecord,
+    assignee,
+    recipients,
+    missingItems,
+  };
+};
+
+/**
+ * Generates a reviewable, status-aware internal follow-up for the assigned
+ * support engineer. Recipients and completeness checks come from Firestore.
+ */
+exports.prepareSupportEngineerFollowUp = onCall(
+  { secrets: [geminiApiKeySecret] },
+  async (request) => {
+    const { projectId, ticketId, quickNote = '' } = request.data || {};
+    if (typeof quickNote !== 'string' || quickNote.length > 2000) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'The follow-up instruction must be 2,000 characters or fewer',
+      );
+    }
+    const context = await getSupportFollowUpContext({
+      auth: request.auth,
+      projectId,
+      ticketId,
+    });
+    const fallback = buildFallbackDraft({
+      ticket: context.ticket,
+      project: context.project,
+      assigneeName: context.assignee.name || 'Engineer',
+      senderName: context.userRecord.displayName || context.userRecord.email || 'Support team',
+      quickNote,
+      missingItems: context.missingItems,
+    });
+
+    let draft = fallback;
+    let generatedByAI = false;
+    try {
+      draft = await prepareSupportFollowUpWithGemini({
+        apiKey: geminiApiKeySecret.value(),
+        fallback,
+        ticket: context.ticket,
+        project: context.project,
+        assignee: context.assignee,
+        quickNote: quickNote.trim(),
+        missingItems: context.missingItems,
+      });
+      generatedByAI = draft !== fallback;
+    } catch (error) {
+      logger.warn('Gemini support follow-up refinement failed; using deterministic draft', {
+        projectId,
+        ticketId,
+        error: error.message,
+      });
+    }
+
+    return {
+      ...draft,
+      to: context.recipients.to,
+      cc: context.recipients.cc,
+      missingItems: context.missingItems,
+      generatedByAI,
+      aiProvider: generatedByAI ? 'gemini' : 'fallback',
+    };
+  },
+);
+
+/**
+ * Sends a reviewed internal follow-up. The server re-resolves recipients so
+ * the browser cannot redirect the message away from the assigned engineer or
+ * omit the project team.
+ */
+exports.sendSupportEngineerFollowUp = onCall(
+  { secrets: [resendApiKey] },
+  async (request) => {
+    const { projectId, ticketId, subject = '', body = '' } = request.data || {};
+    const cleanSubject = String(subject).replace(/[\r\n]+/g, ' ').trim();
+    const cleanBody = String(body).trim();
+    if (!cleanSubject || cleanSubject.length > 180 || !cleanBody || cleanBody.length > 12000) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'A subject and message are required and must be within the allowed length',
+      );
+    }
+    const context = await getSupportFollowUpContext({
+      auth: request.auth,
+      projectId,
+      ticketId,
+    });
+    const escapeHtml = (value) => String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+    const messageHtml = escapeHtml(cleanBody).replace(/\n/g, '<br/>');
+    const ticketNumber = escapeHtml(context.ticket.ticketNumber || ticketId);
+    const supportUrl = `https://visionbomtracker.web.app/project/${encodeURIComponent(projectId)}/support/${encodeURIComponent(ticketId)}`;
+    const html = `<!doctype html>
+<html><body style="margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#1e293b;">
+  <div style="max-width:680px;margin:24px auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 2px 10px rgba(15,23,42,.08);">
+    <div style="padding:24px 30px;background:#0f172a;color:#fff;">
+      <div style="font-size:12px;color:#67e8f9;text-transform:uppercase;letter-spacing:.08em;font-weight:700;">Internal support follow-up</div>
+      <h1 style="margin:8px 0 0;font-size:21px;">${ticketNumber}</h1>
+    </div>
+    <div style="padding:28px 30px;line-height:1.55;">${messageHtml}
+      <p style="margin-top:24px;"><a href="${supportUrl}" style="display:inline-block;padding:11px 18px;background:#0f766e;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">Open support ticket</a></p>
+    </div>
+    <div style="padding:14px 30px;background:#f8fafc;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;">This internal follow-up is recorded in the support activity trail.</div>
+  </div>
+</body></html>`;
+
+    try {
+      const resend = new Resend(getResendApiKey());
+      const response = await resend.emails.send({
+        from: 'BOM Tracker Support <info@qualitastech.com>',
+        to: context.recipients.to,
+        ...(context.recipients.cc.length ? { cc: context.recipients.cc } : {}),
+        subject: cleanSubject,
+        html,
+        text: `${cleanBody}\n\nOpen support ticket: ${supportUrl}`,
+      });
+      if (response?.error) {
+        throw new Error(response.error.message || 'Email provider rejected the message');
+      }
+
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      await context.ticketRef.update({ updatedAt: now, lastEngineerFollowUpAt: now });
+      await context.ticketRef.collection('activities').add({
+        type: 'communication',
+        message: `Engineer follow-up sent to ${context.recipients.to}`,
+        createdAt: now,
+        createdBy: request.auth.uid,
+        createdByName: context.userRecord.displayName || context.userRecord.email || 'Support user',
+        metadata: {
+          kind: 'engineer-follow-up',
+          to: context.recipients.to,
+          ccCount: context.recipients.cc.length,
+          missingRecordCount: context.missingItems.length,
+          subject: cleanSubject,
+          messageId: response?.data?.id || response?.id || null,
+          supportUrl,
+        },
+      });
+      logger.info('Support engineer follow-up sent', {
+        projectId,
+        ticketId,
+        to: context.recipients.to,
+        ccCount: context.recipients.cc.length,
+        sentBy: request.auth.uid,
+      });
+      return {
+        success: true,
+        messageId: response?.data?.id || response?.id,
+        to: context.recipients.to,
+        cc: context.recipients.cc,
+      };
+    } catch (error) {
+      logger.error('Support engineer follow-up failed', {
+        projectId,
+        ticketId,
+        error: error.message,
+      });
+      throw new functions.https.HttpsError(
+        'internal',
+        `Engineer follow-up could not be sent. ${error.message}`,
+      );
+    }
+  },
+);
 
 /**
  * Sends a customer-facing support acknowledgement, quotation, or closure note.
