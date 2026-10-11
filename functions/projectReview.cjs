@@ -1,4 +1,5 @@
 const { createHash, timingSafeEqual } = require('node:crypto');
+const { readProjectCommunications } = require('./projectReviewCommunications.cjs');
 
 const normalizeEmail = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
 const fault = (code, status) => Object.assign(new Error(code), { code, status });
@@ -41,7 +42,7 @@ function materialSummary(categories, scope) {
 }
 
 /** Admin SDK access is deliberately scoped here; Firestore rules do not protect server SDK reads. */
-function createProjectReviewHandler({ db, auth, getServiceKey }) {
+function createProjectReviewHandler({ db, auth, getServiceKey, timestampFromParts }) {
   async function actorFor(req) {
     const configured = getServiceKey();
     const supplied = req.get('X-Project-Review-Key');
@@ -80,6 +81,8 @@ function createProjectReviewHandler({ db, auth, getServiceKey }) {
       if (req.method !== 'GET') return res.status(405).json({ ok: false, error: 'method_not_allowed' });
       const actor = await actorFor(req);
       const id = req.query?.project_id;
+      if (req.query?.resource != null && req.query.resource !== 'communications') throw fault('invalid_resource', 400);
+      if (req.query?.resource === 'communications' && id == null) throw fault('invalid_project_id', 400);
       if (id != null) {
         if (typeof id !== 'string' || !id || id.length > 512 || id.includes('/')) throw fault('invalid_project_id', 400);
         const ref = db.collection('projects').doc(id);
@@ -87,6 +90,7 @@ function createProjectReviewHandler({ db, auth, getServiceKey }) {
         if (!snapshot.exists) throw fault('project_not_found', 404);
         const data = snapshot.data();
         if (!canReview(data, actor)) throw fault('project_forbidden', 403);
+        if (req.query?.resource === 'communications') return res.json(await readProjectCommunications(ref, id, req.query, timestampFromParts));
         const project = sanitizedProject(snapshot);
         const bom = await ref.collection('bom').doc('data').get();
         const member = (Array.isArray(data.members) ? data.members : []).find(row => row.userId === actor.uid);

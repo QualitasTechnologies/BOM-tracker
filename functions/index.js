@@ -4655,7 +4655,7 @@ async function processOneEmailBackfillJob({ db, projectId, jobRef, job, clientId
   // per tick — the job resumes from pageToken on the next scheduled run.
   const { messageIds, nextPageToken } = await searchGmailMessageIds({ accessToken, query, pageToken, fetchImpl: fetch });
   for (const messageId of messageIds) {
-    const matched = await processGmailMessage({ db, accessToken, messageId, geminiApiKey });
+    const matched = await processGmailMessage({ db, accessToken, messageId, geminiApiKey, mailboxEmail: connectionSnap.data().email });
     processedCount += 1;
     if (matched) matchedCount += 1;
   }
@@ -4835,7 +4835,7 @@ async function syncOneGmailAccount({ db, connectionRef, connection, clientId, cl
   }
 
   for (const messageId of messageIds) {
-    await processGmailMessage({ db, accessToken, messageId, geminiApiKey });
+    await processGmailMessage({ db, accessToken, messageId, geminiApiKey, mailboxEmail: connection.email });
   }
 
   await connectionRef.set(
@@ -4844,7 +4844,7 @@ async function syncOneGmailAccount({ db, connectionRef, connection, clientId, cl
   );
 }
 
-async function processGmailMessage({ db, accessToken, messageId, geminiApiKey }) {
+async function processGmailMessage({ db, accessToken, messageId, geminiApiKey, mailboxEmail }) {
   const dedupRef = db.collection('gmailIngestedMessages').doc(messageId);
   const dedupSnap = await dedupRef.get();
   if (dedupSnap.exists) return false;
@@ -4897,6 +4897,12 @@ async function processGmailMessage({ db, accessToken, messageId, geminiApiKey })
   const baseDoc = {
     gmailMessageId: parsed.gmailMessageId,
     gmailThreadId: parsed.gmailThreadId,
+    // Preserve verified provider identity for cross-store deduplication. The
+    // mailbox comes from the authenticated Gmail connection, never participants.
+    ...(typeof parsed.messageIdHeader === 'string' && parsed.messageIdHeader.trim()
+      ? { rfcMessageId: parsed.messageIdHeader } : {}),
+    ...(typeof mailboxEmail === 'string' && mailboxEmail.trim()
+      ? { mailboxEmail: mailboxEmail.trim().toLowerCase() } : {}),
     subject: parsed.subject,
     from: parsed.from,
     to: parsed.to,
