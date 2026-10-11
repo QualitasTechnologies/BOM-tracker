@@ -7467,3 +7467,22 @@ exports.migrateStakeholdersToMembers = onCall(async (request) => {
     message: `Processed ${results.processed} project(s), skipped ${results.skipped} with no stakeholders. Errors: ${results.errors.length}`,
   };
 });
+
+// Pulse project review: authenticate the caller and recheck the mapped Firebase user.
+const { createProjectReviewHandler } = require('./projectReview.cjs');
+const bomProjectReviewKey = defineSecret('BOM_PROJECT_REVIEW_KEY');
+exports.projectReview = onRequest(
+  {
+    region: 'us-central1',
+    secrets: [bomProjectReviewKey],
+    cors: false,
+    invoker: 'public',
+    timeoutSeconds: 30,
+    maxInstances: 5,
+  },
+  createProjectReviewHandler({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    getServiceKey: () => bomProjectReviewKey.value(),
+  })
+);
