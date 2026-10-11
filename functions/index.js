@@ -7492,3 +7492,15 @@ exports.projectReview = onRequest(
     getServiceKey: () => bomProjectReviewKey.value(),
   })
 );
+
+// Native materials stage. Writes require explicit server configuration.
+const { createProjectOperationsHandler } = require('./projectOperations.cjs');
+const bomProjectOperationsKey = defineSecret('BOM_PROJECT_OPERATIONS_KEY');
+exports.projectOperations = onRequest(
+  { region: 'us-central1', secrets: [bomProjectOperationsKey], cors: false, invoker: 'public', timeoutSeconds: 30, maxInstances: 5 },
+  createProjectOperationsHandler({
+    db: admin.firestore(), auth: admin.auth(), getServiceKey: () => bomProjectOperationsKey.value(),
+    mutationsEnabled: () => process.env.BOM_MATERIAL_MUTATIONS_ENABLED === 'true',
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
