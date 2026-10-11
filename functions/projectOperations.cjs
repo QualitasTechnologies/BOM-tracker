@@ -38,8 +38,67 @@ function validateBody(body) {
   return digest(JSON.stringify({ item_id: body.item_id, expected_version: body.expected_version, patch: sortedPatch }));
 }
 
+// Read-only procurement projection. Every field is listed explicitly: anything else stored on a
+// document (download URLs with tokens, storage paths, future fields) never leaves Firebase.
+const PROCUREMENT_FIELDS = {
+  purchaseOrder: [
+    'projectId', 'billingEntityId', 'poNumber', 'vendorId', 'vendorName', 'vendorAddress', 'vendorGstin', 'vendorStateCode', 'vendorStateName', 'vendorEmail', 'vendorPhone',
+    'projectReference', 'vendorQuoteReference', 'invoiceToCompany', 'invoiceToAddress', 'invoiceToGstin', 'invoiceToStateCode', 'invoiceToStateName',
+    'shipToAddress', 'shipToGstin', 'shipToStateCode', 'shipToStateName', 'items', 'subtotal', 'taxType', 'taxPercentage', 'igstAmount', 'cgstAmount', 'sgstAmount',
+    'totalAmount', 'amountInWords', 'currency', 'paymentTerms', 'deliveryTerms', 'dispatchedThrough', 'destination', 'termsAndConditions', 'includeAnnexure',
+    'poDate', 'expectedDeliveryDate', 'status', 'submittedForApprovalAt', 'submittedBy', 'changesRequestedAt', 'changesRequestedBy', 'changesRequestedNote',
+    'sentAt', 'sentBy', 'sentToEmail', 'closedAt', 'warnings', 'createdAt', 'createdBy', 'updatedAt'
+  ],
+  purchaseOrderItem: ['bomItemId', 'slNo', 'description', 'itemCode', 'make', 'uom', 'quantity', 'rate', 'discountPercent', 'amount', 'dueDate', 'hsn'],
+  purchaseOrderWarning: ['field', 'message', 'severity'],
+  document: ['id', 'name', 'type', 'uploadedAt', 'uploadedBy', 'linkedBOMItems', 'fileSize']
+};
+const DOCUMENT_TYPES = ['vendor-quote', 'vendor-po', 'customer-po', 'vendor-invoice', 'spec-sheet'];
+const PO_DATES = new Set(['poDate', 'expectedDeliveryDate', 'submittedForApprovalAt', 'changesRequestedAt', 'sentAt', 'closedAt', 'createdAt', 'updatedAt']);
+const PO_NUMBERS = new Set(['subtotal', 'taxPercentage', 'igstAmount', 'cgstAmount', 'sgstAmount', 'totalAmount']);
+const PO_BOOLEANS = new Set(['includeAnnexure']);
+const ITEM_NUMBERS = new Set(['slNo', 'quantity', 'rate', 'discountPercent', 'amount']);
+const DEFAULT_PROCUREMENT_LIMITS = { purchaseOrders: 100, documents: 500 };
+const MAX_ID = 512;
+
+const text = value => typeof value === 'string' ? value : null;
+const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+const isoOrNull = value => {
+  try {
+    let date;
+    if (value instanceof Date) date = value;
+    else if (value && typeof value.toDate === 'function') date = value.toDate();
+    else if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) date = new Date(value);
+    else return null;
+    return date instanceof Date && Number.isFinite(date.getTime()) ? date.toISOString() : null;
+  } catch { return null; }
+};
+const projectFields = (source, fields, readers) => Object.fromEntries(fields.map(key => [key, readers(key)(source[key])]));
+
+function purchaseOrderOf(id, projectId, data) {
+  const item = row => projectFields(row, PROCUREMENT_FIELDS.purchaseOrderItem, key => key === 'dueDate' ? isoOrNull : ITEM_NUMBERS.has(key) ? finite : text);
+  const warning = row => projectFields(row, PROCUREMENT_FIELDS.purchaseOrderWarning, () => text);
+  const reader = key => PO_DATES.has(key) ? isoOrNull : PO_NUMBERS.has(key) ? finite : PO_BOOLEANS.has(key) ? (value => typeof value === 'boolean' ? value : null)
+    : key === 'items' ? (value => (Array.isArray(value) ? value : []).filter(plain).map(item)) : key === 'warnings' ? (value => (Array.isArray(value) ? value : []).filter(plain).map(warning)) : text;
+  // The route id is authoritative; a stored projectId on a legacy record is never trusted.
+  return { id, ...projectFields(data, PROCUREMENT_FIELDS.purchaseOrder, reader), projectId, has_pdf: typeof data.pdfUrl === 'string' && data.pdfUrl.length > 0 };
+}
+
+function documentOf(id, data, visibleItemIds) {
+  if (!DOCUMENT_TYPES.includes(data.type)) return null;
+  const linked = (Array.isArray(data.linkedBOMItems) ? data.linkedBOMItems : []).filter(value => typeof value === 'string' && value.length > 0 && value.length <= MAX_ID);
+  return {
+    id, name: text(data.name), type: data.type, uploadedAt: isoOrNull(data.uploadedAt), uploadedBy: text(data.uploadedBy),
+    linkedBOMItems: visibleItemIds ? linked.filter(value => visibleItemIds.has(value)) : linked,
+    fileSize: finite(data.fileSize) !== null && data.fileSize >= 0 ? data.fileSize : null
+  };
+}
+
+const newestFirst = field => (a, b) => (b[field] || '').localeCompare(a[field] || '') || a.id.localeCompare(b.id);
+
 /** Admin SDK writes require both trusted-channel identity and current project/category access. */
-function createProjectOperationsHandler({ db, auth, getServiceKey, mutationsEnabled = false, getServerTimestamp }) {
+function createProjectOperationsHandler({ db, auth, getServiceKey, mutationsEnabled = false, getServerTimestamp, procurementLimits = DEFAULT_PROCUREMENT_LIMITS }) {
+  const limits = { ...DEFAULT_PROCUREMENT_LIMITS, ...procurementLimits };
   const actorFor = createProjectActorFactory({ auth, getServiceKey, serviceKeyHeader: 'X-Project-Operations-Key', unavailableCode: 'project_operations_unavailable' });
   const writesOn = () => typeof mutationsEnabled === 'function' ? mutationsEnabled() === true : mutationsEnabled === true;
   return async function projectOperations(req, res) {
@@ -51,6 +110,35 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, mutationsEnab
       if (typeof id !== 'string' || !id || id.length > 512 || id.includes('/')) throw fault('invalid_project_id', 400);
       const projectRef = db.collection('projects').doc(id);
       const bomRef = projectRef.collection('bom').doc('data');
+      // Absent resource keeps the legacy materials contract; anything else must be exactly 'procurement'.
+      const resource = req.query?.resource;
+      if (resource !== undefined && resource !== 'procurement') throw fault('invalid_resource', 400);
+      if (resource === 'procurement') {
+        if (req.method !== 'GET') throw fault('method_not_allowed', 405);
+        const response = await db.runTransaction(async transaction => {
+          const project = await transaction.get(projectRef);
+          if (!project.exists) throw fault('project_not_found', 404);
+          // Project membership gates everything. Category scope narrows documents only: BOM renders
+          // POListSection inside the Documents tab for partners with no isPartner check or item filter.
+          const scope = scopeFor(project.data(), actor);
+          const bom = await transaction.get(bomRef);
+          const visibleItemIds = scope === null ? null : new Set((Array.isArray(bom.data()?.categories) ? bom.data().categories : [])
+            .filter(category => scope.includes(category.name)).flatMap(category => Array.isArray(category.items) ? category.items : []).map(item => item?.id).filter(value => typeof value === 'string'));
+          // Order by document id, never a data field: a missing createdAt would silently drop the record.
+          const poRows = await transaction.get(projectRef.collection('purchaseOrders').orderBy('__name__').limit(limits.purchaseOrders + 1));
+          const docRows = await transaction.get(db.collection('projectDocuments').where('projectId', '==', id).orderBy('__name__').limit(limits.documents + 1));
+          const bomAdmin = actor.customClaims.role === 'admin';
+          const orders = poRows.docs.slice(0, limits.purchaseOrders).filter(row => plain(row.data())).map(row => purchaseOrderOf(row.id, id, row.data())).sort(newestFirst('createdAt'));
+          const documents = docRows.docs.slice(0, limits.documents).filter(row => plain(row.data())).map(row => {
+            const data = row.data();
+            if (data.type === 'customer-po' && !bomAdmin) return null;
+            const mapped = documentOf(row.id, data, visibleItemIds);
+            return mapped && (visibleItemIds === null || mapped.linkedBOMItems.length > 0) ? mapped : null;
+          }).filter(Boolean).sort(newestFirst('uploadedAt'));
+          return { ok: true, project_id: id, purchase_orders: orders, documents, truncated: { purchase_orders: poRows.docs.length > limits.purchaseOrders, documents: docRows.docs.length > limits.documents }, permissions: { edit: false } };
+        });
+        return res.json(response);
+      }
       if (req.method === 'GET') {
         const response = await db.runTransaction(async transaction => {
           const project = await transaction.get(projectRef);
@@ -109,4 +197,4 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, mutationsEnab
   };
 }
 
-module.exports = { createProjectOperationsHandler };
+module.exports = { createProjectOperationsHandler, PROCUREMENT_FIELDS, DOCUMENT_TYPES };

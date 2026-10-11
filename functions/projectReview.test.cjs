@@ -72,3 +72,35 @@ test('malformed direct ID is rejected and absent project is not found',async()=>
   assert.equal((await call(fixture(),'alice@example.com','A/bom')).status,400);
   assert.equal((await call(fixture(),'alice@example.com','absent')).status,404);
 });
+async function session(handler,email,query={resource:'session'},extra={}) {
+  const headers={'x-project-review-key':'trusted-key','x-pulse-user-email':email,'x-pulse-authenticated-at':'1800000000000',...extra};
+  const req={method:'GET',query,get:name=>headers[name.toLowerCase()]};
+  let status=200,body;const res={status:code=>{status=code;return res;},json:value=>{body=value;return res;},set(){}};
+  await handler(req,res);return {status,body};
+}
+test('session resource describes the verified actor without uid, claims or project data',async()=>{
+  const external=await session(fixture(),'alice@example.com');
+  assert.equal(external.status,200);
+  assert.deepEqual(external.body,{ok:true,session:{email:'alice@example.com',name:null,role:'user',bom_admin:false,internal:false,partner:true,capabilities:{communications:false}}});
+  const admin=await session(fixture(),'admin@example.com');
+  assert.deepEqual(admin.body.session,{email:'admin@example.com',name:null,role:'admin',bom_admin:true,internal:false,partner:false,capabilities:{communications:true}});
+  const internal=await session(fixture({bob:{email:'bob@qualitastech.com'}}),'bob@qualitastech.com');
+  assert.deepEqual(internal.body.session,{email:'bob@qualitastech.com',name:null,role:'viewer',bom_admin:false,internal:true,partner:false,capabilities:{communications:true}});
+  for(const forbidden of ['uid','customClaims','memberIds','projects']) assert.equal(JSON.stringify(external.body).includes(forbidden),false);
+});
+test('session resource keeps the viewer label from restricting anything and never grants admin',async()=>{
+  const result=await session(fixture(),'bob@example.com');
+  assert.equal(result.body.session.role,'viewer');assert.equal(result.body.session.bom_admin,false);
+});
+test('session resource applies the same actor denials as every other resource',async()=>{
+  assert.equal((await session(fixture(),'unknown@example.com')).status,403);
+  assert.equal((await session(fixture(),'alice@example.com',undefined,{'x-project-review-key':'bad'})).status,401);
+  for(const override of [{disabled:true},{emailVerified:false},{customClaims:{role:'user',status:'suspended'}},{tokensValidAfterTime:new Date(1900000000000).toISOString()}]) {
+    assert.equal((await session(fixture({alice:override}),'alice@example.com')).status,403);
+  }
+  assert.equal((await session(fixture({alice:{tokensValidAfterTime:new Date(1700000000000).toISOString()}}),'alice@example.com',undefined,{'x-pulse-authenticated-at':undefined})).status,403);
+});
+test('session resource rejects project ids and unknown resources',async()=>{
+  assert.equal((await session(fixture(),'alice@example.com',{resource:'session',project_id:'A'})).status,400);
+  assert.equal((await session(fixture(),'alice@example.com',{resource:'sessions'})).status,400);
+});

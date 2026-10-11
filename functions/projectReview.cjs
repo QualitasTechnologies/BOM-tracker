@@ -21,6 +21,24 @@ function canReview(project, actor) {
   return actor.customClaims.role === 'admin' || (Array.isArray(project.memberIds) && project.memberIds.includes(actor.uid));
 }
 
+/**
+ * What a scoped Pulse session may know about its verified BOM actor. Mirrors the
+ * BOM UI rule (`isPartner` in src/pages/BOM.tsx): non-admin, non-internal users get
+ * the Costs/Inward/Documents views only, so communications stay admin/internal.
+ * The viewer role label deliberately restricts nothing: deployed rules let any
+ * approved member write.
+ */
+function describeActor(actor) {
+  const email = normalizeEmail(actor.email);
+  const admin = actor.customClaims.role === 'admin';
+  const internal = email.endsWith('@qualitastech.com');
+  const partner = !admin && !internal;
+  return {
+    email, name: safeText(actor.displayName), role: actor.customClaims.role,
+    bom_admin: admin, internal, partner, capabilities: { communications: !partner }
+  };
+}
+
 function materialSummary(categories, scope) {
   const summary = { item_count: 0, component_count: 0, service_count: 0, status_counts: { 'not-ordered': 0, ordered: 0, received: 0 } };
   for (const category of Array.isArray(categories) ? categories : []) {
@@ -44,8 +62,12 @@ function createProjectReviewHandler({ db, auth, getServiceKey, timestampFromPart
       if (req.method !== 'GET') return res.status(405).json({ ok: false, error: 'method_not_allowed' });
       const actor = await actorFor(req);
       const id = req.query?.project_id;
-      if (req.query?.resource != null && req.query.resource !== 'communications') throw fault('invalid_resource', 400);
+      if (req.query?.resource != null && !['communications', 'session'].includes(req.query.resource)) throw fault('invalid_resource', 400);
       if (req.query?.resource === 'communications' && id == null) throw fault('invalid_project_id', 400);
+      if (req.query?.resource === 'session') {
+        if (id != null) throw fault('invalid_project_id', 400);
+        return res.json({ ok: true, session: describeActor(actor) });
+      }
       if (id != null) {
         if (typeof id !== 'string' || !id || id.length > 512 || id.includes('/')) throw fault('invalid_project_id', 400);
         const ref = db.collection('projects').doc(id);
