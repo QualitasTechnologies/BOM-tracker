@@ -97,9 +97,10 @@ function documentOf(id, data, visibleItemIds) {
 const newestFirst = field => (a, b) => (b[field] || '').localeCompare(a[field] || '') || a.id.localeCompare(b.id);
 
 /** Admin SDK writes require both trusted-channel identity and current project/category access. */
-function createProjectOperationsHandler({ db, auth, getServiceKey, mutationsEnabled = false, getServerTimestamp, procurementLimits = DEFAULT_PROCUREMENT_LIMITS }) {
+function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor, mutationsEnabled = false, getServerTimestamp, procurementLimits = DEFAULT_PROCUREMENT_LIMITS }) {
   const limits = { ...DEFAULT_PROCUREMENT_LIMITS, ...procurementLimits };
-  const actorFor = createProjectActorFactory({ auth, getServiceKey, serviceKeyHeader: 'X-Project-Operations-Key', unavailableCode: 'project_operations_unavailable' });
+  // Server-only dependency seam. HTTP callers still use the trusted-channel factory by default.
+  const actorFor = resolveActor || createProjectActorFactory({ auth, getServiceKey, serviceKeyHeader: 'X-Project-Operations-Key', unavailableCode: 'project_operations_unavailable' });
   const writesOn = () => typeof mutationsEnabled === 'function' ? mutationsEnabled() === true : mutationsEnabled === true;
   return async function projectOperations(req, res) {
     res.set('Cache-Control', 'private, no-store');

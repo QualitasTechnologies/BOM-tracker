@@ -7504,3 +7504,15 @@ exports.projectOperations = onRequest(
     getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
   })
 );
+
+// Reused BOM UI uses its real Firebase session; both write gates remain off by default.
+const { createNativeMaterialOperations } = require('./nativeMaterialOperations.cjs');
+exports.nativeMaterialOperations = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeMaterialOperations({
+    db: admin.firestore(), auth: admin.auth(),
+    mutationsEnabled: () => process.env.BOM_MATERIAL_MUTATIONS_ENABLED === 'true'
+      && process.env.BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED === 'true',
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
