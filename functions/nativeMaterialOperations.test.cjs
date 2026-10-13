@@ -121,6 +121,20 @@ test('fulfillment actor assertion cannot select a forged actor or accept malform
     assert.deepEqual(await f.invoke(data), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.size, 2);
   }
   const f = fixture({ enabled: true });
-  assert.deepEqual(await f.invoke({ ...f.patch, expected_actor_uid: f.actor.uid }), { ok: false, error: 'invalid_material_request' });
+  assert.equal((await f.invoke({ ...f.patch, expected_actor_uid: f.actor.uid })).ok, true);
   assert.deepEqual(await f.invoke({ ...f.request.data, expected_actor_uid: f.actor.uid }), { ok: false, error: 'invalid_material_request' });
+});
+
+test('patch actor assertion rejects an authorized account switch and audits only matching verified actor', async () => {
+  const f = fixture({ enabled: true }); const openingUid = f.actor.uid;
+  f.actor.uid = 'second-authorized-uid'; f.token.uid = f.actor.uid; f.request.auth.uid = f.actor.uid;
+  f.docs.get('projects/A').memberIds.push(f.actor.uid); f.docs.get('projects/A').members.push({ userId: f.actor.uid, categoryScope: ['Mech'] });
+  assert.deepEqual(await f.invoke({ ...f.patch, expected_actor_uid: openingUid }), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.size, 2);
+  assert.equal((await f.invoke({ ...f.patch, expected_actor_uid: f.actor.uid })).ok, true);
+  assert.equal(f.docs.get('pulseProjectMaterialOperations/A/materialAudit/stable-op').actor_uid, f.actor.uid);
+});
+test('patch actor assertion rejects malformed and forged UIDs without selecting identity', async () => {
+  for (const expected_actor_uid of ['forged-admin', '', null, 1, {}, []]) {
+    const f = fixture({ enabled: true }); assert.deepEqual(await f.invoke({ ...f.patch, expected_actor_uid }), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.size, 2);
+  }
 });

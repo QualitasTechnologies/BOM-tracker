@@ -33,10 +33,10 @@ function createNativeMaterialOperations({ db, auth, mutationsEnabled = false, ge
       if (!plain(data) || !['get', 'patch', 'fulfill'].includes(data.operation)) throw fault('invalid_material_request', 400);
       const allowed = data.operation === 'get' ? ['operation', 'project_id']
         : ['operation', 'project_id', 'item_id', 'expected_version', 'operation_id', data.operation === 'fulfill' ? 'fulfillment' : 'patch'];
-      if (data.operation === 'fulfill') allowed.push('expected_actor_uid');
+      if (data.operation !== 'get') allowed.push('expected_actor_uid');
       if (Object.keys(data).some(key => !allowed.includes(key))) throw fault('invalid_material_request', 400);
       // A session assertion never selects identity: the freshly verified bearer does.
-      if (data.operation === 'fulfill' && Object.hasOwn(data, 'expected_actor_uid')
+      if (data.operation !== 'get' && Object.hasOwn(data, 'expected_actor_uid')
         && (typeof data.expected_actor_uid !== 'string' || data.expected_actor_uid !== actor.uid)) throw fault('actor_session_changed', 403);
       const { operation, project_id: projectId, expected_actor_uid: _expectedActorUid, ...body } = data;
       const handler = createProjectOperationsHandler({ db, auth, mutationsEnabled, getServerTimestamp, resolveActor: async () => actor });
