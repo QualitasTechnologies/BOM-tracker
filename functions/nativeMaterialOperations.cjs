@@ -30,15 +30,19 @@ function createNativeMaterialOperations({ db, auth, mutationsEnabled = false, ge
     try {
       const actor = await currentNativeActor(auth, request);
       const data = request.data;
-      if (!plain(data) || !['get', 'patch'].includes(data.operation)) throw fault('invalid_material_request', 400);
+      if (!plain(data) || !['get', 'patch', 'fulfill'].includes(data.operation)) throw fault('invalid_material_request', 400);
       const allowed = data.operation === 'get' ? ['operation', 'project_id']
-        : ['operation', 'project_id', 'item_id', 'expected_version', 'operation_id', 'patch'];
+        : ['operation', 'project_id', 'item_id', 'expected_version', 'operation_id', data.operation === 'fulfill' ? 'fulfillment' : 'patch'];
+      if (data.operation === 'fulfill') allowed.push('expected_actor_uid');
       if (Object.keys(data).some(key => !allowed.includes(key))) throw fault('invalid_material_request', 400);
-      const { operation, project_id: projectId, ...body } = data;
+      // A session assertion never selects identity: the freshly verified bearer does.
+      if (data.operation === 'fulfill' && Object.hasOwn(data, 'expected_actor_uid')
+        && (typeof data.expected_actor_uid !== 'string' || data.expected_actor_uid !== actor.uid)) throw fault('actor_session_changed', 403);
+      const { operation, project_id: projectId, expected_actor_uid: _expectedActorUid, ...body } = data;
       const handler = createProjectOperationsHandler({ db, auth, mutationsEnabled, getServerTimestamp, resolveActor: async () => actor });
       let result;
       const res = { set() {}, status() { return this; }, json(value) { result = value; return this; } };
-      await handler({ method: operation === 'get' ? 'GET' : 'PATCH', query: { project_id: projectId }, body }, res);
+      await handler({ method: operation === 'get' ? 'GET' : operation === 'fulfill' ? 'POST' : 'PATCH', query: { project_id: projectId, ...(operation === 'fulfill' ? { resource: 'fulfillment' } : {}) }, body }, res);
       return result;
     } catch (error) {
       return { ok: false, error: error.status ? error.code : 'project_operations_unavailable' };

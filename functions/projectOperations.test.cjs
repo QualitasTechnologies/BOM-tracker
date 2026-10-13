@@ -171,3 +171,108 @@ test('decimal receipt rounding does not reject the exact received total', async 
   const f = editorFixture(); f.docs.get('projects/A/bom/data').data.categories[0].items[0].fulfillmentTranches = [{ quantity: 0.1 }, { quantity: 0.2 }];
   assert.equal((await f.patch({ quantity: 0.3 })).status, 200);
 });
+
+const receiptPhoto = 'https://firebasestorage.googleapis.com/v0/b/visionbomtracker.firebasestorage.app/o/projects%2FA%2Freceived-photos%2Fmotor.jpg?alt=media&token=test';
+function receiptFixture(options = {}) {
+  const f = fixture(options);
+  f.docs.set('projectDocuments/invoice', { tick: 1, data: { projectId: 'A', type: 'vendor-invoice', linkedBOMItems: ['motor'] } });
+  f.fulfill = (fulfillment = {}, extra = {}) => f.call('POST', { item_id: 'motor', expected_version: '10:1', operation_id: 'receipt-1', fulfillment: { kind: 'receipt', quantity: 1, invoiceDocId: 'invoice', photoUrl: receiptPhoto, loggedAt: '2026-10-13', ...fulfillment }, ...extra }, { query: { resource: 'fulfillment' } });
+  f.item = () => f.docs.get('projects/A/bom/data').data.categories[0].items[0];
+  return f;
+}
+test('receipt appends atomically with proof, legacy metadata and immutable server audit', async () => {
+  const f = receiptFixture(); f.item().fulfillmentTranches = [{ id: 'old', quantity: 0.5, unknown: 'keep' }];
+  const first = await f.fulfill(); assert.equal(first.status, 200);
+  assert.equal(first.body.item.status, 'ordered'); assert.equal(first.body.item.actualArrival, '2026-10-13');
+  assert.equal(first.body.item.receivedPhotoUrl, receiptPhoto); assert.deepEqual(first.body.item.unknown, { x: 1 });
+  assert.deepEqual(first.body.item.fulfillmentTranches[0], { id: 'old', quantity: 0.5, unknown: 'keep' });
+  assert.equal(first.body.item.fulfillmentTranches[1].photoUrl, receiptPhoto);
+  const audit = f.docs.get('pulseProjectMaterialOperations/A/materialAudit/receipt-1').data;
+  assert.equal(audit.actor_uid, 'alice'); assert.equal(audit.created_at, 'server-time'); assert.equal(audit.before.fulfillmentTranches.length, 1); assert.equal(audit.after.fulfillmentTranches.length, 2);
+  assert.deepEqual(await f.fulfill(), first); assert.equal(f.item().fulfillmentTranches.length, 2);
+});
+test('receipts validate shape, quantity, real dates, invoice and project photo namespace', async () => {
+  for (const fulfillment of [{ quantity: 0 }, { quantity: 0.5 }, { quantity: Infinity }, { loggedAt: '2026-02-30' }, { loggedAt: undefined }, { invoiceDocId: undefined }, { photoUrl: undefined }, { photoUrl: 'https://evil.example/photo' }, { photoUrl: receiptPhoto.replace('%2FA%2F', '%2FB%2F') }, { actor_uid: 'admin' }, { kind: 'unknown' }]) {
+    const f = receiptFixture(); assert.equal((await f.fulfill(fulfillment)).status, 400, JSON.stringify(fulfillment)); assert.equal(f.docs.size, 3);
+  }
+  for (const update of [{ projectId: 'B' }, { type: 'vendor-po' }]) {
+    const f = receiptFixture(); Object.assign(f.docs.get('projectDocuments/invoice').data, update); assert.equal((await f.fulfill()).status, 403); assert.equal(f.docs.size, 3);
+  }
+});
+test('receipt replay reloads invoice project ownership and project/category membership', async () => {
+  for (const revoke of [f => { f.docs.get('projectDocuments/invoice').data.projectId = 'B'; }, f => { f.docs.get('projects/A').data.memberIds = []; }, f => { f.docs.get('projects/A').data.members = []; }]) {
+    const f = receiptFixture(); assert.equal((await f.fulfill()).status, 200); revoke(f); assert.equal((await f.fulfill()).status, 403); assert.equal(f.item().fulfillmentTranches.length, 1);
+  }
+});
+test('receipt preserves legacy received totals and fails closed on corrupt tranche state', async () => {
+  for (const update of [{ status: 'received' }, { fulfillmentTranches: 'bad' }, { fulfillmentTranches: [{ quantity: -1 }] }, { fulfillmentTranches: [{ quantity: NaN }] }, { fulfillmentTranches: [{ quantity: 3 }] }, { quantity: NaN }]) {
+    const f = receiptFixture(); Object.assign(f.item(), update); assert.equal((await f.fulfill()).status, 409); assert.equal(f.docs.size, 3);
+  }
+  const f = receiptFixture(); f.item().itemType = 'service'; assert.equal((await f.fulfill()).status, 400);
+});
+test('fulfillment permits optional proof, server day and original partial service status', async () => {
+  const f = receiptFixture();
+  const result = await f.fulfill({ kind: 'fulfillment', quantity: 0.5, invoiceDocId: undefined, photoUrl: undefined, loggedAt: undefined }, { item_id: 'service' });
+  assert.equal(result.status, 200); assert.equal(result.body.item.status, undefined); assert.match(result.body.item.fulfillmentTranches[0].loggedAt, /^\d{4}-\d{2}-\d{2}$/);
+  const g = receiptFixture(); assert.equal((await g.fulfill({ kind: 'fulfillment', quantity: 0.4 }, { item_id: 'service' })).status, 400);
+});
+test('fulfillment prevents budget overflow, tolerates decimal sum and marks exact completion', async () => {
+  const f = receiptFixture(); assert.equal((await f.fulfill({ quantity: 3 })).status, 409);
+  const g = receiptFixture(); g.item().quantity = 0.8; g.item().itemType = 'service'; g.item().fulfillmentTranches = [{ quantity: 0.1 }, { quantity: 0.2 }];
+  const result = await g.fulfill({ kind: 'fulfillment', quantity: 0.5 }); assert.equal(result.status, 200); assert.equal(result.body.item.status, 'received');
+});
+test('receipt namespace collides with patch and stale concurrent appends commit once', async () => {
+  const f = receiptFixture(); assert.equal((await f.patch({}, { operation_id: 'receipt-1' })).status, 200); assert.equal((await f.fulfill()).body.error, 'operation_conflict');
+  const g = receiptFixture(); const results = await Promise.all([g.fulfill(), g.fulfill({}, { operation_id: 'receipt-2' })]); assert.deepEqual(results.map(r => r.status).sort(), [200, 409]); assert.equal(g.item().fulfillmentTranches.length, 1);
+});
+test('receipt audit failure and proof revocation during transaction retry roll back append', async () => {
+  const f = receiptFixture({ failAudit: true }); assert.equal((await f.fulfill()).status, 503); assert.equal(f.item().fulfillmentTranches, undefined); assert.equal(f.docs.size, 3);
+  const g = receiptFixture({ beforeCommit: docs => { const row = docs.get('projectDocuments/invoice'); docs.set('projectDocuments/invoice', { tick: 999, data: { ...row.data, projectId: 'B' } }); } });
+  assert.equal((await g.fulfill()).status, 403); assert.equal(g.item().fulfillmentTranches, undefined);
+});
+
+test('newly uploaded project invoices with no existing links remain usable in original receipt dialog', async () => {
+  const f = receiptFixture(); f.docs.get('projectDocuments/invoice').data.linkedBOMItems = [];
+  assert.equal((await f.fulfill()).status, 200);
+});
+test('legacy malformed received state and duplicate tranche identities fail closed', async () => {
+  for (const update of [{ status: 'received', quantity: '2' }, { status: 'received', fulfillmentTranches: [{ id: 'same', quantity: 0.5 }, { id: 'same', quantity: 0.5 }] }, { fulfillmentTranches: [{ id: 'tranche-receipt-1', quantity: 0.5 }] }, { itemType: 'unknown' }]) {
+    const f = receiptFixture(); Object.assign(f.item(), update); assert.equal((await f.fulfill()).status, 409); assert.equal(f.docs.size, 3);
+  }
+});
+test('receipt handles stale version, duplicate item identities and uncertain identical concurrent retries', async () => {
+  const f = receiptFixture(); assert.equal((await f.fulfill({}, { expected_version: '10:0' })).body.error, 'material_version_conflict');
+  const g = receiptFixture(); g.docs.get('projects/A/bom/data').data.categories[1].items[0].id = 'motor'; assert.equal((await g.fulfill()).body.error, 'duplicate_material_id');
+  const h = receiptFixture(); const results = await Promise.all([h.fulfill(), h.fulfill()]); assert.equal(results[0].status, 200); assert.deepEqual(results[0], results[1]); assert.equal(h.item().fulfillmentTranches.length, 1);
+});
+
+test('fulfillment log day is server UTC even when caller supplies a valid date', async () => {
+  const f = receiptFixture();
+  const result = await f.fulfill({ kind: 'fulfillment', loggedAt: '1999-01-01' });
+  assert.equal(result.status, 200); assert.equal(result.body.item.fulfillmentTranches[0].loggedAt, new Date().toISOString().slice(0, 10));
+});
+test('receipt retains first arrival date and every earlier unknown tranche field', async () => {
+  const f = receiptFixture(); f.item().actualArrival = '2026-10-01'; f.item().fulfillmentTranches = [{ quantity: 1, other: { kept: true } }];
+  const result = await f.fulfill(); assert.equal(result.status, 200); assert.equal(result.body.item.actualArrival, '2026-10-01'); assert.equal(result.body.item.status, 'received'); assert.deepEqual(result.body.item.fulfillmentTranches[0].other, { kept: true });
+});
+
+test('inconsistent received status cannot be reopened by an append', async () => {
+  const f = receiptFixture(); f.item().status = 'received'; f.item().fulfillmentTranches = [{ quantity: 0.5 }];
+  assert.equal((await f.fulfill()).status, 409); assert.equal(f.item().status, 'received'); assert.equal(f.item().fulfillmentTranches.length, 1);
+});
+
+test('component fulfillment requires invoice and photo even outside the receipt form', async () => {
+  for (const missing of [{ invoiceDocId: undefined }, { photoUrl: undefined }, { invoiceDocId: undefined, photoUrl: undefined }]) {
+    const f = receiptFixture(); const result = await f.fulfill({ kind: 'fulfillment', ...missing });
+    assert.equal(result.status, 400); assert.equal(result.body.error, 'invalid_material_fulfillment'); assert.equal(f.item().fulfillmentTranches, undefined);
+  }
+  const f = receiptFixture(); const result = await f.fulfill({ kind: 'fulfillment' });
+  assert.equal(result.status, 200); assert.equal(result.body.item.fulfillmentTranches[0].invoiceDocId, 'invoice'); assert.equal(result.body.item.fulfillmentTranches[0].photoUrl, receiptPhoto);
+});
+test('present legacy tranche identities must be bounded nonblank strings', async () => {
+  for (const id of [null, 1, {}, [], '', '   ', 'x'.repeat(513)]) {
+    const f = receiptFixture(); f.item().fulfillmentTranches = [{ id, quantity: 0.5 }];
+    assert.equal((await f.fulfill()).status, 409, JSON.stringify(id)); assert.equal(f.item().fulfillmentTranches.length, 1);
+  }
+  const f = receiptFixture(); f.item().fulfillmentTranches = [{ quantity: 0.5 }]; assert.equal((await f.fulfill()).status, 200);
+});

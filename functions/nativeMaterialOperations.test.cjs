@@ -92,3 +92,35 @@ test('native request validation rejects extra resources and malformed operations
     assert.equal((await f.call({ ...f.request, data })).ok, false);
   }
 });
+
+test('native fulfill uses displayed revision, native actor and shared audit engine', async () => {
+  const f = fixture({ enabled: true });
+  f.docs.get('projects/A/bom/data').categories[0].items[0].itemType = 'service';
+  const data = { operation: 'fulfill', project_id: 'A', item_id: 'motor', expected_version: '10:1', operation_id: 'fulfill-1', fulfillment: { kind: 'fulfillment', quantity: 1 } };
+  const result = await f.invoke(data); assert.equal(result.ok, true); assert.equal(result.item.status, 'received');
+  assert.deepEqual(await f.invoke(data), result);
+  assert.equal(f.docs.get('pulseProjectMaterialOperations/A/materialAudit/fulfill-1').actor_uid, f.actor.uid);
+  f.docs.get('projects/A').memberIds = []; assert.deepEqual(await f.invoke(data), { ok: false, error: 'project_forbidden' });
+  const g = fixture(); assert.deepEqual(await g.invoke(data), { ok: false, error: 'material_mutations_disabled' });
+});
+
+test('fulfillment actor assertion rejects SDK account switches before business writes', async () => {
+  const f = fixture({ enabled: true }); const openingUid = f.actor.uid;
+  const data = { operation: 'fulfill', project_id: 'A', item_id: 'motor', expected_version: '10:1', operation_id: 'bound-op', expected_actor_uid: openingUid, fulfillment: { kind: 'fulfillment', quantity: 1 } };
+  f.docs.get('projects/A/bom/data').categories[0].items[0].itemType = 'service';
+  f.actor.uid = 'second-authorized-uid'; f.token.uid = f.actor.uid; f.request.auth.uid = f.actor.uid;
+  f.docs.get('projects/A').memberIds.push(f.actor.uid); f.docs.get('projects/A').members.push({ userId: f.actor.uid, categoryScope: ['Mech'] });
+  assert.deepEqual(await f.invoke(data), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.size, 2);
+  const result = await f.invoke({ ...data, expected_actor_uid: f.actor.uid }); assert.equal(result.ok, true);
+  assert.equal(f.docs.get('pulseProjectMaterialOperations/A/materialAudit/bound-op').actor_uid, f.actor.uid);
+});
+test('fulfillment actor assertion cannot select a forged actor or accept malformed identity', async () => {
+  for (const expected_actor_uid of ['forged-admin', '', null, 1, {}, []]) {
+    const f = fixture({ enabled: true });
+    const data = { operation: 'fulfill', project_id: 'A', item_id: 'motor', expected_version: '10:1', operation_id: 'bound-op', expected_actor_uid, fulfillment: { kind: 'fulfillment', quantity: 1 } };
+    assert.deepEqual(await f.invoke(data), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.size, 2);
+  }
+  const f = fixture({ enabled: true });
+  assert.deepEqual(await f.invoke({ ...f.patch, expected_actor_uid: f.actor.uid }), { ok: false, error: 'invalid_material_request' });
+  assert.deepEqual(await f.invoke({ ...f.request.data, expected_actor_uid: f.actor.uid }), { ok: false, error: 'invalid_material_request' });
+});

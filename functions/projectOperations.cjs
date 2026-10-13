@@ -47,6 +47,55 @@ function validateBody(body) {
   return digest(JSON.stringify({ item_id: body.item_id, expected_version: body.expected_version, patch: sortedPatch }));
 }
 
+function validateFulfillment(body, projectId) {
+  if (!plain(body) || Object.keys(body).some(key => !['item_id', 'expected_version', 'operation_id', 'fulfillment'].includes(key))) throw fault('invalid_material_fulfillment', 400);
+  // Reuse the editor's identity and opaque revision validation without its patch hash.
+  validateBody({ item_id: body.item_id, expected_version: body.expected_version, operation_id: body.operation_id, patch: { name: 'validation' } });
+  const value = body.fulfillment;
+  if (!plain(value) || Object.keys(value).some(key => !['kind', 'quantity', 'invoiceDocId', 'photoUrl', 'loggedAt'].includes(key))
+    || !['receipt', 'fulfillment'].includes(value.kind) || typeof value.quantity !== 'number' || !Number.isFinite(value.quantity) || value.quantity <= 0) throw fault('invalid_material_fulfillment', 400);
+  if (value.loggedAt !== undefined && (typeof value.loggedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.loggedAt)
+    || !Number.isFinite(Date.parse(value.loggedAt)) || new Date(value.loggedAt).toISOString().slice(0, 10) !== value.loggedAt)) throw fault('invalid_material_fulfillment', 400);
+  if (value.invoiceDocId !== undefined && (typeof value.invoiceDocId !== 'string' || !value.invoiceDocId || value.invoiceDocId.length > 512 || /[\/\x00-\x1f]/.test(value.invoiceDocId))) throw fault('invalid_material_fulfillment', 400);
+  if (value.photoUrl !== undefined) {
+    let url, path;
+    try { url = new URL(value.photoUrl); path = decodeURIComponent(url.pathname); } catch { throw fault('invalid_receipt_photo', 400); }
+    const prefix = `/v0/b/visionbomtracker.firebasestorage.app/o/projects/${projectId}/received-photos/`;
+    if (typeof value.photoUrl !== 'string' || value.photoUrl.length > 4096 || url.protocol !== 'https:' || url.hostname !== 'firebasestorage.googleapis.com'
+      || url.port || url.username || url.password || url.hash || !path.startsWith(prefix)
+      || !path.slice(prefix.length) || path.slice(prefix.length).split('/').some(part => !part || part === '.' || part === '..') || /[\x00-\x1f\\]/.test(path)) throw fault('invalid_receipt_photo', 400);
+  }
+  if (value.kind === 'receipt' && (!Number.isInteger(value.quantity) || value.quantity < 1 || !value.loggedAt || !value.invoiceDocId || !value.photoUrl)) throw fault('invalid_material_fulfillment', 400);
+  const sorted = Object.fromEntries(Object.keys(value).sort().filter(key => value[key] !== undefined).map(key => [key, value[key]]));
+  return digest(JSON.stringify({ operation: 'fulfill_material', item_id: body.item_id, expected_version: body.expected_version, fulfillment: sorted }));
+}
+
+function appendFulfillment(item, value, operationId) {
+  if (typeof item.quantity !== 'number' || !Number.isFinite(item.quantity) || item.quantity <= 0
+    || item.itemType !== undefined && !['component', 'service'].includes(item.itemType)
+    || item.fulfillmentTranches !== undefined && !Array.isArray(item.fulfillmentTranches)) throw fault('invalid_material_state', 409);
+  const service = item.itemType === 'service';
+  if (value.kind === 'receipt' && service || value.quantity < (service ? 0.5 : 1)) throw fault('invalid_material_fulfillment', 400);
+  if (!service && (!value.invoiceDocId || !value.photoUrl)) throw fault('invalid_material_fulfillment', 400);
+  const tranches = item.fulfillmentTranches || [];
+  if (tranches.some(row => !plain(row) || typeof row.quantity !== 'number' || !Number.isFinite(row.quantity) || row.quantity <= 0)) throw fault('invalid_material_state', 409);
+  const trancheIds = tranches.map(row => row.id).filter(id => id !== undefined);
+  if (trancheIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 512)) throw fault('invalid_material_state', 409);
+  if (new Set(trancheIds).size !== trancheIds.length || trancheIds.includes(`tranche-${operationId}`)) throw fault('invalid_material_state', 409);
+  const received = tranches.length ? tranches.reduce((total, row) => total + row.quantity, 0) : item.status === 'received' ? item.quantity : 0;
+  const total = received + value.quantity;
+  const tolerance = Number.EPSILON * Math.max(1, received, total, item.quantity) * 4;
+  if (!Number.isFinite(received) || received > item.quantity + tolerance) throw fault('invalid_material_state', 409);
+  if (item.status === 'received' && received + tolerance < item.quantity) throw fault('invalid_material_state', 409);
+  if (total > item.quantity + tolerance) throw fault('received_quantity_conflict', 409);
+  const tranche = { id: `tranche-${operationId}`, quantity: value.quantity, loggedAt: value.kind === 'receipt' ? value.loggedAt : new Date().toISOString().slice(0, 10) };
+  for (const key of ['invoiceDocId', 'photoUrl']) if (value[key] !== undefined) tranche[key] = value[key];
+  const updated = { ...item, fulfillmentTranches: [...tranches, tranche] };
+  if (value.kind === 'receipt') Object.assign(updated, { status: total + tolerance >= item.quantity ? 'received' : 'ordered', actualArrival: item.actualArrival || value.loggedAt, linkedInvoiceDocumentId: value.invoiceDocId, receivedPhotoUrl: value.photoUrl });
+  else if (total + tolerance >= item.quantity) updated.status = 'received';
+  return updated;
+}
+
 // Read-only procurement projection. Every field is listed explicitly: anything else stored on a
 // document (download URLs with tokens, storage paths, future fields) never leaves Firebase.
 const PROCUREMENT_FIELDS = {
@@ -114,7 +163,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
   return async function projectOperations(req, res) {
     res.set('Cache-Control', 'private, no-store');
     try {
-      if (!['GET', 'PATCH'].includes(req.method)) throw fault('method_not_allowed', 405);
+      if (!['GET', 'PATCH', 'POST'].includes(req.method)) throw fault('method_not_allowed', 405);
       const actor = await actorFor(req);
       const id = req.query?.project_id;
       if (typeof id !== 'string' || !id || id.length > 512 || id.includes('/')) throw fault('invalid_project_id', 400);
@@ -122,7 +171,9 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
       const bomRef = projectRef.collection('bom').doc('data');
       // Absent resource keeps the legacy materials contract; anything else must be exactly 'procurement'.
       const resource = req.query?.resource;
-      if (resource !== undefined && resource !== 'procurement') throw fault('invalid_resource', 400);
+      if (resource !== undefined && !['procurement', 'fulfillment'].includes(resource)) throw fault('invalid_resource', 400);
+      const fulfilling = resource === 'fulfillment';
+      if (fulfilling && req.method !== 'POST' || !fulfilling && req.method === 'POST') throw fault('method_not_allowed', 405);
       if (resource === 'procurement') {
         if (req.method !== 'GET') throw fault('method_not_allowed', 405);
         const response = await db.runTransaction(async transaction => {
@@ -161,8 +212,9 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         return res.json(response);
       }
       if (!writesOn()) throw fault('material_mutations_disabled', 503);
-      const payloadHash = validateBody(req.body);
-      const { item_id: itemId, expected_version: expectedVersion, operation_id: operationId, patch } = req.body;
+      const payloadHash = fulfilling ? validateFulfillment(req.body, id) : validateBody(req.body);
+      const { item_id: itemId, expected_version: expectedVersion, operation_id: operationId, fulfillment } = req.body;
+      const patch = fulfilling ? {} : req.body.patch;
       // Keep deduplication and immutable audit outside the legacy project wildcard,
       // which permits approved BOM clients to write project subcollections.
       const operationsRef = db.collection('pulseProjectMaterialOperations').doc(id);
@@ -181,13 +233,20 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         if (!matches.length) throw fault('material_not_found', 404);
         const match = matches[0];
         if (scope !== null && !scope.includes(match.category.name)) throw fault('material_forbidden', 403);
+        if (fulfilling && fulfillment.invoiceDocId !== undefined) {
+          const invoice = await transaction.get(db.collection('projectDocuments').doc(fulfillment.invoiceDocId));
+          const data = invoice.data();
+          // The reused dialogs offer every project invoice, including freshly uploaded
+          // invoices with no links. Documents-tab link filtering is presentation only.
+          if (!invoice.exists || data?.projectId !== id || data.type !== 'vendor-invoice') throw fault('invoice_forbidden', 403);
+        }
         if (receipt.exists) {
           const recorded = receipt.data();
           if (recorded.actor_uid !== actor.uid || recorded.actor_email !== actor.email.trim().toLowerCase() || recorded.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
           return recorded.result;
         }
         if (versionOf(bom) !== expectedVersion) throw fault('material_version_conflict', 409);
-        const updated = { ...match.item, ...patch };
+        const updated = fulfilling ? appendFulfillment(match.item, fulfillment, operationId) : { ...match.item, ...patch };
         for (const key of ['price', 'finalizedVendor']) if (Object.hasOwn(patch, key) && patch[key] === null) delete updated[key];
         if (Object.hasOwn(patch, 'itemType') && (typeof updated.quantity !== 'number' || !Number.isFinite(updated.quantity) || updated.quantity <= 0)) throw fault('invalid_material_state', 409);
         if (updated.itemType === 'service' && (Object.hasOwn(patch, 'quantity') || Object.hasOwn(patch, 'itemType')) && updated.quantity < 0.5) throw fault('invalid_material_patch', 400);
@@ -219,11 +278,14 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         }
         const before = {}, after = {};
         for (const key of Object.keys(patch)) { before[key] = Object.hasOwn(match.item, key) ? match.item[key] : null; after[key] = patch[key]; }
+        if (fulfilling) for (const key of ['fulfillmentTranches', 'status', ...(fulfillment.kind === 'receipt' ? ['actualArrival', 'linkedInvoiceDocumentId', 'receivedPhotoUrl'] : [])]) {
+          before[key] = match.item[key] ?? null; after[key] = updated[key] ?? null;
+        }
         const result = { ok: true, project_id: id, item_id: itemId, operation_id: operationId, item: updated };
         const actorEmail = actor.email.trim().toLowerCase();
         const createdAt = getServerTimestamp();
         transaction.update(bomRef, { categories: nextCategories });
-        transaction.create(auditRef, { actor_uid: actor.uid, actor_email: actorEmail, project_id: id, item_id: itemId, operation_id: operationId, operation: 'patch_material', previous_version: expectedVersion, permission: { role: actor.customClaims.role, category: match.category.name, scope }, before, after, ...(destination !== match.category.name ? { category_transition: { from: match.category.name, to: destination } } : {}), created_at: createdAt });
+        transaction.create(auditRef, { actor_uid: actor.uid, actor_email: actorEmail, project_id: id, item_id: itemId, operation_id: operationId, operation: fulfilling ? 'fulfill_material' : 'patch_material', previous_version: expectedVersion, permission: { role: actor.customClaims.role, category: match.category.name, scope }, before, after, ...(destination !== match.category.name ? { category_transition: { from: match.category.name, to: destination } } : {}), created_at: createdAt });
         transaction.create(receiptRef, { actor_uid: actor.uid, actor_email: actorEmail, payload_hash: payloadHash, result, created_at: createdAt });
         return result;
       });
