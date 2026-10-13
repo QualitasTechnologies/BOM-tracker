@@ -26,15 +26,24 @@ function validateBody(body) {
   if (!validVersion(body.expected_version)) throw fault('invalid_material_version', 400);
   if (typeof body.operation_id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.operation_id)) throw fault('invalid_operation_id', 400);
   if (!plain(body.patch) || !Object.keys(body.patch).length) throw fault('invalid_material_patch', 400);
-  const limits = { name: 500, description: 4000, make: 500, sku: 500, unit: 100 };
+  const limits = { name: 500, description: 4000, make: 500, sku: 500, unit: 100, category: 500 };
   for (const [key, value] of Object.entries(body.patch)) {
     if (Object.hasOwn(limits, key)) {
-      if (typeof value !== 'string' || value.length > limits[key] || (key === 'name' && !value.trim())) throw fault('invalid_material_patch', 400);
+      if (typeof value !== 'string' || value.length > limits[key] || (['name', 'category'].includes(key) && !value.trim())) throw fault('invalid_material_patch', 400);
+    } else if (key === 'itemType') {
+      if (!['component', 'service'].includes(value)) throw fault('invalid_material_patch', 400);
+    } else if (key === 'finalizedVendor') {
+      if (value !== null && (!plain(value) || Object.keys(value).some(field => !['name', 'price', 'leadTime', 'availability'].includes(field))
+        || typeof value.name !== 'string' || !value.name.trim() || value.name.length > 500
+        || Object.hasOwn(value, 'price') && (typeof value.price !== 'number' || !Number.isFinite(value.price) || value.price < 0)
+        || ['leadTime', 'availability'].some(field => Object.hasOwn(value, field) && (typeof value[field] !== 'string' || value[field].length > 500)))) throw fault('invalid_material_patch', 400);
     } else if (key === 'quantity' || key === 'price') {
+      if (key === 'price' && value === null) continue;
       if (typeof value !== 'number' || !Number.isFinite(value) || (key === 'quantity' ? value <= 0 : value < 0)) throw fault('invalid_material_patch', 400);
     } else throw fault('invalid_material_patch', 400);
   }
-  const sortedPatch = Object.fromEntries(Object.keys(body.patch).sort().map(key => [key, body.patch[key]]));
+  const canonical = value => plain(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+  const sortedPatch = canonical(body.patch);
   return digest(JSON.stringify({ item_id: body.item_id, expected_version: body.expected_version, patch: sortedPatch }));
 }
 
@@ -178,16 +187,43 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           return recorded.result;
         }
         if (versionOf(bom) !== expectedVersion) throw fault('material_version_conflict', 409);
-        if (match.item.itemType === 'service' && Object.hasOwn(patch, 'quantity') && patch.quantity < 0.5) throw fault('invalid_material_patch', 400);
         const updated = { ...match.item, ...patch };
-        const nextCategories = categories.map((category, index) => index !== match.categoryIndex ? category : { ...category, items: category.items.map((item, index) => index === match.itemIndex ? updated : item) });
+        for (const key of ['price', 'finalizedVendor']) if (Object.hasOwn(patch, key) && patch[key] === null) delete updated[key];
+        if (Object.hasOwn(patch, 'itemType') && (typeof updated.quantity !== 'number' || !Number.isFinite(updated.quantity) || updated.quantity <= 0)) throw fault('invalid_material_state', 409);
+        if (updated.itemType === 'service' && (Object.hasOwn(patch, 'quantity') || Object.hasOwn(patch, 'itemType')) && updated.quantity < 0.5) throw fault('invalid_material_patch', 400);
+        if (Object.hasOwn(patch, 'quantity')) {
+          let received = match.item.status === 'received' ? match.item.quantity : 0;
+          if (Array.isArray(match.item.fulfillmentTranches) && match.item.fulfillmentTranches.length) {
+            if (match.item.fulfillmentTranches.some(row => !row || typeof row.quantity !== 'number' || !Number.isFinite(row.quantity) || row.quantity < 0)) throw fault('invalid_material_state', 409);
+            received = match.item.fulfillmentTranches.reduce((total, row) => total + row.quantity, 0);
+          }
+          if (patch.quantity + Number.EPSILON * Math.max(1, received) < received) throw fault('received_quantity_conflict', 409);
+        }
+        const destination = patch.category ?? match.category.name;
+        let nextCategories;
+        if (destination !== match.category.name) {
+          if (scope !== null && !scope.includes(destination)) throw fault('material_forbidden', 403);
+          const settings = await transaction.get(db.collection('settings').doc('bom'));
+          const canonical = (Array.isArray(settings.data()?.categories) ? settings.data().categories : [])
+            .filter(row => row && !row.parentId && row.isActive !== false).map(row => row.name);
+          if (!canonical.includes(destination)) throw fault('invalid_material_category', 400);
+          const targets = categories.filter(category => category.name === destination);
+          if (targets.length > 1) throw fault('duplicate_material_category', 409);
+          if (targets.length && !Array.isArray(targets[0].items)) throw fault('invalid_material_state', 409);
+          nextCategories = categories.map((category, index) => index === match.categoryIndex
+            ? { ...category, items: category.items.filter((_item, itemIndex) => itemIndex !== match.itemIndex) }
+            : category.name === destination ? { ...category, items: [...category.items, updated] } : category);
+          if (!targets.length) nextCategories.push({ name: destination, isExpanded: true, items: [updated] });
+        } else {
+          nextCategories = categories.map((category, index) => index !== match.categoryIndex ? category : { ...category, items: category.items.map((item, index) => index === match.itemIndex ? updated : item) });
+        }
         const before = {}, after = {};
         for (const key of Object.keys(patch)) { before[key] = Object.hasOwn(match.item, key) ? match.item[key] : null; after[key] = patch[key]; }
         const result = { ok: true, project_id: id, item_id: itemId, operation_id: operationId, item: updated };
         const actorEmail = actor.email.trim().toLowerCase();
         const createdAt = getServerTimestamp();
         transaction.update(bomRef, { categories: nextCategories });
-        transaction.create(auditRef, { actor_uid: actor.uid, actor_email: actorEmail, project_id: id, item_id: itemId, operation_id: operationId, operation: 'patch_material', previous_version: expectedVersion, permission: { role: actor.customClaims.role, category: match.category.name, scope }, before, after, created_at: createdAt });
+        transaction.create(auditRef, { actor_uid: actor.uid, actor_email: actorEmail, project_id: id, item_id: itemId, operation_id: operationId, operation: 'patch_material', previous_version: expectedVersion, permission: { role: actor.customClaims.role, category: match.category.name, scope }, before, after, ...(destination !== match.category.name ? { category_transition: { from: match.category.name, to: destination } } : {}), created_at: createdAt });
         transaction.create(receiptRef, { actor_uid: actor.uid, actor_email: actorEmail, payload_hash: payloadHash, result, created_at: createdAt });
         return result;
       });
