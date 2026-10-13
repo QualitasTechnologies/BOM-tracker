@@ -1,5 +1,6 @@
 const { createHash } = require('node:crypto');
 const { createProjectActorFactory } = require('./projectReviewActor.cjs');
+const { validateCommand, canonicalCategories, referencedDocuments, applyCommand, assertDocumentBudget, MAX_INPUT_BYTES } = require('./materialCommands.cjs');
 
 const fault = (code, status) => Object.assign(new Error(code), { code, status });
 const digest = text => createHash('sha256').update(text).digest('hex');
@@ -171,9 +172,10 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
       const bomRef = projectRef.collection('bom').doc('data');
       // Absent resource keeps the legacy materials contract; anything else must be exactly 'procurement'.
       const resource = req.query?.resource;
-      if (resource !== undefined && !['procurement', 'fulfillment'].includes(resource)) throw fault('invalid_resource', 400);
+      if (resource !== undefined && !['procurement', 'fulfillment', 'commands'].includes(resource)) throw fault('invalid_resource', 400);
       const fulfilling = resource === 'fulfillment';
-      if (fulfilling && req.method !== 'POST' || !fulfilling && req.method === 'POST') throw fault('method_not_allowed', 405);
+      const commanding = resource === 'commands';
+      if ((fulfilling || commanding) && req.method !== 'POST' || !fulfilling && !commanding && req.method === 'POST') throw fault('method_not_allowed', 405);
       if (resource === 'procurement') {
         if (req.method !== 'GET') throw fault('method_not_allowed', 405);
         const response = await db.runTransaction(async transaction => {
@@ -207,11 +209,76 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           const scope = scopeFor(project.data(), actor);
           const bom = await transaction.get(bomRef);
           const categories = (Array.isArray(bom.data()?.categories) ? bom.data().categories : []).filter(category => scope === null || scope.includes(category.name));
-          return { ok: true, project_id: id, categories, version: versionOf(bom), permissions: { review: true, edit: writesOn() && (scope === null || categories.length > 0) } };
+          return { ok: true, project_id: id, categories, version: versionOf(bom), permissions: { review: true, edit: writesOn() && (scope === null || categories.length > 0), command: writesOn() && (scope === null || scope.length > 0) } };
         });
         return res.json(response);
       }
       if (!writesOn()) throw fault('material_mutations_disabled', 503);
+      if (commanding) {
+        const body = req.body;
+        if (!plain(body) || Object.keys(body).some(key => !['expected_version', 'operation_id', 'command'].includes(key))) throw fault('invalid_material_command', 400);
+        validateBody({ item_id: 'command', expected_version: body.expected_version, operation_id: body.operation_id, patch: { name: 'validation' } });
+        if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_INPUT_BYTES) throw fault('material_command_too_large', 400);
+        const command = validateCommand(body.command);
+        const canonicalize = value => Array.isArray(value) ? value.map(canonicalize) : plain(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])])) : value;
+        const payloadHash = digest(JSON.stringify({ operation: 'material_command', expected_version: body.expected_version, command: canonicalize(command) }));
+        const operations = db.collection('pulseProjectMaterialOperations').doc(id);
+        const receiptRef = operations.collection('materialOperations').doc(body.operation_id);
+        const auditRef = operations.collection('materialAudit').doc(body.operation_id);
+        const response = await db.runTransaction(async transaction => {
+          const project = await transaction.get(projectRef);
+          if (!project.exists) throw fault('project_not_found', 404);
+          const scope = scopeFor(project.data(), actor);
+          // Receipt first: deletion and category removal must remain replayable.
+          const receipt = await transaction.get(receiptRef);
+          const actorEmail = actor.email.trim().toLowerCase();
+          if (receipt.exists) {
+            const recorded = receipt.data();
+            if (recorded.actor_uid !== actor.uid || recorded.actor_email !== actorEmail || recorded.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
+            if (!Array.isArray(recorded.affected_categories) || scope !== null && recorded.affected_categories.some(category => !scope.includes(category))) throw fault('material_forbidden', 403);
+            for (const documentId of recorded.document_ids || []) {
+              const document = await transaction.get(db.collection('projectDocuments').doc(documentId));
+              if (!document.exists || document.data().projectId !== id || document.data().type !== recorded.document_types?.[documentId]
+                || document.data().type === 'customer-po' && actor.customClaims.role !== 'admin') throw fault('document_forbidden', 403);
+            }
+            return recorded.result;
+          }
+          const bom = await transaction.get(bomRef);
+          if (versionOf(bom) !== body.expected_version) throw fault('material_version_conflict', 409);
+          if (!bom.exists && command.kind !== 'add_items') throw fault('material_not_found', 404);
+          const categories = bom.exists ? bom.data()?.categories : [];
+          const settings = await transaction.get(db.collection('settings').doc('bom'));
+          const canonical = canonicalCategories(settings.data());
+          const documentIds = referencedDocuments(command, categories);
+          const documents = new Map();
+          const readDocument = async documentId => {
+            const document = await transaction.get(db.collection('projectDocuments').doc(documentId));
+            if (!document.exists || document.data().projectId !== id || document.data().type === 'customer-po' && actor.customClaims.role !== 'admin') throw fault('document_forbidden', 403);
+            documents.set(documentId, document.data());
+          };
+          for (const documentId of documentIds) await readDocument(documentId);
+          // Document type determines which old scalar link must also be read.
+          for (const documentId of referencedDocuments(command, categories, documents)) if (!documents.has(documentId)) { await readDocument(documentId); documentIds.push(documentId); }
+          const changes = applyCommand({ categories, command, scope, canonical, documents });
+          const result = { ok: true, project_id: id, operation_id: body.operation_id, command_kind: command.kind };
+          const createdAt = getServerTimestamp();
+          const audit = { actor_uid: actor.uid, actor_email: actorEmail, project_id: id, operation_id: body.operation_id, operation: 'material_command', command_kind: command.kind, previous_version: body.expected_version,
+            permission: { role: actor.customClaims.role, scope, categories: changes.affectedCategories }, before: changes.before, after: changes.after, created_at: createdAt };
+          const operationReceipt = { actor_uid: actor.uid, actor_email: actorEmail, payload_hash: payloadHash, affected_categories: changes.affectedCategories, document_ids: documentIds,
+            document_types: Object.fromEntries([...documents].map(([documentId, data]) => [documentId, data.type])), result, created_at: createdAt };
+          const mergedBom = { ...(bom.exists ? bom.data() : {}), categories: changes.categories };
+          // Include legacy unknown fields and every touched document in size checks.
+          assertDocumentBudget([{ path: bomRef.path, data: mergedBom }, { path: auditRef.path, data: audit }, { path: receiptRef.path, data: operationReceipt },
+            ...[...changes.documentUpdates].map(([documentId, fields]) => ({ path: `projectDocuments/${documentId}`, data: { ...documents.get(documentId), ...fields } }))]);
+          // All reads and budget checks above precede the first staged write.
+          if (bom.exists) transaction.update(bomRef, { categories: changes.categories }); else transaction.create(bomRef, mergedBom);
+          for (const [documentId, fields] of changes.documentUpdates) transaction.update(db.collection('projectDocuments').doc(documentId), fields);
+          transaction.create(auditRef, audit);
+          transaction.create(receiptRef, operationReceipt);
+          return result;
+        });
+        return res.json(response);
+      }
       const payloadHash = fulfilling ? validateFulfillment(req.body, id) : validateBody(req.body);
       const { item_id: itemId, expected_version: expectedVersion, operation_id: operationId, fulfillment } = req.body;
       const patch = fulfilling ? {} : req.body.patch;
@@ -251,6 +318,9 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         if (Object.hasOwn(patch, 'itemType') && (typeof updated.quantity !== 'number' || !Number.isFinite(updated.quantity) || updated.quantity <= 0)) throw fault('invalid_material_state', 409);
         if (updated.itemType === 'service' && (Object.hasOwn(patch, 'quantity') || Object.hasOwn(patch, 'itemType')) && updated.quantity < 0.5) throw fault('invalid_material_patch', 400);
         if (Object.hasOwn(patch, 'quantity')) {
+          // Legacy received rows without tranches derive their historical total
+          // from quantity. Changing it would invent or erase received evidence.
+          if (match.item.status === 'received' && !match.item.fulfillmentTranches?.length && patch.quantity !== match.item.quantity) throw fault('received_quantity_conflict', 409);
           let received = match.item.status === 'received' ? match.item.quantity : 0;
           if (Array.isArray(match.item.fulfillmentTranches) && match.item.fulfillmentTranches.length) {
             if (match.item.fulfillmentTranches.some(row => !row || typeof row.quantity !== 'number' || !Number.isFinite(row.quantity) || row.quantity < 0)) throw fault('invalid_material_state', 409);
@@ -263,8 +333,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         if (destination !== match.category.name) {
           if (scope !== null && !scope.includes(destination)) throw fault('material_forbidden', 403);
           const settings = await transaction.get(db.collection('settings').doc('bom'));
-          const canonical = (Array.isArray(settings.data()?.categories) ? settings.data().categories : [])
-            .filter(row => row && !row.parentId && row.isActive !== false).map(row => row.name);
+          const canonical = canonicalCategories(settings.data());
           if (!canonical.includes(destination)) throw fault('invalid_material_category', 400);
           const targets = categories.filter(category => category.name === destination);
           if (targets.length > 1) throw fault('duplicate_material_category', 409);

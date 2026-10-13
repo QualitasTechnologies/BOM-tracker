@@ -276,3 +276,133 @@ test('present legacy tranche identities must be bounded nonblank strings', async
   }
   const f = receiptFixture(); f.item().fulfillmentTranches = [{ quantity: 0.5 }]; assert.equal((await f.fulfill()).status, 200);
 });
+
+function commandFixture(options = {}) {
+  const f = fixture(options);
+  f.docs.set('settings/bom', { tick: 1, data: { categories: [{ name: 'Mech' }, { name: 'Dest' }, { name: 'Uncategorized' }, { name: 'Inactive', isActive: false }, { name: 'Child', parentId: 'Mech' }] } });
+  f.docs.get('projects/A').data.members[0].categoryScope.push('Dest', 'Uncategorized');
+  f.command = (command, extra = {}) => f.call('POST', { expected_version: '10:1', operation_id: 'command-1', command, ...extra }, { query: { resource: 'commands' } });
+  f.categories = () => f.docs.get('projects/A/bom/data')?.data.categories;
+  return f;
+}
+const newMaterial = (extra = {}) => ({ id: 'new', name: 'New', description: '', itemType: 'component', quantity: 1, category: 'Mech', ...extra });
+test('add command appends atomically and preserves prior receipts, unknown item/category/BOM fields', async () => {
+  const f = commandFixture(); f.categories()[0].items[0].fulfillmentTranches = [{ quantity: 1, unknown: 'history' }];
+  const r = await f.command({ kind: 'add_items', items: [newMaterial(), newMaterial({ id: 'another', category: 'Dest' })] });
+  assert.equal(r.status, 200); assert.deepEqual(r.body, { ok: true, project_id: 'A', operation_id: 'command-1', command_kind: 'add_items' });
+  assert.equal(f.categories()[0].items.length, 3); assert.equal(f.categories()[0].extra, 'keep'); assert.equal(f.docs.get('projects/A/bom/data').data.unknown, 'keep'); assert.equal(f.categories()[0].items[0].fulfillmentTranches[0].unknown, 'history');
+  const audit = f.docs.get('pulseProjectMaterialOperations/A/materialAudit/command-1').data;
+  assert.equal(audit.actor_uid, 'alice'); assert.equal(audit.previous_version, '10:1'); assert.equal(audit.created_at, 'server-time'); assert.equal(audit.after.items.length, 2);
+});
+test('delete command replays after deletion but rejects revoked recorded category scope', async () => {
+  const f = commandFixture(); const c = { kind: 'delete_items', item_ids: ['motor'] };
+  const first = await f.command(c); assert.equal(first.status, 200); assert.deepEqual(await f.command(c), first); assert.equal(f.categories()[0].items.some(i => i.id === 'motor'), false);
+  f.docs.get('projects/A').data.members[0].categoryScope = ['Dest']; assert.equal((await f.command(c)).status, 403);
+});
+test('initialization creates missing BOM conditionally and distinguishes valid empty/malformed/nonempty', async () => {
+  const c = { kind: 'add_items', items: [newMaterial()], initialize: true };
+  const f = commandFixture(); f.docs.delete('projects/A/bom/data'); const first = await f.command(c, { expected_version: 'missing' }); assert.equal(first.status, 200); assert.deepEqual(await f.command(c, { expected_version: 'missing' }), first);
+  const g = commandFixture(); g.docs.get('projects/A/bom/data').data.categories = []; assert.equal((await g.command(c)).status, 200);
+  for (const malformed of [null, {}, [{ name: 'Mech', items: 'bad' }]]) { const h = commandFixture(); h.docs.get('projects/A/bom/data').data.categories = malformed; assert.equal((await h.command(c)).status, 409); }
+  assert.equal((await commandFixture().command(c)).status, 409);
+});
+test('scoped empty project exposes command capability without requiring an existing visible category', async () => {
+  const f = commandFixture(); f.docs.delete('projects/A/bom/data'); const r = await f.call(); assert.equal(r.body.permissions.command, true); assert.equal(r.body.permissions.edit, false);
+  const g = commandFixture({ enabled: false }); assert.equal((await g.call()).body.permissions.command, false); assert.equal((await g.command({ kind: 'delete_items', item_ids: ['motor'] })).status, 503);
+});
+test('batch patches preserve unknown fields, apply explicit clears and synchronize ordering PO links', async () => {
+  const f = commandFixture(); const motor = f.categories()[0].items[0]; motor.linkedPODocumentId = 'old-po';
+  f.docs.set('projectDocuments/old-po', { tick: 1, data: { projectId: 'A', type: 'vendor-po', linkedBOMItems: ['motor', 'unrelated'], unknown: true } });
+  f.docs.set('projectDocuments/new-po', { tick: 1, data: { projectId: 'A', type: 'vendor-po', linkedBOMItems: ['other'], unknown: true } });
+  const r = await f.command({ kind: 'patch_items', updates: [{ item_id: 'motor', patch: { price: null, name: 'Changed', linkedPODocumentId: 'new-po', status: 'ordered', orderDate: '2026-10-13' } }, { item_id: 'service', patch: { quantity: 0.5 } }] });
+  assert.equal(r.status, 200); assert.equal(Object.hasOwn(f.categories()[0].items[0], 'price'), false); assert.deepEqual(f.categories()[0].items[0].unknown, { x: 1 });
+  assert.deepEqual(f.docs.get('projectDocuments/old-po').data.linkedBOMItems, ['unrelated']); assert.deepEqual(f.docs.get('projectDocuments/new-po').data.linkedBOMItems, ['other', 'motor']); assert.equal(f.docs.get('projectDocuments/new-po').data.unknown, true);
+});
+test('generic status/quantity patches cannot erase/invent legacy receipt totals or receive without evidence', async () => {
+  for (const patch of [{ status: 'ordered' }, { quantity: 3 }]) {
+    const f = commandFixture(); f.categories()[0].items[0].status = 'received'; assert.equal((await f.command({ kind: 'patch_items', updates: [{ item_id: 'motor', patch }] })).status, 409);
+  }
+  const f = commandFixture(); assert.equal((await f.command({ kind: 'patch_items', updates: [{ item_id: 'motor', patch: { status: 'received' } }] })).status, 409);
+});
+test('move category requires configured destination, preserves merge metadata and replays after source removal', async () => {
+  const f = commandFixture(); f.categories().push({ name: 'Dest', extra: 'destination', isExpanded: false, items: [newMaterial({ id: 'other', category: 'Dest' })] }); f.categories()[0].isExpanded = true;
+  const c = { kind: 'move_category', category: 'Mech', destination: 'Dest' };
+  const first = await f.command(c); assert.equal(first.status, 200); assert.deepEqual(await f.command(c), first);
+  const dest = f.categories().find(c => c.name === 'Dest'); assert.equal(dest.extra, 'destination'); assert.equal(dest.isExpanded, true); assert.equal(dest.items.length, 3); assert.equal(dest.items[1].category, 'Dest'); assert.deepEqual(dest.items[1].unknown, { x: 1 });
+  const g = commandFixture(); g.docs.get('settings/bom').data.categories = [{ name: 'Mech' }]; assert.equal((await g.command({ kind: 'move_category', category: 'Mech', destination: 'Uncategorized' })).status, 400); assert.equal(g.categories()[0].items.length, 2);
+});
+test('category expansion and empty deletion preserve all unrelated state; nonempty deletion is rejected', async () => {
+  const f = commandFixture(); assert.equal((await f.command({ kind: 'category_state', category: 'Mech', isExpanded: false })).status, 200); assert.equal(f.categories()[0].isExpanded, false);
+  const g = commandFixture(); assert.equal((await g.command({ kind: 'delete_category', category: 'Mech' })).status, 409);
+  const h = commandFixture(); h.categories().push({ name: 'Dest', unknown: true, items: [] }); assert.equal((await h.command({ kind: 'delete_category', category: 'Dest' })).status, 200); assert.equal(h.categories().some(c => c.name === 'Dest'), false);
+});
+test('document link deltas update both representations and preserve unrelated links and historical tranches', async () => {
+  const f = commandFixture(); f.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['unrelated'] } });
+  const add = await f.command({ kind: 'link_document', document_id: 'quote', item_ids: ['motor'], action: 'add' }); assert.equal(add.status, 200); assert.equal(f.categories()[0].items[0].linkedQuoteDocumentId, 'quote'); assert.deepEqual(f.docs.get('projectDocuments/quote').data.linkedBOMItems, ['unrelated', 'motor']);
+  const version = `10:${f.docs.get('projects/A/bom/data').tick}`;
+  assert.equal((await f.command({ kind: 'link_document', document_id: 'quote', item_ids: ['motor'], action: 'remove' }, { expected_version: version, operation_id: 'command-2' })).status, 200); assert.equal(Object.hasOwn(f.categories()[0].items[0], 'linkedQuoteDocumentId'), false); assert.deepEqual(f.docs.get('projectDocuments/quote').data.linkedBOMItems, ['unrelated']);
+});
+test('all commands reject forbidden item scope, duplicate identities and operation namespace collisions', async () => {
+  const f = commandFixture(); assert.equal((await f.command({ kind: 'delete_items', item_ids: ['motor', 'secret'] })).status, 403); assert.equal(f.categories()[0].items.length, 2);
+  const g = commandFixture(); g.categories()[1].items[0].id = 'motor'; assert.equal((await g.command({ kind: 'delete_items', item_ids: ['motor'] })).status, 409);
+  const h = commandFixture(); assert.equal((await h.patch({}, { operation_id: 'command-1' })).status, 200); assert.equal((await h.command({ kind: 'delete_items', item_ids: ['motor'] })).body.error, 'operation_conflict');
+});
+test('atomic audit failure and concurrent document access revocation roll back every command write', async () => {
+  const f = commandFixture({ failAudit: true }); assert.equal((await f.command({ kind: 'delete_items', item_ids: ['motor'] })).status, 503); assert.equal(f.categories()[0].items.length, 2);
+  const g = commandFixture({ beforeCommit: docs => { const row = docs.get('projectDocuments/quote'); docs.set('projectDocuments/quote', { tick: 999, data: { ...row.data, projectId: 'B' } }); } }); g.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [] } });
+  assert.equal((await g.command({ kind: 'link_document', document_id: 'quote', item_ids: ['motor'], action: 'add' })).status, 403); assert.equal(g.categories()[0].items[0].linkedQuoteDocumentId, undefined); assert.deepEqual(g.docs.get('projectDocuments/quote').data.linkedBOMItems, []);
+});
+test('two displayed-version commands allow one commit; identical retry commits once', async () => {
+  const c = { kind: 'add_items', items: [newMaterial()] }; const f = commandFixture(); const results = await Promise.all([f.command(c), f.command({ kind: 'delete_items', item_ids: ['motor'] }, { operation_id: 'command-2' })]); assert.deepEqual(results.map(r => r.status).sort(), [200, 409]);
+  const g = commandFixture(); const same = await Promise.all([g.command(c), g.command(c)]); assert.equal(same[0].status, 200); assert.deepEqual(same[0], same[1]); assert.equal(g.categories()[0].items.filter(i => i.id === 'new').length, 1);
+});
+
+test('customer PO document deltas require fresh admin and never invent an item scalar', async () => {
+  const c = { kind: 'link_document', document_id: 'customer', item_ids: ['motor'], action: 'add' };
+  const f = commandFixture(); f.docs.set('projectDocuments/customer', { tick: 1, data: { projectId: 'A', type: 'customer-po', linkedBOMItems: [] } }); assert.equal((await f.command(c)).status, 403);
+  const g = commandFixture({ actor: { customClaims: { role: 'admin', status: 'approved' } } }); g.docs.set('projectDocuments/customer', { tick: 1, data: { projectId: 'A', type: 'customer-po', linkedBOMItems: ['other'] } }); assert.equal((await g.command(c)).status, 200); assert.deepEqual(g.docs.get('projectDocuments/customer').data.linkedBOMItems, ['other', 'motor']); assert.equal(Object.hasOwn(g.categories()[0].items[0], 'linkedCustomerPODocumentId'), false);
+  g.actor.customClaims.role = 'viewer'; assert.equal((await g.command(c)).status, 403);
+});
+test('document delta does not inspect unrelated historical item links and retains tranche references', async () => {
+  const f = commandFixture(); const motor = f.categories()[0].items[0]; motor.linkedInvoiceDocumentId = 'removed-legacy-invoice'; motor.fulfillmentTranches = [{ id: 'history', quantity: 1, invoiceDocId: 'removed-legacy-invoice' }];
+  f.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [] } }); assert.equal((await f.command({ kind: 'link_document', document_id: 'quote', item_ids: ['motor'], action: 'add' })).status, 200); assert.equal(f.categories()[0].items[0].linkedInvoiceDocumentId, 'removed-legacy-invoice'); assert.equal(f.categories()[0].items[0].fulfillmentTranches[0].invoiceDocId, 'removed-legacy-invoice');
+});
+test('command refuses oversized resulting BOM/audit/documents before any staged mutation', async () => {
+  const f = commandFixture(); f.docs.get('projects/A/bom/data').data.large = new Uint8Array(901 * 1024); const before = f.categories()[0].items.length;
+  assert.equal((await f.command({ kind: 'delete_items', item_ids: ['motor'] })).body.error, 'material_document_too_large'); assert.equal(f.categories()[0].items.length, before); assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
+  const g = commandFixture(); g.categories()[0].items[0].large = new Uint8Array(600 * 1024); assert.equal((await g.command({ kind: 'patch_items', updates: [{ item_id: 'motor', patch: { name: 'Changed' } }] })).body.error, 'material_document_too_large'); assert.equal(g.categories()[0].items[0].name, 'Motor');
+  const h = commandFixture(); h.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [], large: new Uint8Array(901 * 1024) } }); assert.equal((await h.command({ kind: 'link_document', document_id: 'quote', item_ids: ['motor'], action: 'add' })).body.error, 'material_document_too_large'); assert.equal(h.categories()[0].items[0].linkedQuoteDocumentId, undefined);
+});
+test('move category counts actual affected items and scope revocation cancels replay', async () => {
+  const f = commandFixture(); f.categories()[0].items = Array.from({ length: 201 }, (_, i) => newMaterial({ id: `large-${i}` })); assert.equal((await f.command({ kind: 'move_category', category: 'Mech', destination: 'Dest' })).body.error, 'material_command_too_large'); assert.equal(f.categories()[0].items.length, 201);
+  const g = commandFixture(); const c = { kind: 'move_category', category: 'Mech', destination: 'Dest' }; assert.equal((await g.command(c)).status, 200); g.docs.get('projects/A').data.members[0].categoryScope = ['Dest']; assert.equal((await g.command(c)).status, 403);
+});
+test('concurrent canonical settings revocation cancels add and receipt write conflicts with stale import', async () => {
+  const f = commandFixture({ beforeCommit: docs => { const row = docs.get('settings/bom'); docs.set('settings/bom', { tick: 999, data: { categories: row.data.categories.filter(c => c.name !== 'Dest') } }); } }); assert.equal((await f.command({ kind: 'add_items', items: [newMaterial({ category: 'Dest' })] })).status, 400); assert.equal(f.categories().some(c => c.name === 'Dest'), false);
+  const g = commandFixture(); g.docs.set('projectDocuments/invoice', { tick: 1, data: { projectId: 'A', type: 'vendor-invoice' } });
+  const r = await g.call('POST', { item_id: 'motor', expected_version: '10:1', operation_id: 'receipt-other', fulfillment: { kind: 'receipt', quantity: 1, invoiceDocId: 'invoice', photoUrl: receiptPhoto, loggedAt: '2026-10-13' } }, { query: { resource: 'fulfillment' } }); assert.equal(r.status, 200); assert.equal((await g.command({ kind: 'add_items', items: [newMaterial()] })).body.error, 'material_version_conflict'); assert.equal(g.categories()[0].items[0].fulfillmentTranches.length, 1);
+});
+
+test('single item PATCH cannot invent legacy received totals through quantity/type changes', async () => {
+  for (const patch of [{ quantity: 3 }, { quantity: 3, itemType: 'service' }, { quantity: 1 }]) {
+    const f = fixture(); f.docs.get('projects/A/bom/data').data.categories[0].items[0].status = 'received'; assert.equal((await f.patch(patch)).body.error, 'received_quantity_conflict'); assert.equal(f.docs.get('projects/A/bom/data').data.categories[0].items[0].quantity, 2);
+  }
+  const g = fixture(); g.docs.get('projects/A/bom/data').data.categories[0].items[0].status = 'received'; assert.equal((await g.patch({ name: 'Descriptive edit' })).status, 200);
+});
+test('document delta preserves unrelated legacy links even when duplicated', async () => {
+  const f = commandFixture(); f.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['unrelated', 'unrelated'] } });
+  assert.equal((await f.command({ kind: 'link_document', document_id: 'quote', item_ids: ['motor'], action: 'add' })).status, 200); assert.deepEqual(f.docs.get('projectDocuments/quote').data.linkedBOMItems, ['unrelated', 'unrelated', 'motor']);
+});
+
+test('legacy category defaults apply only when the primary category field is absent', async () => {
+  const f = commandFixture(); f.docs.get('settings/bom').data = { defaultCategories: ['Mech', 'Dest'] }; assert.equal((await f.command({ kind: 'add_items', items: [newMaterial({ category: 'Dest' })] })).status, 200);
+  const g = commandFixture(); g.docs.get('settings/bom').data = { defaultCategories: ['Mech', 'Dest'] }; assert.equal((await g.patch({ category: 'Dest' })).status, 200);
+  for (const categories of [[], [{ name: 'Dest', isActive: false }], [{ name: 'Dest', parentId: 'parent' }]]) {
+    const h = commandFixture(); h.docs.get('settings/bom').data = { categories, defaultCategories: ['Dest'] }; assert.equal((await h.command({ kind: 'add_items', items: [newMaterial({ category: 'Dest' })] })).body.error, 'invalid_material_category'); assert.equal((await h.patch({ category: 'Dest' })).body.error, 'invalid_material_category');
+  }
+});
+test('malformed primary and legacy canonical settings fail closed before commands or PATCH moves', async () => {
+  for (const settings of [{ categories: null, defaultCategories: ['Dest'] }, { categories: {} }, { categories: [null] }, { categories: [{ name: 'Dest', isActive: 'true' }] }, { defaultCategories: ['Dest', 'Dest'] }, { defaultCategories: [''] }, { defaultCategories: 'Dest' }]) {
+    const f = commandFixture(); f.docs.get('settings/bom').data = settings; assert.equal((await f.command({ kind: 'add_items', items: [newMaterial({ category: 'Dest' })] })).body.error, 'invalid_material_state'); assert.equal((await f.patch({ category: 'Dest' })).body.error, 'invalid_material_state'); assert.equal(f.categories()[0].items.length, 2);
+  }
+});

@@ -138,3 +138,13 @@ test('patch actor assertion rejects malformed and forged UIDs without selecting 
     const f = fixture({ enabled: true }); assert.deepEqual(await f.invoke({ ...f.patch, expected_actor_uid }), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.size, 2);
   }
 });
+
+test('native bounded command uses current verified identity, displayed revision and stable receipt', async () => {
+  const f = fixture({ enabled: true });
+  const data = { operation: 'command', project_id: 'A', expected_version: '10:1', operation_id: 'delete-command', expected_actor_uid: f.actor.uid, command: { kind: 'delete_items', item_ids: ['motor'] } };
+  assert.deepEqual(await f.invoke({ ...data, expected_actor_uid: 'another' }), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.size, 2);
+  const result = await f.invoke(data); assert.deepEqual(result, { ok: true, project_id: 'A', operation_id: 'delete-command', command_kind: 'delete_items' }); assert.deepEqual(await f.invoke(data), result);
+  assert.equal(f.docs.get('pulseProjectMaterialOperations/A/materialAudit/delete-command').actor_uid, f.actor.uid);
+  f.docs.get('projects/A').members = []; assert.deepEqual(await f.invoke(data), { ok: false, error: 'material_forbidden' });
+  const g = fixture(); assert.deepEqual(await g.invoke({ ...data, expected_actor_uid: g.actor.uid }), { ok: false, error: 'material_mutations_disabled' });
+});
