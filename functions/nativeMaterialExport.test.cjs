@@ -17,7 +17,7 @@ test('actual callable export requires both explicit mutation flags and no machin
       require: name => { assert.equal(name, './nativeMaterialOperations.cjs'); return { createNativeMaterialOperations: options => { engine = options; return 'handler'; } }; },
       onCall: (options, handler) => { config = options; assert.equal(handler, 'handler'); return 'callable'; }
     };
-    vm.runInNewContext(source.slice(start), context);
+    vm.runInNewContext(source.slice(start, source.indexOf('// Durable native PO recovery', start)), context);
     assert.equal(context.exports.nativeMaterialOperations, 'callable');
     assert.equal(engine.mutationsEnabled(), expected);
     assert.equal(engine.getServerTimestamp(), 'server-time');

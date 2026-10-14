@@ -5000,7 +5000,8 @@ exports.discardUnassignedEmail = onCall(async (request) => {
  * Generate Purchase Order PDF
  * Creates a professional PO document and stores it in Firebase Storage
  */
-exports.generatePOPDF = onCall(async (request) => {
+const { readNativePoArtifact, writeNativePoArtifact } = require('./nativePoArtifact.cjs');
+async function generatePOPDFHandler(request, immutableTarget) {
   const { purchaseOrder, companySettings, companyLogo, companyLogoUrl, companyLogoPath } = request.data;
 
   if (!purchaseOrder || !companySettings) {
@@ -5011,6 +5012,10 @@ exports.generatePOPDF = onCall(async (request) => {
   }
 
   try {
+    if (immutableTarget) {
+      const cached = await readNativePoArtifact(admin.storage().bucket(), immutableTarget);
+      if (cached) return cached;
+    }
     // Resolve company logo - can be base64, URL, or storage path
     let resolvedLogo = companyLogo;
 
@@ -5539,6 +5544,7 @@ exports.generatePOPDF = onCall(async (request) => {
 
     // Upload to Firebase Storage
     const bucket = admin.storage().bucket();
+    if (immutableTarget) return writeNativePoArtifact(bucket, immutableTarget, pdfBuffer);
     const poNumberSafe = (purchaseOrder.poNumber || 'DRAFT').replace(/[^a-zA-Z0-9-]/g, '_');
     const filename = `purchase-orders/${purchaseOrder.projectId || 'unknown'}/${poNumberSafe}.pdf`;
     const file = bucket.file(filename);
@@ -5593,7 +5599,62 @@ exports.generatePOPDF = onCall(async (request) => {
       `Failed to generate PO PDF: ${error.message}`
     );
   }
-});
+}
+exports.generatePOPDF = onCall(request => generatePOPDFHandler(request));
+
+function buildPOEmailData(purchaseOrder, companySettings, recipientEmail, ccEmails, pdfBuffer) {
+  const poNum = purchaseOrder.poNumber || 'DRAFT';
+  const emailData = {
+    from: 'info@qualitastech.com', // Must be verified in Resend
+    to: recipientEmail,
+    cc: ccEmails || [],
+    subject: `Purchase Order ${poNum} - ${companySettings.companyName || 'Company'}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #1e40af;">Purchase Order ${poNum}</h2>
+        <p>Dear ${purchaseOrder.vendorName || 'Vendor'},</p>
+        <p>Please find attached our Purchase Order for your reference.</p>
+
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+          <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Number:</strong></td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${poNum}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Date:</strong></td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${formatDateSafe(purchaseOrder.poDate)}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Total Amount:</strong></td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${formatIndianCurrency(purchaseOrder.totalAmount)}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Items:</strong></td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${purchaseOrder.items?.length || 0} item(s)</td>
+          </tr>
+        </table>
+
+        <p>Please acknowledge receipt of this Purchase Order.</p>
+
+        <p>
+          Best regards,<br/>
+          <strong>${companySettings.companyName || 'Company'}</strong><br/>
+          ${companySettings.phone ? `Phone: ${companySettings.phone}<br/>` : ''}
+          ${companySettings.email ? `Email: ${companySettings.email}` : ''}
+        </p>
+      </div>
+    `,
+    attachments: [
+      {
+        content: pdfBuffer.toString('base64'),
+        filename: `${poNum}.pdf`,
+        type: 'application/pdf'
+      }
+    ]
+  };
+
+  return emailData;
+}
 
 /**
  * Send Purchase Order via Email
@@ -5630,56 +5691,7 @@ exports.sendPurchaseOrder = onCall(
       // Initialize Resend
       const resend = new Resend(getResendApiKey());
 
-      // Build email
-      const poNum = purchaseOrder.poNumber || 'DRAFT';
-      const emailData = {
-        from: 'info@qualitastech.com', // Must be verified in Resend
-        to: recipientEmail,
-        cc: ccEmails || [],
-        subject: `Purchase Order ${poNum} - ${companySettings.companyName || 'Company'}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #1e40af;">Purchase Order ${poNum}</h2>
-            <p>Dear ${purchaseOrder.vendorName || 'Vendor'},</p>
-            <p>Please find attached our Purchase Order for your reference.</p>
-
-            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-              <tr>
-                <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Number:</strong></td>
-                <td style="padding: 8px; border: 1px solid #ddd;">${poNum}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Date:</strong></td>
-                <td style="padding: 8px; border: 1px solid #ddd;">${formatDateSafe(purchaseOrder.poDate)}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Total Amount:</strong></td>
-                <td style="padding: 8px; border: 1px solid #ddd;">${formatIndianCurrency(purchaseOrder.totalAmount)}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Items:</strong></td>
-                <td style="padding: 8px; border: 1px solid #ddd;">${purchaseOrder.items?.length || 0} item(s)</td>
-              </tr>
-            </table>
-
-            <p>Please acknowledge receipt of this Purchase Order.</p>
-
-            <p>
-              Best regards,<br/>
-              <strong>${companySettings.companyName || 'Company'}</strong><br/>
-              ${companySettings.phone ? `Phone: ${companySettings.phone}<br/>` : ''}
-              ${companySettings.email ? `Email: ${companySettings.email}` : ''}
-            </p>
-          </div>
-        `,
-        attachments: [
-          {
-            content: pdfBuffer.toString('base64'),
-            filename: `${poNum}.pdf`,
-            type: 'application/pdf'
-          }
-        ]
-      };
+      const emailData = buildPOEmailData(purchaseOrder, companySettings, recipientEmail, ccEmails, pdfBuffer);
 
       await resend.emails.send(emailData);
 
@@ -7514,5 +7526,21 @@ exports.nativeMaterialOperations = onCall(
     mutationsEnabled: () => process.env.BOM_MATERIAL_MUTATIONS_ENABLED === 'true'
       && process.env.BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED === 'true',
     getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
+
+// Durable native PO recovery; no provider call is possible until all three gates are enabled.
+const { createNativeProcurementOperations } = require('./nativeProcurementOperations.cjs');
+const { createNativePoRuntime, procurementEnabled } = require('./nativePoRuntime.cjs');
+exports.nativeProcurementOperations = onCall(
+  { region: 'us-central1', secrets: [resendApiKey], timeoutSeconds: 120, maxInstances: 5 },
+  createNativeProcurementOperations({
+    db: admin.firestore(), auth: admin.auth(),
+    enabled: () => procurementEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    ...createNativePoRuntime({
+      db: admin.firestore(), bucket: admin.storage().bucket(), renderPdf: generatePOPDFHandler,
+      createResend: () => new Resend(getResendApiKey()), buildEmail: buildPOEmailData,
+    }),
   })
 );

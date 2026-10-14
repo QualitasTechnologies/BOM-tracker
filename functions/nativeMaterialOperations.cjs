@@ -53,4 +53,4 @@ function createNativeMaterialOperations({ db, auth, mutationsEnabled = false, ge
   };
 }
 
-module.exports = { createNativeMaterialOperations };
+module.exports = { createNativeMaterialOperations, currentNativeActor };
