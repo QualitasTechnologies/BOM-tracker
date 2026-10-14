@@ -21,7 +21,7 @@ function date(value) {
 }
 const editable = ['paymentTerms','deliveryTerms','vendorQuoteReference','expectedDeliveryDate','shipToAddress'];
 function commandOf(value) {
-  if (!plain(value) || !['edit','submit','request_changes'].includes(value.kind)) throw fault('invalid_po_command');
+  if (!plain(value) || !['edit','submit','request_changes','delete'].includes(value.kind)) throw fault('invalid_po_command');
   const fields = value.kind === 'edit' ? ['kind','patch'] : value.kind === 'request_changes' ? ['kind','note'] : ['kind'];
   if (Object.keys(value).some(key => !fields.includes(key))) throw fault('invalid_po_command');
   if (value.kind === 'edit') {
@@ -92,11 +92,21 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
       if (data.operation === 'create') { if (!validVersion(data.expected_material_version)) throw fault('invalid_po_request'); validateCreate(data.input, data.billing_snapshot); }
       const projectRef = db.collection('projects').doc(data.project_id), bomRef = projectRef.collection('bom').doc('data');
       const poRef = data.po_id ? projectRef.collection('purchaseOrders').doc(data.po_id) : null;
+      const archiveRef = data.po_id ? db.collection('pulseDeletedPurchaseOrders').doc(data.project_id).collection('purchaseOrders').doc(data.po_id) : null;
       const ledger = db.collection('pulsePOAuthoringOperations').doc(data.project_id), controlRef = db.collection('pulseRuntimeControl').doc('cutover');
       const receiptRef = data.operation_id ? ledger.collection('receipts').doc(data.operation_id) : null;
       const auditRef = data.operation_id ? ledger.collection('audit').doc(data.operation_id) : null;
       const { resolve_only: resolving, ...originalRequest } = data;
       const payloadHash = digest(originalRequest);
+      const activeSend = async (transaction,po) => {
+        const pointer=po?.exists ? po.data().nativeSendAttemptId : null;
+        if (!pointer) return false;
+        if (!id(pointer)) return true;
+        const stored=await transaction.get(db.collection('pulseProcurementOperations').doc(data.project_id).collection('attempts').doc(pointer));
+        const attempt=stored.data();
+        return !stored.exists || attempt.attempt_id !== pointer || attempt.po_id !== data.po_id || attempt.lease_until !== 0
+          || !['complete','cancelled'].includes(attempt.phase) || attempt.phase === 'cancelled' && attempt.dispatched_ms !== undefined;
+      };
       const latest = async transaction => {
         const project = await transaction.get(projectRef);
         if (!project.exists) throw fault('project_not_found',404);
@@ -110,12 +120,14 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
         if (po?.exists && po.data().projectId && po.data().projectId !== data.project_id) throw fault('procurement_forbidden',403);
         if (data.operation === 'open') {
           if (poRef && !po.exists) throw fault('purchase_order_not_found',404);
-          const bom = await transaction.get(bomRef), final = await latest(transaction);
+          const bom = await transaction.get(bomRef);
           let enabledHere = on(); try { writableControl(control); } catch { enabledHere = false; }
           const draft = po?.data()?.status === 'draft' && !po.data().nativeSendAttemptId;
+          const deletable = po?.exists && !(await activeSend(transaction,po));
+          const final = await latest(transaction);
           return { ok:true, project_id:data.project_id, po_id:data.po_id || null, po_version:po ? version(po) : 'missing', material_version:version(bom), purchase_order:po?.exists ? freeze({ ...po.data(),id:data.po_id,projectId:data.project_id }) : null,
             ...(!poRef ? {categories:final.permissions.create ? freeze(bom.data()?.categories || []) : []} : {}),
-            permissions:{ create:enabledHere && final.permissions.create, edit:enabledHere && !!draft, submit:enabledHere && !!draft, request_changes:enabledHere && final.permissions.admin && po?.data()?.status === 'pending-approval' && !po.data().nativeSendAttemptId } };
+            permissions:{ create:enabledHere && final.permissions.create, edit:enabledHere && !!draft, submit:enabledHere && !!draft, request_changes:enabledHere && final.permissions.admin && po?.data()?.status === 'pending-approval' && !po.data().nativeSendAttemptId, delete:enabledHere && !!deletable } };
         }
         if (data.operation === 'create' && !first.permissions.create || command?.kind === 'request_changes' && !first.permissions.admin) throw fault('procurement_forbidden',403);
         const receipt = await transaction.get(receiptRef);
@@ -143,10 +155,11 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
         writableControl(control);
         const kind = data.operation === 'create' ? 'create' : command.kind;
         const result = { ok:true, project_id:data.project_id, po_id:data.po_id, operation_id:data.operation_id, kind };
-        let after, before = po?.exists ? po.data() : null, counter;
+        let after, before = po?.exists ? po.data() : null, counter, archived;
         const at = getServerTimestamp();
         if (data.operation === 'create') {
           if (po.exists) throw fault('purchase_order_exists',409);
+          if ((await transaction.get(archiveRef)).exists) throw fault('purchase_order_deleted',409);
           const bom = await transaction.get(bomRef);
           if (version(bom) !== data.expected_material_version) throw fault('material_version_conflict',409);
           const input = data.input, vendor = await transaction.get(db.collection('vendors').doc(input.vendorId));
@@ -182,19 +195,25 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
         } else {
           if (!po.exists) throw fault('purchase_order_not_found',404);
           if (version(po) !== data.expected_po_version) throw fault('po_version_conflict',409);
-          if (before.nativeSendAttemptId) throw fault('purchase_order_attempt_active',409);
-          if (before.status !== (kind === 'request_changes' ? 'pending-approval' : 'draft')) throw fault('purchase_order_state_conflict',409);
-          if (kind === 'edit') after = { ...before,...command.patch,...(Object.hasOwn(command.patch,'expectedDeliveryDate') ? {expectedDeliveryDate:date(command.patch.expectedDeliveryDate)} : {}),updatedAt:at };
+          if (before.nativeSendAttemptId && (kind !== 'delete' || await activeSend(transaction,po))) throw fault('purchase_order_attempt_active',409);
+          if (kind !== 'delete' && before.status !== (kind === 'request_changes' ? 'pending-approval' : 'draft')) throw fault('purchase_order_state_conflict',409);
+          if (kind === 'delete') {
+            if ((await transaction.get(archiveRef)).exists) throw fault('purchase_order_identity_reused',409);
+            archived = { project_id:data.project_id,po_id:data.po_id,operation_id:data.operation_id,actor_uid:actor.uid,actor_email:actor.email,revision:version(po),record:before,at };
+            after = null;
+          }
+          else if (kind === 'edit') after = { ...before,...command.patch,...(Object.hasOwn(command.patch,'expectedDeliveryDate') ? {expectedDeliveryDate:date(command.patch.expectedDeliveryDate)} : {}),updatedAt:at };
           else if (kind === 'submit') after = { ...before,status:'pending-approval',submittedBy:actor.uid,submittedForApprovalAt:at,changesRequestedAt:null,changesRequestedBy:null,changesRequestedNote:null,updatedAt:at };
           else after = { ...before,status:'draft',changesRequestedBy:actor.uid,changesRequestedAt:at,changesRequestedNote:command.note || null,updatedAt:at };
         }
         const final = await latest(transaction);
         if (!on()) throw fault('po_authoring_disabled',503);
         if (kind === 'create' && !final.permissions.create || kind === 'request_changes' && !final.permissions.admin) throw fault('procurement_forbidden',403);
-        const audit = { operation:kind,actor_uid:actor.uid,actor_email:actor.email,project_id:data.project_id,po_id:data.po_id,operation_id:data.operation_id,before,after,at };
+        const audit = { operation:kind,actor_uid:actor.uid,actor_email:actor.email,project_id:data.project_id,po_id:data.po_id,operation_id:data.operation_id,before,after,...(archived ? {deleted_record_path:archiveRef.path} : {}),at };
         const recorded = { actor_uid:actor.uid,actor_email:actor.email,payload_hash:payloadHash,result,at };
-        assertDocumentBudget([{path:poRef.path,data:after},{path:auditRef.path,data:audit},{path:receiptRef.path,data:recorded},...(counter ? [{path:counter.ref.path,data:{...counter.before,...counter.patch}}] : [])]);
-        if (kind === 'create') transaction.create(poRef,after); else transaction.update(poRef,after);
+        assertDocumentBudget([...(after ? [{path:poRef.path,data:after}] : []),{path:auditRef.path,data:audit},{path:receiptRef.path,data:recorded},...(archived ? [{path:archiveRef.path,data:archived}] : []),...(counter ? [{path:counter.ref.path,data:{...counter.before,...counter.patch}}] : [])]);
+        if (kind === 'delete') { transaction.create(archiveRef,archived); transaction.delete(poRef); }
+        else if (kind === 'create') transaction.create(poRef,after); else transaction.update(poRef,after);
         if (counter) transaction.update(counter.ref,counter.patch);
         transaction.create(auditRef,audit); transaction.create(receiptRef,recorded);
         return result;

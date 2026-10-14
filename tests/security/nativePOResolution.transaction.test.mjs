@@ -54,3 +54,38 @@ test('real Firestore cancellation fences its old nonce while a fresh authorized 
   assert.equal((await call(request)).error, 'po_request_cancelled');
   assert.equal((await db.doc('billingEntities/B').get()).data().nextPoNumber, 8);
 });
+
+test('real Firestore delete/cancel races preserve the original record or a complete protected archive', async () => {
+  const requests=[];
+  for (let i=0;i<4;i++) {
+    const id=`delete-${i}`, original={...data.docs.get('projects/P/purchaseOrders/existing'),status:'sent',historical:{retained:true,sequence:i}};
+    if (i%2===0) {
+      original.nativeSendAttemptId=`complete-${i}`;
+      await db.doc(`pulseProcurementOperations/P/attempts/complete-${i}`).set({attempt_id:`complete-${i}`,po_id:id,phase:'complete',lease_until:0});
+    }
+    await db.doc(`projects/P/purchaseOrders/${id}`).set(original);
+    const storedOriginal=(await db.doc(`projects/P/purchaseOrders/${id}`).get()).data();
+    const opening=await call({operation:'open',po_id:id});assert.equal(opening.permissions.delete,true);
+    const request={operation:'command',po_id:id,operation_id:id,expected_po_version:opening.po_version,command:{kind:'delete'}};
+    const [removed,resolved]=await Promise.all([call(request),call({...request,resolve_only:true})]);
+    assert.equal(resolved.ok,true);requests.push([request,resolved.resolution]);
+    const po=await db.doc(`projects/P/purchaseOrders/${id}`).get(),archive=await db.doc(`pulseDeletedPurchaseOrders/P/purchaseOrders/${id}`).get();
+    if (resolved.resolution==='committed') {
+      assert.equal(removed.ok,true);assert.equal(po.exists,false);assert.equal(archive.exists,true);
+      assert.deepEqual(archive.data().record,storedOriginal);assert.equal(archive.data().actor_uid,'alice');
+    } else { assert.equal(resolved.resolution,'cancelled');assert.equal(removed.error,'po_request_cancelled');assert.equal(po.exists,true);assert.equal(archive.exists,false); }
+  }
+  // Guarantee a committed archive comparison even if cancellation wins every race above.
+  await db.doc('projects/P/purchaseOrders/existing').update({nativeSendAttemptId:'final-complete',status:'sent'});
+  await db.doc('pulseProcurementOperations/P/attempts/final-complete').set({attempt_id:'final-complete',po_id:'existing',phase:'complete',lease_until:0,dispatched_ms:1});
+  const exactRecord=(await db.doc('projects/P/purchaseOrders/existing').get()).data();
+  const opening=await call({operation:'open',po_id:'existing'});
+  const finalRequest={operation:'command',po_id:'existing',operation_id:'confirmed-delete',expected_po_version:opening.po_version,command:{kind:'delete'}};
+  assert.equal((await call(finalRequest)).ok,true);
+  assert.deepEqual((await db.doc('pulseDeletedPurchaseOrders/P/purchaseOrders/existing').get()).data().record,exactRecord);
+  requests.push([finalRequest,'committed']);
+  await db.doc('pulseRuntimeControl/cutover').set({mode:'read_only'});
+  for (const [request,outcome] of requests) assert.equal((await call({...request,resolve_only:true})).resolution,outcome);
+  assert.equal((await db.doc('billingEntities/B').get()).data().nextPoNumber,7);
+  assert.equal((await db.collection('pulsePOAuthoringOperations/P/receipts').get()).size,5);
+});

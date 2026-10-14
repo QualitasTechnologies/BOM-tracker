@@ -59,3 +59,11 @@ October 14 resolution-stage run: 12/12 tests passed (10 rules + 2 real transacti
 cases). Initial setup used a dummy credential unsupported by Admin; replacing that
 wrapper with an explicit emulator Firestore connection resolved the setup failure.
 No production project/credential/provider is used by this suite.
+
+October 15 audited-deletion stage: 13/13 tests passed. The transaction suite now
+also races deletion against cancellation four times, including completed-send
+pointers, and compares the entire archived record (including Firestore timestamps)
+with the pre-delete document. A matching terminal protected send record permits
+delete; arbitrary PO flags or unknown/pending send state do not. The rules tests
+include denial of direct access to the deleted-PO archive, even for client admins.
+No files, BOM ordering data or billing counters are removed/recycled by PO deletion.

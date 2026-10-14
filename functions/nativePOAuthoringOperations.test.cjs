@@ -137,3 +137,88 @@ test('provider-shaped commit errors remain sanitized and unconfirmed until recei
     assert.equal(f.docs.get('billingEntities/B').nextPoNumber, 8);
   }
 });
+
+test('original members including partners delete every PO status and preserve a protected complete record', async () => {
+  for (const uid of ['alice','partner','admin']) for (const status of ['draft','pending-approval','sent','closed','cancelled']) {
+    const f=fixture({uid}); f.docs.get('projects/P/purchaseOrders/existing').status=status;
+    const before=structuredClone(f.docs.get('projects/P/purchaseOrders/existing'));
+    assert.equal((await f.call({operation:'open',po_id:'existing'})).permissions.delete,true);
+    const result=await f.command({kind:'delete'}); assert.equal(result.ok,true); assert.equal(result.kind,'delete');
+    assert.equal(f.docs.has('projects/P/purchaseOrders/existing'),false);
+    const archive=f.docs.get('pulseDeletedPurchaseOrders/P/purchaseOrders/existing');
+    assert.deepEqual(archive.record,before);assert.equal(archive.actor_uid,uid);assert.equal(archive.po_id,'existing');assert.equal(archive.revision,'10:1');
+    assert.deepEqual(await f.command({kind:'delete'}),result);
+    assert.equal((await f.command({kind:'delete'},{resolve_only:true})).resolution,'committed');
+    assert.equal(f.docs.get('billingEntities/B').nextPoNumber,7);assert.deepEqual(f.docs.get('projects/P/bom/data').categories[0].items[0].finalizedVendor,{name:'Vendor'});
+  }
+});
+
+test('delete rejects stale revision, active send and archive identity reuse without removing anything', async () => {
+  const f=fixture();assert.equal((await f.command({kind:'delete'},{expected_po_version:'10:9'})).error,'po_version_conflict');
+  f.docs.get('projects/P/purchaseOrders/existing').nativeSendAttemptId='sending';
+  assert.equal((await f.command({kind:'delete'})).error,'purchase_order_attempt_active');
+  assert.equal((await f.call({operation:'open',po_id:'existing'})).permissions.delete,false);
+  const g=fixture();g.docs.set('pulseDeletedPurchaseOrders/P/purchaseOrders/existing',{record:{historical:'original'}});
+  assert.equal((await g.command({kind:'delete'})).error,'purchase_order_identity_reused');
+  assert.equal(g.docs.has('projects/P/purchaseOrders/existing'),true);assert.deepEqual(g.docs.get('pulseDeletedPurchaseOrders/P/purchaseOrders/existing').record,{historical:'original'});
+  const h=fixture();h.docs.set('pulseDeletedPurchaseOrders/P/purchaseOrders/created',{record:{keep:true}});
+  assert.equal((await h.create()).error,'purchase_order_deleted');
+});
+
+test('delete current access, disabled writes, audit rollback and lost ACK do not lose protected history', async () => {
+  const outsider=fixture({uid:'outsider'});assert.equal((await outsider.command({kind:'delete'})).error,'project_forbidden');
+  const off=fixture({enabled:false});assert.equal((await off.command({kind:'delete'})).error,'po_authoring_disabled');
+  const rollback=fixture({failAudit:true});assert.equal((await rollback.command({kind:'delete'})).error,'po_authoring_unavailable');
+  assert.equal(rollback.docs.has('projects/P/purchaseOrders/existing'),true);assert.equal(rollback.docs.has('pulseDeletedPurchaseOrders/P/purchaseOrders/existing'),false);
+  let enabled=true;const lost=fixture({enabled:()=>enabled,loseCommitReply:true});assert.equal((await lost.command({kind:'delete'})).error,'po_authoring_unavailable');
+  enabled=false;assert.equal((await lost.command({kind:'delete'},{resolve_only:true})).resolution,'committed');
+  lost.docs.get('projects/P').memberIds=[];assert.equal((await lost.command({kind:'delete'},{resolve_only:true})).error,'project_forbidden');
+  assert.equal(lost.docs.get('pulseDeletedPurchaseOrders/P/purchaseOrders/existing').record.historical.retained,true);
+});
+
+test('cancelling a staged delayed deletion fences it while a committed delete resolves once', async () => {
+  let f;f=fixture({beforeCommit:async()=>{assert.equal((await f.command({kind:'delete'},{resolve_only:true})).resolution,'cancelled');}});
+  assert.equal((await f.command({kind:'delete'})).error,'po_request_cancelled');assert.equal(f.docs.has('projects/P/purchaseOrders/existing'),true);assert.equal(f.docs.has('pulseDeletedPurchaseOrders/P/purchaseOrders/existing'),false);
+  let g;g=fixture({beforeCommit:async()=>{assert.equal((await g.command({kind:'delete'})).ok,true);}});
+  assert.equal((await g.command({kind:'delete'},{resolve_only:true})).resolution,'committed');assert.equal([...g.docs.keys()].filter(path=>path.includes('/audit/')).length,1);
+});
+
+test('completed sends retain their pointer for history but do not permanently block original deletion', async () => {
+  const f=fixture();f.docs.get('projects/P/purchaseOrders/existing').nativeSendAttemptId='done';
+  f.docs.get('projects/P/purchaseOrders/existing').status='sent';
+  f.docs.set('pulseProcurementOperations/P/attempts/done',{attempt_id:'done',po_id:'existing',phase:'complete',lease_until:0,dispatched_ms:1});
+  assert.equal((await f.call({operation:'open',po_id:'existing'})).permissions.delete,true);
+  assert.equal((await f.command({kind:'delete'})).ok,true);
+  assert.equal(f.docs.get('pulseDeletedPurchaseOrders/P/purchaseOrders/existing').record.nativeSendAttemptId,'done');
+  for (const patch of [{phase:'accepted'},{po_id:'different'},{lease_until:99},{phase:'cancelled',dispatched_ms:1}]) {
+    const g=fixture();g.docs.get('projects/P/purchaseOrders/existing').nativeSendAttemptId='done';
+    g.docs.set('pulseProcurementOperations/P/attempts/done',{attempt_id:'done',po_id:'existing',phase:'complete',lease_until:0,...patch});
+    assert.equal((await g.command({kind:'delete'})).error,'purchase_order_attempt_active');
+  }
+});
+
+test('opening rechecks the current actor after reading the protected send journal', async () => {
+  const f=fixture({onRead:(path,users)=>{if(path==='pulseProcurementOperations/P/attempts/done')users.get('alice').disabled=true;}});
+  f.docs.get('projects/P/purchaseOrders/existing').nativeSendAttemptId='done';
+  f.docs.set('pulseProcurementOperations/P/attempts/done',{attempt_id:'done',po_id:'existing',phase:'complete',lease_until:0});
+  assert.equal((await f.call({operation:'open',po_id:'existing'})).error,'actor_forbidden');
+});
+
+test('membership removed during archive reads prevents deletion and a newly active send overrides opening permission', async () => {
+  const f=fixture({onRead:(path,users,docs)=>{if(path==='pulseDeletedPurchaseOrders/P/purchaseOrders/existing')docs.get('projects/P').memberIds=[];}});
+  assert.equal((await f.command({kind:'delete'})).error,'project_forbidden');
+  assert.equal(f.docs.has('projects/P/purchaseOrders/existing'),true);assert.equal(f.docs.has('pulseDeletedPurchaseOrders/P/purchaseOrders/existing'),false);
+  const g=fixture();g.docs.get('projects/P/purchaseOrders/existing').nativeSendAttemptId='done';
+  g.docs.set('pulseProcurementOperations/P/attempts/done',{attempt_id:'done',po_id:'existing',phase:'complete',lease_until:0});
+  assert.equal((await g.call({operation:'open',po_id:'existing'})).permissions.delete,true);
+  g.docs.get('pulseProcurementOperations/P/attempts/done').phase='dispatching';
+  assert.equal((await g.command({kind:'delete'})).error,'purchase_order_attempt_active');
+});
+
+test('a legacy PO exceeding the archive safety budget stays intact with no partial delete or journal', async () => {
+  const f=fixture();f.docs.get('projects/P/purchaseOrders/existing').legacyPayload='x'.repeat(940000);
+  assert.equal((await f.command({kind:'delete'})).error,'po_authoring_unavailable');
+  assert.equal(f.docs.get('projects/P/purchaseOrders/existing').legacyPayload.length,940000);
+  assert.equal(f.docs.has('pulseDeletedPurchaseOrders/P/purchaseOrders/existing'),false);
+  assert.equal([...f.docs.keys()].filter(path=>path.includes('/audit/')||path.includes('/receipts/')).length,0);
+});
