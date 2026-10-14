@@ -15,7 +15,8 @@ test('upload callable uses native dependencies and all three default-off gates',
       require: name => { assert.equal(name, './nativeUploadOperations.cjs'); return { createNativeUploadOperations: dependencies => { engine = dependencies; return 'handler'; } }; },
       onCall: (options, handler) => { config = options; assert.equal(handler, 'handler'); return 'callable'; },
     };
-    vm.runInNewContext(source.slice(start), context);
+    const authoringStart = source.indexOf('// Native PO authoring', start);
+    vm.runInNewContext(source.slice(start, authoringStart < 0 ? undefined : authoringStart), context);
     assert.equal(context.exports.nativeUploadOperations, 'callable');
     assert.equal(engine.enabled(), mask === 7, `gate combination ${mask}`);
     assert.equal(engine.db, 'db'); assert.equal(engine.auth, 'auth'); assert.equal(engine.bucket, 'bucket');

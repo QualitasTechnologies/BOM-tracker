@@ -7568,3 +7568,13 @@ exports.nativeUploadOperations = onCall(
     getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
   })
 );
+
+// Native PO authoring: atomic numbering, draft edits and approval transitions; off by default.
+const { createNativePOAuthoringOperations, authoringEnabled } = require('./nativePOAuthoringOperations.cjs');
+exports.nativePOAuthoringOperations = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativePOAuthoringOperations({
+    db: admin.firestore(), auth: admin.auth(), enabled: () => authoringEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
