@@ -417,6 +417,25 @@ function mixedLinkFixture(options = {}) {
   f.mixed = { kind: 'link_document_delta', document_id: 'quote', add_item_ids: ['service'], remove_item_ids: ['motor'] };
   return f;
 }
+test('native receipt photo requires a finalized server receipt bound to this actor and item', async () => {
+  const fileName = `${'a'.repeat(64)}.jpg`;
+  const nativePhoto = receiptPhoto.replace('motor.jpg', `native%2F${fileName}`) + '&generation=12';
+  for (const change of [null, { state: 'reserved' }, { project_id: 'B' }, { item_id: 'service' }, { actor_uid: 'bob' }, { generation: '13' }]) {
+    const f = receiptFixture();
+    if (change) f.docs.set(`pulseNativeUploadIntents/${fileName}`, { tick: 1, data: { state: 'finalized', project_id: 'A', item_id: 'motor', actor_uid: 'alice', actor_email: 'alice@example.com', generation: '12', operation_id: 'photo-1', path: `projects/A/received-photos/native/${fileName}`, ...change } });
+    f.docs.set('pulseNativeUploadOperations/A/receipts/photo-1', { tick: 1, data: { actor_uid: 'alice', actor_email: 'alice@example.com', project_id: 'A', item_id: 'motor', finalized: { photo_url: nativePhoto, generation: '12' } } });
+    assert.equal((await f.fulfill({ photoUrl: nativePhoto })).body.error, 'receipt_photo_unverified', JSON.stringify(change));
+    assert.equal(f.item().fulfillmentTranches, undefined);
+  }
+  const f = receiptFixture();
+  f.docs.set(`pulseNativeUploadIntents/${fileName}`, { tick: 1, data: { state: 'finalized', project_id: 'A', item_id: 'motor', actor_uid: 'alice', actor_email: 'alice@example.com', generation: '12', operation_id: 'photo-1', path: `projects/A/received-photos/native/${fileName}` } });
+  f.docs.set('pulseNativeUploadOperations/A/receipts/photo-1', { tick: 1, data: { actor_uid: 'alice', actor_email: 'alice@example.com', project_id: 'A', item_id: 'motor', finalized: { photo_url: nativePhoto, generation: '12' } } });
+  assert.equal((await f.fulfill({ photoUrl: nativePhoto })).status, 200);
+  const g = receiptFixture();
+  g.docs.set(`pulseNativeUploadIntents/${fileName}`, f.docs.get(`pulseNativeUploadIntents/${fileName}`));
+  g.docs.set('pulseNativeUploadOperations/A/receipts/photo-1', f.docs.get('pulseNativeUploadOperations/A/receipts/photo-1'));
+  assert.equal((await g.fulfill({ photoUrl: nativePhoto.replace('token=test', 'token=forged') })).body.error, 'receipt_photo_unverified');
+});
 test('mixed link delta commits add/remove and prior-document synchronization at one displayed revision', async () => {
   const f = mixedLinkFixture(); const result = await f.command(f.mixed); assert.equal(result.status, 200); assert.equal(result.body.command_kind, 'link_document_delta');
   assert.deepEqual(f.docs.get('projectDocuments/quote').data.linkedBOMItems, ['unchanged', 'unknown-history', 'unknown-history', 'service']); assert.deepEqual(f.docs.get('projectDocuments/old-quote').data.linkedBOMItems, ['other']);
