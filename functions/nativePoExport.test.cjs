@@ -31,7 +31,7 @@ test('actual native callable wires current identity, secret and all three gates'
     require: name => name === './nativeProcurementOperations.cjs' ? { createNativeProcurementOperations: args => { options = args; return 'handler'; } } : require(name),
     onCall: (args, handler) => { assert.equal(handler, 'handler'); config = args; return 'callable'; },
   };
-  vm.runInNewContext(source.slice(start), context);
+  vm.runInNewContext(source.slice(start, source.indexOf('// Native project metadata', start)), context);
   assert.equal(context.exports.nativeProcurementOperations, 'callable');
   assert.equal(options.auth, 'auth'); assert.equal(options.enabled(), false);
   context.process.env = { BOM_NATIVE_PROCUREMENT_ENABLED: 'true', BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED: 'true', BOM_MATERIAL_MUTATIONS_ENABLED: 'true' };
