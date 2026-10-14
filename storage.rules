@@ -121,7 +121,9 @@ service firebase.storage {
     match /projects/{projectId}/received-photos/native/{fileName} {
       // Intent/audit collections are outside the writable legacy project wildcard.
       // Storage rules cannot revalidate Firebase Auth revocation. Both callables do.
-      allow create: if fileName.matches('[a-f0-9]{64}[.]jpg')
+      // Explicit existing-object check also protects upload APIs evaluated as create.
+      allow create: if resource == null
+        && fileName.matches('[a-f0-9]{64}[.]jpg')
         && firestore.exists(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName))
         && nativeUploadModeAllowsWrite()
         && nativeUploadActor(firestore.get(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName)).data, projectId, fileName)
