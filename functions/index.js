@@ -7555,3 +7555,16 @@ exports.nativeProjectOperations = onCall(
     getDeleteField: () => admin.firestore.FieldValue.delete(),
   })
 );
+
+// Native receipt photos: protected reservation + verified finalization; off by default.
+const { createNativeUploadOperations } = require('./nativeUploadOperations.cjs');
+exports.nativeUploadOperations = onCall(
+  { region: 'us-central1', timeoutSeconds: 60, maxInstances: 5 },
+  createNativeUploadOperations({
+    db: admin.firestore(), auth: admin.auth(), bucket: admin.storage().bucket(),
+    enabled: () => process.env.BOM_MATERIAL_MUTATIONS_ENABLED === 'true'
+      && process.env.BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED === 'true'
+      && process.env.BOM_NATIVE_UPLOADS_ENABLED === 'true',
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);

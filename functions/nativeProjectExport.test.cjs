@@ -13,7 +13,8 @@ test('actual project callable keeps all three gates off by default and uses nati
       require: name => { assert.equal(name, './nativeProjectOperations.cjs'); return { ...require(name), createNativeProjectOperations: args => { engine = args; return 'handler'; } }; },
       onCall: (args, handler) => { config = args; assert.equal(handler, 'handler'); return 'callable'; },
     };
-    vm.runInNewContext(source.slice(start), context);
+    const end = source.indexOf('// Native receipt photos', start);
+    vm.runInNewContext(source.slice(start, end < 0 ? undefined : end), context);
     assert.equal(context.exports.nativeProjectOperations, 'callable'); assert.equal(engine.auth, 'auth');
     assert.equal(engine.enabled(), expected); assert.equal(engine.getDeleteField(), 'delete'); assert.equal(config.secrets, undefined);
   }
