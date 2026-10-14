@@ -13,8 +13,8 @@ const categoryName = value => typeof value === 'string' && !!value.trim() && val
 const date = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 const finite = value => typeof value === 'number' && Number.isFinite(value);
 const exact = (value, keys) => { if (!plain(value) || Object.keys(value).some(key => !keys.includes(key))) throw fault('invalid_material_command'); };
-const ids = values => {
-  if (!Array.isArray(values) || !values.length || values.some(value => !validId(value)) || new Set(values).size !== values.length) throw fault('invalid_material_command');
+const ids = (values, allowEmpty = false) => {
+  if (!Array.isArray(values) || !allowEmpty && !values.length || values.some(value => !validId(value)) || new Set(values).size !== values.length) throw fault('invalid_material_command');
   if (values.length > MAX_ITEMS) throw fault('material_command_too_large');
 };
 function vendor(value, finalized = false) {
@@ -69,6 +69,13 @@ function validateCommand(command) {
     case 'move_category': exact(command, ['kind', 'category', 'destination', 'remove_source']); if (!categoryName(command.category) || !categoryName(command.destination) || command.category === command.destination || command.remove_source !== undefined && typeof command.remove_source !== 'boolean') throw fault('invalid_material_command'); break;
     case 'delete_category': exact(command, ['kind', 'category']); if (!categoryName(command.category)) throw fault('invalid_material_command'); break;
     case 'link_document': exact(command, ['kind', 'document_id', 'item_ids', 'action']); ids(command.item_ids); if (!validId(command.document_id) || !['add', 'remove'].includes(command.action)) throw fault('invalid_material_command'); break;
+    case 'link_document_delta':
+      exact(command, ['kind', 'document_id', 'add_item_ids', 'remove_item_ids']);
+      if (!validId(command.document_id)) throw fault('invalid_material_command');
+      ids(command.add_item_ids, true); ids(command.remove_item_ids, true);
+      // Combined validation also forbids overlap and applies the shared item cap.
+      ids([...command.add_item_ids, ...command.remove_item_ids]);
+      break;
     default: throw fault('invalid_material_command');
   }
   return command;
@@ -102,10 +109,11 @@ function referencedDocuments(command, categories, documents = new Map()) {
   if (command.kind === 'patch_items') for (const { item_id, patch } of command.updates) for (const field of Object.keys(linkTypes)) if (Object.hasOwn(patch, field)) {
     if (patch[field]) result.add(patch[field]); const old = index.get(item_id)?.item[field]; if (old) { if (!validId(old)) throw fault('invalid_material_state', 409); result.add(old); }
   }
-  if (command.kind === 'link_document') {
+  if (['link_document', 'link_document_delta'].includes(command.kind)) {
     result.add(command.document_id);
     const field = typeFields[documents.get(command.document_id)?.type];
-    if (field) for (const id of command.item_ids) {
+    const itemIds = command.kind === 'link_document' ? command.item_ids : [...command.add_item_ids, ...command.remove_item_ids];
+    if (field) for (const id of itemIds) {
       const old = index.get(id)?.item[field]; if (old) { if (!validId(old)) throw fault('invalid_material_state', 409); result.add(old); }
     }
   }
@@ -191,12 +199,14 @@ function applyCommand({ categories, command, scope, canonical = [], documents = 
     dest.items = [...dest.items, ...source.items.map(item => ({ ...item, category: command.destination }))];
     if (command.remove_source !== false) next = next.filter(row => row.name !== command.category); else source.items = [];
     affectedCategoryMetadata.add(command.category); affectedCategoryMetadata.add(command.destination);
-  } else if (command.kind === 'link_document') {
+  } else if (['link_document', 'link_document_delta'].includes(command.kind)) {
     const value = document(command.document_id), field = typeFields[value.type];
-    for (const id of command.item_ids) {
+    const changes = command.kind === 'link_document' ? command.item_ids.map(id => [id, command.action === 'add'])
+      : [...command.add_item_ids.map(id => [id, true]), ...command.remove_item_ids.map(id => [id, false])];
+    for (const [id, adding] of changes) {
       const entry = find(id), updated = { ...entry.item };
-      if (!field) delta(command.document_id, id, command.action === 'add', value.type);
-      else if (command.action === 'add') changeLink(updated, field, command.document_id, id);
+      if (!field) delta(command.document_id, id, adding, value.type);
+      else if (adding) changeLink(updated, field, command.document_id, id);
       else { delta(command.document_id, id, false, value.type); if (updated[field] === command.document_id) delete updated[field]; }
       replace(id, updated, entry.category);
     }

@@ -18,3 +18,21 @@ test('Firestore budget estimates nested fields, Timestamp and binary without JSO
   assert.throws(() => commands.assertDocumentBudget([{ path: 'c/d', data: { large: Buffer.alloc(901 * 1024) } }]), { code: 'material_document_too_large' });
   assert.throws(() => commands.estimateDocumentBytes({ unknown: new Set(['x']) }, 'c/d'), { code: 'material_size_unavailable' });
 });
+
+test('mixed document delta requires explicit disjoint bounded lists and exact keys', () => {
+  for (const command of [
+    { kind: 'link_document_delta', document_id: 'quote', add_item_ids: ['a'], remove_item_ids: [] },
+    { kind: 'link_document_delta', document_id: 'quote', add_item_ids: [], remove_item_ids: ['a'] },
+    { kind: 'link_document_delta', document_id: 'quote', add_item_ids: ['a'], remove_item_ids: ['b'] }
+  ]) assert.deepEqual(commands.validateCommand(command), command);
+  for (const command of [
+    { kind: 'link_document_delta', document_id: 'quote', add_item_ids: [], remove_item_ids: [] },
+    { kind: 'link_document_delta', document_id: 'quote', add_item_ids: ['a'], remove_item_ids: ['a'] },
+    { kind: 'link_document_delta', document_id: 'quote', add_item_ids: ['a', 'a'], remove_item_ids: [] },
+    { kind: 'link_document_delta', document_id: 'quote', add_item_ids: ['a'] },
+    { kind: 'link_document_delta', document_id: 'quote', add_item_ids: [], remove_item_ids: null },
+    { kind: 'link_document_delta', document_id: 'quote', add_item_ids: ['a/b'], remove_item_ids: [] },
+    { kind: 'link_document_delta', document_id: 'quote', add_item_ids: ['a'], remove_item_ids: [], linkedBOMItems: [] }
+  ]) assert.throws(() => commands.validateCommand(command), { code: 'invalid_material_command' });
+  assert.throws(() => commands.validateCommand({ kind: 'link_document_delta', document_id: 'quote', add_item_ids: Array.from({ length: 101 }, (_, i) => `a-${i}`), remove_item_ids: Array.from({ length: 100 }, (_, i) => `r-${i}`) }), { code: 'material_command_too_large' });
+});

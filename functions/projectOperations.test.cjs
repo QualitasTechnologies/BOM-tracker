@@ -406,3 +406,69 @@ test('malformed primary and legacy canonical settings fail closed before command
     const f = commandFixture(); f.docs.get('settings/bom').data = settings; assert.equal((await f.command({ kind: 'add_items', items: [newMaterial({ category: 'Dest' })] })).body.error, 'invalid_material_state'); assert.equal((await f.patch({ category: 'Dest' })).body.error, 'invalid_material_state'); assert.equal(f.categories()[0].items.length, 2);
   }
 });
+
+function mixedLinkFixture(options = {}) {
+  const f = commandFixture(options);
+  f.categories()[0].items[0].linkedQuoteDocumentId = 'quote';
+  f.categories()[0].items[0].fulfillmentTranches = [{ quantity: 1, invoiceDocId: 'historical-invoice', unknown: true }];
+  f.categories()[0].items[1].linkedQuoteDocumentId = 'old-quote';
+  f.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor', 'unchanged', 'unknown-history', 'unknown-history'], unknown: true } });
+  f.docs.set('projectDocuments/old-quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['service', 'other'], unknown: true } });
+  f.mixed = { kind: 'link_document_delta', document_id: 'quote', add_item_ids: ['service'], remove_item_ids: ['motor'] };
+  return f;
+}
+test('mixed link delta commits add/remove and prior-document synchronization at one displayed revision', async () => {
+  const f = mixedLinkFixture(); const result = await f.command(f.mixed); assert.equal(result.status, 200); assert.equal(result.body.command_kind, 'link_document_delta');
+  assert.deepEqual(f.docs.get('projectDocuments/quote').data.linkedBOMItems, ['unchanged', 'unknown-history', 'unknown-history', 'service']); assert.deepEqual(f.docs.get('projectDocuments/old-quote').data.linkedBOMItems, ['other']);
+  assert.equal(Object.hasOwn(f.categories()[0].items[0], 'linkedQuoteDocumentId'), false); assert.equal(f.categories()[0].items[1].linkedQuoteDocumentId, 'quote');
+  assert.equal(f.categories()[0].items[0].fulfillmentTranches[0].invoiceDocId, 'historical-invoice'); assert.equal(f.docs.get('projectDocuments/quote').data.unknown, true);
+  assert.equal(f.docs.get('projects/A/bom/data').tick, 2);
+  const audit = f.docs.get('pulseProjectMaterialOperations/A/materialAudit/command-1').data; assert.equal(audit.previous_version, '10:1'); assert.equal(audit.before.items.length, 2); assert.equal(audit.after.items.length, 2); assert.equal(audit.after.documents.length, 2);
+  assert.deepEqual(await f.command(f.mixed), result); assert.equal([...f.docs.keys()].filter(p => p.includes('materialAudit')).length, 1);
+});
+test('mixed link delta scope/audit failure rejects both halves without partial document writes', async () => {
+  const f = mixedLinkFixture(); const result = await f.command({ ...f.mixed, remove_item_ids: ['motor', 'secret'] }); assert.equal(result.status, 403); assert.equal(f.categories()[0].items[1].linkedQuoteDocumentId, 'old-quote'); assert.equal(f.categories()[0].items[0].linkedQuoteDocumentId, 'quote'); assert.deepEqual(f.docs.get('projectDocuments/quote').data.linkedBOMItems, ['motor', 'unchanged', 'unknown-history', 'unknown-history']);
+  const g = mixedLinkFixture({ failAudit: true }); assert.equal((await g.command(g.mixed)).status, 503); assert.equal(g.categories()[0].items[1].linkedQuoteDocumentId, 'old-quote'); assert.deepEqual(g.docs.get('projectDocuments/old-quote').data.linkedBOMItems, ['service', 'other']);
+});
+test('mixed link delta reloads relevant old/new document types and revocation inside transaction/replay', async () => {
+  const f = mixedLinkFixture(); f.docs.get('projectDocuments/old-quote').data.type = 'vendor-po'; assert.equal((await f.command(f.mixed)).status, 403); assert.equal(f.categories()[0].items[0].linkedQuoteDocumentId, 'quote');
+  const g = mixedLinkFixture({ beforeCommit: docs => { const row = docs.get('projectDocuments/old-quote'); docs.set('projectDocuments/old-quote', { tick: 999, data: { ...row.data, projectId: 'B' } }); } }); assert.equal((await g.command(g.mixed)).status, 403); assert.equal(g.categories()[0].items[0].linkedQuoteDocumentId, 'quote');
+  const h = mixedLinkFixture(); assert.equal((await h.command(h.mixed)).status, 200); h.docs.get('projectDocuments/quote').data.type = 'vendor-po'; assert.equal((await h.command(h.mixed)).status, 403);
+});
+test('mixed customer PO deltas require current admin, modify no scalars and retain unrelated links', async () => {
+  const f = mixedLinkFixture({ actor: { customClaims: { role: 'admin', status: 'approved' } } }); f.docs.get('projectDocuments/quote').data.type = 'customer-po';
+  assert.equal((await f.command(f.mixed)).status, 200); assert.deepEqual(f.docs.get('projectDocuments/quote').data.linkedBOMItems, ['unchanged', 'unknown-history', 'unknown-history', 'service']); assert.equal(f.categories()[0].items[0].linkedQuoteDocumentId, 'quote'); assert.equal(f.categories()[0].items[1].linkedQuoteDocumentId, 'old-quote');
+  f.actor.customClaims.role = 'viewer'; assert.equal((await f.command(f.mixed)).status, 403);
+});
+
+const createMetadata = { projectName: 'New Project', clientName: 'Customer', description: '', status: 'Planning', deadline: '2026-12-01', poValue: 0 };
+function creationFixture(options = {}) {
+  const f = fixture({ actor: { customClaims: { role: 'admin', status: 'approved' } }, ...options });
+  f.create = (project = createMetadata, extra = {}, projectId = 'NEW') => f.call('POST', { operation_id: 'create-1', project, ...extra }, { query: { resource: 'project_create', project_id: projectId }, headers: { 'x-pulse-user-email': f.actor.email } });
+  return f;
+}
+test('project creation conditionally creates one project with server actor membership, immutable audit and replay', async () => {
+  const f = creationFixture(); f.actor.displayName = 'Current Profile'; const first = await f.create(); assert.equal(first.status, 200); assert.deepEqual(first.body, { ok: true, project_id: 'NEW', operation_id: 'create-1' });
+  const project = f.docs.get('projects/NEW').data; assert.equal(project.projectId, 'NEW'); assert.equal(project.projectName, 'New Project'); assert.deepEqual(project.memberIds, ['alice']); assert.deepEqual(project.members, [{ userId: 'alice', email: 'alice@example.com', displayName: 'Current Profile', addedAt: new Date().toISOString().slice(0, 10), addedBy: 'alice', notificationsEnabled: true }]); assert.equal(project.createdAt, 'server-time'); assert.equal(f.docs.has('projects/NEW/bom/data'), false);
+  assert.deepEqual(await f.create(), first); const audit = f.docs.get('pulseProjectMaterialOperations/NEW/materialAudit/create-1').data; assert.equal(audit.actor_uid, 'alice'); assert.equal(audit.created_at, 'server-time'); assert.equal(audit.before, null); assert.equal(audit.after.projectName, 'New Project'); assert.equal([...f.docs.keys()].filter(p => p.includes('materialAudit')).length, 1);
+});
+test('project ID collisions never overwrite and concurrent unknown-outcome retries create exactly once', async () => {
+  const f = creationFixture(); const before = structuredClone(f.docs.get('projects/A').data); assert.equal((await f.create(createMetadata, {}, 'A')).body.error, 'project_id_conflict'); assert.deepEqual(f.docs.get('projects/A').data, before);
+  const g = creationFixture(); const results = await Promise.all([g.create(), g.create({ ...createMetadata, projectName: 'Other' }, { operation_id: 'create-2' })]); assert.deepEqual(results.map(r => r.status).sort(), [200, 409]); assert.equal([...g.docs.keys()].filter(p => p.includes('materialAudit')).length, 1);
+  const h = creationFixture(); const same = await Promise.all([h.create(), h.create()]); assert.equal(same[0].status, 200); assert.deepEqual(same[0], same[1]); assert.equal((await h.create({ ...createMetadata, projectName: 'Changed' })).body.error, 'operation_conflict');
+});
+test('creation permission uses fresh admin/internal actor and replay still requires project access', async () => {
+  const f = creationFixture({ actor: { customClaims: { role: 'viewer', status: 'approved' } } }); assert.equal((await f.create()).body.error, 'project_creation_forbidden');
+  const g = creationFixture({ actor: { email: 'alice@qualitastech.com', customClaims: { role: 'viewer', status: 'approved' } } }); assert.equal((await g.create()).status, 200); g.docs.get('projects/NEW').data.memberIds = []; assert.equal((await g.create()).body.error, 'project_forbidden');
+  const h = creationFixture(); assert.equal((await h.create()).status, 200); h.actor.disabled = true; assert.equal((await h.create()).body.error, 'actor_forbidden');
+});
+test('creation strictly validates original metadata, IDs, body keys and actor spoofing without writes', async () => {
+  for (const project of [null, {}, { ...createMetadata, projectName: '' }, { ...createMetadata, clientName: '' }, { ...createMetadata, deadline: '2026-02-30' }, { ...createMetadata, poValue: -1 }, { ...createMetadata, poValue: Infinity }, { ...createMetadata, status: 'Won' }, { ...createMetadata, description: 'x'.repeat(4001) }, { ...createMetadata, members: [] }, { ...createMetadata, memberIds: ['admin'] }, { ...createMetadata, sourceDealId: 'guessed' }, { ...createMetadata, pulseProjectId: 1 }, { ...createMetadata, projectId: 'different' }, { ...createMetadata, billingEntityId: 'a/b' }]) {
+    const f = creationFixture(); assert.equal((await f.create(project)).status, 400); assert.equal(f.docs.has('projects/NEW'), false);
+  }
+  const f = creationFixture(); assert.equal((await f.create(createMetadata, { actor_uid: 'admin' })).status, 400); assert.equal((await f.create(createMetadata, { operation_id: 'a/b' })).status, 400);
+});
+test('project creation audit failure rolls back the project and receipt and default-off flag gates all writes', async () => {
+  const f = creationFixture({ failAudit: true }); assert.equal((await f.create()).status, 503); assert.equal(f.docs.has('projects/NEW'), false); assert.equal(f.docs.has('pulseProjectMaterialOperations/NEW/materialOperations/create-1'), false);
+  const g = creationFixture({ defaultWrites: true }); assert.equal((await g.create()).body.error, 'material_mutations_disabled'); assert.equal(g.docs.has('projects/NEW'), false);
+});

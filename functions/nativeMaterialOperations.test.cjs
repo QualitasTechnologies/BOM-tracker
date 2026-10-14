@@ -148,3 +148,13 @@ test('native bounded command uses current verified identity, displayed revision 
   f.docs.get('projects/A').members = []; assert.deepEqual(await f.invoke(data), { ok: false, error: 'material_forbidden' });
   const g = fixture(); assert.deepEqual(await g.invoke({ ...data, expected_actor_uid: g.actor.uid }), { ok: false, error: 'material_mutations_disabled' });
 });
+
+test('native conditional project creation verifies the opening account and fresh current profile before writes', async () => {
+  const f = fixture({ enabled: true }); f.actor.customClaims.role = 'admin'; f.actor.displayName = 'Fresh Display';
+  const data = { operation: 'create_project', project_id: 'NEW', operation_id: 'create-1', expected_actor_uid: f.actor.uid, project: { projectName: 'New', clientName: 'Customer', description: '', status: 'Planning', deadline: '2026-12-01', poValue: 0 } };
+  assert.deepEqual(await f.invoke({ ...data, expected_actor_uid: 'opening-account' }), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.has('projects/NEW'), false);
+  assert.deepEqual(await f.invoke(data), { ok: true, project_id: 'NEW', operation_id: 'create-1' }); assert.deepEqual(await f.invoke(data), { ok: true, project_id: 'NEW', operation_id: 'create-1' });
+  assert.equal(f.docs.get('projects/NEW').members[0].displayName, 'Fresh Display'); assert.equal(f.docs.get('projects/NEW').members[0].userId, f.actor.uid);
+  f.actor.disabled = true; assert.deepEqual(await f.invoke(data), { ok: false, error: 'actor_forbidden' });
+  const g = fixture(); g.actor.customClaims.role = 'admin'; assert.deepEqual(await g.invoke({ ...data, expected_actor_uid: g.actor.uid }), { ok: false, error: 'material_mutations_disabled' });
+});

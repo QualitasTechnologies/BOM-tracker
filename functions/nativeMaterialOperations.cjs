@@ -30,12 +30,14 @@ function createNativeMaterialOperations({ db, auth, mutationsEnabled = false, ge
     try {
       const actor = await currentNativeActor(auth, request);
       const data = request.data;
-      if (!plain(data) || !['get', 'patch', 'fulfill', 'command'].includes(data.operation)) throw fault('invalid_material_request', 400);
+      if (!plain(data) || !['get', 'patch', 'fulfill', 'command', 'create_project'].includes(data.operation)) throw fault('invalid_material_request', 400);
       const allowed = data.operation === 'get' ? ['operation', 'project_id']
+        : data.operation === 'create_project' ? ['operation', 'project_id', 'operation_id', 'project']
         : data.operation === 'command' ? ['operation', 'project_id', 'expected_version', 'operation_id', 'command']
         : ['operation', 'project_id', 'item_id', 'expected_version', 'operation_id', data.operation === 'fulfill' ? 'fulfillment' : 'patch'];
       if (data.operation !== 'get') allowed.push('expected_actor_uid');
       if (Object.keys(data).some(key => !allowed.includes(key))) throw fault('invalid_material_request', 400);
+      if (data.operation === 'create_project' && !Object.hasOwn(data, 'expected_actor_uid')) throw fault('invalid_material_request', 400);
       // A session assertion never selects identity: the freshly verified bearer does.
       if (data.operation !== 'get' && Object.hasOwn(data, 'expected_actor_uid')
         && (typeof data.expected_actor_uid !== 'string' || data.expected_actor_uid !== actor.uid)) throw fault('actor_session_changed', 403);
@@ -43,7 +45,7 @@ function createNativeMaterialOperations({ db, auth, mutationsEnabled = false, ge
       const handler = createProjectOperationsHandler({ db, auth, mutationsEnabled, getServerTimestamp, resolveActor: async () => actor });
       let result;
       const res = { set() {}, status() { return this; }, json(value) { result = value; return this; } };
-      await handler({ method: operation === 'get' ? 'GET' : ['fulfill', 'command'].includes(operation) ? 'POST' : 'PATCH', query: { project_id: projectId, ...(operation === 'fulfill' ? { resource: 'fulfillment' } : operation === 'command' ? { resource: 'commands' } : {}) }, body }, res);
+      await handler({ method: operation === 'get' ? 'GET' : ['fulfill', 'command', 'create_project'].includes(operation) ? 'POST' : 'PATCH', query: { project_id: projectId, ...(operation === 'create_project' ? { resource: 'project_create' } : operation === 'fulfill' ? { resource: 'fulfillment' } : operation === 'command' ? { resource: 'commands' } : {}) }, body }, res);
       return result;
     } catch (error) {
       return { ok: false, error: error.status ? error.code : 'project_operations_unavailable' };

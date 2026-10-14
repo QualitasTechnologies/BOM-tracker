@@ -172,6 +172,49 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
       const bomRef = projectRef.collection('bom').doc('data');
       // Absent resource keeps the legacy materials contract; anything else must be exactly 'procurement'.
       const resource = req.query?.resource;
+      if (resource === 'project_create') {
+        if (req.method !== 'POST') throw fault('method_not_allowed', 405);
+        if (!writesOn()) throw fault('material_mutations_disabled', 503);
+        if (actor.customClaims.role !== 'admin' && !actor.email.trim().toLowerCase().endsWith('@qualitastech.com')) throw fault('project_creation_forbidden', 403);
+        const body = req.body;
+        if (!plain(body) || Object.keys(body).some(key => !['operation_id', 'project'].includes(key))) throw fault('invalid_project_create', 400);
+        validateBody({ item_id: 'create', operation_id: body.operation_id, expected_version: 'missing', patch: { name: 'validation' } });
+        const data = body.project;
+        const fields = ['projectName', 'clientName', 'description', 'status', 'deadline', 'poValue', 'clientId', 'billingEntityId'];
+        if (!plain(data) || Object.keys(data).some(key => !fields.includes(key))
+          || ['projectName', 'clientName'].some(key => typeof data[key] !== 'string' || !data[key].trim() || data[key].length > 500)
+          || typeof data.description !== 'string' || data.description.length > 4000
+          || !['Planning', 'Procurement', 'Ongoing', 'Delayed', 'Completed', 'Archived'].includes(data.status)
+          || typeof data.deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(data.deadline) || !Number.isFinite(Date.parse(data.deadline)) || new Date(data.deadline).toISOString().slice(0, 10) !== data.deadline
+          || typeof data.poValue !== 'number' || !Number.isFinite(data.poValue) || data.poValue < 0
+          || ['clientId', 'billingEntityId'].some(key => Object.hasOwn(data, key) && (typeof data[key] !== 'string' || !data[key].trim() || data[key].length > 512 || /[\/\x00-\x1f]/.test(data[key])))
+          || /[\x00-\x1f]/.test(id) || !id.trim()) throw fault('invalid_project_create', 400);
+        const payloadHash = digest(JSON.stringify(Object.fromEntries(Object.keys(data).sort().map(key => [key, data[key]]))));
+        const operations = db.collection('pulseProjectMaterialOperations').doc(id);
+        const receiptRef = operations.collection('materialOperations').doc(body.operation_id);
+        const auditRef = operations.collection('materialAudit').doc(body.operation_id);
+        const actorEmail = actor.email.trim().toLowerCase();
+        return res.json(await db.runTransaction(async transaction => {
+          const receipt = await transaction.get(receiptRef);
+          const project = await transaction.get(projectRef);
+          if (receipt.exists) {
+            const recorded = receipt.data();
+            if (recorded.operation !== 'create_project' || recorded.actor_uid !== actor.uid || recorded.actor_email !== actorEmail || recorded.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
+            if (!project.exists) throw fault('project_not_found', 404);
+            scopeFor(project.data(), actor);
+            return recorded.result;
+          }
+          if (project.exists) throw fault('project_id_conflict', 409);
+          const createdAt = getServerTimestamp();
+          const after = { ...data, projectId: id, memberIds: [actor.uid], members: [{ userId: actor.uid, email: actorEmail, displayName: typeof actor.displayName === 'string' && actor.displayName.trim() ? actor.displayName : actorEmail, addedAt: new Date().toISOString().slice(0, 10), addedBy: actor.uid, notificationsEnabled: true }], createdAt };
+          const result = { ok: true, project_id: id, operation_id: body.operation_id };
+          const audit = { actor_uid: actor.uid, actor_email: actorEmail, operation: 'create_project', project_id: id, operation_id: body.operation_id, before: null, after, created_at: createdAt };
+          const recorded = { operation: 'create_project', actor_uid: actor.uid, actor_email: actorEmail, payload_hash: payloadHash, result, created_at: createdAt };
+          assertDocumentBudget([{ path: projectRef.path, data: after }, { path: auditRef.path, data: audit }, { path: receiptRef.path, data: recorded }]);
+          transaction.create(projectRef, after); transaction.create(auditRef, audit); transaction.create(receiptRef, recorded);
+          return result;
+        }));
+      }
       if (resource !== undefined && !['procurement', 'fulfillment', 'commands'].includes(resource)) throw fault('invalid_resource', 400);
       const fulfilling = resource === 'fulfillment';
       const commanding = resource === 'commands';
