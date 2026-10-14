@@ -78,3 +78,62 @@ test('lost commit acknowledgments preserve a recoverable receipt and do not cons
   const g=fixture({loseCommitReply:true});assert.equal((await g.command()).error,'po_authoring_unavailable');assert.equal((await g.command()).ok,true);
   assert.equal([...g.docs.keys()].filter(path=>path.includes('pulsePOAuthoringOperations/P/audit/')).length,1);
 });
+
+test('cancellation competes atomically with a staged delayed create and prevents its commit', async () => {
+  let f;
+  f = fixture({ beforeCommit: async () => {
+    assert.equal((await f.create({ resolve_only: true })).resolution, 'cancelled');
+  } });
+  assert.equal((await f.create()).error, 'po_request_cancelled');
+  assert.equal(f.docs.has('projects/P/purchaseOrders/created'), false);
+  assert.equal(f.docs.get('billingEntities/B').nextPoNumber, 7);
+  assert.equal((await f.create({ resolve_only: true })).resolution, 'cancelled');
+  assert.equal([...f.docs.keys()].filter(path => path.includes('/audit/')).length, 1);
+});
+
+test('if the original create wins, resolution confirms it rather than claiming cancellation', async () => {
+  let f;
+  f = fixture({ beforeCommit: async () => { assert.equal((await f.create()).ok, true); } });
+  const resolved = await f.create({ resolve_only: true });
+  assert.equal(resolved.ok, true); assert.equal(resolved.resolution, 'committed');
+  assert.equal(resolved.po_id, 'created'); assert.equal(resolved.operation_id, 'create-1');
+  assert.equal(f.docs.get('billingEntities/B').nextPoNumber, 8);
+  assert.equal([...f.docs.keys()].filter(path => path.includes('/audit/')).length, 1);
+});
+
+test('lost cancellation acknowledgment is replayable and cancellation audit failure rolls back', async () => {
+  const f = fixture({ loseCommitReply: true });
+  assert.equal((await f.command(undefined, { resolve_only: true })).error, 'po_authoring_unavailable');
+  assert.equal((await f.command()).error, 'po_request_cancelled');
+  assert.equal((await f.command(undefined, { resolve_only: true })).resolution, 'cancelled');
+  assert.equal(f.docs.get('projects/P/purchaseOrders/existing').status, 'draft');
+  const g = fixture({ failAudit: true });
+  assert.equal((await g.create({ resolve_only: true })).error, 'po_authoring_unavailable');
+  assert.equal([...g.docs.keys()].filter(path => path.includes('/receipts/')).length, 0);
+});
+
+test('resolution allows recovery with writes off or read-only, but keeps current access and exact identity', async () => {
+  let enabled = true; const f = fixture({ enabled: () => enabled });
+  const saved = await f.create(); enabled = false;
+  assert.deepEqual(await f.create(), saved);
+  assert.equal((await f.create({ resolve_only: true })).resolution, 'committed');
+  assert.equal((await f.create({ po_id: 'new', operation_id: 'new' })).error, 'po_authoring_disabled');
+  const g = fixture({ enabled: false }); g.docs.set('pulseRuntimeControl/cutover', { mode: 'read_only' });
+  assert.equal((await g.command(undefined, { resolve_only: true })).resolution, 'cancelled');
+  assert.equal((await g.command({ kind: 'edit', patch: { paymentTerms: 'Other' } }, { resolve_only: true })).error, 'operation_conflict');
+  g.docs.get('projects/P').memberIds = [];
+  assert.equal((await g.command(undefined, { resolve_only: true })).error, 'project_forbidden');
+  const h = fixture(); h.docs.set('pulseRuntimeControl/cutover', { mode: 'unknown' });
+  assert.equal((await h.command(undefined, { resolve_only: true })).error, 'po_authoring_control_unavailable');
+  assert.equal((await h.command(undefined, { resolve_only: false })).error, 'invalid_po_request');
+  assert.equal((await h.call({ operation: 'open', resolve_only: true })).error, 'invalid_po_request');
+});
+
+test('provider-shaped commit errors remain sanitized and unconfirmed until receipt resolution', async () => {
+  for (const code of ['private_provider_detail', 4]) {
+    const f = fixture({ loseCommitReply: true, commitReplyError: Object.assign(new Error('private diagnostic'), { status:503,code }) });
+    assert.deepEqual(await f.create(), {ok:false,error:'po_authoring_unavailable'});
+    assert.equal((await f.create({resolve_only:true})).resolution, 'committed');
+    assert.equal(f.docs.get('billingEntities/B').nextPoNumber, 8);
+  }
+});

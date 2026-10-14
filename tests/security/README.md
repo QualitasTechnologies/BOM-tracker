@@ -42,3 +42,20 @@ rules-unit-testing 5.0.0 and Firebase SDK 12.0.0: 10 tests passed. The first run
 exposed a successful second upload to a reserved existing object. Adding the
 explicit `resource == null` condition made the overwrite regression pass. The
 emulator tests are evidence for these isolated scenarios, not a live IAM claim.
+
+## Atomic PO resolution transaction checks
+
+The runner also executes nativePOResolution.transaction.test.mjs against the same
+isolated demo Firestore. It uses the Firestore transaction implementation installed
+with the functions package (install its locked dependencies first), explicit
+localhost host/SSL-disabled settings and the fixed demo project, without application
+credentials. Synthetic user assertions are local stubs, not a live Auth acceptance test.
+The tests race create against cancellation eight times and check the actual receipt,
+audit, PO existence and billing counter. A second case verifies a cancelled nonce
+stays fenced while a new nonce can proceed. The callable's fake-transaction tests
+also force both specific commit interleavings and simulate lost replies/audit failure.
+
+October 14 resolution-stage run: 12/12 tests passed (10 rules + 2 real transaction
+cases). Initial setup used a dummy credential unsupported by Admin; replacing that
+wrapper with an explicit emulator Firestore connection resolved the setup failure.
+No production project/credential/provider is used by this suite.
