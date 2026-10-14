@@ -20,11 +20,12 @@ function fixture(options = {}) {
       const result = await fn({ get: async r => { assert.equal(writes.length, 0, 'reads precede writes'); await options.onRead?.(r.path, users, docs); reads.set(r.path, versions.get(r.path)); return snapshot(r.path); },
         create: (r, data) => { if (options.failAudit && r.path.includes('/audit/')) throw Error('audit'); writes.push(['create', r.path, data]); },
         update: (r, patch) => writes.push(['update', r.path, patch]),
+        delete: r => writes.push(['delete', r.path]),
       });
       if (options.beforeCommit) { const hook = options.beforeCommit; options.beforeCommit = null; await hook(docs, versions); }
       if ([...reads].some(([path, version]) => versions.get(path) !== version)) continue;
       for (const [kind, path] of writes) assert.equal(docs.has(path), kind !== 'create');
-      for (const [kind, path, value] of writes) { docs.set(path, structuredClone(kind === 'create' ? value : { ...docs.get(path), ...value })); versions.set(path, ++clock); }
+      for (const [kind, path, value] of writes) { if (kind === 'delete') docs.delete(path); else docs.set(path, structuredClone(kind === 'create' ? value : { ...docs.get(path), ...value })); versions.set(path, ++clock); }
       if (options.loseCommitReply && writes.length) { options.loseCommitReply = false; throw options.commitReplyError || Error('committed but reply lost'); }
       return result;
     }
