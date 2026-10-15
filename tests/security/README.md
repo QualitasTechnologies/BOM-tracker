@@ -67,3 +67,9 @@ with the pre-delete document. A matching terminal protected send record permits
 delete; arbitrary PO flags or unknown/pending send state do not. The rules tests
 include denial of direct access to the deleted-PO archive, even for client admins.
 No files, BOM ordering data or billing counters are removed/recycled by PO deletion.
+
+## Durable approval outbox checks (October 15)
+
+Settled notification-stage run passed 14/14 tests (10 rules + 4 real transaction cases), then stopped its emulator processes. In addition to the prior create/cancel/delete coverage, the suite verifies actual atomic PO/outbox receipt persistence, cached native notification acknowledgment, more than 50 approved admins split into two protected batches, revoked-recipient removal, concurrent delivery lease ownership and aggregate acceptance. Provider sends are local counters, and Auth identities are synthetic stubs. Direct client-admin reads/writes to notification parents, deliveries and audit records are denied. No real email, provider acceptance, deployed IAM or live Auth claim follows from this result. Separate actual backend suite passed 262 tests.
+
+Notifications default off. Before enabling restored notification records, reconcile provider receipts newer than the backup; restored pending state does not prove a message was never accepted. Operator reconciliation and tested restore remain release gates.

@@ -81,7 +81,7 @@ test('proof becomes readable only after server confirmation, and remains immutab
 });
 test('even client admins cannot forge protected intent, receipts, audit or cutover controls', async () => {
   const client = actor('alice', { role: 'admin' }).firestore();
-  for (const path of ['pulseNativeUploadIntents/forged', 'pulseNativeUploadOperations/P/receipts/forged', 'pulseNativeUploadOperations/P/audit/forged', 'pulsePOAuthoringOperations/P/receipts/forged', 'pulsePOAuthoringOperations/P/audit/forged', 'pulseDeletedPurchaseOrders/P/purchaseOrders/existing', 'pulseRuntimeControl/cutover', 'pulseProjectMaterialOperations/P/materialAudit/forged', 'pulseMcpOperations/P/receipts/forged']) {
+  for (const path of ['pulseNativeUploadIntents/forged', 'pulseNativeUploadOperations/P/receipts/forged', 'pulseNativeUploadOperations/P/audit/forged', 'pulsePOAuthoringOperations/P/receipts/forged', 'pulsePOAuthoringOperations/P/audit/forged', 'pulseDeletedPurchaseOrders/P/purchaseOrders/existing', 'pulsePOApprovalNotifications/forged','pulsePOApprovalNotificationDeliveries/forged','pulsePOApprovalNotificationAudit/forged/events/forged', 'pulseRuntimeControl/cutover', 'pulseProjectMaterialOperations/P/materialAudit/forged', 'pulseMcpOperations/P/receipts/forged']) {
     await assertFails(setDoc(doc(client, path), { fake: true })); await assertFails(getDoc(doc(client, path)));
   }
 });

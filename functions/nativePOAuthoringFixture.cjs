@@ -9,7 +9,7 @@ function fixture(options = {}) {
     ['projects/P/bom/data', { categories: [{ name: 'Parts', items: [{ id: 'bolt', quantity: 2, name: 'Bolt', finalizedVendor:{name:'Vendor'} }] }] }],
     ['billingEntities/B', billing], ['settings/company', { ...billing, companyName: 'Company' }],
     ['vendors/V', { company: 'Vendor', address: 'Vendor address', gstNo: 'VGST', stateCode: '29', stateName: 'Karnataka', email: 'vendor@example.com', phone: '123',status:'active' }],
-    ['projects/P/purchaseOrders/existing', { projectId: 'P', status: 'draft', items: [{ bomItemId: 'bolt' }], paymentTerms: 'Old', expectedDeliveryDate: new Date('2026-11-01'), historical: { retained: true } }],
+    ['projects/P/purchaseOrders/existing', { projectId: 'P', poNumber:'PO-EX',vendorName:'Vendor',totalAmount:100,status: 'draft', items: [{ bomItemId: 'bolt' }], paymentTerms: 'Old', expectedDeliveryDate: new Date('2026-11-01'), historical: { retained: true } }],
   ]);
   const versions = new Map([...docs.keys()].map(path => [path, 1])); let clock = 1;
   const ref = path => ({ path, doc: id => ref(`${path}/${id}`), collection: name => ref(`${path}/${name}`) });
@@ -18,7 +18,7 @@ function fixture(options = {}) {
     for (let attempt = 0; attempt < 5; attempt++) {
       const writes = [], reads = new Map();
       const result = await fn({ get: async r => { assert.equal(writes.length, 0, 'reads precede writes'); await options.onRead?.(r.path, users, docs); reads.set(r.path, versions.get(r.path)); return snapshot(r.path); },
-        create: (r, data) => { if (options.failAudit && r.path.includes('/audit/')) throw Error('audit'); writes.push(['create', r.path, data]); },
+        create: (r, data) => { if (options.failAudit && r.path.includes('/audit/')) throw Error('audit'); if(options.failOutbox && r.path.startsWith('pulsePOApprovalNotifications/')) throw Error('outbox'); writes.push(['create', r.path, data]); },
         update: (r, patch) => writes.push(['update', r.path, patch]),
         delete: r => writes.push(['delete', r.path]),
       });
@@ -26,7 +26,8 @@ function fixture(options = {}) {
       if ([...reads].some(([path, version]) => versions.get(path) !== version)) continue;
       for (const [kind, path] of writes) assert.equal(docs.has(path), kind !== 'create');
       for (const [kind, path, value] of writes) { if (kind === 'delete') docs.delete(path); else docs.set(path, structuredClone(kind === 'create' ? value : { ...docs.get(path), ...value })); versions.set(path, ++clock); }
-      if (options.loseCommitReply && writes.length) { options.loseCommitReply = false; throw options.commitReplyError || Error('committed but reply lost'); }
+      if(options.afterApply&&writes.length){const hook=options.afterApply;options.afterApply=null;await hook(writes,docs);}
+      if (options.loseCommitReply && writes.length && (!options.loseCommitReplyWhen||options.loseCommitReplyWhen(writes))) { options.loseCommitReply = false; throw options.commitReplyError || Error('committed but reply lost'); }
       return result;
     }
     throw Error('contention');
@@ -38,6 +39,6 @@ function fixture(options = {}) {
   const billingSnapshot = { companyName: 'Company', companyAddress: 'Address', gstin: 'GST', stateCode: '29', stateName: 'Karnataka' };
   const create = extra => call({ operation: 'create', po_id: 'created', operation_id: 'create-1', expected_material_version: '10:1', input, billing_snapshot: billingSnapshot, ...extra });
   const command = (value = { kind: 'submit' }, extra = {}) => call({ operation: 'command', po_id: 'existing', operation_id: 'command-1', expected_po_version: '10:1', command: value, ...extra });
-  return { docs, versions, users, input, billingSnapshot, call, create, command };
+  return { docs, versions, users, input, billingSnapshot, call, create, command,db,auth };
 }
 module.exports = { fixture };

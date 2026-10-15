@@ -222,3 +222,24 @@ test('a legacy PO exceeding the archive safety budget stays intact with no parti
   assert.equal(f.docs.has('pulseDeletedPurchaseOrders/P/purchaseOrders/existing'),false);
   assert.equal([...f.docs.keys()].filter(path=>path.includes('/audit/')||path.includes('/receipts/')).length,0);
 });
+
+test('approval status and its authoritative notification job commit together and replay once',async()=>{
+  const f=fixture({loseCommitReply:true});assert.equal((await f.command()).error,'po_authoring_unavailable');
+  const result=await f.command();assert.match(result.notification_id,/^[a-f0-9]{64}$/);
+  const job=f.docs.get(`pulsePOApprovalNotifications/${result.notification_id}`);
+  assert.equal(job.state,'pending');assert.equal(job.payload.projectName,'Project');assert.equal(job.payload.poNumber,'PO-EX');assert.equal(job.payload.actorName,'alice@qualitastech.com');assert.equal(job.payload.totalAmount,100);
+  assert.equal((await f.command(undefined,{resolve_only:true})).notification_id,result.notification_id);
+  assert.equal([...f.docs.keys()].filter(path=>path.startsWith('pulsePOApprovalNotifications/')).length,1);
+  const rollback=fixture({failOutbox:true});assert.equal((await rollback.command()).error,'po_authoring_unavailable');
+  assert.equal(rollback.docs.get('projects/P/purchaseOrders/existing').status,'draft');assert.equal([...rollback.docs.keys()].filter(path=>path.includes('/receipts/')).length,0);
+});
+
+test('changes notifications use the original submitter and absent recipients are explicitly recorded without inventing one',async()=>{
+  const f=fixture({uid:'admin'});Object.assign(f.docs.get('projects/P/purchaseOrders/existing'),{status:'pending-approval',submittedBy:'alice'});
+  const result=await f.command({kind:'request_changes',note:'Fix quotation'});const job=f.docs.get(`pulsePOApprovalNotifications/${result.notification_id}`);
+  assert.equal(job.payload.submitterUid,'alice');assert.equal(job.payload.note,'Fix quotation');assert.equal(job.payload.actorName,'admin@qualitastech.com');
+  const g=fixture({uid:'admin'});g.docs.get('projects/P/purchaseOrders/existing').status='pending-approval';
+  const skipped=await g.command({kind:'request_changes'});assert.equal(skipped.notification_id,undefined);
+  const jobs=[...g.docs].filter(([path])=>path.startsWith('pulsePOApprovalNotifications/'));assert.equal(jobs.length,1);assert.equal(jobs[0][1].state,'skipped');assert.equal(jobs[0][1].problem,'no_submitter');
+  const cancelled=fixture();await cancelled.command(undefined,{resolve_only:true});assert.equal([...cancelled.docs.keys()].filter(path=>path.startsWith('pulsePOApprovalNotifications/')).length,0);
+});

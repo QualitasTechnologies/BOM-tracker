@@ -2,6 +2,7 @@ const { createHash } = require('node:crypto');
 const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
 const { assertDocumentBudget, MAX_INPUT_BYTES } = require('./materialCommands.cjs');
 const { calculatePOTotals, generatePONumber, determineTaxType, getStateName } = require('./poDomain.generated.cjs');
+const { createApprovalJob } = require('./poApprovalOutbox.cjs');
 const PO_FAULT = Symbol('po-authoring-fault');
 const fault = (code, status = 400) => Object.assign(new Error(code), { code, status, [PO_FAULT]:true });
 const plain = value => value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -113,7 +114,7 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
         if (project.data().projectId && project.data().projectId !== data.project_id) throw fault('project_identity_conflict',409);
         const current = await verifiedActor(request);
         if (current.uid !== actor.uid || current.email !== actor.email) throw fault('actor_session_changed',403);
-        return { current, permissions: access(project.data(),current) };
+        return { current, permissions: access(project.data(),current), project:project.data() };
       };
       return await db.runTransaction(async transaction => {
         const first = await latest(transaction), po = poRef ? await transaction.get(poRef) : null, control = await transaction.get(controlRef);
@@ -136,7 +137,7 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
           if (data.operation === 'create' && !final.permissions.create || command?.kind === 'request_changes' && !final.permissions.admin) throw fault('procurement_forbidden',403);
           if (old.actor_uid !== actor.uid || old.actor_email !== actor.email || old.payload_hash !== payloadHash) throw fault('operation_conflict',409);
           writableControl(control,true);
-          return resolving ? { ok:true,project_id:data.project_id,po_id:data.po_id,operation_id:data.operation_id,kind:data.operation === 'create' ? 'create' : command.kind,resolution:old.cancelled === true ? 'cancelled' : 'committed' } : old.result;
+          return resolving ? { ok:true,project_id:data.project_id,po_id:data.po_id,operation_id:data.operation_id,kind:data.operation === 'create' ? 'create' : command.kind,resolution:old.cancelled === true ? 'cancelled' : 'committed',...(!old.cancelled&&old.result.notification_id?{notification_id:old.result.notification_id}:{}) } : old.result;
         }
         if (resolving) {
           writableControl(control,true);
@@ -209,13 +210,17 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
         const final = await latest(transaction);
         if (!on()) throw fault('po_authoring_disabled',503);
         if (kind === 'create' && !final.permissions.create || kind === 'request_changes' && !final.permissions.admin) throw fault('procurement_forbidden',403);
-        const audit = { operation:kind,actor_uid:actor.uid,actor_email:actor.email,project_id:data.project_id,po_id:data.po_id,operation_id:data.operation_id,before,after,...(archived ? {deleted_record_path:archiveRef.path} : {}),at };
+        const notification=createApprovalJob({projectId:data.project_id,poId:data.po_id,operationId:data.operation_id,kind,project:final.project,po:after,actor:final.current,at,createdMs:now().getTime()});
+        const notificationRef=notification?db.collection('pulsePOApprovalNotifications').doc(notification.id):null;
+        if(notification?.record.state==='pending') { result.notification_id=notification.id; after.nativeApprovalNotificationId=notification.id; }
+        const audit = { operation:kind,actor_uid:actor.uid,actor_email:actor.email,project_id:data.project_id,po_id:data.po_id,operation_id:data.operation_id,before,after,...(archived ? {deleted_record_path:archiveRef.path} : {}),...(notification?{notification_job_id:notification.id,notification_state:notification.record.state}:{}),at };
         const recorded = { actor_uid:actor.uid,actor_email:actor.email,payload_hash:payloadHash,result,at };
-        assertDocumentBudget([...(after ? [{path:poRef.path,data:after}] : []),{path:auditRef.path,data:audit},{path:receiptRef.path,data:recorded},...(archived ? [{path:archiveRef.path,data:archived}] : []),...(counter ? [{path:counter.ref.path,data:{...counter.before,...counter.patch}}] : [])]);
+        assertDocumentBudget([...(after ? [{path:poRef.path,data:after}] : []),{path:auditRef.path,data:audit},{path:receiptRef.path,data:recorded},...(notification?[{path:notificationRef.path,data:notification.record}]:[]),...(archived ? [{path:archiveRef.path,data:archived}] : []),...(counter ? [{path:counter.ref.path,data:{...counter.before,...counter.patch}}] : [])]);
         if (kind === 'delete') { transaction.create(archiveRef,archived); transaction.delete(poRef); }
         else if (kind === 'create') transaction.create(poRef,after); else transaction.update(poRef,after);
         if (counter) transaction.update(counter.ref,counter.patch);
         transaction.create(auditRef,audit); transaction.create(receiptRef,recorded);
+        if(notification) transaction.create(notificationRef,notification.record);
         return result;
       });
     } catch (error) { return { ok:false,error:error?.[PO_FAULT] === true ? error.code : 'po_authoring_unavailable' }; }

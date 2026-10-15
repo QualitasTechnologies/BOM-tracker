@@ -8,7 +8,8 @@ test('native PO authoring callable binds native auth and exact default-off gates
     const context={exports:{},process:{env},admin:{auth:()=> 'auth',firestore:Object.assign(()=> 'db',{FieldValue:{serverTimestamp:()=> 'time'}})},
       require:name=>{assert.equal(name,'./nativePOAuthoringOperations.cjs');return{authoringEnabled,createNativePOAuthoringOperations:options=>{dependencies=options;return'handler';}};},
       onCall:(options,handler)=>{assert.equal(handler,'handler');config=options;return'callable';}};
-    vm.runInNewContext(source.slice(start),context);assert.equal(context.exports.nativePOAuthoringOperations,'callable');
+    const end=source.indexOf('// Durable PO approval notifications',start);
+    vm.runInNewContext(source.slice(start,end<0?undefined:end),context);assert.equal(context.exports.nativePOAuthoringOperations,'callable');
     assert.equal(dependencies.enabled(),mask===7);assert.equal(dependencies.auth,'auth');assert.equal(dependencies.db,'db');assert.equal(dependencies.getServerTimestamp(),'time');
     assert.equal(config.region,'us-central1');assert.equal(config.secrets,undefined);
   }
