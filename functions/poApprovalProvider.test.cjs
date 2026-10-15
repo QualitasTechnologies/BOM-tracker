@@ -1,5 +1,15 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {Resend}=require('resend');const {createPOApprovalSender,REJECTED}=require('./poApprovalProvider.cjs');
+test('provider lookup uses only a bounded GET to the UUID path and never sends email',async()=>{
+  const {createPOApprovalLookup}=require('./poApprovalProvider.cjs');const prior=global.fetch;let captured;
+  const id='4ef9a417-02e9-4d39-ad75-9611e0fcc33c';
+  global.fetch=async(url,options)=>{captured={url,options};return new Response(JSON.stringify({id,object:'email'}),{status:200,headers:{'Content-Type':'application/json'}});};
+  try{
+    const lookup=createPOApprovalLookup({Resend,getApiKey:()=> 're_synthetic'});
+    assert.equal((await lookup(id)).id,id);assert.equal(captured.url,`https://api.resend.com/emails/${id}`);assert.equal(captured.options.method,'GET');assert.ok(captured.options.signal instanceof AbortSignal);
+    captured=null;await assert.rejects(lookup('../keys'));assert.equal(captured,null);
+  }finally{global.fetch=prior;}
+});
 test('installed Resend SDK sends the stable header and exact mail through a bounded request without a real provider',async()=>{
   const prior=global.fetch;let captured;
   global.fetch=async(url,options)=>{captured={url,options};return new Response(JSON.stringify({id:'synthetic-provider-id'}),{status:200,headers:{'Content-Type':'application/json'}});};

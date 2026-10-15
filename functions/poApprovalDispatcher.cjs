@@ -67,6 +67,7 @@ function createPOApprovalDispatcher({db,auth,enabled=false,now=Date.now,getServe
       for(let offset=0;offset<recipients.length;offset+=50) {
         const deliveryId=digest([id,offset/50]),batch=recipients.slice(offset,offset+50),{submitterUid:_submitter,...body}=job.payload;
         let mail;try {mail=buildEmail({...body,to:batch.map(row=>row.email),workspaceUrl,workspaceName:'Pulse'});}catch{throw problem('invalid_snapshot_or_workspace');}
+        mail={...mail,tags:[{name:'pulse_po_delivery',value:deliveryId}]};
         const record={schema:1,parent_id:id,project_id:job.project_id,po_id:job.po_id,kind:job.kind,actor_uid:job.actor_uid,state:'pending',
           recipients:batch,mail,mail_hash:digest(mail),idempotency_key:`po-approval/${deliveryId}`,created_ms:now(),next_attempt_ms:now()};
         deliveries.push({id:deliveryId,ref:deliveryRef(deliveryId),record});
@@ -97,7 +98,7 @@ function createPOApprovalDispatcher({db,auth,enabled=false,now=Date.now,getServe
       if(acceptedHash?current.mail_hash!==acceptedHash||current.first_dispatched_ms===undefined:current.lease_owner!==owner)return publicState(current,id);
       const parent=await tx.get(parentRef(current.parent_id));if(!parent.exists)return{state:'needs_reconciliation',problem:'parent_missing'};
       const states=[];for(const otherId of parent.data().delivery_ids){if(otherId===id)states.push(state);else{const other=await tx.get(deliveryRef(otherId));states.push(other.exists?other.data().state:'blocked');}}
-      const next={...patch,state,lease_until:0,next_attempt_ms:terminal.has(state)?NEVER:now()+delay(current.attempt_count)};
+      const next={...patch,state,...(state==='accepted'?{problem:null}:{}),lease_until:0,next_attempt_ms:terminal.has(state)?NEVER:now()+delay(current.attempt_count)};
       const parentState=states.every(value=>value==='accepted')?'accepted':states.every(value=>value==='skipped')?'skipped':states.every(value=>['accepted','skipped'].includes(value))?'accepted_with_skips':states.some(value=>['blocked','needs_reconciliation'].includes(value))?'needs_reconciliation':'prepared';
       const event=audit(current.parent_id,owner,state,{job_id:id,requested_by:current.actor_uid,...(next.provider_id?{provider_id:next.provider_id}:{}),...(next.problem?{problem:next.problem}:{})});
       assertDocumentBudget([{path:ref.path,data:{...current,...next}},{path:event.ref.path,data:event.data}]);

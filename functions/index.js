@@ -7535,6 +7535,20 @@ exports.nativePOApprovalNotificationOperations = onCall(
   createPOApprovalNotificationOperations({
     db:admin.firestore(),auth:admin.auth(),
     enabled:()=>process.env.BOM_NATIVE_PO_NOTIFICATIONS_ENABLED === 'true',
+    reconciliationEnabled:()=>process.env.BOM_NATIVE_PO_NOTIFICATION_RECONCILIATION_ENABLED === 'true',
     getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
+// PO approval provider evidence: GET-only verification, default off; never sends email.
+const {createPOApprovalReconciliation}=require('./poApprovalReconciliation.cjs');
+const {createPOApprovalLookup}=require('./poApprovalProvider.cjs');
+exports.nativePOApprovalNotificationReconciliation=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:3,secrets:[resendApiKey]},
+  createPOApprovalReconciliation({
+    db:admin.firestore(),auth:admin.auth(),
+    enabled:()=>process.env.BOM_NATIVE_PO_NOTIFICATION_RECONCILIATION_ENABLED === 'true',
+    getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp(),
+    lookup:createPOApprovalLookup({Resend,getApiKey:getResendApiKey}),
   }),
 );

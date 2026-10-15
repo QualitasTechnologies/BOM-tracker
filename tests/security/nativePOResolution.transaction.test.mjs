@@ -13,6 +13,7 @@ const { fixture } = require('./nativePOAuthoringFixture.cjs');
 const { createPOApprovalDispatcher } = require('./poApprovalDispatcher.cjs');
 const { managedApprovalNotification } = require('./poApprovalLegacyGuard.cjs');
 const { createPOApprovalNotificationOperations } = require('./poApprovalNotificationOperations.cjs');
+const { createPOApprovalReconciliation } = require('./poApprovalReconciliation.cjs');
 let env, db, data, call, nativeAuth;
 before(async () => {
   env = await initializeTestEnvironment({ projectId, firestore: { host: '127.0.0.1', port: 18080 } });
@@ -144,4 +145,31 @@ test('real notification operator retries have one audited receipt and preserve i
   const refused=await invoke({...request,operation_id:'cancelled-next'});assert.equal(refused.request_finalized,true);
   enabled=true;await db.doc('pulseRuntimeControl/cutover').set({mode:'coexist'});
   assert.deepEqual(await invoke({...request,operation_id:'cancelled-next'}),refused);
+});
+
+test('real provider evidence reconciliation commits one receipt/audit without sending or changing a message',async()=>{
+  const opening=await call({operation:'open',po_id:'existing'});
+  const submitted=await call({operation:'command',po_id:'existing',operation_id:'evidence-submit',expected_po_version:opening.po_version,command:{kind:'submit'}});
+  const dispatcher=createPOApprovalDispatcher({db,auth:nativeAuth,enabled:true,getServerTimestamp:()=>FieldValue.serverTimestamp(),sendEmail:async()=>{throw Error('synthetic unknown send');}});
+  const parent=await dispatcher.prepare(submitted.notification_id),id=parent.delivery_ids[0];await dispatcher.deliver(id);
+  const path=`pulsePOApprovalNotificationDeliveries/${id}`,before=(await db.doc(path).get()).data();
+  const auth={...nativeAuth,verifyIdToken:async()=>({uid:'admin',email:data.users.get('admin').email})};
+  const request=data=>({auth:{uid:'admin'},rawRequest:{get:()=> 'Bearer synthetic'},data});
+  const status=await createPOApprovalNotificationOperations({db,auth,reconciliationEnabled:true})(request({operation:'status',project_id:'P',po_id:'existing',expected_actor_uid:'admin'}));
+  assert.equal(status.deliveries[0].can_reconcile,true);
+  const provider='4ef9a417-02e9-4d39-ad75-9611e0fcc33c';let enabled=true,lookups=0;
+  const evidence={...before.mail,object:'email',id:provider,text:null,bcc:[],cc:[],reply_to:[],created_at:new Date(before.first_dispatched_ms).toISOString(),scheduled_at:null,last_event:'sent'};
+  const reconcile=createPOApprovalReconciliation({db,auth,enabled:()=>enabled,getServerTimestamp:()=>FieldValue.serverTimestamp(),lookup:async()=>{lookups++;return evidence;}});
+  const payload={operation:'reconcile',project_id:'P',po_id:'existing',expected_actor_uid:'admin',notification_id:submitted.notification_id,delivery_id:id,provider_id:provider,expected_revision:status.revision,operation_id:'verify-evidence'};
+  const [left,right]=await Promise.all([reconcile(request(payload)),reconcile(request(payload))]);assert.equal(left.ok,true);assert.deepEqual(right,left);
+  assert.equal((await db.collection('pulsePOApprovalNotificationReconciliations').get()).size,1);
+  const audit=await db.collection(`pulsePOApprovalNotificationAudit/${submitted.notification_id}/events`).where('phase','==','provider_evidence_verified').get();assert.equal(audit.size,1);
+  const after=(await db.doc(path).get()).data();for(const key of ['mail','mail_hash','idempotency_key','recipients','first_dispatched_ms'])assert.deepEqual(after[key],before[key]);
+  assert.equal(after.state,'accepted');assert.equal((await db.doc(`pulsePOApprovalNotifications/${submitted.notification_id}`).get()).data().state,'accepted');
+  enabled=false;await db.doc('pulseRuntimeControl/cutover').set({mode:'read_only'});const previous=lookups;
+  assert.deepEqual(await reconcile(request({...payload,resolve_only:true})),left);assert.equal(lookups,previous);
+  await db.doc('projects/P/purchaseOrders/existing').delete();await db.doc('projects/P').delete();await db.doc('pulseRuntimeControl/cutover').set({mode:'unknown'});
+  assert.deepEqual(await reconcile(request(payload)),left);assert.equal(lookups,previous);
+  const cancelled=await reconcile(request({...payload,operation_id:'deleted-cancel',resolve_only:true}));assert.equal(cancelled.request_finalized,true);
+  assert.deepEqual(await reconcile(request({...payload,operation_id:'deleted-cancel'})),cancelled);assert.equal(lookups,previous);
 });

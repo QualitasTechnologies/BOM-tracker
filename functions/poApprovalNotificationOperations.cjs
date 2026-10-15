@@ -10,9 +10,10 @@ const id = value => typeof value==='string' && value.length>0 && value.length<=5
 const hashId = value => typeof value==='string' && /^[a-f0-9]{64}$/.test(value);
 const sort = value => Array.isArray(value)?value.map(sort):value && typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,sort(value[key])])):value;
 const hash = value => createHash('sha256').update(JSON.stringify(sort(value))).digest('hex');
+const notificationSnapshotRevision = snapshots => hash(snapshots.map(snapshot=>snapshot?.exists?[snapshot.updateTime?.seconds,snapshot.updateTime?.nanoseconds,snapshot.data()]:null));
 const STATES = new Set(['pending','preparing','prepared','sending','uncertain','accepted','accepted_with_skips','skipped','blocked','needs_reconciliation']);
 const PROBLEMS = new Set(['invalid_snapshot','project_missing','event_superseded','no_authorized_recipients','invalid_snapshot_or_workspace','recipient_capacity_exceeded','recipient_lookup_failed','notification_preparation_unavailable','provider_window_expired','recipient_access_changed','provider_rejected','provider_outcome_unconfirmed','invalid_frozen_message','no_current_recipients','no_submitter']);
-function createPOApprovalNotificationOperations({db,auth,enabled=false,now=Date.now,getServerTimestamp}) {
+function createPOApprovalNotificationOperations({db,auth,enabled=false,reconciliationEnabled=false,now=Date.now,getServerTimestamp}) {
   const on = () => (typeof enabled==='function'?enabled():enabled)===true;
   async function actorOf(request) {
     try { return await currentNativeActor(auth,request); }
@@ -62,9 +63,12 @@ function createPOApprovalNotificationOperations({db,auth,enabled=false,now=Date.
         const canPrepare=admin&&dispatch&&fingerprintMatches&&!deliveryIds.length&&['pending','blocked'].includes(parentData?.state)&&free(parentData);
         const canDeliver=record=>admin&&dispatch&&fingerprintMatches&&['pending','uncertain'].includes(record.state)&&free(record)
           &&(record.first_dispatched_ms===undefined||Number.isFinite(record.first_dispatched_ms)&&now()>=record.first_dispatched_ms&&now()-record.first_dispatched_ms<RETRY_WINDOW);
-        const version=snapshot=>snapshot?.exists?[snapshot.updateTime?.seconds,snapshot.updateTime?.nanoseconds,snapshot.data()]:null;
-        const revision=hash([version(project),version(po),version(parent),...deliveries.map(row=>version(row.snapshot))]);
-        const publicRow=(record,childId)=>({id:childId,state:STATES.has(record.state)?record.state:'blocked',recipient_count:Array.isArray(record.recipients)?Math.min(50,record.recipients.length):0,can_retry:!!canDeliver(record),...(PROBLEMS.has(record.problem)?{problem:record.problem}:{})});
+        const revision=notificationSnapshotRevision([project,po,parent,...deliveries.map(row=>row.snapshot)]);
+        const reconcileOn=(typeof reconciliationEnabled==='function'?reconciliationEnabled():reconciliationEnabled)===true;
+        const events=new Set(['sent','delivered','opened','clicked','delivery_delayed','bounced','complained','failed']);
+        const publicRow=(record,childId)=>({id:childId,state:STATES.has(record.state)?record.state:'blocked',recipient_count:Array.isArray(record.recipients)?Math.min(50,record.recipients.length):0,can_retry:!!canDeliver(record),
+          can_reconcile:admin&&reconcileOn&&(!control.exists||['coexist','pulse_only','read_only'].includes(control.data()?.mode))&&['pending','sending','uncertain','needs_reconciliation'].includes(record.state)&&free(record)&&Number.isFinite(record.first_dispatched_ms)&&record.first_dispatched_ms<=now()&&Array.isArray(record.mail?.tags)&&record.mail.tags.some(tag=>tag.name==='pulse_po_delivery'&&tag.value===childId),
+          ...(events.has(record.provider_event)?{provider_event:record.provider_event}:{}),...(PROBLEMS.has(record.problem)?{problem:record.problem}:{})});
         const result={ok:true,project_id:data.project_id,po_id:data.po_id,notification_id:pointer||null,revision,state:parentData?(STATES.has(parentData.state)?parentData.state:'blocked'):'none',dispatch_enabled:dispatch,can_retry_prepare:!!canPrepare,deliveries:deliveries.map(row=>publicRow(row.record,row.id))};
         if(!retry)return result;
         // Refusals compete on the same receipt as a successful retry. A cached browser
@@ -96,4 +100,4 @@ function createPOApprovalNotificationOperations({db,auth,enabled=false,now=Date.
     }catch(error){return{ok:false,error:error?.[PUBLIC]?error.code:'notification_service_unavailable',status:error?.[PUBLIC]?error.status:503};}
   };
 }
-module.exports={createPOApprovalNotificationOperations};
+module.exports={createPOApprovalNotificationOperations,notificationSnapshotRevision};

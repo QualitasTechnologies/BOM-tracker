@@ -16,9 +16,17 @@ test('notification operator callable is secret-free and uses its own strict defa
   let options,configuration;const handler=()=>{};
   const context={exports:{},process:{env:{}},admin:{firestore:Object.assign(()=>({}),{FieldValue:{serverTimestamp:()=>0}}),auth:()=>({})},
     require:()=>({createPOApprovalNotificationOperations:input=>{options=input;return handler;}}),onCall:(config,fn)=>{configuration=config;return fn;}};
-  vm.runInNewContext(source.slice(source.indexOf('// PO approval notification operator status')),context);
+  vm.runInNewContext(source.slice(source.indexOf('// PO approval notification operator status'),source.indexOf('// PO approval provider evidence')),context);
   assert.equal(context.exports.nativePOApprovalNotificationOperations,handler);assert.equal(configuration.secrets,undefined);assert.equal(configuration.region,'us-central1');assert.equal(options.enabled(),false);
   context.process.env.BOM_NATIVE_PO_NOTIFICATIONS_ENABLED='true';assert.equal(options.enabled(),true);
+});
+test('provider reconciliation binds its secret but remains strict default-off without requesting credentials',()=>{
+  let options,configuration,secretReads=0;const handler=()=>{};
+  const context={exports:{},process:{env:{}},resendApiKey:'secret-reference',Resend:class{},getResendApiKey:()=>{secretReads++;throw Error('disabled');},admin:{firestore:Object.assign(()=>({}),{FieldValue:{serverTimestamp:()=>0}}),auth:()=>({})},
+    require:name=>name==='./poApprovalReconciliation.cjs'?{createPOApprovalReconciliation:input=>{options=input;return handler;}}:{createPOApprovalLookup:()=>()=>{}},onCall:(config,fn)=>{configuration=config;return fn;}};
+  vm.runInNewContext(source.slice(source.indexOf('// PO approval provider evidence')),context);
+  assert.equal(context.exports.nativePOApprovalNotificationReconciliation,handler);assert.deepEqual(Array.from(configuration.secrets),['secret-reference']);assert.equal(options.enabled(),false);assert.equal(secretReads,0);
+  context.process.env.BOM_NATIVE_PO_NOTIFICATION_RECONCILIATION_ENABLED='true';assert.equal(options.enabled(),true);
 });
 test('legacy notification callable uses the shared original message and acknowledges managed native events without another provider call',async()=>{
   const start=source.indexOf('exports.notifyPOApproval = onCall('),end=source.indexOf('// Extract text from PDF quotation',start);let managed=null,sends=0,built=0;

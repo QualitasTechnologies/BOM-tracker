@@ -10,4 +10,15 @@ function createPOApprovalSender({Resend,getApiKey,timeoutMs=30000}) {
     return{id:result.data.id};
   };
 }
-module.exports={createPOApprovalSender,REJECTED};
+function createPOApprovalLookup({Resend,getApiKey,timeoutMs=15000}) {
+  return async providerId=>{
+    if(typeof providerId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(providerId))throw Error('notification_provider_lookup_unavailable');
+    try {
+      // The SDK's lower-level GET accepts AbortSignal; emails.get(id) has no options in 4.8.0.
+      const result=await new Resend(getApiKey()).get(`/emails/${providerId}`,{signal:AbortSignal.timeout(timeoutMs)});
+      if(result?.error||!result?.data||result.data.id!==providerId)throw Error('unconfirmed');
+      return result.data;
+    }catch{throw Error('notification_provider_lookup_unavailable');}
+  };
+}
+module.exports={createPOApprovalSender,createPOApprovalLookup,REJECTED};

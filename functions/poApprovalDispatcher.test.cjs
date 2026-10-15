@@ -16,6 +16,7 @@ test('preparation is default-off, leases once and freezes an original Pulse emai
   const prepared=await f.dispatcher.prepare(f.id);assert.equal(prepared.state,'prepared');assert.equal(prepared.delivery_ids.length,1);
   assert.deepEqual((await f.dispatcher.prepare(f.id)).delivery_ids,prepared.delivery_ids);
   const delivery=f.docs.get(`pulsePOApprovalNotificationDeliveries/${prepared.delivery_ids[0]}`);
+  assert.deepEqual(delivery.mail.tags,[{name:'pulse_po_delivery',value:prepared.delivery_ids[0]}]);
   assert.deepEqual(delivery.mail.to,['admin@qualitastech.com']);assert.match(delivery.mail.html,/eagle-eye\.qualitastech\.com\/pulse\/bom\/project\/P\/bom/);
   assert.equal(f.sent.length,0);assert.equal((await f.dispatcher.deliver(prepared.delivery_ids[0])).state,'accepted');
   assert.equal(f.docs.get(`pulsePOApprovalNotifications/${f.id}`).state,'accepted');assert.equal(f.sent.length,1);
