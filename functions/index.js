@@ -7527,3 +7527,14 @@ exports.retryPOApprovalNotifications = onSchedule(
     }
   },
 );
+
+// PO approval notification operator status and audited same-key retries; no provider secret.
+const {createPOApprovalNotificationOperations} = require('./poApprovalNotificationOperations.cjs');
+exports.nativePOApprovalNotificationOperations = onCall(
+  {region:'us-central1',timeoutSeconds:30,maxInstances:5},
+  createPOApprovalNotificationOperations({
+    db:admin.firestore(),auth:admin.auth(),
+    enabled:()=>process.env.BOM_NATIVE_PO_NOTIFICATIONS_ENABLED === 'true',
+    getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);

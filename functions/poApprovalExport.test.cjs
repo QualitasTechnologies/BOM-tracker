@@ -8,9 +8,17 @@ test('private queue triggers and bounded scheduler are gated off without request
     Resend:class{},getResendApiKey:()=>{secretReads++;throw Error('secret not needed');},resendApiKey:'secret-reference',
     onDocumentCreated:(config,handler)=>{const type=config.document.startsWith('pulsePOApprovalNotifications/')?'prepare':'send';configs[type]=config;handlers[type]=handler;return handler;},
     onSchedule:(config,handler)=>{configs.retry=config;handlers.retry=handler;return handler;},logger:{warn:()=>{}}};
-  vm.runInNewContext(source.slice(start),context);assert.equal(dependencies.enabled(),false);await handlers.retry();assert.equal(queries,0);assert.equal(secretReads,0);
+  vm.runInNewContext(source.slice(start,source.indexOf('// PO approval notification operator status')),context);assert.equal(dependencies.enabled(),false);await handlers.retry();assert.equal(queries,0);assert.equal(secretReads,0);
   assert.equal(configs.prepare.secrets,undefined);assert.deepEqual(Array.from(configs.send.secrets),['secret-reference']);assert.equal(configs.send.region,'us-central1');assert.equal(configs.retry.maxInstances,1);
   context.process.env.BOM_NATIVE_PO_NOTIFICATIONS_ENABLED='TRUE';assert.equal(dependencies.enabled(),false);context.process.env.BOM_NATIVE_PO_NOTIFICATIONS_ENABLED='true';assert.equal(dependencies.enabled(),true);
+});
+test('notification operator callable is secret-free and uses its own strict default-off flag',()=>{
+  let options,configuration;const handler=()=>{};
+  const context={exports:{},process:{env:{}},admin:{firestore:Object.assign(()=>({}),{FieldValue:{serverTimestamp:()=>0}}),auth:()=>({})},
+    require:()=>({createPOApprovalNotificationOperations:input=>{options=input;return handler;}}),onCall:(config,fn)=>{configuration=config;return fn;}};
+  vm.runInNewContext(source.slice(source.indexOf('// PO approval notification operator status')),context);
+  assert.equal(context.exports.nativePOApprovalNotificationOperations,handler);assert.equal(configuration.secrets,undefined);assert.equal(configuration.region,'us-central1');assert.equal(options.enabled(),false);
+  context.process.env.BOM_NATIVE_PO_NOTIFICATIONS_ENABLED='true';assert.equal(options.enabled(),true);
 });
 test('legacy notification callable uses the shared original message and acknowledges managed native events without another provider call',async()=>{
   const start=source.indexOf('exports.notifyPOApproval = onCall('),end=source.indexOf('// Extract text from PDF quotation',start);let managed=null,sends=0,built=0;

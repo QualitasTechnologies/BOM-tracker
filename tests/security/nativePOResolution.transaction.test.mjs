@@ -12,6 +12,7 @@ const { createNativePOAuthoringOperations } = require('./nativePOAuthoringOperat
 const { fixture } = require('./nativePOAuthoringFixture.cjs');
 const { createPOApprovalDispatcher } = require('./poApprovalDispatcher.cjs');
 const { managedApprovalNotification } = require('./poApprovalLegacyGuard.cjs');
+const { createPOApprovalNotificationOperations } = require('./poApprovalNotificationOperations.cjs');
 let env, db, data, call, nativeAuth;
 before(async () => {
   env = await initializeTestEnvironment({ projectId, firestore: { host: '127.0.0.1', port: 18080 } });
@@ -116,4 +117,31 @@ test('real approval outbox, fanout and competing delivery triggers preserve one 
   const dispatch=events.docs.map(doc=>doc.data()).find(event=>event.job_id===id&&event.phase==='dispatching');assert.equal(dispatch.mail_hash,delivered.mail_hash);
   assert.equal((await db.doc(`pulsePOApprovalNotifications/${result.notification_id}`).get()).data().state,'accepted');
   await dispatcher.deliver(id);assert.equal(count,2);
+});
+
+test('real notification operator retries have one audited receipt and preserve immutable delivery payload',async()=>{
+  const opening=await call({operation:'open',po_id:'existing'});
+  const submitted=await call({operation:'command',po_id:'existing',operation_id:'operator-submit',expected_po_version:opening.po_version,command:{kind:'submit'}});
+  assert.equal(submitted.ok,true);
+  const auth={...nativeAuth,verifyIdToken:async()=>({uid:'admin',email:data.users.get('admin').email})};
+  let enabled=true;
+  const operator=createPOApprovalNotificationOperations({db,auth,enabled:()=>enabled,getServerTimestamp:()=>FieldValue.serverTimestamp()});
+  const invoke=extra=>operator({auth:{uid:'admin'},rawRequest:{get:()=> 'Bearer synthetic'},data:{operation:'status',project_id:'P',po_id:'existing',expected_actor_uid:'admin',...extra}});
+  const dispatcher=createPOApprovalDispatcher({db,auth:nativeAuth,enabled:true,getServerTimestamp:()=>FieldValue.serverTimestamp(),sendEmail:async()=>{throw Error('synthetic lost reply');}});
+  const prepared=await dispatcher.prepare(submitted.notification_id),target=prepared.delivery_ids[0];
+  assert.equal((await dispatcher.deliver(target)).state,'uncertain');
+  const before=(await db.doc(`pulsePOApprovalNotificationDeliveries/${target}`).get()).data(),status=await invoke({});
+  assert.equal(status.deliveries[0].can_retry,true);
+  const request={operation:'retry',notification_id:submitted.notification_id,expected_revision:status.revision,operation_id:'operator-retry',target_id:target};
+  const [left,right]=await Promise.all([invoke(request),invoke(request)]);
+  assert.equal(left.ok,true);assert.deepEqual(right,left);
+  assert.equal((await db.collection('pulsePOApprovalNotificationOperations').get()).size,1);
+  const after=(await db.doc(`pulsePOApprovalNotificationDeliveries/${target}`).get()).data();
+  for(const key of ['mail','mail_hash','idempotency_key','recipients','first_dispatched_ms'])assert.deepEqual(after[key],before[key]);
+  const events=await db.collection(`pulsePOApprovalNotificationAudit/${submitted.notification_id}/events`).where('phase','==','operator_retry').get();assert.equal(events.size,1);
+  enabled=false;await db.doc('pulseRuntimeControl/cutover').set({mode:'read_only'});assert.deepEqual(await invoke(request),left);
+  assert.equal((await invoke({...request,operation_id:'stale-next'})).error,'notification_dispatch_disabled');
+  const refused=await invoke({...request,operation_id:'cancelled-next'});assert.equal(refused.request_finalized,true);
+  enabled=true;await db.doc('pulseRuntimeControl/cutover').set({mode:'coexist'});
+  assert.deepEqual(await invoke({...request,operation_id:'cancelled-next'}),refused);
 });
