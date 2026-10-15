@@ -24,7 +24,7 @@ test('provider reconciliation binds its secret but remains strict default-off wi
   let options,configuration,secretReads=0;const handler=()=>{};
   const context={exports:{},process:{env:{}},resendApiKey:'secret-reference',Resend:class{},getResendApiKey:()=>{secretReads++;throw Error('disabled');},admin:{firestore:Object.assign(()=>({}),{FieldValue:{serverTimestamp:()=>0}}),auth:()=>({})},
     require:name=>name==='./poApprovalReconciliation.cjs'?{createPOApprovalReconciliation:input=>{options=input;return handler;}}:{createPOApprovalLookup:()=>()=>{}},onCall:(config,fn)=>{configuration=config;return fn;}};
-  vm.runInNewContext(source.slice(source.indexOf('// PO approval provider evidence')),context);
+  vm.runInNewContext(source.slice(source.indexOf('// PO approval provider evidence'),source.indexOf('// Native delivery schedule')),context);
   assert.equal(context.exports.nativePOApprovalNotificationReconciliation,handler);assert.deepEqual(Array.from(configuration.secrets),['secret-reference']);assert.equal(options.enabled(),false);assert.equal(secretReads,0);
   context.process.env.BOM_NATIVE_PO_NOTIFICATION_RECONCILIATION_ENABLED='true';assert.equal(options.enabled(),true);
 });

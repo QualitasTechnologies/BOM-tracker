@@ -7552,3 +7552,10 @@ exports.nativePOApprovalNotificationReconciliation=onCall(
     lookup:createPOApprovalLookup({Resend,getApiKey:getResendApiKey}),
   }),
 );
+
+// Native delivery schedule: original milestone/baseline/history actions, default off.
+const {createNativeMilestoneOperations,milestoneMutationsEnabled}=require('./nativeMilestoneOperations.cjs');
+exports.nativeMilestoneOperations=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:5},
+  createNativeMilestoneOperations({db:admin.firestore(),auth:admin.auth(),enabled:()=>milestoneMutationsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
+);

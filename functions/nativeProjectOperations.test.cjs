@@ -2,6 +2,23 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { fixture } = require('./nativeProjectFixture.cjs');
+test('baselined project deadline saves require reason and atomically append authoritative history',async()=>{
+  const f=fixture();f.change({isBaselined:true,originalDeadline:'2026-10-20'});
+  assert.equal((await f.command({kind:'metadata',patch:{deadline:'2026-11-04'}})).ok,false);
+  const command={kind:'metadata',patch:{deadline:'2026-11-04',description:'Updated'},delay:{reason:'Customer approved the schedule change',attribution:'external-client'}};
+  assert.equal((await f.command(command)).ok,true);const logs=[...f.docs].filter(([path])=>path.startsWith('projects/P/delayLogs/'));assert.equal(logs.length,1);
+  assert.equal(logs[0][1].previousDate,'2026-11-01');assert.equal(logs[0][1].delayDays,3);assert.equal(logs[0][1].cumulativeProjectDelay,15);assert.equal(logs[0][1].loggedBy,'admin');
+  assert.equal(f.docs.get('projects/P').originalDeadline,'2026-10-20');
+  const g=fixture({failAudit:true});g.change({isBaselined:true,originalDeadline:'2026-10-20'});assert.equal((await g.command(command)).ok,false);assert.equal(g.docs.get('projects/P').deadline,'2026-11-01');assert.equal([...g.docs.keys()].filter(path=>path.includes('/delayLogs/')).length,0);
+});
+test('metadata resolution confirms or cancels the original nonce even with writes disabled or readonly',async()=>{
+  const f=fixture(),opening=await f.call({operation:'get'}),request={operation:'command',expected_version:opening.version,operation_id:'resolve',command:{kind:'metadata',patch:{description:'Changed'}}};
+  assert.equal((await f.call(request)).ok,true);f.docs.set('pulseRuntimeControl/cutover',{mode:'read_only'});
+  assert.equal((await f.call({...request,resolve_only:true})).resolution,'committed');
+  const g=fixture({enabled:false}),snap=await g.call({operation:'get'}),cancel={...request,expected_version:snap.version};
+  assert.equal((await g.call({...cancel,resolve_only:true})).resolution,'cancelled');assert.equal((await g.call(cancel)).error,'project_request_cancelled');
+  const h=fixture();h.docs.set('pulseRuntimeControl/cutover',{mode:'read_only'});assert.equal((await h.command({kind:'metadata',patch:{description:'No'}})).ok,false);
+});
 
 test('metadata transition and unlink are atomic, audited, replayable and preserve all other data', async () => {
   const f = fixture(); const opening = await f.call({ operation: 'get' });
