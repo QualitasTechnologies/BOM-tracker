@@ -338,9 +338,9 @@ export const calculatePOTotals = (
 export const generatePONumber = (
   prefix: string,
   format: 'simple' | 'financial-year',
-  nextNumber: number
+  nextNumber: number,
+  now: Pick<Date, 'getFullYear' | 'getMonth'> = new Date()
 ): string => {
-  const now = new Date();
   const year = now.getFullYear();
   const paddedNumber = String(nextNumber).padStart(3, '0');
 
