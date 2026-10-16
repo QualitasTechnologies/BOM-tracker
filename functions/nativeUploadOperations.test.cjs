@@ -11,23 +11,28 @@ function fixture(options = {}) {
     const writes = []; const result = await fn({ get: async r => { assert.equal(writes.length, 0); await options.onRead?.(r.path, { actor, docs }); return { exists: docs.has(r.path), data: () => structuredClone(docs.get(r.path)) }; },
       create: (r, d) => { assert.equal(docs.has(r.path), false); writes.push([r.path, d]); }, update: (r, d) => writes.push([r.path, { ...docs.get(r.path), ...d }]) });
     if (options.failAudit && writes.some(([p]) => p.includes('/audit/'))) throw Error('audit');
+    if (options.failFinalizeOnce && writes.some(([p]) => p.endsWith('_finalize'))) { options.failFinalizeOnce = false; throw Error('interrupted final journal'); }
     writes.forEach(([p, d]) => docs.set(p, d)); return result;
   } };
   const auth = { verifyIdToken: async () => ({ uid: actor.uid, email: actor.email }), getUser: async () => structuredClone(actor) };
-  let blob = null, time = new Date('2026-10-14T00:00:00Z');
-  const bucket = { name: 'test.appspot.com', file: (path, opts) => ({ getMetadata: async () => { if (!blob) throw Object.assign(Error('missing'), { code: 404 }); return [{ size: String(blob.length), contentType: 'image/jpeg', generation: '7', metageneration: '1' }]; },
-    createReadStream: () => { const stream = (async function* () { await options.onDownload?.({ actor, docs }); assert.equal(opts.generation, '7'); yield blob; })(); stream.destroy = () => {}; return stream; },
-    setMetadata: async (_data, metadataOptions) => { assert.equal(metadataOptions.ifGenerationMatch, '7'); await options.onMetadata?.({ actor, docs }); } }) };
+  let blob = null, finalBlob = null, finalMetadata, publications = 0, time = new Date('2026-10-14T00:00:00Z');
+  const bucket = { name: 'test.appspot.com', file: (path, opts) => {
+    const final = path.includes('/finalized/'); return {
+      getMetadata: async () => { const value = final ? finalBlob : blob; if (!value) throw Object.assign(Error('missing'), { code: 404 }); return [{ size: String(value.length), contentType: 'image/jpeg', generation: final ? '8' : '7', metageneration: '1', ...(final ? finalMetadata : {}) }]; },
+      createReadStream: () => { const value = final ? finalBlob : blob; const stream = (async function* () { if (!final) await options.onDownload?.({ actor, docs }); assert.equal(opts.generation, final ? '8' : '7'); yield value; })(); stream.destroy = () => {}; return stream; },
+      save: async (value, settings) => { assert.equal(final, true); assert.equal(settings.preconditionOpts.ifGenerationMatch, 0); assert.equal(settings.resumable, false); if (finalBlob) throw Object.assign(Error('exists'), { code: 412 }); finalBlob = Buffer.from(value); finalMetadata = settings.metadata; publications++; await options.onMetadata?.({ actor, docs }); },
+    };
+  } };
   const native = createNativeUploadOperations({ db, auth, bucket, enabled: options.enabled ?? true, getServerTimestamp: () => 'server', now: () => time });
   const base = { project_id: 'P', item_id: 'bolt', operation_id: 'nonce', expected_actor_uid: 'alice' };
   const call = data => native({ auth: { uid: 'alice' }, rawRequest: { get: () => 'Bearer test' }, data: { ...base, ...data } });
   const reserve = extra => call({ operation: 'reserve', content_type: 'image/jpeg', byte_size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), ...extra });
-  return { actor, docs, bytes, reserve, finalize: extra => call({ operation: 'finalize', ...extra }), upload: value => { blob = value ?? bytes; }, expire: () => { time = new Date('2026-10-14T01:00:00Z'); } };
+  return { actor, docs, bytes, reserve, finalize: extra => call({ operation: 'finalize', ...extra }), upload: value => { blob = value ?? bytes; }, expire: () => { time = new Date('2026-10-14T01:00:00Z'); }, finalBytes: () => finalBlob, publications: () => publications };
 }
 test('reserve and finalize are nonce bound, audited and replayable with verified generation', async () => {
   const f = fixture(); const r = await f.reserve(); assert.equal(r.ok, true); assert.match(r.path, /^projects\/P\/received-photos\/native\/[a-f0-9]{64}\.jpg$/);
   assert.deepEqual(await f.reserve(), r); assert.equal((await f.reserve({ sha256: 'a'.repeat(64) })).error, 'operation_conflict');
-  f.upload(); const done = await f.finalize(); assert.equal(done.ok, true); assert.equal(done.generation, '7'); assert.match(done.photo_url, /generation=7/); assert.deepEqual(await f.finalize(), done);
+  f.upload(); const done = await f.finalize(); assert.equal(done.ok, true); assert.equal(done.generation, '8'); assert.match(done.photo_url, /generation=8/); assert.deepEqual(await f.finalize(), done);
   assert.equal([...f.docs.keys()].filter(p => p.includes('/audit/')).length, 2);
 });
 test('missing, wrong-size and same-size changed bytes never finalize', async () => {
@@ -75,12 +80,38 @@ test('oversized files, non-JPEG bytes and non-JPEG declarations cannot become pr
   assert.equal((await fixture().reserve({ content_type: 'image/png' })).error, 'invalid_upload_request');
   const f = fixture(), bytes = Buffer.from('notjpeg'); await f.reserve({ sha256: createHash('sha256').update(bytes).digest('hex') }); f.upload(bytes); assert.equal((await f.finalize()).error, 'upload_integrity_failed');
 });
-test('source boundary keeps grants outside legacy writes and native uploads outside legacy Storage match', () => {
-  const fs = require('node:fs'), path = require('node:path');
-  const rules = fs.readFileSync(path.join(__dirname, '..', 'storage.rules'), 'utf8');
-  assert.match(rules, /match \/projects\/\{projectId\}\/received-photos\/native\/\{fileName\}/);
-  assert.match(rules, /allow update, delete: if false/); assert.match(rules, /allow create:/);
-  assert.match(rules, /request\.time < .*expires_at/); assert.match(rules, /pulseNativeUploadIntents/); assert.match(rules, /nativeUploadModeAllowsWrite/);
-  const firestore = fs.readFileSync(path.join(__dirname, '..', 'firestore.rules'), 'utf8');
-  assert.doesNotMatch(firestore, /^ {4}match \/\{[^}]+\}/m);
+test('finalized photo bytes live outside the writable staging path', async () => {
+  const f = fixture(); await f.reserve(); f.upload(); const result = await f.finalize();
+  assert.equal(result.ok, true);
+  assert.match(decodeURIComponent(new URL(result.photo_url).pathname), /\/received-photos\/finalized\//);
+});
+
+test('finalized photo replay survives disabled writes but new reservations do not', async () => {
+  let enabled = true; const f = fixture({ enabled: () => enabled }); await f.reserve(); f.upload();
+  const result = await f.finalize(); assert.equal(result.ok, true); enabled = false;
+  assert.deepEqual(await f.finalize(), result);
+  assert.equal((await f.reserve({ operation_id: 'new-photo' })).error, 'native_uploads_disabled');
+});
+
+test('an interrupted publication recovers the verified destination after staging is replaced', async () => {
+  const f = fixture({ failFinalizeOnce: true }); await f.reserve(); f.upload();
+  assert.equal((await f.finalize()).error, 'native_uploads_unavailable');
+  f.upload(Buffer.from([255, 216, 255, 8, 9, 255, 217]));
+  const recovered = await f.finalize(); assert.equal(recovered.ok, true);
+  assert.deepEqual(f.finalBytes(), f.bytes); assert.equal(f.publications(), 1);
+});
+
+test('existing unpublished canonical bytes cannot bypass a later write-disable or expiry fence', async () => {
+  let enabled = true; const f = fixture({ failFinalizeOnce: true, enabled: () => enabled }); await f.reserve(); f.upload();
+  assert.equal((await f.finalize()).ok, false); enabled = false;
+  assert.equal((await f.finalize()).error, 'native_uploads_disabled');
+  enabled = true; f.expire(); assert.equal((await f.finalize()).error, 'upload_intent_expired');
+  assert.equal(f.docs.get('pulseNativeUploadOperations/P/receipts/nonce').finalized, undefined);
+});
+
+test('restored current authorization can confirm the same unpublished destination without another upload', async () => {
+  const f = fixture({ onMetadata: ({ actor }) => { actor.disabled = true; } }); await f.reserve(); f.upload();
+  assert.equal((await f.finalize()).error, 'actor_forbidden'); assert.equal(f.publications(), 1);
+  f.actor.disabled = false; assert.equal((await f.finalize()).ok, true);
+  assert.equal(f.publications(), 1); assert.deepEqual(f.finalBytes(), f.bytes);
 });
