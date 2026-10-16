@@ -1006,128 +1006,35 @@ exports.notifyExpenseApproval = onCall(
   async (request) => {
     const { auth, data } = request;
     if (!auth) throw new Error('Authentication required');
-
-    const { mode, projectId, projectName, visitDates, visitLocation, visitPurpose, visitTotal, ownerUid } = data;
-    const resend = new Resend(getResendApiKey());
-    const FROM = 'BOM Tracker <info@qualitastech.com>';
-
-    const formatINR = (n) => `₹${Math.round(n || 0).toLocaleString('en-IN')}`;
-    const esc = (s) => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-    const visitRows = [
-      `<tr><td style="padding:6px 0;color:#666;width:130px;vertical-align:top;">Project</td><td style="padding:6px 0;font-weight:600;">${esc(projectName)}</td></tr>`,
-      `<tr><td style="padding:6px 0;color:#666;vertical-align:top;">Dates</td><td style="padding:6px 0;">${esc(visitDates)}</td></tr>`,
-      visitLocation ? `<tr><td style="padding:6px 0;color:#666;vertical-align:top;">Location</td><td style="padding:6px 0;">${esc(visitLocation)}</td></tr>` : '',
-      visitPurpose ? `<tr><td style="padding:6px 0;color:#666;vertical-align:top;">Purpose</td><td style="padding:6px 0;">${esc(visitPurpose)}</td></tr>` : '',
-      `<tr><td style="padding:6px 0;color:#666;vertical-align:top;">Amount</td><td style="padding:6px 0;font-weight:700;font-size:17px;color:#0066cc;">${formatINR(visitTotal)}</td></tr>`,
-    ].filter(Boolean).join('');
-
-    const visitSummary = `<table style="width:100%;font-size:14px;border-collapse:collapse;margin:16px 0;">${visitRows}</table>`;
-
-    const footer = `
-      <div style="padding:16px 28px;background:#f8f9fa;border-top:1px solid #eee;font-size:12px;color:#888;text-align:center;">
-        BOM Tracker — Qualitas Technologies Pvt Ltd
-      </div>`;
-
-    const projectUrl = `https://visionbomtracker.web.app/project/${esc(projectId)}/bom`;
-    const ctaBtn = (label, href = projectUrl) =>
-      `<a href="${href}" style="display:inline-block;margin-top:16px;padding:10px 22px;background:#0066cc;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:600;">${label} →</a>`;
-
-    // ── mode: submitted ──────────────────────────────────────────────
+    // Old expense callbacks have no visit ID: do not guess a native event from dates/amount.
+    // Legacy expense writers and their callbacks must be fenced together at cutover.
+    const {legacyApprovalSendingAllowed}=require('./poApprovalLegacyGuard.cjs');
+    if (!await legacyApprovalSendingAllowed(admin.firestore())) throw new Error('Legacy notifications disabled; reopen the project in Pulse');
+    const {buildExpenseApprovalEmail}=require('./expenseApprovalEmail.cjs');
+    const {mode,projectId,projectName,visitDates,visitLocation,visitPurpose,visitTotal,ownerUid}=data;
+    if (!['submitted','approved','rejected'].includes(mode)) throw new Error('Invalid expense notification mode');
+    let to,actorName;
     if (mode === 'submitted') {
-      const allUsers = await admin.auth().listUsers(1000);
-      const adminEmails = allUsers.users
-        .filter(u => u.customClaims?.role === 'admin' && u.customClaims?.status === 'approved' && u.email)
-        .map(u => u.email);
-
-      if (adminEmails.length === 0) {
-        logger.warn('[notifyExpenseApproval] No admin emails found');
-        return { success: false, reason: 'no-admins' };
-      }
-
-      const submitter = await admin.auth().getUser(auth.uid);
-      const submitterName = esc(submitter.displayName || submitter.email || 'A team member');
-
-      const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;color:#333;margin:0;padding:0;background:#f4f4f4;">
-<div style="max-width:600px;margin:24px auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);overflow:hidden;">
-  <div style="background:linear-gradient(135deg,#f59e0b,#d97706);padding:28px 32px;">
-    <h1 style="margin:0;color:#fff;font-size:22px;">Expense Approval Required</h1>
-    <p style="margin:8px 0 0;color:rgba(255,255,255,.9);font-size:14px;">${submitterName} has submitted a travel expense for review</p>
-  </div>
-  <div style="padding:28px 32px;">${visitSummary}
-    <p style="color:#666;font-size:14px;margin:20px 0 0;">Log in to BOM Tracker to approve or reject this claim.</p>
-    ${ctaBtn('Review Claim')}
-  </div>${footer}
-</div></body></html>`;
-
-      await resend.emails.send({
-        from: FROM,
-        to: adminEmails,
-        subject: `Expense Approval Required — ${projectName} (${formatINR(visitTotal)})`,
-        html,
-      });
-
-      logger.info('[notifyExpenseApproval] Submitted', { adminEmails, projectId });
-      return { success: true, sent: adminEmails.length };
-    }
-
-    // ── mode: approved / rejected ─────────────────────────────────────
-    if (mode === 'approved' || mode === 'rejected') {
-      // Verify caller is an admin — prevents non-admins from sending fake approval emails
-      const callerRecord = await admin.auth().getUser(auth.uid);
-      const callerClaims = callerRecord.customClaims || {};
-      if (callerClaims.role !== 'admin' || callerClaims.status !== 'approved') {
-        throw new Error('Admin privileges required');
-      }
-
+      const allUsers=await admin.auth().listUsers(1000);
+      to=allUsers.users.filter(user=>user.customClaims?.role==='admin'&&user.customClaims?.status==='approved'&&user.email).map(user=>user.email);
+      if (!to.length) return {success:false,reason:'no-admins'};
+      const submitter=await admin.auth().getUser(auth.uid);
+      actorName=submitter.displayName||submitter.email||'A team member';
+    } else {
+      const caller=await admin.auth().getUser(auth.uid);
+      if (caller.customClaims?.role!=='admin'||caller.customClaims?.status!=='approved') throw new Error('Admin privileges required');
       if (!ownerUid) throw new Error('ownerUid required');
-
-      const owner = await admin.auth().getUser(ownerUid);
-      if (!owner.email) {
-        logger.warn('[notifyExpenseApproval] Owner has no email', { ownerUid });
-        return { success: false, reason: 'no-owner-email' };
-      }
-
-      const approver = await admin.auth().getUser(auth.uid);
-      const approverName = esc(approver.displayName || approver.email || 'An admin');
-      const isApproved = mode === 'approved';
-      const word = isApproved ? 'Approved' : 'Rejected';
-      const color = isApproved ? '#059669' : '#dc2626';
-      const bgColor = isApproved ? '#ecfdf5' : '#fef2f2';
-
-      const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;color:#333;margin:0;padding:0;background:#f4f4f4;">
-<div style="max-width:600px;margin:24px auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);overflow:hidden;">
-  <div style="background:${color};padding:28px 32px;">
-    <h1 style="margin:0;color:#fff;font-size:22px;">Expense ${word}</h1>
-    <p style="margin:8px 0 0;color:rgba(255,255,255,.9);font-size:14px;">${approverName} has ${word.toLowerCase()} your travel expense claim</p>
-  </div>
-  <div style="padding:28px 32px;">
-    <div style="background:${bgColor};border:1px solid ${color}44;border-radius:6px;padding:10px 16px;margin-bottom:20px;">
-      <p style="margin:0;font-weight:600;color:${color};">Status: ${word}</p>
-    </div>
-    ${visitSummary}
-    <p style="color:#666;font-size:14px;margin:20px 0 0;">${isApproved
-        ? 'Your expense claim has been approved. Please proceed with reimbursement as per company policy.'
-        : 'Your expense claim was not approved. Please contact your manager for details or resubmit with updated information.'}</p>
-    ${ctaBtn('Open BOM Tracker')}
-  </div>${footer}
-</div></body></html>`;
-
-      await resend.emails.send({
-        from: FROM,
-        to: owner.email,
-        subject: `Your expense claim was ${word} — ${projectName}`,
-        html,
-      });
-
-      logger.info('[notifyExpenseApproval] Status sent', { ownerEmail: owner.email, mode, projectId });
-      return { success: true };
+      const owner=await admin.auth().getUser(ownerUid);
+      if (!owner.email) return {success:false,reason:'no-owner-email'};
+      to=owner.email;actorName=caller.displayName||caller.email||'An admin';
     }
-
-    throw new Error(`Invalid mode: ${mode}`);
+    const mail=buildExpenseApprovalEmail({mode,projectId,projectName,visitDates,visitLocation,visitPurpose,visitTotal,actorName,to,legacyCompatibility:true});
+    const resend=new Resend(getResendApiKey());
+    await resend.emails.send(mail);
+    logger.info('[notifyExpenseApproval] Status sent',{mode,projectId});
+    return mode==='submitted'?{success:true,sent:to.length}:{success:true};
   }
 );
-
 // ==================== PURCHASE ORDER APPROVAL NOTIFICATIONS ====================
 
 // Notify on PO approval workflow events
@@ -7558,4 +7465,47 @@ const {createNativeMilestoneOperations,milestoneMutationsEnabled}=require('./nat
 exports.nativeMilestoneOperations=onCall(
   {region:'us-central1',timeoutSeconds:60,maxInstances:5},
   createNativeMilestoneOperations({db:admin.firestore(),auth:admin.auth(),enabled:()=>milestoneMutationsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
+);
+
+// Native project overheads: original cost entries and reimbursement transitions, default off.
+const {createNativeOverheadOperations,overheadMutationsEnabled}=require('./nativeOverheadOperations.cjs');
+exports.nativeOverheadOperations=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:5},
+  createNativeOverheadOperations({db:admin.firestore(),auth:admin.auth(),enabled:()=>overheadMutationsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
+);
+
+// Durable expense approval notifications: original messages with private atomic jobs, default off.
+const {createExpenseApprovalDispatcher}=require('./expenseApprovalAdapter.cjs');
+const expenseApprovalNotificationsEnabled=()=>process.env.BOM_NATIVE_EXPENSE_NOTIFICATIONS_ENABLED==='true';
+const expenseApprovalDispatcher=createExpenseApprovalDispatcher({
+  db:admin.firestore(),auth:admin.auth(),enabled:expenseApprovalNotificationsEnabled,
+  getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp(),
+  workspaceUrl:process.env.BOM_PULSE_WORKSPACE_URL||'https://eagle-eye.qualitastech.com/pulse/bom',
+  sendEmail:createPOApprovalSender({Resend,getApiKey:getResendApiKey}),
+});
+exports.prepareExpenseApprovalNotification=onDocumentCreated(
+  {document:'pulseExpenseApprovalNotifications/{jobId}',region:'us-central1',timeoutSeconds:120,maxInstances:3,retry:true},
+  async event=>expenseApprovalDispatcher.prepare(event.params.jobId),
+);
+exports.sendExpenseApprovalNotification=onDocumentCreated(
+  {document:'pulseExpenseApprovalNotificationDeliveries/{jobId}',region:'us-central1',secrets:[resendApiKey],timeoutSeconds:120,maxInstances:3,retry:true},
+  async event=>expenseApprovalDispatcher.deliver(event.params.jobId),
+);
+exports.retryExpenseApprovalNotifications=onSchedule(
+  {schedule:'every 1 minutes',region:'us-central1',secrets:[resendApiKey],timeoutSeconds:300,maxInstances:1},
+  async()=>{
+    if(!expenseApprovalNotificationsEnabled())return;
+    const db=admin.firestore();
+    for(const[collection,processJob]of[
+      ['pulseExpenseApprovalNotifications',id=>expenseApprovalDispatcher.prepare(id)],
+      ['pulseExpenseApprovalNotificationDeliveries',id=>expenseApprovalDispatcher.deliver(id)],
+    ]){
+      const due=await db.collection(collection).where('next_attempt_ms','<=',Date.now()).orderBy('next_attempt_ms').limit(25).get();
+      for(let offset=0;offset<due.docs.length;offset+=3){
+        await Promise.all(due.docs.slice(offset,offset+3).map(async job=>{
+          try{await processJob(job.id);}catch{logger.warn('[expense-approval] Deferred job remains unconfirmed',{jobId:job.id,collection});}
+        }));
+      }
+    }
+  },
 );
