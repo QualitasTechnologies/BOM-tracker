@@ -1,27 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict'),{createHash}=require('node:crypto');
-const {createNativeExpenseReceiptOperations}=require('./nativeExpenseReceiptOperations.cjs');
-function fixture(options={}){
- const actor={uid:'alice',email:'alice@partner.example',emailVerified:true,customClaims:{role:'viewer',status:'approved'}};
- const bytes=Buffer.from('%PDF-1.7 synthetic receipt'),docs=new Map([['projects/P',{projectId:'P',memberIds:['alice']}]]);
- const ref=path=>({path,doc:id=>ref(`${path}/${id}`),collection:id=>ref(`${path}/${id}`)});
- const db={collection:ref,runTransaction:async fn=>{
-  const writes=[],out=await fn({get:async r=>{assert.equal(writes.length,0);await options.onRead?.(r.path,{actor,docs});return{exists:docs.has(r.path),data:()=>docs.get(r.path)};},
-   create:(r,data)=>{assert.equal(docs.has(r.path),false);writes.push([r.path,data]);},update:(r,data)=>writes.push([r.path,{...docs.get(r.path),...data}])});
-  if(options.failAudit&&writes.some(([p])=>p.includes('/audit/')))throw Error('private journal fault');
-  for(const[path,data]of writes)docs.set(path,data);return out;
- }};
- const auth={verifyIdToken:async()=>({uid:actor.uid,email:actor.email}),getUser:async()=>actor};
- let blob,clock=new Date('2026-10-16T00:00:00Z'),type='application/pdf',enabled=true,published=0;
- const bucket={name:'visionbomtracker.firebasestorage.app',file:(path,opts)=>({getMetadata:async()=>{if(!blob)throw Object.assign(Error('missing'),{code:404});await options.onMetadataRead?.({actor,docs});return[{generation:'7',size:String(blob.length),contentType:type,...options.metadata}];},
-  createReadStream:()=>{assert.equal(opts.generation,'7');const stream=(async function*(){await options.onDownload?.({actor,docs});yield blob;})();stream.destroy=()=>{};return stream;},
-  setMetadata:async(patch,condition)=>{assert.equal(condition.ifGenerationMatch,'7');assert.notEqual(patch.metadata.firebaseStorageDownloadTokens,'client-token');assert.deepEqual(Object.keys(patch.metadata),['firebaseStorageDownloadTokens']);published++;await options.onMetadata?.({actor,docs});}})};
- const handler=createNativeExpenseReceiptOperations({db,auth,bucket,enabled:()=>enabled,getServerTimestamp:()=>clock,now:()=>clock});
- const ids={project_id:'P',visit_id:'draft-trip',expense_id:'taxi',operation_id:'upload-1',expected_actor_uid:'alice'};
- const call=data=>handler({auth:{uid:'alice'},rawRequest:{get:()=> 'Bearer synthetic'},data:{...ids,...data}});
- return{actor,docs,bytes,ids,call,off:()=>{enabled=false;},expire:()=>{clock=new Date('2026-10-17');},published:()=>published,
-  reserve:extra=>call({operation:'reserve',content_type:'application/pdf',byte_size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),...extra}),
-  finalize:extra=>call({operation:'finalize',...extra}),upload:(value=bytes,mime='application/pdf')=>{blob=value;type=mime;}};
-}
+const {fixture}=require('./nativeExpenseReceiptFixture.cjs');
 test('draft PDF receipts reserve, finalize and replay with generation-bound URL and atomic protected audit',async()=>{
  const f=fixture(),r=await f.reserve();assert.equal(r.ok,true);assert.match(r.path,/^projects\/P\/receipts\/native\/[a-f0-9]{64}\.bin$/);assert.deepEqual(await f.reserve(),r);
  f.upload();const done=await f.finalize();assert.equal(done.ok,true);assert.match(done.receipt_url,/generation=7/);assert.equal(done.generation,'7');assert.deepEqual(await f.finalize(),done);assert.equal(f.published(),1);
@@ -66,3 +44,17 @@ test('explicit cancellation with writes-off fences late finalization and never r
  assert.equal((await f.finalize()).error,'expense_receipt_cancelled');assert.deepEqual(await f.call({operation:'cancel'}),cancelled);assert.equal(f.published(),0);
 });
 module.exports={fixture};
+
+test('final proof publishes a server-only immutable copy, surviving delayed staging replacement',async()=>{
+ const f=fixture();await f.reserve();f.upload();const done=await f.finalize();assert.equal(done.ok,true);
+ assert.match(decodeURIComponent(new URL(done.receipt_url).pathname),/\/receipts\/finalized\//);
+ f.upload(Buffer.alloc(f.bytes.length));assert.deepEqual(await f.finalize(),done);
+ assert.deepEqual(f.finalBytes(),f.bytes);
+});
+
+test('conditional publication recovers an existing verified destination and refuses a conflicting destination',async()=>{
+ const f=fixture({failFinalizeOnce:true});await f.reserve();f.upload();assert.equal((await f.finalize()).ok,false);
+ f.upload(Buffer.alloc(f.bytes.length));const done=await f.finalize();assert.equal(done.ok,true);assert.deepEqual(f.finalBytes(),f.bytes);assert.equal(f.published(),1);
+ const g=fixture({conflictingDestination:true});await g.reserve();g.upload();assert.equal((await g.finalize()).error,'upload_integrity_failed');
+ assert.equal(g.docs.get('pulseExpenseReceiptUploads/P/receipts/upload-1').finalized,undefined);
+});

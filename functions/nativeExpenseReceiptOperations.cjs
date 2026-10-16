@@ -61,26 +61,39 @@ function createNativeExpenseReceiptOperations({db,auth,bucket,enabled=false,getS
     const fileName=randomBytes(32).toString('hex')+'.bin',path=`projects/${data.project_id}/receipts/native/${fileName}`,expires=now().getTime()+TTL;
     const reserved={ok:true,operation_id:data.operation_id,path,expires_at:new Date(expires).toISOString()};
     const intent={actor_uid:actor.uid,actor_email:actor.email.trim().toLowerCase(),project_id:data.project_id,visit_id:data.visit_id,expense_id:data.expense_id,operation_id:data.operation_id,
-     path,content_type:data.content_type,byte_size:data.byte_size,sha256:data.sha256,state:'reserved',expires_at:new Date(expires),expires_at_ms:expires};
+     path,final_path:`projects/${data.project_id}/receipts/finalized/${fileName}`,content_type:data.content_type,byte_size:data.byte_size,sha256:data.sha256,state:'reserved',expires_at:new Date(expires),expires_at_ms:expires};
     const stored={...intent,file_name:fileName,payload_hash:payloadHash,download_token:randomUUID(),reserved},intentRef=db.collection('pulseExpenseReceiptIntents').doc(fileName),auditRef=journal.collection('audit').doc(data.operation_id+'_reserve');
     const audit={...intent,event:'expense_receipt_reserved',at:getServerTimestamp()};await readAccess(tx);
     assertDocumentBudget([{path:receiptRef.path,data:stored},{path:intentRef.path,data:intent},{path:auditRef.path,data:audit}]);
     tx.create(receiptRef,stored);tx.create(intentRef,intent);tx.create(auditRef,audit);return{result:reserved};
    });
    if(opening.result)return opening.result;const old=opening.receipt;
-   let metadata;try{[metadata]=await bucket.file(old.path).getMetadata();}catch(error){if(Number(error.code)===404)throw fault('upload_not_found',404);throw error;}
-   const generation=String(metadata.generation||'');
-   if(!/^[1-9]\d*$/.test(generation)||Number(metadata.size)!==old.byte_size||metadata.contentType!==old.content_type)throw fault('upload_integrity_failed',409);
-   // Firebase upload APIs may assign download tokens before finalization. They
-   // are never accepted as expense proof; publish our canonical token only after
-   // verifying bytes and rechecking access. The cost transaction checks the journal.
-   await db.runTransaction(async tx=>{await readAccess(tx);control(await tx.get(controlRef));await readAccess(tx);});
-   const file=bucket.file(old.path,{generation}),stream=file.createReadStream({validation:'crc32c'}),chunks=[];let size=0;
-   for await(const chunk of stream){size+=chunk.length;if(size>old.byte_size||size>=MAX_BYTES){stream.destroy();throw fault('upload_integrity_failed',409);}chunks.push(chunk);}
-   if(size!==old.byte_size||hash(Buffer.concat(chunks,size))!==old.sha256)throw fault('upload_integrity_failed',409);
-   await db.runTransaction(async tx=>{await readAccess(tx);control(await tx.get(controlRef));await readAccess(tx);});
-   await file.setMetadata({metadata:{firebaseStorageDownloadTokens:old.download_token}},{ifGenerationMatch:generation});
-   const finalized={ok:true,operation_id:data.operation_id,path:old.path,generation,receipt_url:`https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}/o/${encodeURIComponent(old.path)}?alt=media&token=${encodeURIComponent(old.download_token)}&generation=${generation}`};
+   // Rules check a staging upload before it finishes; concurrent admitted uploads
+   // can both succeed. Only the server-created destination is expense proof.
+   const finalPath=`projects/${data.project_id}/receipts/finalized/${old.file_name}`;
+   if(old.final_path!==finalPath)throw fault('operation_conflict',409);
+   const verifiedBytes=async(path,canonical=false)=>{
+    let metadata;try{[metadata]=await bucket.file(path).getMetadata();}catch(error){if(Number(error.code)===404)return null;throw error;}
+    const generation=String(metadata.generation||'');
+    if(!/^[1-9]\d*$/.test(generation)||Number(metadata.size)!==old.byte_size||metadata.contentType!==old.content_type
+     ||(canonical&&metadata.metadata?.firebaseStorageDownloadTokens!==old.download_token))throw fault('upload_integrity_failed',409);
+    await db.runTransaction(async tx=>{await readAccess(tx);control(await tx.get(controlRef));await readAccess(tx);});
+    const stream=bucket.file(path,{generation}).createReadStream({validation:'crc32c'}),chunks=[];let size=0;
+    for await(const chunk of stream){size+=chunk.length;if(size>old.byte_size||size>=MAX_BYTES){stream.destroy();throw fault('upload_integrity_failed',409);}chunks.push(chunk);}
+    const bytes=Buffer.concat(chunks,size);if(size!==old.byte_size||hash(bytes)!==old.sha256)throw fault('upload_integrity_failed',409);
+    return{generation,bytes};
+   };
+   let published=await verifiedBytes(finalPath,true);
+   if(!published){
+    const staged=await verifiedBytes(old.path);if(!staged)throw fault('upload_not_found',404);
+    await db.runTransaction(async tx=>{await readAccess(tx);control(await tx.get(controlRef));await readAccess(tx);});
+    try{
+     await bucket.file(finalPath).save(staged.bytes,{resumable:false,validation:'crc32c',preconditionOpts:{ifGenerationMatch:0},metadata:{contentType:old.content_type,metadata:{firebaseStorageDownloadTokens:old.download_token}}});
+    }catch(error){if(Number(error.code)!==412)throw error;}
+    published=await verifiedBytes(finalPath,true);if(!published)throw fault('upload_integrity_failed',409);
+   }
+   const generation=published.generation;
+   const finalized={ok:true,operation_id:data.operation_id,path:old.path,generation,receipt_url:`https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}/o/${encodeURIComponent(finalPath)}?alt=media&token=${encodeURIComponent(old.download_token)}&generation=${generation}`};
    return await db.runTransaction(async tx=>{
     await readAccess(tx);const receipt=await tx.get(receiptRef),mode=await tx.get(controlRef);
     if(!receipt.exists)throw fault('upload_intent_not_found',404);const current=receipt.data();assertReceipt(current);
@@ -88,7 +101,7 @@ function createNativeExpenseReceiptOperations({db,auth,bucket,enabled=false,getS
     if(current.finalized){control(mode,true);if(current.finalized.generation!==generation)throw fault('upload_generation_conflict',409);await readAccess(tx);return current.finalized;}
     control(mode);if(now().getTime()>=current.expires_at_ms)throw fault('upload_intent_expired',409);
     if(current.payload_hash!==old.payload_hash||current.path!==old.path||current.download_token!==old.download_token)throw fault('operation_conflict',409);
-    const auditRef=journal.collection('audit').doc(data.operation_id+'_finalize'),audit={event:'expense_receipt_finalized',actor_uid:actor.uid,actor_email:current.actor_email,project_id:data.project_id,visit_id:data.visit_id,expense_id:data.expense_id,operation_id:data.operation_id,path:old.path,sha256:old.sha256,byte_size:old.byte_size,content_type:old.content_type,generation,at:getServerTimestamp()};
+    const auditRef=journal.collection('audit').doc(data.operation_id+'_finalize'),audit={event:'expense_receipt_finalized',actor_uid:actor.uid,actor_email:current.actor_email,project_id:data.project_id,visit_id:data.visit_id,expense_id:data.expense_id,operation_id:data.operation_id,path:old.path,final_path:finalPath,sha256:old.sha256,byte_size:old.byte_size,content_type:old.content_type,generation,at:getServerTimestamp()};
     await readAccess(tx);assertDocumentBudget([{path:receiptRef.path,data:{...current,finalized}},{path:auditRef.path,data:audit}]);
     tx.update(receiptRef,{finalized});tx.update(db.collection('pulseExpenseReceiptIntents').doc(old.file_name),{state:'finalized',generation,receipt_url:finalized.receipt_url});tx.create(auditRef,audit);return finalized;
    });

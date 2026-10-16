@@ -13,12 +13,12 @@ async function assertExpenseReceiptAttachments({db,tx,projectId,actorUid,command
    if(url.origin!=='https://firebasestorage.googleapis.com'||url.username||url.password||url.hash)throw 0;
    const prefix=`/v0/b/${encodeURIComponent(bucketName)}/o/`;if(!url.pathname.startsWith(prefix))throw 0;
    path=decodeURIComponent(url.pathname.slice(prefix.length));
-   const objectPrefix=`projects/${projectId}/receipts/native/`;if(!path.startsWith(objectPrefix))throw 0;
+   const objectPrefix=`projects/${projectId}/receipts/finalized/`;if(!path.startsWith(objectPrefix))throw 0;
    fileName=path.slice(objectPrefix.length);if(!/^[a-f0-9]{64}\.bin$/.test(fileName)||url.pathname!==prefix+encodeURIComponent(path))throw 0;
    if([...url.searchParams.keys()].length!==3||['alt','token','generation'].some(key=>url.searchParams.getAll(key).length!==1)||url.searchParams.get('alt')!=='media'||!url.searchParams.get('token')||!/^[1-9]\d*$/.test(url.searchParams.get('generation')))throw 0;
   }catch{throw fault();}
   const snapshot=await tx.get(db.collection('pulseExpenseReceiptIntents').doc(fileName)),proof=snapshot.exists?snapshot.data():null;
-  if(!proof||proof.state!=='finalized'||proof.project_id!==projectId||proof.visit_id!==command.record_id||proof.expense_id!==expense.id||proof.actor_uid!==actorUid||proof.path!==path||proof.generation!==url.searchParams.get('generation')||proof.receipt_url!==expense.receiptUrl)throw fault();
+  if(!proof||proof.state!=='finalized'||proof.project_id!==projectId||proof.visit_id!==command.record_id||proof.expense_id!==expense.id||proof.actor_uid!==actorUid||proof.final_path!==path||proof.generation!==url.searchParams.get('generation')||proof.receipt_url!==expense.receiptUrl)throw fault();
  }
 }
 module.exports={assertExpenseReceiptAttachments,isExpenseReceiptProofFault};

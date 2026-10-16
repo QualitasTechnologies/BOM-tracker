@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {initializeTestEnvironment,assertFails,assertSucceeds} from '@firebase/rules-unit-testing';
 import {doc,setDoc,Timestamp} from 'firebase/firestore';
-import {ref,uploadBytes,deleteObject,updateMetadata} from 'firebase/storage';
+import {ref,uploadBytes,deleteObject,updateMetadata,getBytes} from 'firebase/storage';
 assert.equal(process.env.FIRESTORE_EMULATOR_HOST,'127.0.0.1:18080');assert.equal(process.env.FIREBASE_STORAGE_EMULATOR_HOST,'127.0.0.1:19199');
 let env,sequence=1000;const bytes=new Uint8Array([1,2,3]),claims={email:'alice@partner.example',email_verified:true,status:'approved',role:'viewer'};
 before(async()=>{env=await initializeTestEnvironment({projectId:'demo-bom-native-security',firestore:{host:'127.0.0.1',port:18080,rules:await readFile(new URL('../../firestore.rules',import.meta.url),'utf8')},storage:{host:'127.0.0.1',port:19199,rules:await readFile(new URL('../../storage.rules',import.meta.url),'utf8')}});});
@@ -37,4 +37,21 @@ test('wrong actor, expired/state/type/size/control intents cannot be used throug
 test('even client admins cannot forge expense receipt intents, receipts or audit',async()=>{
  const context=actor('alice',{role:'admin'});
  for(const path of ['pulseExpenseReceiptIntents/forged','pulseExpenseReceiptUploads/P/receipts/forged','pulseExpenseReceiptUploads/P/audit/forged'])await assertFails(setDoc(doc(context.firestore(),path),{state:'finalized'}));
+});
+test('concurrent staging uploads grant no final-object write authority or readable staging attachment',async()=>{
+ // The observed emulator permits both preflight creates. Safety must not depend
+ // on a single winner here: finalized bytes live at a different server-only path.
+ const f=await seed();await Promise.allSettled([f.upload(),f.upload()]);
+ await assertFails(getBytes(ref(actor().storage(),f.path)));
+ const path=f.path.replace('/native/','/finalized/');
+ const attempts=await Promise.allSettled([uploadBytes(ref(actor().storage(),path),bytes,{contentType:'application/pdf'}),uploadBytes(ref(actor().storage(),path),bytes,{contentType:'application/pdf'})]);
+ assert.equal(attempts.every(result=>result.status==='rejected'),true);
+ await env.withSecurityRulesDisabled(async context=>{
+  await uploadBytes(ref(context.storage(),path),bytes,{contentType:'application/pdf'});
+  await setDoc(doc(context.firestore(),'pulseExpenseReceiptIntents/'+f.filename),{project_id:'P',state:'finalized',final_path:path});
+ });
+ assert.deepEqual(new Uint8Array(await assertSucceeds(getBytes(ref(actor().storage(),path)))),bytes);
+ await assertFails(getBytes(ref(actor('bob').storage(),path)));
+ await assertFails(uploadBytes(ref(actor().storage(),path),bytes,{contentType:'application/pdf'}));
+ await assertFails(updateMetadata(ref(actor().storage(),path),{contentType:'image/png'}));await assertFails(deleteObject(ref(actor().storage(),path)));
 });
