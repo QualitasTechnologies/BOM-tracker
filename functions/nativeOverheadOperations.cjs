@@ -3,6 +3,7 @@ const {currentNativeActor}=require('./nativeMaterialOperations.cjs');
 const {assertDocumentBudget,MAX_INPUT_BYTES}=require('./materialCommands.cjs');
 const {applyOverheadCommand,validateOverheadCommand,isOverheadFault}=require('./overheadCommands.cjs');
 const {createExpenseApprovalJob}=require('./expenseApprovalOutbox.cjs');
+const {assertExpenseReceiptAttachments,isExpenseReceiptProofFault}=require('./expenseReceiptProof.cjs');
 const PUBLIC=Symbol('overhead-operation');
 const fault=(code,status=400)=>Object.assign(Error(code),{code,status,[PUBLIC]:true});
 const plain=value=>value&&typeof value==='object'&&!Array.isArray(value)&&[Object.prototype,null].includes(Object.getPrototypeOf(value));
@@ -35,7 +36,7 @@ const budgetValue=value=>{
 };
 const budget=documents=>assertDocumentBudget(documents.map(row=>({...row,data:budgetValue(row.data)})));
 function rowsOf(doc,key){const rows=doc[key]===undefined?[]:doc[key];if(!Array.isArray(rows)||rows.some(row=>!plain(row)||!id(row.id))||new Set(rows.map(row=>row.id)).size!==rows.length)throw fault('invalid_overhead_state',409);return rows;}
-function createNativeOverheadOperations({db,auth,enabled=false,getServerTimestamp,now=()=>new Date()}){
+function createNativeOverheadOperations({db,auth,enabled=false,requireReceiptProof=false,getServerTimestamp,now=()=>new Date()}){
   const on=()=>(typeof enabled==='function'?enabled():enabled)===true;
   async function actorOf(request){try{return await currentNativeActor(auth,request);}catch(error){const codes={actor_authentication_required:401,actor_forbidden:403,identity_provider_unavailable:503};if(Object.hasOwn(codes,error?.code)&&codes[error.code]===error.status)throw fault(error.code,error.status);throw error;}}
   return async request=>{
@@ -80,6 +81,7 @@ function createNativeOverheadOperations({db,auth,enabled=false,getServerTimestam
         const archiveRef=db.collection('pulseDeletedOverheads').doc(data.project_id).collection('records').doc(`${type}-${data.command.record_id}`);
         if(data.command.kind.startsWith('add_')||data.command.kind.startsWith('delete_'))if((await tx.get(archiveRef)).exists)throw fault('overhead_identity_used',409);
         const clock=now(),plan=applyOverheadCommand({project:{...projectData,projectId:data.project_id},overheads:raw,command:data.command,actor:{uid:current.uid,email:current.email,displayName:current.displayName},now:clock});
+        if((typeof requireReceiptProof==='function'?requireReceiptProof():requireReceiptProof)===true)await assertExpenseReceiptAttachments({db,tx,projectId:data.project_id,actorUid:current.uid,command:data.command,overheads:raw});
         const final=await verified();if(!on())throw fault('overhead_mutations_disabled',503);if(data.command.kind==='review_visit'&&final.customClaims.role!=='admin')throw fault('overhead_review_forbidden',403);
         const at=getServerTimestamp(),result={ok:true,project_id:data.project_id,operation_id:data.operation_id,...plan.result};
         const notification=plan.notification?createExpenseApprovalJob({projectId:data.project_id,visitId:data.command.record_id,operationId:data.operation_id,mode:plan.notification.mode,project:projectData,visit:plan.notification.visit,actor:final,at,createdMs:clock.getTime()}):null;
@@ -92,7 +94,7 @@ function createNativeOverheadOperations({db,auth,enabled=false,getServerTimestam
         budget([{path:overheadsRef.path,data:plan.overheads},{path:receiptRef.path,data:stored},{path:auditRef.path,data:audit},...(archive?[{path:archiveRef.path,data:archive}]:[]),...(notification?[{path:notificationRef.path,data:notification.record}]:[])]);
         tx.set(overheadsRef,plan.overheads);if(archive)tx.create(archiveRef,archive);tx.create(receiptRef,stored);tx.create(auditRef,audit);if(notification)tx.create(notificationRef,notification.record);return result;
       },{readOnly:!writing});
-    }catch(error){return{ok:false,error:error?.[PUBLIC]||isOverheadFault(error)?error.code:'overhead_service_unavailable',status:error?.[PUBLIC]||isOverheadFault(error)?error.status:503};}
+    }catch(error){return{ok:false,error:error?.[PUBLIC]||isOverheadFault(error)||isExpenseReceiptProofFault(error)?error.code:'overhead_service_unavailable',status:error?.[PUBLIC]||isOverheadFault(error)||isExpenseReceiptProofFault(error)?error.status:503};}
   };
 }
 module.exports={createNativeOverheadOperations,overheadMutationsEnabled};

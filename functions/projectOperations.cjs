@@ -353,18 +353,22 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         if (fulfilling && fulfillment.photoUrl) {
           const photo = new URL(fulfillment.photoUrl);
           const path = decodeURIComponent(photo.pathname).split('/o/')[1];
-          const nativePrefix = `projects/${id}/received-photos/native/`;
+          const nativePrefix = `projects/${id}/received-photos/finalized/`;
+          if (path?.startsWith(`projects/${id}/received-photos/native/`)) throw fault('receipt_photo_unverified', 409);
           if (path?.startsWith(nativePrefix)) {
             const fileName = path.slice(nativePrefix.length);
-            if (!/^[a-f0-9]{64}[.]jpg$/.test(fileName)) throw fault('receipt_photo_unverified', 409);
+            if (!/^[a-f0-9]{64}[.]jpg$/.test(fileName)
+              || photo.pathname !== `/v0/b/visionbomtracker.firebasestorage.app/o/${encodeURIComponent(path)}`
+              || [...photo.searchParams.keys()].length !== 3 || ['alt', 'token', 'generation'].some(key => photo.searchParams.getAll(key).length !== 1)
+              || photo.searchParams.get('alt') !== 'media' || !photo.searchParams.get('token') || !/^[1-9]\d*$/.test(photo.searchParams.get('generation'))) throw fault('receipt_photo_unverified', 409);
             const intentSnapshot = await transaction.get(db.collection('pulseNativeUploadIntents').doc(fileName));
             const intent = intentSnapshot.data();
-            if (!intentSnapshot.exists || intent.state !== 'finalized' || intent.path !== path || intent.project_id !== id || intent.item_id !== itemId
+            if (!intentSnapshot.exists || intent.state !== 'finalized' || intent.final_path !== path || intent.project_id !== id || intent.item_id !== itemId
               || intent.actor_uid !== actor.uid || intent.actor_email !== actor.email.trim().toLowerCase()
               || !/^[a-zA-Z0-9_-]{1,128}$/.test(intent.operation_id || '') || intent.generation !== photo.searchParams.get('generation')) throw fault('receipt_photo_unverified', 409);
             const uploadedSnapshot = await transaction.get(db.collection('pulseNativeUploadOperations').doc(id).collection('receipts').doc(intent.operation_id));
             const uploaded = uploadedSnapshot.data();
-            if (!uploadedSnapshot.exists || uploaded.project_id !== id || uploaded.item_id !== itemId || uploaded.actor_uid !== actor.uid
+            if (!uploadedSnapshot.exists || uploaded.project_id !== id || uploaded.item_id !== itemId || uploaded.actor_uid !== actor.uid || uploaded.final_path !== path
               || uploaded.actor_email !== actor.email.trim().toLowerCase() || uploaded.finalized?.photo_url !== fulfillment.photoUrl
               || uploaded.finalized.generation !== intent.generation) throw fault('receipt_photo_unverified', 409);
           }

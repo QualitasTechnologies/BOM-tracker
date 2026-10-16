@@ -73,11 +73,27 @@ test('membership removal and read-only or unknown control modes deny new uploads
   for (const mode of ['read_only', 'unknown']) { await serverWrite('pulseRuntimeControl/cutover', { mode }); await assertFails(f.upload()); }
   await serverWrite('pulseRuntimeControl/cutover', { mode: 'pulse_only' }); await assertSucceeds(f.upload());
 });
-test('proof becomes readable only after server confirmation, and remains immutable', async () => {
+test('only the separate server-published proof becomes readable after confirmation and remains immutable', async () => {
   const f = await seed(); await assertSucceeds(f.upload()); await assertFails(getBytes(ref(actor().storage(), f.path)));
-  await serverWrite(`pulseNativeUploadIntents/${f.fileName}`, { state: 'finalized' });
-  assert.deepEqual(new Uint8Array(await assertSucceeds(getBytes(ref(actor().storage(), f.path)))), jpeg);
+  const finalPath = f.path.replace('/native/', '/finalized/');
+  await assertFails(uploadBytes(ref(actor().storage(), finalPath), jpeg, { contentType: 'image/jpeg' }));
+  await env.withSecurityRulesDisabled(context => uploadBytes(ref(context.storage(), finalPath), jpeg, { contentType: 'image/jpeg' }));
+  await assertFails(getBytes(ref(actor().storage(), finalPath)));
+  await serverWrite(`pulseNativeUploadIntents/${f.fileName}`, { state: 'finalized', final_path: finalPath });
+  assert.deepEqual(new Uint8Array(await assertSucceeds(getBytes(ref(actor().storage(), finalPath)))), jpeg);
+  await assertFails(getBytes(ref(actor().storage(), f.path)));
+  await assertFails(uploadBytes(ref(actor().storage(), finalPath), jpeg, { contentType: 'image/jpeg' }));
+  await assertFails(updateMetadata(ref(actor().storage(), finalPath), { customMetadata: { changed: 'true' } }));
+  await assertFails(deleteObject(ref(actor().storage(), finalPath)));
   await assertFails(f.upload()); await assertFails(deleteObject(ref(actor().storage(), f.path)));
+});
+
+test('concurrent staging admission grants no final-object mutation authority', async () => {
+  const f = await seed(); await Promise.allSettled([f.upload(), f.upload()]);
+  const finalPath = f.path.replace('/native/', '/finalized/');
+  const attempts = await Promise.allSettled([f.upload(actor('alice', { role: 'admin' })), uploadBytes(ref(actor('alice', { role: 'admin' }).storage(), finalPath), jpeg, { contentType: 'image/jpeg' })]);
+  assert.equal(attempts[1].status, 'rejected');
+  await assertFails(getBytes(ref(actor().storage(), f.path)));
 });
 test('even client admins cannot forge protected intent, receipts, audit or cutover controls', async () => {
   const client = actor('alice', { role: 'admin' }).firestore();

@@ -30,7 +30,7 @@ function fixture(options={}){
     throw Error('contention');
   }};
   const auth={verifyIdToken:async()=>({uid,email:users.get(uid)?.email}),getUser:async id=>clone(users.get(id))};
-  const handler=createNativeOverheadOperations({db,auth,enabled:()=>options.enabled!==false,now:()=>new Date('2026-10-15T00:00:00Z'),getServerTimestamp:()=>new Date('2026-10-15T00:00:00Z')});
+  const handler=createNativeOverheadOperations({db,auth,enabled:()=>options.enabled!==false,requireReceiptProof:()=>options.requireReceiptProof===true,now:()=>new Date('2026-10-15T00:00:00Z'),getServerTimestamp:()=>new Date('2026-10-15T00:00:00Z')});
   const call=extra=>handler({auth:{uid},rawRequest:{get:()=> 'Bearer fake'},data:{operation:'get',project_id:'P',expected_actor_uid:uid,...extra}});
   const issue=async(command,extra={})=>{const opening=await call();return call({operation:'command',expected_project_version:opening.project_version,expected_version:opening.version,operation_id:'operation-1',command,...extra});};
   return{docs,versions,users,auth,db,call,issue,options};

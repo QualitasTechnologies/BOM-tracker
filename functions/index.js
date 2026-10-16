@@ -7471,7 +7471,7 @@ exports.nativeMilestoneOperations=onCall(
 const {createNativeOverheadOperations,overheadMutationsEnabled}=require('./nativeOverheadOperations.cjs');
 exports.nativeOverheadOperations=onCall(
   {region:'us-central1',timeoutSeconds:60,maxInstances:5},
-  createNativeOverheadOperations({db:admin.firestore(),auth:admin.auth(),enabled:()=>overheadMutationsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
+  createNativeOverheadOperations({db:admin.firestore(),auth:admin.auth(),enabled:()=>overheadMutationsEnabled(process.env),requireReceiptProof:()=>process.env.BOM_NATIVE_EXPENSE_RECEIPTS_ENABLED==='true',getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
 );
 
 // Durable expense approval notifications: original messages with private atomic jobs, default off.
@@ -7508,4 +7508,11 @@ exports.retryExpenseApprovalNotifications=onSchedule(
       }
     }
   },
+);
+
+// Native travel receipts: original image/PDF attachments with protected proof, default off.
+const {createNativeExpenseReceiptOperations,expenseReceiptsEnabled}=require('./nativeExpenseReceiptOperations.cjs');
+exports.nativeExpenseReceiptOperations=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:5},
+  createNativeExpenseReceiptOperations({db:admin.firestore(),auth:admin.auth(),bucket:admin.storage().bucket(),enabled:()=>expenseReceiptsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
 );
