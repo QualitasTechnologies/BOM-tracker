@@ -121,7 +121,8 @@ service firebase.storage {
     match /projects/{projectId}/received-photos/native/{fileName} {
       // Intent/audit collections are outside the writable legacy project wildcard.
       // Storage rules cannot revalidate Firebase Auth revocation. Both callables do.
-      // Explicit existing-object check also protects upload APIs evaluated as create.
+      // Admission-time check only; concurrent admitted creates can both finish.
+      // Canonical bytes are published separately by the server below.
       allow create: if resource == null
         && fileName.matches('[a-f0-9]{64}[.]jpg')
         && firestore.exists(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName))
@@ -132,10 +133,14 @@ service firebase.storage {
         && request.resource.contentType == 'image/jpeg'
         && request.resource.size > 0 && request.resource.size < 10 * 1024 * 1024
         && request.resource.size == firestore.get(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName)).data.byte_size;
+      allow read, update, delete: if false;
+    }
+    match /projects/{projectId}/received-photos/finalized/{fileName} {
       allow read: if firestore.exists(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName))
         && nativeUploadActor(firestore.get(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName)).data, projectId, fileName)
+        && firestore.get(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName)).data.final_path == 'projects/' + projectId + '/received-photos/finalized/' + fileName
         && firestore.get(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName)).data.state == 'finalized';
-      allow update, delete: if false;
+      allow write: if false;
     }
     match /projects/{projectId}/received-photos/{fileName} {
       allow read: if isAuthenticated();

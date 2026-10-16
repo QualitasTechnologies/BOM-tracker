@@ -29,6 +29,10 @@ function assertControl(snapshot, replay = false) {
 
 function createNativeUploadOperations({ db, auth, bucket, enabled = false, getServerTimestamp, now = () => new Date() }) {
   const writesOn = () => (typeof enabled === 'function' ? enabled() : enabled) === true;
+  const checkControl = (snapshot, replay = false) => {
+    assertControl(snapshot, replay);
+    if (!replay && !writesOn()) throw fault('native_uploads_disabled', 503);
+  };
   return async request => {
     try {
       const actor = await currentNativeActor(auth, request), data = request.data;
@@ -37,7 +41,6 @@ function createNativeUploadOperations({ db, auth, bucket, enabled = false, getSe
         || Object.keys(data).some(key => ![...keys, ...(data.operation === 'reserve' ? ['content_type', 'byte_size', 'sha256'] : [])].includes(key))
         || !validId(data.project_id) || !validId(data.item_id) || !/^[a-zA-Z0-9_-]{1,128}$/.test(data.operation_id || '')) throw fault('invalid_upload_request');
       if (data.expected_actor_uid !== actor.uid) throw fault('actor_session_changed', 403);
-      if (!writesOn()) throw fault('native_uploads_disabled', 503);
       if (data.operation === 'reserve' && (data.content_type !== 'image/jpeg' || !Number.isSafeInteger(data.byte_size) || data.byte_size <= 0 || data.byte_size >= MAX_PHOTO_BYTES || !/^[a-f0-9]{64}$/.test(data.sha256 || ''))) throw fault('invalid_upload_request');
       const projectRef = db.collection('projects').doc(data.project_id), bomRef = projectRef.collection('bom').doc('data');
       const controlRef = db.collection('pulseRuntimeControl').doc('cutover');
@@ -61,19 +64,19 @@ function createNativeUploadOperations({ db, auth, bucket, enabled = false, getSe
         if (receipt.exists) {
           const old = receipt.data(); assertReceipt(old);
           if (payloadHash && old.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
-          if (old.finalized) { assertControl(control, true); await readAccess(transaction); return data.operation === 'finalize' ? { result: old.finalized } : { result: old.reserved }; }
-          assertControl(control);
+          if (old.finalized) { checkControl(control, true); await readAccess(transaction); return data.operation === 'finalize' ? { result: old.finalized } : { result: old.reserved }; }
+          checkControl(control);
           if (now().getTime() >= old.expires_at_ms) throw fault('upload_intent_expired', 409);
           await readAccess(transaction);
           return data.operation === 'reserve' ? { result: old.reserved } : { receipt: old };
         }
-        assertControl(control);
+        checkControl(control);
         if (data.operation !== 'reserve') throw fault('upload_intent_not_found', 404);
         const fileName = `${randomBytes(32).toString('hex')}.jpg`, path = `projects/${data.project_id}/received-photos/native/${fileName}`;
         const expiresAtMs = now().getTime() + UPLOAD_TTL_MS;
         const reserved = { ok: true, path, operation_id: data.operation_id, expires_at: new Date(expiresAtMs).toISOString() };
         const intent = { actor_uid: actor.uid, actor_email: actor.email.trim().toLowerCase(), project_id: data.project_id, item_id: data.item_id, category: access.category, member_index: access.memberIndex,
-          operation_id: data.operation_id, path, content_type: data.content_type, byte_size: data.byte_size, sha256: data.sha256,
+          operation_id: data.operation_id, path, final_path: `projects/${data.project_id}/received-photos/finalized/${fileName}`, content_type: data.content_type, byte_size: data.byte_size, sha256: data.sha256,
           expires_at: new Date(expiresAtMs), expires_at_ms: expiresAtMs, state: 'reserved' };
         // Recheck account approval after the last Firestore await before staging a grant.
         const latestAccess = await readAccess(transaction);
@@ -86,47 +89,58 @@ function createNativeUploadOperations({ db, auth, bucket, enabled = false, getSe
       });
       if (opening.result) return opening.result;
       const old = opening.receipt;
-      let metadata;
-      try { [metadata] = await bucket.file(old.path).getMetadata(); }
-      catch (error) { if (Number(error.code) === 404) throw fault('upload_not_found', 404); throw error; }
-      const generation = String(metadata.generation || '');
-      if (!/^[1-9]\d*$/.test(generation) || Number(metadata.size) !== old.byte_size || metadata.contentType !== 'image/jpeg') throw fault('upload_integrity_failed', 409);
-      // Pin the download and metadata write to the generation that was inspected.
-      const file = bucket.file(old.path, { generation });
-      const stream = file.createReadStream({ validation: 'crc32c' });
-      const chunks = []; let receivedBytes = 0;
-      for await (const chunk of stream) {
-        receivedBytes += chunk.length;
-        if (receivedBytes > old.byte_size || receivedBytes >= MAX_PHOTO_BYTES) {
-          stream.destroy(); throw fault('upload_integrity_failed', 409);
+      // An admitted staging upload can finish after another finalize. Publish to
+      // a distinct, server-only object using a storage-level create precondition.
+      const finalPath = `projects/${data.project_id}/received-photos/finalized/${old.file_name}`;
+      if (old.final_path !== finalPath) throw fault('operation_conflict', 409);
+      const verifiedBytes = async (path, canonical = false) => {
+        let metadata;
+        try { [metadata] = await bucket.file(path).getMetadata(); }
+        catch (error) { if (Number(error.code) === 404) return null; throw error; }
+        const generation = String(metadata.generation || '');
+        if (!/^[1-9]\d*$/.test(generation) || Number(metadata.size) !== old.byte_size || metadata.contentType !== 'image/jpeg'
+          || (canonical && metadata.metadata?.firebaseStorageDownloadTokens !== old.download_token)) throw fault('upload_integrity_failed', 409);
+        await db.runTransaction(async transaction => { await readAccess(transaction); checkControl(await transaction.get(controlRef)); await readAccess(transaction); });
+        const stream = bucket.file(path, { generation }).createReadStream({ validation: 'crc32c' });
+        const chunks = []; let receivedBytes = 0;
+        for await (const chunk of stream) {
+          receivedBytes += chunk.length;
+          if (receivedBytes > old.byte_size || receivedBytes >= MAX_PHOTO_BYTES) { stream.destroy(); throw fault('upload_integrity_failed', 409); }
+          chunks.push(chunk);
         }
-        chunks.push(chunk);
+        const bytes = Buffer.concat(chunks, receivedBytes);
+        if (bytes.length !== old.byte_size || hash(bytes) !== old.sha256 || bytes.length < 4 || bytes[0] !== 255 || bytes[1] !== 216 || bytes[2] !== 255 || bytes[bytes.length - 2] !== 255 || bytes[bytes.length - 1] !== 217) throw fault('upload_integrity_failed', 409);
+        return { generation, bytes };
+      };
+      let published = await verifiedBytes(finalPath, true);
+      if (!published) {
+        const staged = await verifiedBytes(old.path); if (!staged) throw fault('upload_not_found', 404);
+        await db.runTransaction(async transaction => { await readAccess(transaction); checkControl(await transaction.get(controlRef)); await readAccess(transaction); });
+        try {
+          await bucket.file(finalPath).save(staged.bytes, { resumable: false, validation: 'crc32c', preconditionOpts: { ifGenerationMatch: 0 }, metadata: { contentType: 'image/jpeg', metadata: { firebaseStorageDownloadTokens: old.download_token } } });
+        } catch (error) { if (Number(error.code) !== 412) throw error; }
+        published = await verifiedBytes(finalPath, true); if (!published) throw fault('upload_integrity_failed', 409);
       }
-      const bytes = Buffer.concat(chunks, receivedBytes);
-      if (bytes.length !== old.byte_size || hash(bytes) !== old.sha256 || bytes.length < 4 || bytes[0] !== 255 || bytes[1] !== 216 || bytes[2] !== 255 || bytes[bytes.length - 2] !== 255 || bytes[bytes.length - 1] !== 217) throw fault('upload_integrity_failed', 409);
-      // Storage and Firestore are not atomic. Check access before creating the URL,
-      // then again before committing the immutable final receipt. Failures can leave an orphan.
-      await db.runTransaction(async transaction => { await readAccess(transaction); assertControl(await transaction.get(controlRef)); });
-      await file.setMetadata({ metadata: { ...(metadata.metadata || {}), firebaseStorageDownloadTokens: old.download_token } }, { ifGenerationMatch: generation });
-      const result = { ok: true, photo_url: `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}/o/${encodeURIComponent(old.path)}?alt=media&token=${encodeURIComponent(old.download_token)}&generation=${generation}`, path: old.path, generation };
+      const generation = published.generation;
+      const result = { ok: true, photo_url: `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}/o/${encodeURIComponent(finalPath)}?alt=media&token=${encodeURIComponent(old.download_token)}&generation=${generation}`, path: old.path, generation };
       return await db.runTransaction(async transaction => {
         await readAccess(transaction);
         const receipt = await transaction.get(receiptRef), control = await transaction.get(controlRef);
         if (!receipt.exists) throw fault('upload_intent_not_found', 404);
         const current = receipt.data(); assertReceipt(current);
         if (current.finalized) {
-          assertControl(control, true);
+          checkControl(control, true);
           if (current.finalized.generation !== generation) throw fault('upload_generation_conflict', 409);
           await readAccess(transaction);
           return current.finalized;
         }
-        assertControl(control);
+        checkControl(control);
         if (now().getTime() >= current.expires_at_ms) throw fault('upload_intent_expired', 409);
-        if (current.payload_hash !== old.payload_hash || current.path !== old.path) throw fault('operation_conflict', 409);
+        if (current.payload_hash !== old.payload_hash || current.path !== old.path || current.final_path !== finalPath || current.download_token !== old.download_token) throw fault('operation_conflict', 409);
         await readAccess(transaction);
         transaction.update(receiptRef, { finalized: result });
-        transaction.update(db.collection('pulseNativeUploadIntents').doc(old.file_name), { state: 'finalized', generation });
-        transaction.create(finalAuditRef, { event: 'receipt_photo_finalized', actor_uid: actor.uid, actor_email: current.actor_email, project_id: data.project_id, item_id: data.item_id, operation_id: data.operation_id, path: old.path, sha256: old.sha256, byte_size: old.byte_size, generation, at: getServerTimestamp() });
+        transaction.update(db.collection('pulseNativeUploadIntents').doc(old.file_name), { state: 'finalized', generation, photo_url: result.photo_url });
+        transaction.create(finalAuditRef, { event: 'receipt_photo_finalized', actor_uid: actor.uid, actor_email: current.actor_email, project_id: data.project_id, item_id: data.item_id, operation_id: data.operation_id, path: old.path, final_path: finalPath, sha256: old.sha256, byte_size: old.byte_size, generation, at: getServerTimestamp() });
         return result;
       });
     } catch (error) { return { ok: false, error: error.status ? error.code : 'native_uploads_unavailable' }; }
