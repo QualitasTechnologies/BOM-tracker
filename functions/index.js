@@ -7516,3 +7516,10 @@ exports.nativeExpenseReceiptOperations=onCall(
   {region:'us-central1',timeoutSeconds:60,maxInstances:5},
   createNativeExpenseReceiptOperations({db:admin.firestore(),auth:admin.auth(),bucket:admin.storage().bucket(),enabled:()=>expenseReceiptsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
 );
+
+// Native project documents: protected staging/finalization with private proof, default off.
+const {createNativeProjectDocumentOperations,projectDocumentsEnabled}=require('./nativeProjectDocumentOperations.cjs');
+exports.nativeProjectDocumentOperations=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:5},
+  createNativeProjectDocumentOperations({db:admin.firestore(),auth:admin.auth(),bucket:admin.storage().bucket(),enabled:()=>projectDocumentsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
+);

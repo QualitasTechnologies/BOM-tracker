@@ -152,8 +152,18 @@ service cloud.firestore {
       allow read, write: if request.auth != null;
     }
 
+    // pulseNativeDocument marks server-published Pulse documents. No client
+    // (admin included) may create/update/delete a row whose existing or
+    // proposed data carries it; unmarked legacy rows keep their grants.
+    function projectDocumentUnprotected() {
+      return (resource == null || !('pulseNativeDocument' in resource.data))
+        && (request.resource == null || !('pulseNativeDocument' in request.resource.data));
+    }
     match /projectDocuments/{document=**} {
-      allow read, write: if request.auth != null;
+      // Keep original SDK list queries valid. Native metadata contains no bearer
+      // download token; only the scoped callable returns the private proof URL.
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null && projectDocumentUnprotected();
     }
 
     match /projectContexts/{document=**} {

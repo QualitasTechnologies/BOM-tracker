@@ -46,6 +46,43 @@ service firebase.storage {
       allow delete: if isAuthenticated();
     }
 
+    // Native project documents: exact extra segments never overlap the legacy
+    // documents/{docType}/{fileName} grant above. Staging is create-only; the
+    // server publishes verified bytes to finalized, which clients cannot write.
+    function projectDocumentMember(projectId, intent) {
+      let project = firestore.get(/databases/(default)/documents/projects/$(projectId)).data;
+      return request.auth != null && request.auth.token.status == 'approved'
+        && request.auth.token.email_verified == true
+        && request.auth.token.role in ['admin', 'user', 'viewer']
+        && (request.auth.token.role == 'admin' || !('memberIds' in project)
+          || project.memberIds == null || (project.memberIds is list && request.auth.uid in project.memberIds))
+        && (intent.document_type != 'customer-po' || request.auth.token.role == 'admin');
+    }
+    match /projects/{projectId}/documents/native/staging/{fileName} {
+      allow create: if resource == null && fileName.matches('[a-f0-9]{64}[.]bin')
+        && firestore.exists(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName))
+        && projectDocumentMember(projectId, firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data)
+        && firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data.actor_uid == request.auth.uid
+        && firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data.actor_email == request.auth.token.email.lower()
+        && firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data.project_id == projectId
+        && firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data.path == 'projects/' + projectId + '/documents/native/staging/' + fileName
+        && firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data.state == 'reserved'
+        && request.time < firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data.expires_at
+        && request.resource.contentType == firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data.content_type
+        && request.resource.size >= 0 && request.resource.size < 10 * 1024 * 1024
+        && request.resource.size == firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data.byte_size;
+      allow read, update, delete: if false;
+    }
+    match /projects/{projectId}/documents/native/finalized/{fileName} {
+      allow read: if fileName.matches('[a-f0-9]{64}[.]bin')
+        && firestore.exists(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName))
+        && projectDocumentMember(projectId, firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data)
+        && firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data.project_id == projectId
+        && firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data.final_path == 'projects/' + projectId + '/documents/native/finalized/' + fileName
+        && firestore.get(/databases/(default)/documents/pulseProjectDocumentUploadIntents/$(fileName)).data.state == 'finalized';
+      allow write: if false;
+    }
+
     // Post-commissioning support documents (manuals, drawings, logs, quotes, RCA)
     match /projects/{projectId}/support/{scope}/{docType}/{fileName} {
       allow read: if isAuthenticated();
@@ -89,10 +126,10 @@ service firebase.storage {
     // Received item photos (proof of delivery)
     // Native receipt uploads are a separate exact path. Legacy {fileName} below
     // cannot match this extra segment, so its write/delete grants never overlap.
-    function nativeUploadModeAllowsWrite() {
-      return !firestore.exists(/databases/(default)/documents/pulseRuntimeControl/cutover)
-        || firestore.get(/databases/(default)/documents/pulseRuntimeControl/cutover).data.mode in ['coexist', 'pulse_only'];
-    }
+    // Storage permits at most two distinct Firestore documents per request:
+    // intent + current project. An existing short-lived reservation may finish
+    // staging after a freeze, but staging is unreadable and never an attachment.
+    // Reserve/finalize callables revalidate cutover before authoritative writes.
     function nativeUploadMember(intent, projectId) {
       let project = firestore.get(/databases/(default)/documents/projects/$(projectId)).data;
       let internal = request.auth.token.email.lower().matches('.*@qualitastech[.]com');
@@ -126,7 +163,6 @@ service firebase.storage {
       allow create: if resource == null
         && fileName.matches('[a-f0-9]{64}[.]jpg')
         && firestore.exists(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName))
-        && nativeUploadModeAllowsWrite()
         && nativeUploadActor(firestore.get(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName)).data, projectId, fileName)
         && firestore.get(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName)).data.state == 'reserved'
         && request.time < firestore.get(/databases/(default)/documents/pulseNativeUploadIntents/$(fileName)).data.expires_at
@@ -162,7 +198,7 @@ service firebase.storage {
     match /projects/{projectId}/receipts/native/{fileName} {
       allow create: if resource == null && fileName.matches('[a-f0-9]{64}[.]bin')
         && firestore.exists(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName))
-        && expenseReceiptMember(projectId) && nativeUploadModeAllowsWrite()
+        && expenseReceiptMember(projectId)
         && firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.actor_uid == request.auth.uid
         && firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.actor_email == request.auth.token.email.lower()
         && firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.project_id == projectId

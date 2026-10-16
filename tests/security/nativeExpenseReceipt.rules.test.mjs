@@ -28,10 +28,10 @@ test('protected native objects are create-only; provider token assignment does n
  // Token secrecy is not the proof boundary: only the private finalized journal is.
  const g=await seed();await assertSucceeds(g.upload(actor(),{contentType:'application/pdf',customMetadata:{firebaseStorageDownloadTokens:'forged'}}));
 });
-test('wrong actor, expired/state/type/size/control intents cannot be used through the legacy path rule',async()=>{
+test('wrong actor, expired/state/type/size intents cannot be used through the legacy path rule',async()=>{
  await assertFails((await seed()).upload(actor('bob')));
  for(const intent of [{state:'cancelled'},{state:'finalized'},{byte_size:4},{expires_at:Timestamp.fromMillis(0)},{project_id:'Q'}])await assertFails((await seed({intent})).upload());
- for(const mode of ['read_only','unknown'])await assertFails((await seed({mode})).upload());
+ for(const mode of ['read_only','unknown']){const f=await seed({mode});await assertSucceeds(f.upload());await assertFails(getBytes(ref(actor().storage(),f.path)));}
  await assertFails((await seed()).upload(actor(),{contentType:'image/png'}));
 });
 test('even client admins cannot forge expense receipt intents, receipts or audit',async()=>{
