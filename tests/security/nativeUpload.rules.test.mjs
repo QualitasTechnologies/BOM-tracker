@@ -67,11 +67,13 @@ test('legacy grants cannot overwrite, edit metadata or delete a reserved native 
   await assertFails(updateMetadata(ref(actor().storage(), f.path), { customMetadata: { changed: 'true' } }));
   await assertFails(deleteObject(ref(actor().storage(), f.path)));
 });
-test('membership removal and read-only or unknown control modes deny new uploads', async () => {
+test('membership removal denies staging; already reserved staging after cutover remains unreadable', async () => {
   const f = await seed(); await serverWrite('projects/P', { memberIds: [] }); await assertFails(f.upload());
   await serverWrite('projects/P', { memberIds: ['alice'] });
-  for (const mode of ['read_only', 'unknown']) { await serverWrite('pulseRuntimeControl/cutover', { mode }); await assertFails(f.upload()); }
-  await serverWrite('pulseRuntimeControl/cutover', { mode: 'pulse_only' }); await assertSucceeds(f.upload());
+  for (const mode of ['read_only', 'unknown', 'pulse_only']) {
+    const reserved = await seed(); await serverWrite('pulseRuntimeControl/cutover', { mode }); await assertSucceeds(reserved.upload());
+    await assertFails(getBytes(ref(actor().storage(), reserved.path)));
+  }
 });
 test('only the separate server-published proof becomes readable after confirmation and remains immutable', async () => {
   const f = await seed(); await assertSucceeds(f.upload()); await assertFails(getBytes(ref(actor().storage(), f.path)));

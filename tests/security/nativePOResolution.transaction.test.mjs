@@ -161,7 +161,7 @@ test('real provider evidence reconciliation commits one receipt/audit without se
   const evidence={...before.mail,object:'email',id:provider,text:null,bcc:[],cc:[],reply_to:[],created_at:new Date(before.first_dispatched_ms).toISOString(),scheduled_at:null,last_event:'sent'};
   const reconcile=createPOApprovalReconciliation({db,auth,enabled:()=>enabled,getServerTimestamp:()=>FieldValue.serverTimestamp(),lookup:async()=>{lookups++;return evidence;}});
   const payload={operation:'reconcile',project_id:'P',po_id:'existing',expected_actor_uid:'admin',notification_id:submitted.notification_id,delivery_id:id,provider_id:provider,expected_revision:status.revision,operation_id:'verify-evidence'};
-  const [left,right]=await Promise.all([reconcile(request(payload)),reconcile(request(payload))]);assert.equal(left.ok,true);assert.deepEqual(right,left);
+  const [left,right]=await Promise.all([reconcile(request(payload)),reconcile(request(payload))]);assert.equal(left.ok,true,JSON.stringify(left));assert.deepEqual(right,left);
   assert.equal((await db.collection('pulsePOApprovalNotificationReconciliations').get()).size,1);
   const audit=await db.collection(`pulsePOApprovalNotificationAudit/${submitted.notification_id}/events`).where('phase','==','provider_evidence_verified').get();assert.equal(audit.size,1);
   const after=(await db.doc(path).get()).data();for(const key of ['mail','mail_hash','idempotency_key','recipients','first_dispatched_ms'])assert.deepEqual(after[key],before[key]);
