@@ -146,6 +146,34 @@ service firebase.storage {
     }
 
     // Travel expense receipts (images or PDFs)
+    function expenseReceiptMember(projectId) {
+      let project = firestore.get(/databases/(default)/documents/projects/$(projectId)).data;
+      return request.auth != null && request.auth.token.status == 'approved'
+        && request.auth.token.email_verified == true
+        && request.auth.token.role in ['admin', 'user', 'viewer']
+        && (request.auth.token.role == 'admin' || !('memberIds' in project)
+          || project.memberIds == null || (project.memberIds is list && request.auth.uid in project.memberIds));
+    }
+    match /projects/{projectId}/receipts/native/{fileName} {
+      allow create: if resource == null && fileName.matches('[a-f0-9]{64}[.]bin')
+        && firestore.exists(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName))
+        && expenseReceiptMember(projectId) && nativeUploadModeAllowsWrite()
+        && firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.actor_uid == request.auth.uid
+        && firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.actor_email == request.auth.token.email.lower()
+        && firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.project_id == projectId
+        && firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.path == 'projects/' + projectId + '/receipts/native/' + fileName
+        && firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.state == 'reserved'
+        && request.time < firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.expires_at
+        && request.resource.contentType == firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.content_type
+        && (request.resource.contentType.matches('image/[a-z0-9][a-z0-9.+-]*') || request.resource.contentType == 'application/pdf')
+        && request.resource.size > 0 && request.resource.size < 10 * 1024 * 1024
+        && request.resource.size == firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.byte_size;
+      allow read: if expenseReceiptMember(projectId)
+        && firestore.exists(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName))
+        && firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.project_id == projectId
+        && firestore.get(/databases/(default)/documents/pulseExpenseReceiptIntents/$(fileName)).data.state == 'finalized';
+      allow update, delete: if false;
+    }
     match /projects/{projectId}/receipts/{fileName} {
       allow read: if isAuthenticated();
       allow write: if isAuthenticated()

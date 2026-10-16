@@ -8,7 +8,7 @@ test('expense delivery exports stay off and do not load credentials or query job
     createPOApprovalSender:()=>()=>{},Resend:class{},getResendApiKey:()=>{secrets++;throw Error('not required');},resendApiKey:'private-reference',
     onDocumentCreated:(config,handler)=>{const kind=config.document.startsWith('pulseExpenseApprovalNotifications/')?'prepare':'send';configurations[kind]=config;handlers[kind]=handler;return handler;},
     onSchedule:(config,handler)=>{configurations.retry=config;handlers.retry=handler;return handler;},logger:{warn:()=>{}}};
-  vm.runInNewContext(source.slice(start),context);
+  vm.runInNewContext(source.slice(start,source.indexOf('// Native travel receipts:')),context);
   assert.equal(options.enabled(),false);await handlers.retry();assert.equal(queries,0);assert.equal(secrets,0);
   assert.equal(configurations.prepare.secrets,undefined);assert.deepEqual(Array.from(configurations.send.secrets),['private-reference']);assert.equal(configurations.retry.maxInstances,1);
   context.process.env.BOM_NATIVE_EXPENSE_NOTIFICATIONS_ENABLED='TRUE';assert.equal(options.enabled(),false);
