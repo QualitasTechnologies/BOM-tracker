@@ -117,6 +117,89 @@ test('changed master-data IDs must exist and identify the selected client/billin
   assert.equal((await f.command({ kind: 'metadata', patch: { clientId: 'C', clientName: 'Acme', billingEntityId: 'B' } })).ok, true);
 });
 
+test('archive restore is separately gated from receipt resolution and returns the project to Planning', async () => {
+  const f = fixture();
+  f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', projectStatusClientWritesFenced: true });
+  const opening = await f.call({ operation: 'get' });
+  assert.equal(opening.permissions.restore, true);
+  assert.equal(opening.permissions.restore_resolve, true);
+  const before = structuredClone(f.docs.get('projects/P'));
+  const archive = await f.call({ operation: 'command', expected_version: opening.version, operation_id: 'archive', command: { kind: 'archive' } });
+  assert.equal(archive.ok, true);
+  const archived = await f.call({ operation: 'get' });
+  const request = { operation: 'command', expected_version: archived.version, operation_id: 'restore', command: { kind: 'restore' } };
+  assert.equal((await f.call(request)).ok, true);
+  const restored = f.docs.get('projects/P');
+  assert.equal(restored.status, 'Planning');
+  assert.equal(restored.archivedAt, null);
+  assert.equal(restored.projectName, before.projectName);
+  assert.deepEqual(restored.members, before.members);
+  assert.deepEqual(restored.supportProfile, before.supportProfile);
+  assert.deepEqual(restored.bomSnapshot, before.bomSnapshot);
+  const audit = f.docs.get('pulseProjectOperations/P/audit/restore');
+  assert.equal(audit.operation, 'restore');
+  assert.deepEqual(audit.changes.status, { before: { present: true, value: 'Archived' }, after: { present: true, value: 'Planning' } });
+  assert.deepEqual(audit.changes.archivedAt, { before: { present: true, value: '2026-10-14T00:00:00.000Z' }, after: { present: true, value: null } });
+  f.docs.set('pulseRuntimeControl/cutover', { mode: 'read_only', projectStatusClientWritesFenced: false });
+  assert.deepEqual(await f.call(request), { ok: true, project_id: 'P', operation_id: 'restore' });
+  assert.equal([...f.docs.keys()].filter(path => path.startsWith('pulseProjectOperations/P/audit/')).length, 2);
+});
+
+test('restore writes are blocked without the explicit legacy status-writer fence or allowed cutover', async () => {
+  for (const control of [
+    { mode: 'coexist' },
+    { mode: 'read_only', projectStatusClientWritesFenced: true },
+    { mode: 'coexist', projectStatusClientWritesFenced: false },
+  ]) {
+    const f = fixture(); f.change({ status: 'Archived', archivedAt: 'old' }); f.docs.set('pulseRuntimeControl/cutover', control);
+    const result = await f.command({ kind: 'restore' });
+    assert.equal(result.error, control.mode === 'read_only' ? 'project_read_only' : 'project_status_writers_not_fenced');
+    assert.equal(f.docs.get('projects/P').status, 'Archived');
+    assert.equal([...f.docs.keys()].some(path => path.includes('/audit/')), false);
+  }
+});
+
+test('only an archived project at the exact version can be restored', async () => {
+  const f = fixture(); f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', projectStatusClientWritesFenced: true });
+  assert.equal((await f.command({ kind: 'restore' })).error, 'project_not_archived');
+  f.change({ status: 'Archived', archivedAt: 'old' });
+  const stale = await f.call({ operation: 'get' }); f.change({ description: 'concurrent update' });
+  assert.equal((await f.call({ operation: 'command', expected_version: stale.version, operation_id: 'stale-restore', command: { kind: 'restore' } })).error, 'project_version_conflict');
+  assert.equal(f.docs.get('projects/P').status, 'Archived');
+});
+
+test('metadata cannot archive or unarchive and repeat archive is rejected', async () => {
+  const f = fixture();
+  assert.equal((await f.command({ kind: 'metadata', patch: { status: 'Archived' } })).error, 'project_status_transition_invalid');
+  f.change({ status: 'Archived', archivedAt: 'old' });
+  assert.equal((await f.command({ kind: 'metadata', patch: { status: 'Ongoing' } })).error, 'project_status_transition_invalid');
+  assert.equal((await f.command({ kind: 'archive' })).error, 'project_already_archived');
+  assert.equal(f.docs.get('projects/P').status, 'Archived');
+  assert.equal(f.docs.get('projects/P').archivedAt, 'old');
+});
+
+test('an uncertain restore can be resolved as cancelled without restoring or requiring write gates', async () => {
+  const f = fixture({ enabled: false }); f.change({ status: 'Archived', archivedAt: 'old' });
+  const opening = await f.call({ operation: 'get' });
+  assert.equal(opening.permissions.restore, false);
+  assert.equal(opening.permissions.restore_resolve, true);
+  const request = { operation: 'command', expected_version: opening.version, operation_id: 'cancel-restore', command: { kind: 'restore' } };
+  const before = structuredClone([...f.docs]);
+  assert.equal((await f.call({ ...request, resolve_only: true })).resolution, 'cancelled');
+  assert.equal(f.docs.get('projects/P').status, 'Archived');
+  assert.deepEqual([...f.docs].filter(([path]) => path.startsWith('projects/')), before.filter(([path]) => path.startsWith('projects/')));
+  assert.equal(f.docs.get('pulseProjectOperations/P/audit/cancel-restore').operation, 'restore_cancelled');
+  assert.equal((await f.call(request)).error, 'project_request_cancelled');
+});
+
+test('restore audit failure leaves project, receipt and audit unchanged', async () => {
+  const f = fixture({ failAudit: true }); f.change({ status: 'Archived', archivedAt: 'old' });
+  f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', projectStatusClientWritesFenced: true });
+  const before = structuredClone([...f.docs]);
+  assert.equal((await f.command({ kind: 'restore' })).ok, false);
+  assert.deepEqual([...f.docs], before);
+});
+
 test('revoked admin cannot use a malformed access list as a membership substring', async () => {
   const f = fixture({ onRead: (path, users) => { if (path.includes('/receipts/')) users.get('admin').customClaims.role = 'viewer'; } });
   f.docs.get('projects/P').memberIds = 'admin';
