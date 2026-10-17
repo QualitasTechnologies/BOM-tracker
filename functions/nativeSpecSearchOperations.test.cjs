@@ -1,8 +1,14 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const {createHash} = require("node:crypto");
 const {createNativeSpecSearchOperation} = require("./nativeSpecSearchOperations.cjs");
 
 const clone = (value) => value === undefined ? undefined : structuredClone(value);
+const receiptKey = (actorUid, projectId) => createHash("sha256").update(JSON.stringify({
+  actor_uid: actorUid,
+  project_id: projectId,
+  operation_id: "550e8400-e29b-41d4-a716-446655440000",
+})).digest("hex");
 function fixture({actor = {}, project = {}, categories = [], enabled = true, response, beforeFetch, fetchError} = {}) {
   if (!Object.hasOwn(project, "members") && !actor.email?.toLowerCase().endsWith("@qualitastech.com") && actor.customClaims?.role !== "admin") {
     project = {...project, members: [{userId: actor.uid || "alice", categoryScope: ["Parts"]}]};
@@ -12,6 +18,7 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
     ["projects/P/bom/data", {categories: clone(categories)}],
   ]);
   const calls = [];
+  const updates = [];
   const db = {
     collection(name) {
       return {doc(id) {
@@ -31,6 +38,7 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
           writes.push(["set", reference.path, clone(data)]);
         },
         update(reference, data) {
+          updates.push({path: reference.path, fields: Object.keys(data)});
           writes.push(["update", reference.path, clone(data)]);
         },
       };
@@ -67,7 +75,7 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
     webhookUrl: "https://n8n.example.test/webhook/spec-search",
   });
   const call = (data = {}) => handler({auth: {uid: actor.uid || "alice"}, data: {project_id: "P", item_id: "i1", operation_id: "550e8400-e29b-41d4-a716-446655440000", expected_actor_uid: actor.uid || "alice", ...data}});
-  return {call, docs, calls};
+  return {call, docs, calls, updates};
 }
 const user = (uid = "alice", role = "viewer", email = "alice@partner.example") => ({uid, email, disabled: false, customClaims: {role, status: "approved"}});
 const component = {id: "i1", name: "Valve", make: "Acme", sku: "V-1", itemType: "component", specificationUrl: null};
@@ -119,7 +127,9 @@ test("same operation replay is saved and changed input conflicts without another
   assert.equal((await f.call({item_id: "other"})).error, "operation_conflict");
   assert.equal(f.calls.length, 1);
   assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, "https://docs.example.com/spec.pdf");
-  assert.equal(f.docs.get("pulseSpecSearchAudit/550e8400-e29b-41d4-a716-446655440000").outcome, "completed");
+  assert.equal(f.docs.get(`pulseSpecSearchAudit/${receiptKey("alice", "P")}`).outcome, "completed");
+  assert.deepEqual(f.updates, [{path: "projects/P/bom/data", fields: ["categories"]}]);
+  assert.equal(f.docs.get("projects/P/bom/data").updatedAt, undefined);
 });
 
 test("a completed search without a link returns and replays not_found", async () => {
@@ -129,14 +139,18 @@ test("a completed search without a link returns and replays not_found", async ()
   assert.equal(result.ok, true);
   assert.equal((await f.call()).state, "not_found");
   assert.equal(f.calls.length, 1);
-  assert.equal(f.docs.get("pulseSpecSearchReceipts/550e8400-e29b-41d4-a716-446655440000").state, "not_found");
-  assert.equal(f.docs.get("pulseSpecSearchAudit/550e8400-e29b-41d4-a716-446655440000").outcome, "not_found");
+  assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey("alice", "P")}`).state, "not_found");
+  assert.equal(f.docs.get(`pulseSpecSearchAudit/${receiptKey("alice", "P")}`).outcome, "not_found");
 });
 
 test("only valid public HTTPS URLs are stored", async () => {
   for (const specificationUrl of ["http://docs.example.com/a", "https://user:pass@docs.example.com/a", "https://@docs.example.com/a", "https://localhost/a", "https://127.0.0.1/a", "https://[::1]/a"]) {
     const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl}});
-    assert.equal((await f.call()).error, "invalid_specification_url");
+    const first = await f.call();
+    const replay = await f.call();
+    assert.equal(first.error, "invalid_specification_url");
+    assert.deepEqual(replay, first);
+    assert.equal(f.calls.length, 1);
     assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
   }
 });
@@ -147,7 +161,7 @@ test("n8n failures and timeouts remain unresolved and never automatically retry"
     assert.equal((await f.call()).state, "outcome_unknown");
     assert.equal((await f.call()).state, "outcome_unknown");
     assert.equal(f.calls.length, 1);
-    assert.equal(f.docs.get("pulseSpecSearchReceipts/550e8400-e29b-41d4-a716-446655440000").status, "unresolved");
+    assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey("alice", "P")}`).status, "unresolved");
   }
 });
 
@@ -175,7 +189,22 @@ test("target identity edits conflict while unrelated edits made during search su
   }});
   assert.equal((await f4.call()).state, "conflict");
   assert.equal(f4.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, "https://other.example.com/spec.pdf");
-  assert.equal(f4.docs.get("pulseSpecSearchReceipts/550e8400-e29b-41d4-a716-446655440000").state, "conflict");
+  assert.equal(f4.docs.get(`pulseSpecSearchReceipts/${receiptKey("alice", "P")}`).state, "conflict");
+});
+
+test("replay rechecks current project and component-category access before returning a receipt", async () => {
+  for (const revoke of [
+    (project) => { project.memberIds = []; },
+    (_project, bom) => { bom.categories[0].items[0].itemType = "service"; },
+    (project) => { project.members[0].categoryScope = []; },
+    (_project, bom) => { bom.categories[0].items.push({...component}); },
+  ]) {
+    const f = fixture({actor: user(), project: {memberIds: ["alice"], members: [{userId: "alice", categoryScope: ["Parts"]}]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}});
+    assert.equal((await f.call()).state, "completed");
+    revoke(f.docs.get("projects/P"), f.docs.get("projects/P/bom/data"));
+    assert.notEqual((await f.call()).state, "completed");
+    assert.equal(f.calls.length, 1);
+  }
 });
 
 test("disabled actors and the default-off gate are rejected", async () => {

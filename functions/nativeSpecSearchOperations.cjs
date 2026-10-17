@@ -31,7 +31,8 @@ const operationResult = (receipt, operationId) => ({
   ok: ["completed", "not_found"].includes(receipt.state || receipt.status), operation_id: operationId,
   state: receipt.state || (receipt.status === "dispatching" || receipt.status === "unresolved" ? "outcome_unknown" : receipt.status),
   specificationUrl: receipt.specification_url || null,
-  ...(["unresolved", "dispatching"].includes(receipt.status) ? {error: receipt.error_code || "spec_search_unresolved"} : {}),
+  ...(receipt.error_code ? {error: receipt.error_code} :
+    ["unresolved", "dispatching"].includes(receipt.status) ? {error: "spec_search_unresolved"} : {}),
 });
 
 function createNativeSpecSearchOperation({db, resolveActor, enabled = () => false, getServerTimestamp,
@@ -60,8 +61,9 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
       const {project_id: projectId, item_id: itemId, operation_id: operationId} = data;
       const projectRef = db.collection("projects").doc(projectId);
       const bomRef = projectRef.collection("bom").doc("data");
-      const receiptRef = db.collection("pulseSpecSearchReceipts").doc(operationId);
-      const auditRef = db.collection("pulseSpecSearchAudit").doc(operationId);
+      const documentKey = hash({actor_uid: actor.uid, project_id: projectId, operation_id: operationId});
+      const receiptRef = db.collection("pulseSpecSearchReceipts").doc(documentKey);
+      const auditRef = db.collection("pulseSpecSearchAudit").doc(documentKey);
       const payloadHash = hash({actor_uid: actor.uid, project_id: projectId, item_id: itemId});
       const initial = await db.runTransaction(async (transaction) => {
         const projectSnap = await transaction.get(projectRef);
@@ -71,11 +73,8 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
         const bomSnap = await transaction.get(bomRef);
         if (!bomSnap.exists) throw fault("bom_not_found", 404);
         const receiptSnap = await transaction.get(receiptRef);
-        if (receiptSnap.exists) {
-          const receipt = receiptSnap.data();
-          if (receipt.actor_uid !== actor.uid || receipt.payload_hash !== payloadHash) throw fault("operation_conflict", 409);
-          return {replay: true, receipt};
-        }
+        const savedReceipt = receiptSnap.exists ? receiptSnap.data() : null;
+        if (savedReceipt && (savedReceipt.actor_uid !== actor.uid || savedReceipt.payload_hash !== payloadHash)) throw fault("operation_conflict", 409);
         const bom = bomSnap.data();
         const matches = [];
         for (const category of Array.isArray(bom.categories) ? bom.categories : []) {
@@ -90,6 +89,7 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
           const member = (Array.isArray(project.members) ? project.members : []).find((entry) => entry?.userId === actor.uid);
           if (!Array.isArray(member?.categoryScope) || !member.categoryScope.includes(category.name)) throw fault("spec_search_forbidden", 403);
         }
+        if (savedReceipt) return {replay: true, receipt: savedReceipt};
         const itemSnapshot = {id: item.id, name: item.name, make: item.make || "", sku: item.sku || "", itemType: item.itemType || "component", category: category.name, specificationUrl: item.specificationUrl ?? null};
         const receipt = {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
           payload_hash: payloadHash, status: "dispatching", before_specification_url: itemSnapshot.specificationUrl,
@@ -121,7 +121,7 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
             before_specification_url: receipt.before_specification_url, after_specification_url: null, outcome,
             created_at: getServerTimestamp()});
         });
-        if (status === "failed") throw fault("invalid_specification_url");
+        if (status === "failed") return operationResult(receipt, operationId);
         return operationResult(receipt, operationId);
       }
 
@@ -149,7 +149,7 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
           if (specificationUrl) {
             const nextCategories = categories.map((row, index) => index !== categoryIndex ? row : ({...row,
               items: row.items.map((entry, index2) => index2 !== itemIndex ? entry : ({...entry, specificationUrl}))}));
-            transaction.update(bomRef, {categories: nextCategories, updatedAt: getServerTimestamp()});
+            transaction.update(bomRef, {categories: nextCategories});
           }
           const state = specificationUrl ? "completed" : "not_found";
           const receipt = {...currentReceipt, status: state, state, outcome: state, after_specification_url: specificationUrl, specification_url: specificationUrl, updated_at: getServerTimestamp()};
