@@ -166,23 +166,29 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
           return operationResult(receipt, operationId);
         });
       } catch (error) {
-        const persistedResult = await db.runTransaction(async (transaction) => {
-          const receiptSnap = await transaction.get(receiptRef);
-          const current = receiptSnap.exists ? receiptSnap.data() : null;
-          if (!current || current.status !== "dispatching") return null;
-          const accessRevoked = error.code === "spec_search_forbidden";
-          const status = accessRevoked ? "failed" : "unresolved";
-          const state = accessRevoked ? "failed" : "conflict";
-          const outcome = accessRevoked ? "failed" : "conflict";
-          const errorCode = accessRevoked ? "spec_search_forbidden" : "spec_search_conflict";
-          const unresolved = {...current, status, state, outcome, error_code: errorCode, updated_at: getServerTimestamp()};
-          transaction.set(receiptRef, unresolved);
-          transaction.create(auditRef, {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
-            before_specification_url: current.before_specification_url, after_specification_url: null, outcome, created_at: getServerTimestamp()});
-          return accessRevoked ? operationResult(unresolved, operationId) : null;
-        });
-        if (persistedResult) return persistedResult;
-        throw error;
+        const isTargetConflict = error.code === "spec_search_conflict";
+        const accessRevoked = error.code === "spec_search_forbidden";
+        const status = isTargetConflict ? "conflict" : accessRevoked ? "failed" : "unresolved";
+        const state = isTargetConflict ? "conflict" : accessRevoked ? "failed" : "outcome_unknown";
+        const outcome = state;
+        const errorCode = isTargetConflict ? "spec_search_conflict" : accessRevoked ? "spec_search_forbidden" : "spec_search_unresolved";
+        try {
+          const persistedResult = await db.runTransaction(async (transaction) => {
+            const receiptSnap = await transaction.get(receiptRef);
+            const current = receiptSnap.exists ? receiptSnap.data() : null;
+            if (!current || current.status !== "dispatching") return current ? operationResult(current, operationId) : null;
+            const terminal = {...current, status, state, outcome, error_code: errorCode, updated_at: getServerTimestamp()};
+            transaction.set(receiptRef, terminal);
+            transaction.create(auditRef, {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
+              before_specification_url: current.before_specification_url, after_specification_url: null, outcome, created_at: getServerTimestamp()});
+            return operationResult(terminal, operationId);
+          });
+          if (persistedResult) return persistedResult;
+        } catch {
+          // The receipt remains dispatching if persistence also fails. Replays treat
+          // that state as outcome_unknown and therefore never dispatch n8n again.
+        }
+        return {ok: false, state: "outcome_unknown", operation_id: operationId, error: "spec_search_unresolved"};
       }
     } catch (error) {
       const code = error.status ? error.code : "spec_search_unavailable";

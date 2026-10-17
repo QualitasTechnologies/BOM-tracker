@@ -5,7 +5,7 @@ const {createNativeSpecSearchOperation} = require("./nativeSpecSearchOperations.
 
 const clone = (value) => value === undefined ? undefined : structuredClone(value);
 const receiptKey = () => createHash("sha256").update("550e8400-e29b-41d4-a716-446655440000").digest("hex");
-function fixture({actor = {}, project = {}, categories = [], enabled = true, response, beforeFetch, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P"} = {}) {
+function fixture({actor = {}, project = {}, categories = [], enabled = true, response, beforeFetch, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P", failTransactionNumbers = []} = {}) {
   if (!Object.hasOwn(project, "members") && !actor.email?.toLowerCase().endsWith("@qualitastech.com") && actor.customClaims?.role !== "admin") {
     project = {...project, members: [{userId: actor.uid || "alice", categoryScope: ["Parts"]}]};
   }
@@ -15,6 +15,7 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
   ]);
   const calls = sharedCalls || [];
   const updates = [];
+  let transactionNumber = 0;
   const db = {
     collection(name) {
       return {doc(id) {
@@ -22,6 +23,8 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
       }};
     },
     runTransaction: async (callback) => {
+      transactionNumber += 1;
+      if (failTransactionNumbers.includes(transactionNumber)) throw Object.assign(new Error("temporary Firestore failure"), {code: 14});
       const writes = [];
       const transaction = {
         async get(reference) {
@@ -176,6 +179,22 @@ test("n8n failures and timeouts remain unresolved and never automatically retry"
     assert.equal(f.calls.length, 1);
     assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`).status, "unresolved");
   }
+});
+
+test("transient finalization failure is stored as outcome_unknown and replay does not redispatch", async () => {
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}, failTransactionNumbers: [2]});
+  const first = await f.call();
+  assert.equal(first.state, "outcome_unknown");
+  assert.equal(first.error, "spec_search_unresolved");
+  const receipt = f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`);
+  assert.equal(receipt.status, "unresolved");
+  assert.equal(receipt.state, "outcome_unknown");
+  assert.equal(receipt.outcome, "outcome_unknown");
+  assert.equal(f.docs.get(`pulseSpecSearchAudit/${receiptKey()}`).outcome, "outcome_unknown");
+  assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
+  const replay = await f.call();
+  assert.deepEqual(replay, first);
+  assert.equal(f.calls.length, 1);
 });
 
 test("target identity edits conflict while unrelated edits made during search survive", async () => {
