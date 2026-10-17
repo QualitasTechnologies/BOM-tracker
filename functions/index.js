@@ -15,6 +15,7 @@ const logger = require("firebase-functions/logger");
 const {defineSecret} = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const { Resend } = require("resend");
+const { createLegacyPoAccess } = require('./legacyPoAccess.cjs');
 const pdfParse = require("pdf-parse");
 const PDFDocument = require("pdfkit");
 const {
@@ -5419,7 +5420,11 @@ async function generatePOPDFHandler(request, immutableTarget) {
     );
   }
 }
-exports.generatePOPDF = onCall(request => generatePOPDFHandler(request));
+const legacyPoAccess = createLegacyPoAccess({ admin, functions });
+exports.generatePOPDF = onCall(async (request) => {
+  const authorized = await legacyPoAccess.preparePreview(request);
+  return generatePOPDFHandler({ data: { ...authorized, purchaseOrder: authorized.po } });
+});
 
 function buildPOEmailData(purchaseOrder, companySettings, recipientEmail, ccEmails, pdfBuffer) {
   const poNum = purchaseOrder.poNumber || 'DRAFT';
@@ -5482,25 +5487,19 @@ function buildPOEmailData(purchaseOrder, companySettings, recipientEmail, ccEmai
 exports.sendPurchaseOrder = onCall(
   { secrets: [resendApiKey] },
   async (request) => {
-    const { purchaseOrder, companySettings, companyLogo, companyLogoPath, recipientEmail, ccEmails } = request.data;
-
-    if (!purchaseOrder || !companySettings || !recipientEmail) {
-      throw new functions.https.HttpsError(
-        'invalid-argument',
-        'purchaseOrder, companySettings, and recipientEmail are required'
-      );
-    }
+    const { uid, projectId, po, companySettings, companyLogoPath, recipientEmail, ccEmails } =
+      await legacyPoAccess.prepareSend(request);
 
     try {
       logger.info('Sending PO via email', {
-        poNumber: purchaseOrder.poNumber,
+        poNumber: po.poNumber,
         to: recipientEmail
       });
 
-      // First generate the PDF
-      const pdfResult = await exports.generatePOPDF.run({
-        data: { purchaseOrder, companySettings, companyLogo, companyLogoPath }
-      }, { auth: request.auth });
+      // Render from the stored PO and billing entity, never from caller snapshots.
+      const pdfResult = await generatePOPDFHandler({
+        data: { purchaseOrder: po, companySettings, companyLogoPath }
+      });
 
       // Download the PDF from storage
       const bucket = admin.storage().bucket();
@@ -5510,16 +5509,16 @@ exports.sendPurchaseOrder = onCall(
       // Initialize Resend
       const resend = new Resend(getResendApiKey());
 
-      const emailData = buildPOEmailData(purchaseOrder, companySettings, recipientEmail, ccEmails, pdfBuffer);
+      const emailData = buildPOEmailData(po, companySettings, recipientEmail, ccEmails, pdfBuffer);
 
       await resend.emails.send(emailData);
 
       // Update PO status to 'sent' in Firestore
       const db = admin.firestore();
-      await db.collection('projects').doc(purchaseOrder.projectId).collection('purchaseOrders').doc(purchaseOrder.id).update({
+      await db.collection('projects').doc(projectId).collection('purchaseOrders').doc(po.id).update({
         status: 'sent',
         sentAt: admin.firestore.FieldValue.serverTimestamp(),
-        sentBy: request.auth?.uid || 'system',
+        sentBy: uid,
         sentToEmail: recipientEmail,
         pdfUrl: pdfResult.pdfUrl
       });
@@ -5527,36 +5526,36 @@ exports.sendPurchaseOrder = onCall(
       // Create ProjectDocument entry for the generated PO PDF
       // This makes the PO appear in the "Vendor POs" documents section
       const projectDocRef = await db.collection('projectDocuments').add({
-        projectId: purchaseOrder.projectId,
-        name: (purchaseOrder.poNumber || 'PO') + '.pdf',
+        projectId,
+        name: (po.poNumber || 'PO') + '.pdf',
         url: pdfResult.pdfUrl,
         type: 'vendor-po',
         uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
-        uploadedBy: request.auth?.uid || 'system',
-        linkedBOMItems: purchaseOrder.items.map(item => item.bomItemId),
+        uploadedBy: uid,
+        linkedBOMItems: (Array.isArray(po.items) ? po.items : []).map(item => item.bomItemId),
         fileSize: pdfResult.size || 0
       });
 
       logger.info('ProjectDocument created for PO', {
         documentId: projectDocRef.id,
-        poNumber: purchaseOrder.poNumber
+        poNumber: po.poNumber
       });
 
       logger.info('PO email sent successfully', {
-        poNumber: purchaseOrder.poNumber,
+        poNumber: po.poNumber,
         to: recipientEmail
       });
 
       return {
         success: true,
-        message: `Purchase Order ${purchaseOrder.poNumber} sent to ${recipientEmail}`,
+        message: `Purchase Order ${po.poNumber} sent to ${recipientEmail}`,
         pdfUrl: pdfResult.pdfUrl
       };
 
     } catch (error) {
       // Log full error for debugging
       logger.error('Failed to send PO email', {
-        poNumber: purchaseOrder?.poNumber,
+        poNumber: po.poNumber,
         error: error.message,
         code: error.code,
         response: error.response?.body,
