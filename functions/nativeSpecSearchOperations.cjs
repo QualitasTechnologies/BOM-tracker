@@ -126,18 +126,20 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
       } catch (error) {
         const status = error.code === "invalid_specification_url" ? "failed" : "unresolved";
         const outcome = status === "failed" ? "failed" : "unresolved";
-        const receipt = {...initial.receipt, status, state: status === "failed" ? "failed" : "outcome_unknown", outcome,
-          error_code: error.code === "invalid_specification_url" ? error.code : "dispatch_uncertain", updated_at: getServerTimestamp()};
-        await db.runTransaction(async (transaction) => {
+        const finalizedReceipt = await db.runTransaction(async (transaction) => {
           const current = await transaction.get(receiptRef);
           if (!current.exists) throw fault("spec_search_unavailable", 503);
+          const persistedReceipt = current.data();
+          if (persistedReceipt.status !== "dispatching") return persistedReceipt;
+          const receipt = {...persistedReceipt, status, state: status === "failed" ? "failed" : "outcome_unknown", outcome,
+            error_code: error.code === "invalid_specification_url" ? error.code : "dispatch_uncertain", updated_at: getServerTimestamp()};
           transaction.set(receiptRef, receipt);
           transaction.create(auditRef, {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
             before_specification_url: receipt.before_specification_url, after_specification_url: null, outcome,
             created_at: getServerTimestamp()});
+          return receipt;
         });
-        if (status === "failed") return operationResult(receipt, operationId);
-        return operationResult(receipt, operationId);
+        return operationResult(finalizedReceipt, operationId);
       }
 
       const specificationUrl = response.specificationUrl || null;

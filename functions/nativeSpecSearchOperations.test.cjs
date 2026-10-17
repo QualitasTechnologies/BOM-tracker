@@ -5,7 +5,7 @@ const {createNativeSpecSearchOperation} = require("./nativeSpecSearchOperations.
 
 const clone = (value) => value === undefined ? undefined : structuredClone(value);
 const receiptKey = () => createHash("sha256").update("550e8400-e29b-41d4-a716-446655440000").digest("hex");
-function fixture({actor = {}, project = {}, categories = [], enabled = true, response, beforeFetch, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P", failTransactionNumbers = [], timestamp = () => "server-time", receiptReadError = false} = {}) {
+function fixture({actor = {}, project = {}, categories = [], enabled = true, response, beforeFetch, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P", failTransactionNumbers = [], timestamp = () => "server-time", receiptReadError = false, materializedReservationCreatedAt} = {}) {
   if (!Object.hasOwn(project, "members") && !actor.email?.toLowerCase().endsWith("@qualitastech.com") && actor.customClaims?.role !== "admin") {
     project = {...project, members: [{userId: actor.uid || "alice", categoryScope: ["Parts"]}]};
   }
@@ -34,7 +34,11 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
           return snap(docs.get(reference.path));
         },
         create(reference, data) {
-          writes.push(["create", reference.path, clone(data)]);
+          const storedData = clone(data);
+          if (reference.path.startsWith("pulseSpecSearchReceipts/") && data.status === "dispatching" && materializedReservationCreatedAt !== undefined) {
+            storedData.created_at = materializedReservationCreatedAt;
+          }
+          writes.push(["create", reference.path, storedData]);
         },
         set(reference, data) {
           writes.push(["set", reference.path, clone(data)]);
@@ -245,12 +249,11 @@ test("replays preserve unresolved operation IDs through auth failures, flag-off,
 });
 
 test("dispatch-failure finalization preserves the receipt creation timestamp", async () => {
-  const timestamps = ["created-once", "initial-update", "final-update", "audit-created"];
-  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], fetchError: new Error("n8n timeout"), timestamp: () => timestamps.shift()});
+  const serverTimestamp = {serverTimestamp: true};
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], fetchError: new Error("n8n timeout"), timestamp: () => serverTimestamp, materializedReservationCreatedAt: "persisted-reservation-created-at"});
   await f.call();
   const receipt = f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`);
-  assert.equal(receipt.created_at, "created-once");
-  assert.equal(receipt.updated_at, "final-update");
+  assert.equal(receipt.created_at, "persisted-reservation-created-at");
 });
 
 test("failure to persist a post-dispatch error remains unknown and never invites redispatch", async () => {
