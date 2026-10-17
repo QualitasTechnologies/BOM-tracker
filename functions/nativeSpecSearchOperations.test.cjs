@@ -197,6 +197,24 @@ test("transient finalization failure is stored as outcome_unknown and replay doe
   assert.equal(f.calls.length, 1);
 });
 
+test("failed persistence of a known conflict returns unknown and replays without redispatch", async () => {
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}, beforeFetch: async ({docs}) => {
+    docs.get("projects/P/bom/data").categories[0].items[0].make = "Changed during search";
+  }, failTransactionNumbers: [3]});
+  const first = await f.call();
+  assert.equal(first.state, "outcome_unknown");
+  assert.equal(first.error, "spec_search_unresolved");
+  const receipt = f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`);
+  assert.equal(receipt.status, "dispatching");
+  assert.equal(receipt.state, undefined);
+  assert.equal(receipt.outcome, undefined);
+  assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
+  const replay = await f.call();
+  assert.equal(replay.state, "outcome_unknown");
+  assert.equal(replay.operation_id, first.operation_id);
+  assert.equal(f.calls.length, 1);
+});
+
 test("target identity edits conflict while unrelated edits made during search survive", async () => {
   const make = (f) => async () => {
     const bom = f.docs.get("projects/P/bom/data");
