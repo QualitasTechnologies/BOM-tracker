@@ -4,20 +4,16 @@ const {createHash} = require("node:crypto");
 const {createNativeSpecSearchOperation} = require("./nativeSpecSearchOperations.cjs");
 
 const clone = (value) => value === undefined ? undefined : structuredClone(value);
-const receiptKey = (actorUid, projectId) => createHash("sha256").update(JSON.stringify({
-  actor_uid: actorUid,
-  project_id: projectId,
-  operation_id: "550e8400-e29b-41d4-a716-446655440000",
-})).digest("hex");
-function fixture({actor = {}, project = {}, categories = [], enabled = true, response, beforeFetch, fetchError} = {}) {
+const receiptKey = () => createHash("sha256").update("550e8400-e29b-41d4-a716-446655440000").digest("hex");
+function fixture({actor = {}, project = {}, categories = [], enabled = true, response, beforeFetch, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P"} = {}) {
   if (!Object.hasOwn(project, "members") && !actor.email?.toLowerCase().endsWith("@qualitastech.com") && actor.customClaims?.role !== "admin") {
     project = {...project, members: [{userId: actor.uid || "alice", categoryScope: ["Parts"]}]};
   }
-  const docs = new Map([
-    ["projects/P", {projectId: "P", ...project}],
-    ["projects/P/bom/data", {categories: clone(categories)}],
+  const docs = sharedDocs || new Map([
+    [`projects/${projectId}`, {projectId, ...project}],
+    [`projects/${projectId}/bom/data`, {categories: clone(categories)}],
   ]);
-  const calls = [];
+  const calls = sharedCalls || [];
   const updates = [];
   const db = {
     collection(name) {
@@ -74,7 +70,7 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
     },
     webhookUrl: "https://n8n.example.test/webhook/spec-search",
   });
-  const call = (data = {}) => handler({auth: {uid: actor.uid || "alice"}, data: {project_id: "P", item_id: "i1", operation_id: "550e8400-e29b-41d4-a716-446655440000", expected_actor_uid: actor.uid || "alice", ...data}});
+  const call = (data = {}) => handler({auth: {uid: actor.uid || "alice"}, data: {project_id: projectId, item_id: "i1", operation_id: "550e8400-e29b-41d4-a716-446655440000", expected_actor_uid: actor.uid || "alice", ...data}});
   return {call, docs, calls, updates};
 }
 const user = (uid = "alice", role = "viewer", email = "alice@partner.example") => ({uid, email, disabled: false, customClaims: {role, status: "approved"}});
@@ -127,9 +123,26 @@ test("same operation replay is saved and changed input conflicts without another
   assert.equal((await f.call({item_id: "other"})).error, "operation_conflict");
   assert.equal(f.calls.length, 1);
   assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, "https://docs.example.com/spec.pdf");
-  assert.equal(f.docs.get(`pulseSpecSearchAudit/${receiptKey("alice", "P")}`).outcome, "completed");
+  assert.equal(f.docs.get(`pulseSpecSearchAudit/${receiptKey()}`).outcome, "completed");
   assert.deepEqual(f.updates, [{path: "projects/P/bom/data", fields: ["categories"]}]);
   assert.equal(f.docs.get("projects/P/bom/data").updatedAt, undefined);
+});
+
+test("operation IDs conflict globally when reused by another project or actor", async () => {
+  const first = fixture({actor: user(), project: {memberIds: ["alice"], members: [{userId: "alice", categoryScope: ["Parts"]}]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}});
+  assert.equal((await first.call()).state, "completed");
+  first.docs.set("projects/Q", {projectId: "Q", memberIds: ["alice"], members: [{userId: "alice", categoryScope: ["Parts"]}]});
+  first.docs.set("projects/Q/bom/data", {categories: [{name: "Parts", items: [component]}]});
+  const otherProject = fixture({actor: user(), projectId: "Q", docs: first.docs, response: {success: true}});
+  assert.equal((await otherProject.call()).error, "operation_conflict");
+  const currentProject = first.docs.get("projects/P");
+  currentProject.memberIds.push("bob");
+  currentProject.members.push({userId: "bob", categoryScope: ["Parts"]});
+  const otherActor = fixture({actor: user("bob"), docs: first.docs, response: {success: true}});
+  assert.equal((await otherActor.call()).error, "operation_conflict");
+  assert.equal(first.calls.length, 1);
+  assert.equal(otherProject.calls.length, 0);
+  assert.equal(otherActor.calls.length, 0);
 });
 
 test("a completed search without a link returns and replays not_found", async () => {
@@ -139,8 +152,8 @@ test("a completed search without a link returns and replays not_found", async ()
   assert.equal(result.ok, true);
   assert.equal((await f.call()).state, "not_found");
   assert.equal(f.calls.length, 1);
-  assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey("alice", "P")}`).state, "not_found");
-  assert.equal(f.docs.get(`pulseSpecSearchAudit/${receiptKey("alice", "P")}`).outcome, "not_found");
+  assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`).state, "not_found");
+  assert.equal(f.docs.get(`pulseSpecSearchAudit/${receiptKey()}`).outcome, "not_found");
 });
 
 test("only valid public HTTPS URLs are stored", async () => {
@@ -161,7 +174,7 @@ test("n8n failures and timeouts remain unresolved and never automatically retry"
     assert.equal((await f.call()).state, "outcome_unknown");
     assert.equal((await f.call()).state, "outcome_unknown");
     assert.equal(f.calls.length, 1);
-    assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey("alice", "P")}`).status, "unresolved");
+    assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`).status, "unresolved");
   }
 });
 
@@ -189,7 +202,7 @@ test("target identity edits conflict while unrelated edits made during search su
   }});
   assert.equal((await f4.call()).state, "conflict");
   assert.equal(f4.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, "https://other.example.com/spec.pdf");
-  assert.equal(f4.docs.get(`pulseSpecSearchReceipts/${receiptKey("alice", "P")}`).state, "conflict");
+  assert.equal(f4.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`).state, "conflict");
 });
 
 test("replay rechecks current project and component-category access before returning a receipt", async () => {
@@ -204,6 +217,28 @@ test("replay rechecks current project and component-category access before retur
     revoke(f.docs.get("projects/P"), f.docs.get("projects/P/bom/data"));
     assert.notEqual((await f.call()).state, "completed");
     assert.equal(f.calls.length, 1);
+  }
+});
+
+test("membership or category-scope revocation during n8n dispatch blocks the final URL write", async () => {
+  for (const revoke of [
+    (project) => { project.memberIds = []; },
+    (project) => { project.members[0].categoryScope = []; },
+  ]) {
+    const f = fixture({actor: user(), project: {memberIds: ["alice"], members: [{userId: "alice", categoryScope: ["Parts"]}]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}, beforeFetch: async ({docs}) => {
+      revoke(docs.get("projects/P"));
+    }});
+    const result = await f.call();
+    assert.equal(result.state, "failed");
+    assert.equal(result.error, "spec_search_forbidden");
+    assert.equal(f.calls.length, 1);
+    assert.deepEqual(f.updates, []);
+    assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
+    const key = receiptKey();
+    assert.equal(f.docs.get(`pulseSpecSearchReceipts/${key}`).state, "failed");
+    assert.equal(f.docs.get(`pulseSpecSearchReceipts/${key}`).specification_url, undefined);
+    assert.equal(f.docs.get(`pulseSpecSearchAudit/${key}`).outcome, "failed");
+    assert.equal(f.docs.get(`pulseSpecSearchAudit/${key}`).after_specification_url, null);
   }
 });
 

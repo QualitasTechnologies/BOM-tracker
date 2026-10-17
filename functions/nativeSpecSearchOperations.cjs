@@ -61,7 +61,7 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
       const {project_id: projectId, item_id: itemId, operation_id: operationId} = data;
       const projectRef = db.collection("projects").doc(projectId);
       const bomRef = projectRef.collection("bom").doc("data");
-      const documentKey = hash({actor_uid: actor.uid, project_id: projectId, operation_id: operationId});
+      const documentKey = createHash("sha256").update(operationId).digest("hex");
       const receiptRef = db.collection("pulseSpecSearchReceipts").doc(documentKey);
       const auditRef = db.collection("pulseSpecSearchAudit").doc(documentKey);
       const payloadHash = hash({actor_uid: actor.uid, project_id: projectId, item_id: itemId});
@@ -128,8 +128,10 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
       const specificationUrl = response.specificationUrl || null;
       try {
         return await db.runTransaction(async (transaction) => {
+          const projectSnap = await transaction.get(projectRef);
           const currentReceiptSnap = await transaction.get(receiptRef);
           const bomSnap = await transaction.get(bomRef);
+          if (!projectSnap.exists || !projectAccess(projectSnap.data(), actor)) throw fault("spec_search_forbidden", 403);
           if (!currentReceiptSnap.exists || !bomSnap.exists) throw fault("spec_search_conflict", 409);
           const currentReceipt = currentReceiptSnap.data();
           if (currentReceipt.status !== "dispatching") return operationResult(currentReceipt, operationId);
@@ -141,6 +143,11 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
           }));
           if (matches.length !== 1) throw fault("spec_search_conflict", 409);
           const {categoryIndex, itemIndex, category, item} = matches[0];
+          const currentProject = projectSnap.data();
+          if (actor.customClaims.role !== "admin" && !internal(actor)) {
+            const member = (Array.isArray(currentProject.members) ? currentProject.members : []).find((entry) => entry?.userId === actor.uid);
+            if (!Array.isArray(member?.categoryScope) || !member.categoryScope.includes(category.name)) throw fault("spec_search_forbidden", 403);
+          }
           const before = initial.itemSnapshot;
           if (category.name !== before.category || item.id !== before.id || item.name !== before.name ||
             (item.make || "") !== before.make || (item.sku || "") !== before.sku ||
@@ -159,15 +166,22 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
           return operationResult(receipt, operationId);
         });
       } catch (error) {
-        await db.runTransaction(async (transaction) => {
+        const persistedResult = await db.runTransaction(async (transaction) => {
           const receiptSnap = await transaction.get(receiptRef);
           const current = receiptSnap.exists ? receiptSnap.data() : null;
-          if (!current || current.status !== "dispatching") return;
-          const unresolved = {...current, status: "unresolved", state: "conflict", outcome: "conflict", error_code: "spec_search_conflict", updated_at: getServerTimestamp()};
+          if (!current || current.status !== "dispatching") return null;
+          const accessRevoked = error.code === "spec_search_forbidden";
+          const status = accessRevoked ? "failed" : "unresolved";
+          const state = accessRevoked ? "failed" : "conflict";
+          const outcome = accessRevoked ? "failed" : "conflict";
+          const errorCode = accessRevoked ? "spec_search_forbidden" : "spec_search_conflict";
+          const unresolved = {...current, status, state, outcome, error_code: errorCode, updated_at: getServerTimestamp()};
           transaction.set(receiptRef, unresolved);
           transaction.create(auditRef, {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
-            before_specification_url: current.before_specification_url, after_specification_url: null, outcome: "conflict", created_at: getServerTimestamp()});
+            before_specification_url: current.before_specification_url, after_specification_url: null, outcome, created_at: getServerTimestamp()});
+          return accessRevoked ? operationResult(unresolved, operationId) : null;
         });
+        if (persistedResult) return persistedResult;
         throw error;
       }
     } catch (error) {
