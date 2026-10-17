@@ -2494,8 +2494,8 @@ exports.triggerSpecSearch = onRequest(
       return;
     }
 
-    const { rejectLegacySpecSearch } = require('./specSearchLegacyGuard.cjs');
-    if (rejectLegacySpecSearch(response, () => process.env.BOM_NATIVE_SPEC_SEARCH_ENABLED === 'true')) return;
+    const { rejectLegacySpecSearch, isNativeSpecSearchEnabled } = require('./specSearchLegacyGuard.cjs');
+    if (rejectLegacySpecSearch(response, () => isNativeSpecSearchEnabled(process.env.BOM_NATIVE_SPEC_SEARCH_ENABLED))) return;
 
     try {
       const { bomItemId, projectId, itemName, make, sku, userId } = request.body;
@@ -7558,7 +7558,7 @@ exports.nativeSpecSearchOperation = onCall(
   { region: 'us-central1', timeoutSeconds: 120, maxInstances: 5 },
   createNativeSpecSearchOperation({
     db: admin.firestore(), auth: admin.auth(), resolveActor: resolveSpecSearchActor,
-    enabled: () => process.env.BOM_NATIVE_SPEC_SEARCH_ENABLED === 'true',
+    enabled: () => require('./specSearchLegacyGuard.cjs').isNativeSpecSearchEnabled(process.env.BOM_NATIVE_SPEC_SEARCH_ENABLED),
     getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
     fetch: (...args) => globalThis.fetch(...args),
   })

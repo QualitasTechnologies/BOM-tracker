@@ -2,10 +2,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {createHash} = require("node:crypto");
 const {createNativeSpecSearchOperation} = require("./nativeSpecSearchOperations.cjs");
+const {isNativeSpecSearchEnabled} = require("./specSearchLegacyGuard.cjs");
 
 const clone = (value) => value === undefined ? undefined : structuredClone(value);
 const receiptKey = () => createHash("sha256").update("550e8400-e29b-41d4-a716-446655440000").digest("hex");
-function fixture({actor = {}, project = {}, categories = [], enabled = true, response, beforeFetch, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P", failTransactionNumbers = [], timestamp = () => "server-time", receiptReadError = false, materializedReservationCreatedAt} = {}) {
+function fixture({actor = {}, project = {}, categories = [], enabled = "true", response, fetchResponse, jsonError, beforeFetch, beforeReceiptRead, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P", failTransactionNumbers = [], timestamp = () => "server-time", receiptReadError = false, materializedReservationCreatedAt} = {}) {
   if (!Object.hasOwn(project, "members") && !actor.email?.toLowerCase().endsWith("@qualitastech.com") && actor.customClaims?.role !== "admin") {
     project = {...project, members: [{userId: actor.uid || "alice", categoryScope: ["Parts"]}]};
   }
@@ -31,6 +32,7 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
       const writes = [];
       const transaction = {
         async get(reference) {
+          if (reference.path.startsWith("pulseSpecSearchReceipts/") && beforeReceiptRead) await beforeReceiptRead();
           return snap(docs.get(reference.path));
         },
         create(reference, data) {
@@ -76,12 +78,13 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
       if (actorError) throw actorError;
       return currentActor;
     },
-    enabled: () => currentEnabled,
+    enabled: () => isNativeSpecSearchEnabled(currentEnabled),
     getServerTimestamp: timestamp,
     fetch: async (_url, options) => {
       calls.push(JSON.parse(options.body));
       if (beforeFetch) await beforeFetch({docs, calls});
       if (fetchError) throw fetchError;
+      if (fetchResponse) return {...fetchResponse, json: jsonError ? async () => { throw jsonError; } : fetchResponse.json};
       return {ok: true, json: async () => clone(response || {success: true, specificationUrl: null})};
     },
     webhookUrl: "https://n8n.example.test/webhook/spec-search",
@@ -161,6 +164,27 @@ test("same operation replay is saved and changed input conflicts without another
   assert.equal(f.docs.get("projects/P/bom/data").updatedAt, undefined);
 });
 
+test("two concurrent calls with the same operation ID dispatch once and share one receipt", async () => {
+  let receiptReads = 0;
+  let releaseReceiptReads;
+  const bothReadEmpty = new Promise((resolve) => { releaseReceiptReads = resolve; });
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}, beforeReceiptRead: async () => {
+    receiptReads += 1;
+    if (receiptReads === 2) releaseReceiptReads();
+    if (receiptReads <= 2) await bothReadEmpty;
+  }});
+  const [first, second] = await Promise.all([f.call(), f.call()]);
+  assert.equal(f.calls.length, 1);
+  assert.ok(["completed", "outcome_unknown"].includes(first.state));
+  assert.ok(["completed", "outcome_unknown"].includes(second.state));
+  const receipt = f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`);
+  assert.equal(receipt.operation_id, "550e8400-e29b-41d4-a716-446655440000");
+  assert.equal(receipt.state, "completed");
+  assert.equal(receipt.specification_url, "https://docs.example.com/spec.pdf");
+  assert.equal(f.docs.get(`pulseSpecSearchAudit/${receiptKey()}`).outcome, "completed");
+  assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, "https://docs.example.com/spec.pdf");
+});
+
 test("operation IDs conflict globally when reused by another project or actor", async () => {
   const first = fixture({actor: user(), project: {memberIds: ["alice"], members: [{userId: "alice", categoryScope: ["Parts"]}]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}});
   assert.equal((await first.call()).state, "completed");
@@ -208,6 +232,23 @@ test("n8n failures and timeouts remain unresolved and never automatically retry"
     assert.equal((await f.call()).state, "outcome_unknown");
     assert.equal(f.calls.length, 1);
     assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`).status, "unresolved");
+  }
+});
+
+test("non-OK n8n responses and malformed JSON stay unknown and replay without another dispatch", async () => {
+  const cases = [
+    {fetchResponse: {ok: false, json: async () => ({success: true})}},
+    {fetchResponse: {ok: true, json: async () => ({})}, jsonError: new SyntaxError("invalid JSON")},
+  ];
+  for (const options of cases) {
+    const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], ...options});
+    const first = await f.call();
+    assert.equal(first.state, "outcome_unknown");
+    assert.equal(first.operation_id, "550e8400-e29b-41d4-a716-446655440000");
+    assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`).state, "outcome_unknown");
+    assert.deepEqual(await f.call(), first);
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
   }
 });
 
@@ -372,4 +413,16 @@ test("disabled actors and the default-off gate are rejected", async () => {
   const g = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], enabled: false});
   assert.equal((await g.call()).error, "spec_search_disabled");
   assert.equal(g.calls.length, 0);
+});
+
+test("callable gate enables only for the exact literal true and otherwise stays off", async () => {
+  for (const value of [undefined, null, false, "TRUE", "True", "1", "yes", "enabled", " true", "true "]) {
+    const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}]});
+    f.setEnabled(value);
+    assert.equal((await f.call()).error, "spec_search_disabled", `${String(value)} must remain disabled`);
+    assert.equal(f.calls.length, 0);
+  }
+  const enabled = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], enabled: "true"});
+  assert.equal((await enabled.call()).state, "not_found");
+  assert.equal(enabled.calls.length, 1);
 });

@@ -2,7 +2,14 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
-const {rejectLegacySpecSearch} = require("./specSearchLegacyGuard.cjs");
+const {rejectLegacySpecSearch, isNativeSpecSearchEnabled} = require("./specSearchLegacyGuard.cjs");
+
+test("native spec search enablement accepts only the exact literal true", () => {
+  for (const value of [undefined, null, false, "TRUE", "True", "1", "yes", "enabled", " true", "true "]) {
+    assert.equal(isNativeSpecSearchEnabled(value), false, `${String(value)} must remain disabled`);
+  }
+  assert.equal(isNativeSpecSearchEnabled("true"), true);
+});
 
 test("legacy spec search is allowed while the native gate is off", () => {
   const response = {status() {
@@ -36,7 +43,7 @@ test("triggerSpecSearch endpoint runs the native fence before n8n or Firestore",
     exports: {},
     process: {env: {BOM_NATIVE_SPEC_SEARCH_ENABLED: "true"}},
     onRequest: (value) => { handler = value; return value; },
-    require: () => ({rejectLegacySpecSearch: require("./specSearchLegacyGuard.cjs").rejectLegacySpecSearch}),
+    require: () => require("./specSearchLegacyGuard.cjs"),
     fetch: async () => { fetchCalls++; },
     admin: {firestore: () => { firestoreCalls++; return {}; }},
   };
