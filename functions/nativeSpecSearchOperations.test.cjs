@@ -236,6 +236,12 @@ test("replays preserve unresolved operation IDs through auth failures, flag-off,
   assert.equal(uncertain.state, "outcome_unknown");
   assert.deepEqual(Object.keys(uncertain).sort(), ["error", "ok", "operation_id", "state"]);
   assert.equal(uncheckable.calls.length, 0);
+
+  const noReceipt = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}]});
+  noReceipt.setActorError(Object.assign(new Error("not signed in"), {status: 401, code: "unauthenticated"}));
+  const rejected = await noReceipt.call();
+  assert.deepEqual(rejected, {ok: false, state: "failed", operation_id: "550e8400-e29b-41d4-a716-446655440000", error: "unauthenticated"});
+  assert.equal(noReceipt.calls.length, 0);
 });
 
 test("dispatch-failure finalization preserves the receipt creation timestamp", async () => {
