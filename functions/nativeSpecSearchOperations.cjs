@@ -27,6 +27,17 @@ const validPublicHttps = (value) => {
   }
 };
 const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const operationDocumentKey = (operationId) => createHash("sha256").update(operationId).digest("hex");
+const receiptExistsOrCannotBeChecked = async (db, operationId) => {
+  if (!uuid(operationId)) return false;
+  try {
+    const snapshot = await db.collection("pulseSpecSearchReceipts").doc(operationDocumentKey(operationId)).get();
+    return snapshot.exists;
+  } catch {
+    // An unavailable lookup cannot prove that a previous dispatch did not occur.
+    return true;
+  }
+};
 const operationResult = (receipt, operationId) => ({
   ok: ["completed", "not_found"].includes(receipt.state || receipt.status), operation_id: operationId,
   state: receipt.state || (receipt.status === "dispatching" || receipt.status === "unresolved" ? "outcome_unknown" : receipt.status),
@@ -62,7 +73,7 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
       const {project_id: projectId, item_id: itemId, operation_id: operationId} = data;
       const projectRef = db.collection("projects").doc(projectId);
       const bomRef = projectRef.collection("bom").doc("data");
-      const documentKey = createHash("sha256").update(operationId).digest("hex");
+      const documentKey = operationDocumentKey(operationId);
       const receiptRef = db.collection("pulseSpecSearchReceipts").doc(documentKey);
       const auditRef = db.collection("pulseSpecSearchAudit").doc(documentKey);
       const payloadHash = hash({actor_uid: actor.uid, project_id: projectId, item_id: itemId});
@@ -195,11 +206,16 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
         return {ok: false, state: "outcome_unknown", operation_id: operationId, error: "spec_search_unresolved"};
       }
     } catch (error) {
-      if (dispatchReserved) {
+      const operationId = request?.data?.operation_id;
+      // Conflicts are already receipt-bound; malformed requests aren't eligible
+      // for lookup. Other failures must prove no receipt exists before they clear
+      // the caller's journal, including auth, gate, and access failures.
+      const receiptMayExist = dispatchReserved || (!["operation_conflict", "invalid_spec_search_request"].includes(error.code) && await receiptExistsOrCannotBeChecked(db, operationId));
+      if (receiptMayExist) {
         return {ok: false, state: "outcome_unknown", ...(uuid(request?.data?.operation_id) ? {operation_id: request.data.operation_id} : {}), error: "spec_search_unresolved"};
       }
       const code = error.status ? error.code : "spec_search_unavailable";
-      const state = /conflict/.test(code) ? "conflict" : code === "project_not_found" ? "project_not_found" : code === "bom_item_not_found" ? "item_not_found" : code === "bom_not_found" ? "bom_not_found" : /not_found/.test(code) ? "not_found" : code === "spec_search_unresolved" ? "outcome_unknown" : "failed";
+      const state = /conflict/.test(code) ? "conflict" : code === "project_not_found" ? "project_not_found" : code === "bom_item_not_found" ? "item_not_found" : code === "bom_not_found" ? "bom_not_found" : code === "spec_search_unresolved" ? "outcome_unknown" : "failed";
       return {ok: false, state, ...(uuid(request?.data?.operation_id) ? {operation_id: request.data.operation_id} : {}), error: code};
     }
   };

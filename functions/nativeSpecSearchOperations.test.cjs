@@ -5,7 +5,7 @@ const {createNativeSpecSearchOperation} = require("./nativeSpecSearchOperations.
 
 const clone = (value) => value === undefined ? undefined : structuredClone(value);
 const receiptKey = () => createHash("sha256").update("550e8400-e29b-41d4-a716-446655440000").digest("hex");
-function fixture({actor = {}, project = {}, categories = [], enabled = true, response, beforeFetch, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P", failTransactionNumbers = []} = {}) {
+function fixture({actor = {}, project = {}, categories = [], enabled = true, response, beforeFetch, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P", failTransactionNumbers = [], timestamp = () => "server-time", receiptReadError = false} = {}) {
   if (!Object.hasOwn(project, "members") && !actor.email?.toLowerCase().endsWith("@qualitastech.com") && actor.customClaims?.role !== "admin") {
     project = {...project, members: [{userId: actor.uid || "alice", categoryScope: ["Parts"]}]};
   }
@@ -16,6 +16,9 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
   const calls = sharedCalls || [];
   const updates = [];
   let transactionNumber = 0;
+  let currentActor = actor;
+  let actorError;
+  let currentEnabled = enabled;
   const db = {
     collection(name) {
       return {doc(id) {
@@ -51,7 +54,10 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
     },
   };
   function ref(path) {
-    return {path, collection(name) {
+    return {path, async get() {
+      if (path.startsWith("pulseSpecSearchReceipts/") && receiptReadError) throw new Error("receipt lookup unavailable");
+      return snap(docs.get(path));
+    }, collection(name) {
       return {doc(id) {
         return ref(`${path}/${name}/${id}`);
       }};
@@ -62,9 +68,12 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
   }
   const handler = createNativeSpecSearchOperation({
     db,
-    resolveActor: async () => actor,
-    enabled: () => enabled,
-    getServerTimestamp: () => "server-time",
+    resolveActor: async () => {
+      if (actorError) throw actorError;
+      return currentActor;
+    },
+    enabled: () => currentEnabled,
+    getServerTimestamp: timestamp,
     fetch: async (_url, options) => {
       calls.push(JSON.parse(options.body));
       if (beforeFetch) await beforeFetch({docs, calls});
@@ -73,8 +82,8 @@ function fixture({actor = {}, project = {}, categories = [], enabled = true, res
     },
     webhookUrl: "https://n8n.example.test/webhook/spec-search",
   });
-  const call = (data = {}) => handler({auth: {uid: actor.uid || "alice"}, data: {project_id: projectId, item_id: "i1", operation_id: "550e8400-e29b-41d4-a716-446655440000", expected_actor_uid: actor.uid || "alice", ...data}});
-  return {call, docs, calls, updates};
+  const call = (data = {}) => handler({auth: {uid: currentActor.uid || "alice"}, data: {project_id: projectId, item_id: "i1", operation_id: "550e8400-e29b-41d4-a716-446655440000", expected_actor_uid: currentActor.uid || "alice", ...data}});
+  return {call, docs, calls, updates, setActor(nextActor) { currentActor = nextActor; }, setActorError(error) { actorError = error; }, clearActorError() { actorError = null; }, setEnabled(value) { currentEnabled = value; }};
 }
 const user = (uid = "alice", role = "viewer", email = "alice@partner.example") => ({uid, email, disabled: false, customClaims: {role, status: "approved"}});
 const component = {id: "i1", name: "Valve", make: "Acme", sku: "V-1", itemType: "component", specificationUrl: null};
@@ -194,6 +203,48 @@ test("n8n failures and timeouts remain unresolved and never automatically retry"
     assert.equal(f.calls.length, 1);
     assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`).status, "unresolved");
   }
+});
+
+test("replays preserve unresolved operation IDs through auth failures, flag-off, revoked access, and uncertain receipt reads", async () => {
+  for (const {status, receiptState} of [{status: 401, receiptState: "dispatching"}, {status: 503, receiptState: "unresolved"}]) {
+    const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], fetchError: new Error("n8n timeout")});
+    assert.equal((await f.call()).state, "outcome_unknown");
+    const receipt = f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`);
+    receipt.status = receiptState;
+    receipt.state = receiptState === "dispatching" ? undefined : "outcome_unknown";
+    f.setActorError(Object.assign(new Error("auth unavailable"), {status, code: status === 401 ? "unauthenticated" : "unavailable"}));
+    const result = await f.call();
+    assert.deepEqual(result, {ok: false, state: "outcome_unknown", operation_id: "550e8400-e29b-41d4-a716-446655440000", error: "spec_search_unresolved"});
+    assert.equal(f.calls.length, 1);
+  }
+
+  const flagOff = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], fetchError: new Error("n8n timeout")});
+  assert.equal((await flagOff.call()).state, "outcome_unknown");
+  flagOff.setEnabled(false);
+  assert.equal((await flagOff.call()).state, "outcome_unknown");
+  assert.equal(flagOff.calls.length, 1);
+
+  const revoked = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], fetchError: new Error("n8n timeout")});
+  assert.equal((await revoked.call()).state, "outcome_unknown");
+  revoked.docs.get("projects/P").memberIds = [];
+  assert.equal((await revoked.call()).state, "outcome_unknown");
+  assert.equal(revoked.calls.length, 1);
+
+  const uncheckable = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], receiptReadError: true});
+  uncheckable.setActorError(Object.assign(new Error("auth unavailable"), {status: 503}));
+  const uncertain = await uncheckable.call();
+  assert.equal(uncertain.state, "outcome_unknown");
+  assert.deepEqual(Object.keys(uncertain).sort(), ["error", "ok", "operation_id", "state"]);
+  assert.equal(uncheckable.calls.length, 0);
+});
+
+test("dispatch-failure finalization preserves the receipt creation timestamp", async () => {
+  const timestamps = ["created-once", "initial-update", "final-update", "audit-created"];
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], fetchError: new Error("n8n timeout"), timestamp: () => timestamps.shift()});
+  await f.call();
+  const receipt = f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`);
+  assert.equal(receipt.created_at, "created-once");
+  assert.equal(receipt.updated_at, "final-update");
 });
 
 test("failure to persist a post-dispatch error remains unknown and never invites redispatch", async () => {
