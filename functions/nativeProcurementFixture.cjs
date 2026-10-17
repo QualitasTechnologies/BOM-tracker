@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { createNativeProcurementOperations } = require('./nativeProcurementOperations.cjs');
 function fixture(options = {}) {
-  let time = 1000000, revision = 1, actorUid = 'admin';
+  let time = options.nowMs ?? Date.parse('2026-10-14T12:00:00.000Z'), revision = 1, actorUid = 'admin';
   const docs = new Map([
     ['projects/P', { memberIds: ['admin'] }],
     ['projects/P/purchaseOrders/PO', { projectId: 'P', poNumber: 'PO-1', status: 'pending-approval', items: [{ bomItemId: 'bolt' }], totalAmount: 5 }],

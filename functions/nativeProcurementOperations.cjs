@@ -13,6 +13,21 @@ const business = value => Object.fromEntries(Object.entries(value).filter(([key]
 const mail = value => typeof value === 'string' && value.length <= 254 && /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(value);
 const RETRY_WINDOW = 23 * 60 * 60 * 1000;
 const LEASE = 5 * 60 * 1000;
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+function dateOnly(value) {
+  if (typeof value === 'string' && DATE_ONLY.test(value)) {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? value : null;
+  }
+  try {
+    const date = value instanceof Date ? value : value && typeof value.toDate === 'function' ? value.toDate()
+      : typeof value === 'string' || typeof value === 'number' ? new Date(value) : null;
+    if (!(date instanceof Date) || !Number.isFinite(date.getTime())) return null;
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+    const fields = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    return `${fields.year}-${fields.month}-${fields.day}`;
+  } catch { return null; }
+}
 
 // The provider and artifact seams must be server-only and preserve immutable bytes.
 function createNativeProcurementOperations({ db, auth, enabled = false, now = Date.now, getServerTimestamp, resolveBilling, prepareArtifact, sendEmail }) {
@@ -146,7 +161,9 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
             if (!provider || typeof provider.id !== 'string' || !provider.id || provider.id.length > 512) throw fault('provider_outcome_unconfirmed', 503);
             providerId = provider.id;
           }
-          await store({ phase: 'accepted', provider_id: providerId }, 'accepted'); attempt.phase = 'accepted';
+          const acceptedMs = now();
+          await store({ phase: 'accepted', provider_id: providerId, accepted_ms: acceptedMs }, 'accepted');
+          attempt.phase = 'accepted'; attempt.accepted_ms = acceptedMs;
         }
         const finalActor = await currentNativeActor(auth, request);
         if (finalActor.customClaims.role !== 'admin') throw fault('procurement_forbidden', 403);
@@ -168,7 +185,22 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
             try {
               const categories = state.bom.data()?.categories;
               const ids = [...new Set(record.po_snapshot.items.map(item => item.bomItemId))];
-              const updates = ids.map(item_id => { const item = categories.flatMap(category => category.items).find(item => item.id === item_id); return { item_id, patch: { ...(item?.status === 'received' ? {} : { status: 'ordered' }), poNumber: record.po_snapshot.poNumber || '' } }; });
+              const updates = ids.map(item_id => {
+                const item = categories.flatMap(category => category.items).find(item => item.id === item_id);
+                const poItem = record.po_snapshot.items.find(row => row.bomItemId === item_id && dateOnly(row.dueDate))
+                  || record.po_snapshot.items.find(row => row.bomItemId === item_id);
+                const patch = { ...(item?.status === 'received' ? {} : { status: 'ordered' }), poNumber: record.po_snapshot.poNumber || item?.poNumber || '' };
+                const hasAcceptedTimestamp = Number.isSafeInteger(record.accepted_ms) && record.accepted_ms >= 0;
+                if (hasAcceptedTimestamp && !item?.orderDate) {
+                  const orderDate = dateOnly(record.accepted_ms);
+                  if (orderDate) patch.orderDate = orderDate;
+                }
+                if (hasAcceptedTimestamp && !item?.expectedArrival) {
+                  const expectedArrival = dateOnly(poItem?.dueDate) || dateOnly(record.po_snapshot.expectedDeliveryDate);
+                  if (expectedArrival) patch.expectedArrival = expectedArrival;
+                }
+                return { item_id, patch };
+              });
               changes = applyCommand({ categories, command: { kind: 'patch_items', updates }, scope: null }); nextCategories = changes.categories;
             } catch (error) { problem = error.code || 'material_state_conflict'; }
           }
