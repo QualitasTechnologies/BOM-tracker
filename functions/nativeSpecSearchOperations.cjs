@@ -38,6 +38,7 @@ const operationResult = (receipt, operationId) => ({
 function createNativeSpecSearchOperation({db, resolveActor, enabled = () => false, getServerTimestamp,
   fetch: fetchImpl = globalThis.fetch, webhookUrl = process.env.BOM_SPEC_SEARCH_WEBHOOK_URL || "https://n8n.qualitastech.com/webhook/spec-search"}) {
   return async (request) => {
+    let dispatchReserved = false;
     try {
       const actor = await resolveActor(request);
       const data = request.data;
@@ -98,6 +99,9 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
         return {receipt, itemSnapshot};
       });
       if (initial.replay) return operationResult(initial.receipt, operationId);
+      // From this point onward a receipt exists and the request may have reached
+      // n8n. Any uncaught failure must preserve the operation ID as unresolved.
+      dispatchReserved = true;
 
       const searchPayload = {searchId: operationId, projectId, bomItemId: itemId, itemName: initial.itemSnapshot.name,
         make: initial.itemSnapshot.make, sku: initial.itemSnapshot.sku, category: initial.itemSnapshot.category};
@@ -191,8 +195,11 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
         return {ok: false, state: "outcome_unknown", operation_id: operationId, error: "spec_search_unresolved"};
       }
     } catch (error) {
+      if (dispatchReserved) {
+        return {ok: false, state: "outcome_unknown", ...(uuid(request?.data?.operation_id) ? {operation_id: request.data.operation_id} : {}), error: "spec_search_unresolved"};
+      }
       const code = error.status ? error.code : "spec_search_unavailable";
-      const state = /conflict/.test(code) ? "conflict" : /not_found/.test(code) ? "not_found" : code === "spec_search_unresolved" ? "outcome_unknown" : "failed";
+      const state = /conflict/.test(code) ? "conflict" : code === "project_not_found" ? "project_not_found" : code === "bom_item_not_found" ? "item_not_found" : code === "bom_not_found" ? "bom_not_found" : /not_found/.test(code) ? "not_found" : code === "spec_search_unresolved" ? "outcome_unknown" : "failed";
       return {ok: false, state, ...(uuid(request?.data?.operation_id) ? {operation_id: request.data.operation_id} : {}), error: code};
     }
   };

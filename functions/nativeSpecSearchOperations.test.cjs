@@ -118,6 +118,21 @@ test("missing, duplicate and service items are rejected without n8n dispatch", a
   }
 });
 
+test("pre-dispatch missing project or item is distinguishable from a completed search with no result", async () => {
+  const missingProject = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], projectId: "missing", docs: new Map()});
+  assert.equal((await missingProject.call()).state, "project_not_found");
+  assert.equal(missingProject.calls.length, 0);
+
+  const missingItem = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: []}]});
+  assert.equal((await missingItem.call()).state, "item_not_found");
+  assert.equal(missingItem.calls.length, 0);
+
+  const noSearchResult = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true}});
+  assert.equal((await noSearchResult.call()).state, "not_found");
+  assert.equal((await noSearchResult.call()).state, "not_found");
+  assert.equal(noSearchResult.calls.length, 1);
+});
+
 test("same operation replay is saved and changed input conflicts without another dispatch", async () => {
   const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}});
   const first = await f.call();
@@ -179,6 +194,16 @@ test("n8n failures and timeouts remain unresolved and never automatically retry"
     assert.equal(f.calls.length, 1);
     assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`).status, "unresolved");
   }
+});
+
+test("failure to persist a post-dispatch error remains unknown and never invites redispatch", async () => {
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], fetchError: new Error("network reset after dispatch"), failTransactionNumbers: [2]});
+  const first = await f.call();
+  assert.equal(first.state, "outcome_unknown");
+  assert.equal(first.error, "spec_search_unresolved");
+  assert.equal(first.ok, false);
+  assert.equal((await f.call()).state, "outcome_unknown");
+  assert.equal(f.calls.length, 1);
 });
 
 test("transient finalization failure is stored as outcome_unknown and replay does not redispatch", async () => {
