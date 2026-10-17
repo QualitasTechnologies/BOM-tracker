@@ -6,8 +6,95 @@ const { fixture } = require('./nativeProcurementFixture.cjs');
 test('accepted email finalizes original PO and BOM with one attributable send and retry receipt', async () => {
   const f = fixture(); const result = await f.send(); assert.equal(result.phase, 'complete');
   assert.equal(f.calls.length, 1); assert.equal(f.docs.get('projects/P/purchaseOrders/PO').status, 'sent');
+  assert.equal(f.docs.get('projects/P/purchaseOrders/PO').sentAt, 'fixture-time');
   assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].status, 'ordered');
   assert.equal((await f.call({ operation: 'recover' })).phase, 'complete'); assert.equal(f.calls.length, 1);
+});
+test('finalizing a PO uses the accepted event date in Asia/Kolkata and the item promised date', async () => {
+  const f = fixture();
+  const po = f.docs.get('projects/P/purchaseOrders/PO');
+  po.items[0].dueDate = '2026-10-22';
+  po.expectedDeliveryDate = '2026-10-25';
+  f.advance(Date.parse('2026-10-17T23:30:00.000Z') - Date.parse('2026-10-14T12:00:00.000Z'));
+
+  assert.equal((await f.send()).phase, 'complete');
+
+  const item = f.docs.get('projects/P/bom/data').categories[0].items[0];
+  assert.equal(item.orderDate, '2026-10-18');
+  assert.equal(item.expectedArrival, '2026-10-22');
+});
+test('PO inward date handoff falls back to the PO expected delivery date', async () => {
+  const f = fixture();
+  const po = f.docs.get('projects/P/purchaseOrders/PO');
+  po.expectedDeliveryDate = '2026-10-25';
+
+  assert.equal((await f.send()).phase, 'complete');
+
+  const item = f.docs.get('projects/P/bom/data').categories[0].items[0];
+  assert.equal(item.expectedArrival, '2026-10-25');
+});
+test('PO inward date handoff preserves existing dates and ignores free-text lead times', async () => {
+  const f = fixture();
+  const po = f.docs.get('projects/P/purchaseOrders/PO');
+  po.items[0].description = 'Bolt, delivery in 14 days';
+  const item = f.docs.get('projects/P/bom/data').categories[0].items[0];
+  item.orderDate = '2026-09-01';
+  item.expectedArrival = '2026-09-12';
+
+  assert.equal((await f.send()).phase, 'complete');
+
+  const saved = f.docs.get('projects/P/bom/data').categories[0].items[0];
+  assert.equal(saved.orderDate, '2026-09-01');
+  assert.equal(saved.expectedArrival, '2026-09-12');
+});
+test('PO retries reuse the accepted date and do not change manually set inward dates', async () => {
+  const f = fixture();
+  f.advance(Date.parse('2026-10-18T20:00:00.000Z') - Date.parse('2026-10-14T12:00:00.000Z'));
+  assert.equal((await f.send()).phase, 'complete');
+  const saved = f.docs.get('projects/P/bom/data').categories[0].items[0];
+  assert.equal(saved.orderDate, '2026-10-19');
+  saved.expectedArrival = '2026-11-02';
+
+  assert.equal((await f.call({ operation: 'recover' })).phase, 'complete');
+
+  const retried = f.docs.get('projects/P/bom/data').categories[0].items[0];
+  assert.equal(retried.orderDate, '2026-10-19');
+  assert.equal(retried.expectedArrival, '2026-11-02');
+  assert.equal(f.calls.length, 1);
+});
+test('free-text lead time does not create an expected arrival date', async () => {
+  const f = fixture();
+  const po = f.docs.get('projects/P/purchaseOrders/PO');
+  po.items[0].description = 'Bolt, delivery in 14 days';
+
+  assert.equal((await f.send()).phase, 'complete');
+
+  const item = f.docs.get('projects/P/bom/data').categories[0].items[0];
+  assert.equal(item.expectedArrival, undefined);
+});
+test('legacy accepted sends without an event timestamp do not backfill inward dates on recovery', async () => {
+  let failed = false;
+  const f = fixture({ failWrite: writes => { if (!failed && writes.some(([path]) => path.endsWith('-finalized'))) { failed = true; return true; } return false; } });
+  const po = f.docs.get('projects/P/purchaseOrders/PO');
+  po.items[0].dueDate = '2026-10-22';
+  assert.equal((await f.send()).phase, 'metadata_pending');
+  delete f.docs.get('pulseProcurementOperations/P/attempts/attempt-1').accepted_ms;
+
+  assert.equal((await f.call({ operation: 'recover' })).phase, 'complete');
+
+  const item = f.docs.get('projects/P/bom/data').categories[0].items[0];
+  assert.equal(item.orderDate, undefined);
+  assert.equal(item.expectedArrival, undefined);
+  assert.equal(f.calls.length, 1);
+});
+test('PO finalization preserves an existing inward PO number when the PO snapshot has none', async () => {
+  const f = fixture();
+  f.docs.get('projects/P/purchaseOrders/PO').poNumber = '';
+  f.docs.get('projects/P/bom/data').categories[0].items[0].poNumber = 'Existing PO-42';
+
+  assert.equal((await f.send()).phase, 'complete');
+
+  assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].poNumber, 'Existing PO-42');
 });
 test('unknown outcomes remain durable and identical retries reuse provider key and artifact', async () => {
   const f = fixture(); f.timeout(true); assert.equal((await f.send()).phase, 'uncertain');
@@ -88,9 +175,14 @@ test('protected artifact attestation key never leaves the public attempt respons
 });
 
 test('mark as sent preserves the original workflow without billing or an email provider', async () => {
-  const f = fixture({ billingFailure: true }); const opening = await f.call({ operation: 'open' });
+  const f = fixture({ billingFailure: true, nowMs: Date.parse('2026-10-18T20:00:00.000Z') });
+  const po = f.docs.get('projects/P/purchaseOrders/PO');
+  po.items[0].dueDate = '2026-10-23'; po.expectedDeliveryDate = '2026-10-26';
+  const opening = await f.call({ operation: 'open' });
   const result = await f.call({ operation: 'send', attempt_id: 'mark-one', expected_po_version: opening.po_version, expected_material_version: opening.material_version, mode: 'mark', recipient_email: 'vendor@example.com', cc_emails: [] });
   assert.equal(result.phase, 'complete'); assert.equal(f.calls.length, 0);
+  const item = f.docs.get('projects/P/bom/data').categories[0].items[0];
+  assert.equal(item.orderDate, '2026-10-19'); assert.equal(item.expectedArrival, '2026-10-23');
   assert.equal([...f.docs.keys()].some(path => path.startsWith('projectDocuments/')), false);
 });
 
