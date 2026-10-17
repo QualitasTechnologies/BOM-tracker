@@ -9,6 +9,7 @@ const validId = (value) => typeof value === "string" && value.trim() && value.le
 const uuid = (value) => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const normalizedEmail = (value) => typeof value === "string" ? value.trim().toLowerCase() : "";
 const internal = (actor) => normalizedEmail(actor.email).endsWith("@qualitastech.com");
+const canonicalUuid = (value) => uuid(value) ? value.toLowerCase() : null;
 const projectAccess = (project, actor) => actor.customClaims.role === "admin" ||
   project.memberIds == null ||
   (Array.isArray(project.memberIds) && project.memberIds.includes(actor.uid));
@@ -27,11 +28,12 @@ const validPublicHttps = (value) => {
   }
 };
 const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const operationDocumentKey = (operationId) => createHash("sha256").update(operationId).digest("hex");
+const operationDocumentKey = (operationId) => createHash("sha256").update(canonicalUuid(operationId) || operationId).digest("hex");
 const receiptExistsOrCannotBeChecked = async (db, operationId) => {
-  if (!uuid(operationId)) return false;
+  const id = canonicalUuid(operationId);
+  if (!id) return false;
   try {
-    const snapshot = await db.collection("pulseSpecSearchReceipts").doc(operationDocumentKey(operationId)).get();
+    const snapshot = await db.collection("pulseSpecSearchReceipts").doc(operationDocumentKey(id)).get();
     return snapshot.exists;
   } catch {
     // An unavailable lookup cannot prove that a previous dispatch did not occur.
@@ -53,10 +55,11 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
     try {
       const actor = await resolveActor(request);
       const data = request.data;
+      const operationId = canonicalUuid(data?.operation_id);
       const allowed = ["project_id", "item_id", "operation_id", "expected_actor_uid"];
       if (!plain(data) || Object.keys(data).some((key) => !allowed.includes(key)) ||
         allowed.some((key) => !Object.hasOwn(data, key)) || !validId(data.project_id) || !validId(data.item_id) ||
-        !uuid(data.operation_id) || data.expected_actor_uid !== actor.uid) {
+        !operationId || data.expected_actor_uid !== actor.uid) {
         throw fault(data?.expected_actor_uid !== actor.uid ? "actor_session_changed" : "invalid_spec_search_request", data?.expected_actor_uid !== actor.uid ? 403 : 400);
       }
       if (!actor || actor.disabled || actor.customClaims?.status !== "approved" ||
@@ -70,7 +73,7 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
       }
       if (target.protocol !== "https:" || target.username || target.password || !target.hostname || isIP(target.hostname)) throw fault("spec_search_unavailable", 503);
 
-      const {project_id: projectId, item_id: itemId, operation_id: operationId} = data;
+      const {project_id: projectId, item_id: itemId} = data;
       const projectRef = db.collection("projects").doc(projectId);
       const bomRef = projectRef.collection("bom").doc("data");
       const documentKey = operationDocumentKey(operationId);
@@ -208,17 +211,17 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
         return {ok: false, state: "outcome_unknown", operation_id: operationId, error: "spec_search_unresolved"};
       }
     } catch (error) {
-      const operationId = request?.data?.operation_id;
+      const operationId = canonicalUuid(request?.data?.operation_id);
       // Conflicts are already receipt-bound; malformed requests aren't eligible
       // for lookup. Other failures must prove no receipt exists before they clear
       // the caller's journal, including auth, gate, and access failures.
       const receiptMayExist = dispatchReserved || (!["operation_conflict", "invalid_spec_search_request"].includes(error.code) && await receiptExistsOrCannotBeChecked(db, operationId));
       if (receiptMayExist) {
-        return {ok: false, state: "outcome_unknown", ...(uuid(request?.data?.operation_id) ? {operation_id: request.data.operation_id} : {}), error: "spec_search_unresolved"};
+        return {ok: false, state: "outcome_unknown", ...(operationId ? {operation_id: operationId} : {}), error: "spec_search_unresolved"};
       }
       const code = error.status ? error.code : "spec_search_unavailable";
       const state = /conflict/.test(code) ? "conflict" : code === "project_not_found" ? "project_not_found" : code === "bom_item_not_found" ? "item_not_found" : code === "bom_not_found" ? "bom_not_found" : code === "spec_search_unresolved" ? "outcome_unknown" : "failed";
-      return {ok: false, state, ...(uuid(request?.data?.operation_id) ? {operation_id: request.data.operation_id} : {}), error: code};
+      return {ok: false, state, ...(operationId ? {operation_id: operationId} : {}), error: code};
     }
   };
 }

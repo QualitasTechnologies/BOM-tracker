@@ -164,6 +164,18 @@ test("same operation replay is saved and changed input conflicts without another
   assert.equal(f.docs.get("projects/P/bom/data").updatedAt, undefined);
 });
 
+test("UUID casing does not create a second operation receipt or n8n dispatch", async () => {
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}});
+  const upper = await f.call({operation_id: "550E8400-E29B-41D4-A716-446655440000"});
+  const lower = await f.call();
+  assert.equal(upper.state, "completed");
+  assert.equal(lower.state, "completed");
+  assert.equal(f.calls.length, 1);
+  assert.equal(upper.operation_id, "550e8400-e29b-41d4-a716-446655440000");
+  assert.equal([...f.docs.keys()].filter((key) => key.startsWith("pulseSpecSearchReceipts/")).length, 1);
+  assert.equal(f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`).operation_id, "550e8400-e29b-41d4-a716-446655440000");
+});
+
 test("two concurrent calls with the same operation ID dispatch once and share one receipt", async () => {
   let receiptReads = 0;
   let releaseReceiptReads;
