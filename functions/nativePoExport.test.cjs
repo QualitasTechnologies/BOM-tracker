@@ -9,7 +9,7 @@ test('native PDF path uses the original renderer, cached artifact and no legacy 
   const end = source.indexOf('exports.generatePOPDF = onCall(', start);
   assert.ok(start >= 0 && end > start, 'original renderer must have a server-only internal entry');
   let writes = 0, cached = null;
-  const context = { Buffer, PDFDocument: require('pdfkit'), logger: { info() {}, error() {}, warn() {} },
+  const context = { Buffer, PDFDocument: require('pdfkit'), createLegacyPoAccess: () => ({ preparePreview() {}, prepareSend() {} }), logger: { info() {}, error() {}, warn() {} },
     functions: { https: { HttpsError: Error } }, admin: { storage: () => ({ bucket: () => ({ file: () => { throw Error('legacy upload called'); } }) }) },
     formatDateSafe: () => '14/10/2026', formatIndianCurrency: n => String(n), numberToWords: () => 'Two rupees',
     readNativePoArtifact: async () => cached,
@@ -38,13 +38,16 @@ test('actual native callable wires current identity, secret and all three gates'
   assert.equal(options.enabled(), true); assert.equal(config.secrets[0], 'secret');
 });
 test('the public PDF callable cannot choose the internal artifact destination', async () => {
-  const start = source.indexOf('exports.generatePOPDF = onCall('), end = source.indexOf('\n', start);
+  const start = source.indexOf('exports.generatePOPDF = onCall('), end = source.indexOf('\nfunction buildPOEmailData', start);
   const calls = [];
-  const context = { exports: {}, onCall: callback => callback, generatePOPDFHandler: (...args) => { calls.push(args); return 'legacy'; } };
+  const context = { exports: {}, onCall: callback => callback,
+    legacyPoAccess: { preparePreview: async request => { calls.push(['access', request]); return { po: { id: 'stored-po' } }; } },
+    generatePOPDFHandler: (...args) => { calls.push(['render', ...args]); return 'legacy'; } };
   vm.runInNewContext(source.slice(start, end), context);
   const request = { data: { immutableTarget: { path: 'forged-native-path' } } };
   assert.equal(await context.exports.generatePOPDF(request), 'legacy');
-  assert.deepEqual(calls[0], [request]);
+  assert.deepEqual(calls[0], ['access', request]);
+  assert.deepEqual(calls[1][1].data.purchaseOrder, { id: 'stored-po' });
 });
 test('the shared original email builder preserves recipients, PO details and exact attachment bytes', () => {
   const start = source.indexOf('function buildPOEmailData('), end = source.indexOf('\n/**', start);
