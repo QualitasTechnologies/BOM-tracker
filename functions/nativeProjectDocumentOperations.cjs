@@ -128,9 +128,9 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
     if(initial.result)return initial.result;
     if(initial.raw.document.pulseNativeDocument){
      const marker=initial.raw.document.pulseNativeDocument,proof=initial.proof;
-     if(!plain(marker)||!plain(proof)||proof.project_id!==data.project_id||proof.document_id!==initial.raw.document_id||proof.final_path!==marker.path||proof.finalized?.generation!==marker.generation||proof.finalized?.document?.id!==initial.raw.document_id||!Number.isSafeInteger(proof.byte_size)||typeof proof.sha256!=='string'||!/^[a-f0-9]{64}$/.test(proof.sha256))throw fault('project_document_integrity_failed',409);
+     if(!plain(marker)||!plain(proof)||proof.project_id!==data.project_id||proof.document_id!==initial.raw.document_id||proof.final_path!==marker.path||proof.finalized?.generation!==marker.generation||proof.finalized?.document?.id!==initial.raw.document_id||typeof proof.download_token!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(proof.download_token)||!Number.isSafeInteger(proof.byte_size)||typeof proof.sha256!=='string'||!/^[a-f0-9]{64}$/.test(proof.sha256))throw fault('project_document_integrity_failed',409);
      let metadata;try{[metadata]=await bucket.file(marker.path,{generation:marker.generation}).getMetadata();}catch(error){if(Number(error.code)===404)throw fault('project_document_integrity_failed',409);throw error;}
-     if(String(metadata.generation)!==marker.generation||Number(metadata.size)!==proof.byte_size)throw fault('project_document_integrity_failed',409);
+     if(String(metadata.generation)!==marker.generation||Number(metadata.size)!==proof.byte_size||metadata.metadata?.firebaseStorageDownloadTokens!==proof.download_token)throw fault('project_document_integrity_failed',409);
      const stream=bucket.file(marker.path,{generation:marker.generation}).createReadStream({validation:'crc32c'}),chunks=[];let size=0;for await(const chunk of stream){size+=chunk.length;if(size>proof.byte_size||size>=MAX_BYTES){stream.destroy();throw fault('project_document_integrity_failed',409);}chunks.push(chunk);}
      if(size!==proof.byte_size||hash(Buffer.concat(chunks,size))!==proof.sha256)throw fault('project_document_integrity_failed',409);
     }else{

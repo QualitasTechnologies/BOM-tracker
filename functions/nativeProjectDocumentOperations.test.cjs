@@ -118,6 +118,14 @@ test('deleted documents can be browsed and restored with exact metadata and the 
  assert.equal((await f.call({operation:'restore',archive_id:archived.archive_id,operation_id:'restore-again',expected_project_version:archived.opening.project_version,expected_bom_version:archived.opening.bom_version,expected_archive_version:archived.opening.archive_version})).error,'project_document_archive_already_restored');
 });
 
+test('native restore fails closed when the original download token was rotated',async()=>{
+ const f=fixture();await uploaded(f);const row=(await f.get()).documents[0];await f.call({operation:'delete',operation_id:'delete-1',...opening(row)});
+ const archive=(await f.call({operation:'list_deleted'})).deleted_documents[0],marker=f.docs.get(`pulseDeletedProjectDocuments/P/documents/${archive.archive_id}`).document.pulseNativeDocument;
+ f.objects.get(marker.path).metadata.metadata.firebaseStorageDownloadTokens='rotated-token';
+ const restore={operation:'restore',archive_id:archive.archive_id,operation_id:'restore-rotated-token',expected_project_version:archive.opening.project_version,expected_bom_version:archive.opening.bom_version,expected_archive_version:archive.opening.archive_version};
+ assert.equal((await f.call(restore)).error,'project_document_integrity_failed');assert.equal(f.docs.has('projectDocuments/document-1'),false);
+});
+
 test('append-only deletion generations support delete restore delete without losing either archive',async()=>{
  const f=fixture();await uploaded(f);let row=(await f.get()).documents[0];await f.call({operation:'delete',operation_id:'delete-1',...opening(row)});
  let listed=await f.call({operation:'list_deleted'}),archive=listed.deleted_documents[0];
