@@ -7324,6 +7324,18 @@ exports.projectReview = onRequest(
   })
 );
 
+// Native Support ticket creation is independently gated and defaults off.
+const { createNativeSupportTicketCreate, supportTicketCreateEnabled } = require('./nativeSupportTicketCreate.cjs');
+exports.nativeSupportTicketCreate = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeSupportTicketCreate({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    enabled: () => supportTicketCreateEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
 // Native materials stage. Writes require explicit server configuration.
 const { createProjectOperationsHandler } = require('./projectOperations.cjs');
 const bomProjectOperationsKey = defineSecret('BOM_PROJECT_OPERATIONS_KEY');
