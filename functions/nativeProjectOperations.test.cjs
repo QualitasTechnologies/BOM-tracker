@@ -200,6 +200,26 @@ test('restore audit failure leaves project, receipt and audit unchanged', async 
   assert.deepEqual([...f.docs], before);
 });
 
+test('restore receipt replay requires current project access and base edit permission', async () => {
+  for (const revoke of [
+    { uid: 'alice', revoke: f => f.change({ memberIds: ['admin', 'partner'] }) },
+    { uid: 'partner', role: 'admin', revoke: f => { f.users.get('partner').customClaims.role = 'user'; } },
+  ]) {
+    const f = fixture({ uid: revoke.uid });
+    if (revoke.role) f.users.get(revoke.uid).customClaims.role = revoke.role;
+    f.change({ status: 'Archived', archivedAt: 'old' });
+    f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', projectStatusClientWritesFenced: true });
+    const opening = await f.call({ operation: 'get' });
+    const request = { operation: 'command', expected_version: opening.version, operation_id: 'restore-replay', command: { kind: 'restore' } };
+    assert.equal((await f.call(request)).ok, true);
+    revoke.revoke(f);
+    const before = structuredClone([...f.docs]);
+    const replay = await f.call(request);
+    assert.ok(['project_forbidden', 'project_edit_forbidden'].includes(replay.error), `unexpected replay response: ${JSON.stringify(replay)}`);
+    assert.deepEqual([...f.docs], before);
+  }
+});
+
 test('revoked admin cannot use a malformed access list as a membership substring', async () => {
   const f = fixture({ onRead: (path, users) => { if (path.includes('/receipts/')) users.get('admin').customClaims.role = 'viewer'; } });
   f.docs.get('projects/P').memberIds = 'admin';
