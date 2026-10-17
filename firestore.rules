@@ -96,6 +96,15 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Specification-search operation receipts and audit are callable-only.
+    match /pulseSpecSearchReceipts/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /pulseSpecSearchAudit/{document=**} {
+      allow read, write: if false;
+    }
+
     // Contact-discovery directory and job state are per-user and only ever
     // written by processContactDiscoveryJobs (Admin SDK). The owning user can
     // read their own directory/job to show scan progress and the picker.

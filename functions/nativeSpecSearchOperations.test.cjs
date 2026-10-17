@@ -1,0 +1,187 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const {createNativeSpecSearchOperation} = require("./nativeSpecSearchOperations.cjs");
+
+const clone = (value) => value === undefined ? undefined : structuredClone(value);
+function fixture({actor = {}, project = {}, categories = [], enabled = true, response, beforeFetch, fetchError} = {}) {
+  if (!Object.hasOwn(project, "members") && !actor.email?.toLowerCase().endsWith("@qualitastech.com") && actor.customClaims?.role !== "admin") {
+    project = {...project, members: [{userId: actor.uid || "alice", categoryScope: ["Parts"]}]};
+  }
+  const docs = new Map([
+    ["projects/P", {projectId: "P", ...project}],
+    ["projects/P/bom/data", {categories: clone(categories)}],
+  ]);
+  const calls = [];
+  const db = {
+    collection(name) {
+      return {doc(id) {
+        return ref(`${name}/${id}`);
+      }};
+    },
+    runTransaction: async (callback) => {
+      const writes = [];
+      const transaction = {
+        async get(reference) {
+          return snap(docs.get(reference.path));
+        },
+        create(reference, data) {
+          writes.push(["create", reference.path, clone(data)]);
+        },
+        set(reference, data) {
+          writes.push(["set", reference.path, clone(data)]);
+        },
+        update(reference, data) {
+          writes.push(["update", reference.path, clone(data)]);
+        },
+      };
+      const result = await callback(transaction);
+      for (const [mode, path, data] of writes) {
+        if (mode === "create" && docs.has(path)) throw Object.assign(new Error("already exists"), {code: 6});
+        if (mode === "update" && !docs.has(path)) throw new Error("missing document");
+        docs.set(path, mode === "update" ? {...docs.get(path), ...data} : data);
+      }
+      return result;
+    },
+  };
+  function ref(path) {
+    return {path, collection(name) {
+      return {doc(id) {
+        return ref(`${path}/${name}/${id}`);
+      }};
+    }};
+  }
+  function snap(data) {
+    return {exists: data !== undefined, data: () => clone(data)};
+  }
+  const handler = createNativeSpecSearchOperation({
+    db,
+    resolveActor: async () => actor,
+    enabled: () => enabled,
+    getServerTimestamp: () => "server-time",
+    fetch: async (_url, options) => {
+      calls.push(JSON.parse(options.body));
+      if (beforeFetch) await beforeFetch({docs, calls});
+      if (fetchError) throw fetchError;
+      return {ok: true, json: async () => clone(response || {success: true, specificationUrl: null})};
+    },
+    webhookUrl: "https://n8n.example.test/webhook/spec-search",
+  });
+  const call = (data = {}) => handler({auth: {uid: actor.uid || "alice"}, data: {project_id: "P", item_id: "i1", operation_id: "550e8400-e29b-41d4-a716-446655440000", expected_actor_uid: actor.uid || "alice", ...data}});
+  return {call, docs, calls};
+}
+const user = (uid = "alice", role = "viewer", email = "alice@partner.example") => ({uid, email, disabled: false, customClaims: {role, status: "approved"}});
+const component = {id: "i1", name: "Valve", make: "Acme", sku: "V-1", itemType: "component", specificationUrl: null};
+
+test("approved admin, internal member and viewer can search; external members need category scope", async () => {
+  for (const actor of [user("admin", "admin"), user("internal", "viewer", "internal@qualitastech.com"), user()]) {
+    const f = fixture({actor, project: {memberIds: [actor.uid]}, categories: [{name: "Parts", items: [component]}]});
+    assert.equal((await f.call({expected_actor_uid: actor.uid})).ok, true);
+  }
+  const scoped = fixture({actor: user(), project: {memberIds: ["alice"], members: [{userId: "alice", categoryScope: ["Parts"]}]}, categories: [{name: "Parts", items: [component]}]});
+  assert.equal((await scoped.call()).ok, true);
+  for (const categoryScope of [[], ["Other"], undefined]) {
+    const f = fixture({actor: user(), project: {memberIds: ["alice"], members: [{userId: "alice", categoryScope}]}, categories: [{name: "Parts", items: [component]}]});
+    assert.equal((await f.call()).error, "spec_search_forbidden");
+  }
+});
+
+test("project access permits explicit null legacy fallback but rejects missing memberIds and non-members", async () => {
+  for (const project of [{memberIds: null}, {memberIds: ["alice"]}]) {
+    const f = fixture({actor: user(), project, categories: [{name: "Parts", items: [component]}]});
+    assert.equal((await f.call()).ok, true);
+  }
+  for (const project of [{}, {memberIds: []}]) {
+    const f = fixture({actor: user(), project, categories: [{name: "Parts", items: [component]}]});
+    assert.equal((await f.call()).error, "spec_search_forbidden");
+  }
+});
+
+test("server derives search metadata and rejects caller-supplied item or webhook fields", async () => {
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}]});
+  assert.equal((await f.call()).ok, true);
+  assert.deepEqual(f.calls[0], {searchId: "550e8400-e29b-41d4-a716-446655440000", projectId: "P", bomItemId: "i1", itemName: "Valve", make: "Acme", sku: "V-1", category: "Parts"});
+  assert.equal((await f.call({name: "Forged"})).error, "invalid_spec_search_request");
+});
+
+test("missing, duplicate and service items are rejected without n8n dispatch", async () => {
+  for (const categories of [[], [{name: "Parts", items: [component, component]}], [{name: "Services", items: [{...component, itemType: "service"}]}]]) {
+    const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories});
+    assert.notEqual((await f.call()).ok, true);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("same operation replay is saved and changed input conflicts without another dispatch", async () => {
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}});
+  const first = await f.call();
+  assert.equal(first.ok, true);
+  assert.equal((await f.call()).specificationUrl, "https://docs.example.com/spec.pdf");
+  assert.equal((await f.call({item_id: "other"})).error, "operation_conflict");
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, "https://docs.example.com/spec.pdf");
+  assert.equal(f.docs.get("pulseSpecSearchAudit/550e8400-e29b-41d4-a716-446655440000").outcome, "completed");
+});
+
+test("a completed search without a link returns and replays not_found", async () => {
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true}});
+  const result = await f.call();
+  assert.equal(result.state, "not_found");
+  assert.equal(result.ok, true);
+  assert.equal((await f.call()).state, "not_found");
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.docs.get("pulseSpecSearchReceipts/550e8400-e29b-41d4-a716-446655440000").state, "not_found");
+  assert.equal(f.docs.get("pulseSpecSearchAudit/550e8400-e29b-41d4-a716-446655440000").outcome, "not_found");
+});
+
+test("only valid public HTTPS URLs are stored", async () => {
+  for (const specificationUrl of ["http://docs.example.com/a", "https://user:pass@docs.example.com/a", "https://@docs.example.com/a", "https://localhost/a", "https://127.0.0.1/a", "https://[::1]/a"]) {
+    const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl}});
+    assert.equal((await f.call()).error, "invalid_specification_url");
+    assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
+  }
+});
+
+test("n8n failures and timeouts remain unresolved and never automatically retry", async () => {
+  for (const fetchError of [new Error("workflow rejected"), Object.assign(new Error("timeout"), {name: "AbortError"})]) {
+    const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], fetchError});
+    assert.equal((await f.call()).state, "outcome_unknown");
+    assert.equal((await f.call()).state, "outcome_unknown");
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.docs.get("pulseSpecSearchReceipts/550e8400-e29b-41d4-a716-446655440000").status, "unresolved");
+  }
+});
+
+test("target identity edits conflict while unrelated edits made during search survive", async () => {
+  const make = (f) => async () => {
+    const bom = f.docs.get("projects/P/bom/data");
+    bom.categories[0].items[0].notes = "changed";
+    bom.updatedBy = "other editor";
+  };
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}});
+  await make(f)();
+  const f2 = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}, beforeFetch: async ({docs}) => {
+    const bom = docs.get("projects/P/bom/data"); bom.categories[0].items[0].notes = "changed"; bom.updatedBy = "other editor";
+  }});
+  assert.equal((await f2.call()).ok, true);
+  assert.equal(f2.docs.get("projects/P/bom/data").categories[0].items[0].notes, "changed");
+  assert.equal(f2.docs.get("projects/P/bom/data").updatedBy, "other editor");
+  const f3 = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}, beforeFetch: async ({docs}) => {
+    docs.get("projects/P/bom/data").categories[0].items[0].make = "Different";
+  }});
+  assert.equal((await f3.call()).error, "spec_search_conflict");
+  assert.equal(f3.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
+  const f4 = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}, beforeFetch: async ({docs}) => {
+    docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl = "https://other.example.com/spec.pdf";
+  }});
+  assert.equal((await f4.call()).state, "conflict");
+  assert.equal(f4.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, "https://other.example.com/spec.pdf");
+  assert.equal(f4.docs.get("pulseSpecSearchReceipts/550e8400-e29b-41d4-a716-446655440000").state, "conflict");
+});
+
+test("disabled actors and the default-off gate are rejected", async () => {
+  const f = fixture({actor: {...user(), disabled: true}, project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}]});
+  assert.equal((await f.call()).error, "actor_forbidden");
+  const g = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], enabled: false});
+  assert.equal((await g.call()).error, "spec_search_disabled");
+  assert.equal(g.calls.length, 0);
+});
