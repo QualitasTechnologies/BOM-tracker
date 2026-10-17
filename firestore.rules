@@ -18,6 +18,9 @@ service cloud.firestore {
 
       allow update: if request.auth != null
         && request.auth.token.status == 'approved'
+        // Archive state is server-owned: project lifecycle changes go through
+        // the gated native callable, while ordinary project edits stay open.
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'archivedAt'])
         && (request.auth.token.role == 'admin'
             || (resource.data.memberIds == null)
             || request.auth.uid in resource.data.memberIds);
