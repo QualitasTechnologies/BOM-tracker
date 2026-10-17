@@ -2494,6 +2494,9 @@ exports.triggerSpecSearch = onRequest(
       return;
     }
 
+    const { rejectLegacySpecSearch, isNativeSpecSearchEnabled } = require('./specSearchLegacyGuard.cjs');
+    if (rejectLegacySpecSearch(response, () => isNativeSpecSearchEnabled(process.env.BOM_NATIVE_SPEC_SEARCH_ENABLED))) return;
+
     try {
       const { bomItemId, projectId, itemName, make, sku, userId } = request.body;
 
@@ -7522,4 +7525,18 @@ const {createNativeProjectDocumentOperations,projectDocumentsEnabled}=require('.
 exports.nativeProjectDocumentOperations=onCall(
   {region:'us-central1',timeoutSeconds:60,maxInstances:5},
   createNativeProjectDocumentOperations({db:admin.firestore(),auth:admin.auth(),bucket:admin.storage().bucket(),enabled:()=>projectDocumentsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
+);
+
+// Native specification search remains disabled until its protected client path is enabled.
+const { createNativeSpecSearchOperation } = require('./nativeSpecSearchOperations.cjs');
+const {resolveSpecSearchActor: resolveSpecSearchActorWithAuth} = require('./specSearchActor.cjs');
+const resolveSpecSearchActor = request => resolveSpecSearchActorWithAuth({request, auth: admin.auth()});
+exports.nativeSpecSearchOperation = onCall(
+  { region: 'us-central1', timeoutSeconds: 120, maxInstances: 5 },
+  createNativeSpecSearchOperation({
+    db: admin.firestore(), auth: admin.auth(), resolveActor: resolveSpecSearchActor,
+    enabled: () => require('./specSearchLegacyGuard.cjs').isNativeSpecSearchEnabled(process.env.BOM_NATIVE_SPEC_SEARCH_ENABLED),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    fetch: (...args) => globalThis.fetch(...args),
+  })
 );

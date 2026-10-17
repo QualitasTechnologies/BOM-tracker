@@ -18,6 +18,8 @@ test('server-only communication collections cannot be opened by an authenticated
     'gmailIngestedMessages',
     'gmailIngestedMessageIds',
     'fathomIngestedMeetings',
+    'pulseSpecSearchReceipts',
+    'pulseSpecSearchAudit',
   ]) {
     assert.match(
       rules,
