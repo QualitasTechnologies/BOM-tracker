@@ -32,7 +32,7 @@ function fixture(options={}){
  const bytes=Buffer.from('%PDF synthetic document');
  return{docs,versions,actor,options,objects,bytes,call,db,auth,bucket,off:()=>{enabled=false;},expire:()=>{time=new Date('2026-10-17');},publications:()=>publications,
   reserve:extra=>call({operation:'reserve',name:'quote.pdf',document_type:'vendor-quote',content_type:'application/pdf',byte_size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),...extra}),
-  upload:(path,value=bytes,type='application/pdf')=>put(path,value,type),finalize:()=>call({operation:'finalize'}),get:extra=>handler({auth:{uid:'alice'},rawRequest:{get:()=> 'Bearer synthetic'},data:{operation:'get',project_id:'P',expected_actor_uid:'alice',...extra}}),
+  upload:(path,value=bytes,type='application/pdf',metadata={})=>put(path,value,type,metadata),finalize:()=>call({operation:'finalize'}),get:extra=>handler({auth:{uid:'alice'},rawRequest:{get:()=> 'Bearer synthetic'},data:{operation:'get',project_id:'P',expected_actor_uid:'alice',...extra}}),
  };
 }
 module.exports={fixture};

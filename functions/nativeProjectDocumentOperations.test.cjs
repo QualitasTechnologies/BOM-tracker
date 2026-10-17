@@ -170,3 +170,62 @@ test('restore audit failure is atomic and its archive can be retried with the sa
  f.options.failAudit=true;assert.equal((await f.call(request)).ok,false);assert.equal(f.docs.has('projectDocuments/document-1'),false);assert.equal(f.docs.has(`pulseDeletedProjectDocuments/P/documents/${archive.archive_id}`),true);assert.equal(f.docs.has(`pulseProjectDocumentMutations/P/restorations/${archive.archive_id}`),false);
  f.options.failAudit=false;assert.equal((await f.call(request)).ok,true);assert.equal(f.docs.has('pulseProjectDocumentMutations/P/audit/restore-restore-1'),true);
 });
+
+test('item-side document references participate in category-scope access checks',async()=>{
+ for(const[type,field]of [['vendor-quote','linkedQuoteDocumentId'],['vendor-po','linkedPODocumentId'],['vendor-invoice','linkedInvoiceDocumentId']]){
+  const f=fixture(),reserved=await f.reserve({document_type:type});f.upload(reserved.path);assert.equal((await f.finalize()).ok,true);f.docs.get('projectDocuments/document-1').linkedBOMItems=[];f.docs.get('projects/P').members=[{userId:'alice',categoryScope:['Parts']}];f.docs.get('projects/P/bom/data').categories.push({name:'Other',items:[{id:'other',status:'not-ordered',[field]:'document-1'}]});
+  const row=(await f.get()).documents[0];assert.ok(row);await f.call({operation:'delete',operation_id:'delete-1',...opening(row)});const archive=(await f.call({operation:'list_deleted'})).deleted_documents[0];assert.ok(archive);
+  f.actor.email='user@customer.test';const scoped=await f.call({operation:'list_deleted'});assert.equal(scoped.deleted_documents.length,0,`${type} should be hidden when only its item-side link is outside scope`);
+  assert.equal((await f.call({operation:'restore',archive_id:archive.archive_id,operation_id:'restore-denied',expected_project_version:archive.opening.project_version,expected_bom_version:archive.opening.bom_version,expected_archive_version:archive.opening.archive_version})).error,'project_document_forbidden');
+ }
+});
+
+test('new non-native archives capture and verify the original Firebase Storage generation and bytes',async()=>{
+ const f=fixture(),path='projects/P/documents/vendor-quote/legacy.pdf',bytes=Buffer.from('legacy bytes');f.upload(path,bytes,'application/pdf',{metadata:{firebaseStorageDownloadTokens:'legacy-token'}});
+ const url=`https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(f.bucket.name)}/o/${encodeURIComponent(path)}?alt=media&token=legacy-token`;
+ f.docs.set('projectDocuments/document-1',{projectId:'P',name:'legacy.pdf',url,type:'vendor-quote',uploadedAt:new Date('2025-01-01'),uploadedBy:'alice',linkedBOMItems:[],fileSize:bytes.length});const raw=f.docs.get('projectDocuments/document-1'),row=(await f.get()).documents[0],deleted=await f.call({operation:'delete',operation_id:'delete-1',...opening(row)});assert.equal(deleted.ok,true,JSON.stringify(deleted));
+ const archive=(await f.call({operation:'list_deleted'})).deleted_documents[0],stored=f.docs.get(`pulseDeletedProjectDocuments/P/documents/${archive.archive_id}`);
+ assert.deepEqual(stored.storage_proof,{bucket:f.bucket.name,path,generation:f.objects.get(path).metadata.generation,size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')});
+ const restore={operation:'restore',archive_id:archive.archive_id,operation_id:'restore-1',expected_project_version:archive.opening.project_version,expected_bom_version:archive.opening.bom_version,expected_archive_version:archive.opening.archive_version};
+ assert.equal((await f.call(restore)).ok,true);assert.deepEqual(f.docs.get('projectDocuments/document-1'),raw);
+});
+
+test('non-native restore fails when its storage generation or download token changed after deletion',async()=>{
+ for(const change of ['generation','token']){
+  const f=fixture(),path='projects/P/documents/vendor-quote/legacy.pdf',bytes=Buffer.from('legacy bytes');f.upload(path,bytes,'application/pdf',{metadata:{firebaseStorageDownloadTokens:'legacy-token'}});
+  const url=`https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(f.bucket.name)}/o/${encodeURIComponent(path)}?alt=media&token=legacy-token`;
+  f.docs.set('projectDocuments/document-1',{projectId:'P',name:'legacy.pdf',url,type:'vendor-quote',uploadedAt:new Date('2025-01-01'),uploadedBy:'alice',linkedBOMItems:[],fileSize:bytes.length});const row=(await f.get()).documents[0];await f.call({operation:'delete',operation_id:'delete-1',...opening(row)});
+  const archive=(await f.call({operation:'list_deleted'})).deleted_documents[0];if(change==='generation')f.upload(path,Buffer.from('replacement'),'application/pdf',{metadata:{firebaseStorageDownloadTokens:'legacy-token'}});else f.objects.get(path).metadata.metadata.firebaseStorageDownloadTokens='rotated-token';
+  const restore={operation:'restore',archive_id:archive.archive_id,operation_id:'restore-1',expected_project_version:archive.opening.project_version,expected_bom_version:archive.opening.bom_version,expected_archive_version:archive.opening.archive_version};
+  assert.equal((await f.call(restore)).error,'project_document_integrity_failed');assert.equal(f.docs.has('projectDocuments/document-1'),false);
+ }
+});
+
+test('legacy non-native archives without deletion-time storage proof fail closed on restore',async()=>{
+ const f=fixture();f.docs.set('pulseDeletedProjectDocuments/P/documents/legacy',{project_id:'P',document_id:'legacy',document_type:'spec-sheet',actor_uid:'alice',document:{projectId:'P',name:'legacy',url:'https://storage.example/file.pdf',type:'spec-sheet',linkedBOMItems:[]},at:new Date('2020-01-01')});
+ const archive=(await f.call({operation:'list_deleted'})).deleted_documents[0],restore={operation:'restore',archive_id:archive.archive_id,operation_id:'restore-legacy',expected_project_version:archive.opening.project_version,expected_bom_version:archive.opening.bom_version,expected_archive_version:archive.opening.archive_version};
+ assert.equal((await f.call(restore)).error,'project_document_integrity_unverified');assert.equal(f.docs.has('projectDocuments/legacy'),false);
+});
+
+test('new deletes refuse to archive non-native URLs whose storage identity cannot be verified',async()=>{
+ const f=fixture();f.docs.set('projectDocuments/document-1',{projectId:'P',name:'external.pdf',url:'https://files.example/document.pdf',type:'spec-sheet',uploadedAt:new Date('2025-01-01'),uploadedBy:'alice',linkedBOMItems:[]});
+ const row=(await f.get()).documents[0],result=await f.call({operation:'delete',operation_id:'delete-1',...opening(row)});
+ assert.equal(result.error,'project_document_integrity_unverified');assert.equal(f.docs.has('projectDocuments/document-1'),true);assert.equal(f.docs.has('pulseDeletedProjectDocuments/P/documents/document-1'),false);
+});
+
+test('deleted archive pagination skips restored entries and revocation during listing is rechecked',async()=>{
+ const f=fixture();
+ for(let i=0;i<205;i++)f.docs.set(`pulseDeletedProjectDocuments/P/documents/archive-${String(i).padStart(3,'0')}`,{project_id:'P',document_id:`doc-${i}`,document_type:'spec-sheet',document:{projectId:'P',name:`doc-${i}`,url:'https://example.test/file.pdf',type:'spec-sheet',linkedBOMItems:[]},at:new Date(2026,0,i+1)});
+ f.docs.set('pulseProjectDocumentMutations/P/restorations/archive-000',{event:'project_document_archive_restored'});
+ const seen=[];let cursor,rounds=0;do{const page=await f.call({operation:'list_deleted',...(cursor?{cursor}:{})});assert.equal(page.ok,true);seen.push(...page.deleted_documents.map(row=>row.archive_id));cursor=page.next_cursor;assert.ok(++rounds<=3);}while(cursor);
+ assert.equal(rounds,3);assert.equal(seen.length,204);assert.equal(seen.includes('archive-000'),false);assert.equal(new Set(seen).size,204);
+ const g=fixture();g.options.onRead=path=>{if(path==='pulseDeletedProjectDocuments/P/documents')g.docs.get('projects/P').memberIds=[];};
+ assert.equal((await g.call({operation:'list_deleted'})).error,'project_document_forbidden');
+});
+
+test('restore rechecks project membership after verifying the original storage object',async()=>{
+ const f=fixture();await uploaded(f);const row=(await f.get()).documents[0];await f.call({operation:'delete',operation_id:'delete-1',...opening(row)});const archive=(await f.call({operation:'list_deleted'})).deleted_documents[0];
+ f.options.onRead=path=>{if(path==='pulseProjectDocumentUploads/P/receipts/upload-1')f.docs.get('projects/P').memberIds=[];};
+ const restore={operation:'restore',archive_id:archive.archive_id,operation_id:'restore-1',expected_project_version:archive.opening.project_version,expected_bom_version:archive.opening.bom_version,expected_archive_version:archive.opening.archive_version};
+ assert.equal((await f.call(restore)).error,'project_document_forbidden');assert.equal(f.docs.has('projectDocuments/document-1'),false);assert.equal(f.docs.has(`pulseDeletedProjectDocuments/P/documents/${archive.archive_id}`),true);
+});

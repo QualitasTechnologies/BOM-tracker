@@ -1,7 +1,28 @@
-const {randomBytes,randomUUID}=require('node:crypto');
+const {randomBytes,randomUUID,createHash}=require('node:crypto');
 const {currentNativeActor}=require('./nativeMaterialOperations.cjs');
 const {fault,isFault,plain,validId,version,validVersion,TYPES,MAX_BYTES,hash,typeAccess,projectAccess,assertDeletion,view,projectDocumentsEnabled,budget:assertDocumentBudget}=require('./projectDocumentState.cjs');
 const TTL=15*60*1000;
+const MAX_ARCHIVE_OBJECT_BYTES=250*1024*1024;
+function firebaseStorageLocation(value,bucketName){
+ try{
+  const url=new URL(value),match=url.pathname.match(/^\/v0\/b\/([^/]+)\/o\/(.+)$/);
+  if(url.origin!=='https://firebasestorage.googleapis.com'||url.username||url.password||url.hash||!match)throw 0;
+  const bucket=decodeURIComponent(match[1]),path=decodeURIComponent(match[2]),downloadToken=url.searchParams.get('token');
+  if(bucket!==bucketName||!path||!downloadToken)throw 0;
+  return{bucket,path,downloadToken};
+ }catch(error){if(error?.code==='project_document_integrity_unverified')throw error;throw fault('project_document_integrity_unverified',409);}
+}
+async function verifyFirebaseStorageObject(bucket,value,expected){
+ const location=firebaseStorageLocation(value,bucket.name);
+ if(expected&&(expected.bucket!==location.bucket||expected.path!==location.path))throw fault('project_document_integrity_failed',409);
+ let metadata;try{[metadata]=await bucket.file(location.path).getMetadata();}catch(error){if(Number(error.code)===404)throw fault('project_document_integrity_failed',409);throw error;}
+ const generation=String(metadata.generation||''),size=Number(metadata.size),tokens=String(metadata.metadata?.firebaseStorageDownloadTokens||'').split(',').map(token=>token.trim());
+ if(!/^[1-9]\d*$/.test(generation)||!Number.isSafeInteger(size)||size<0||size>MAX_ARCHIVE_OBJECT_BYTES||!tokens.includes(location.downloadToken)||expected&&(generation!==expected.generation||size!==expected.size))throw fault('project_document_integrity_failed',409);
+ const digest=createHash('sha256'),stream=bucket.file(location.path,{generation}).createReadStream({validation:'crc32c'});let read=0;
+ try{for await(const chunk of stream){read+=chunk.length;if(read>size||read>MAX_ARCHIVE_OBJECT_BYTES){stream.destroy();throw fault('project_document_integrity_failed',409);}digest.update(chunk);}}catch(error){if(isFault(error))throw error;throw fault('project_document_integrity_failed',409);}
+ const sha256=digest.digest('hex');if(read!==size||expected&&sha256!==expected.sha256)throw fault('project_document_integrity_failed',409);
+ return{bucket:location.bucket,path:location.path,generation,size,sha256};
+}
 function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,getServerTimestamp,now=()=>new Date()}){
  const on=()=>(typeof enabled==='function'?enabled():enabled)===true;
  const control=(snapshot,replay=false)=>{
@@ -31,15 +52,14 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
     const old=await tx.get(legacyArchiveRef);if(old.exists)return true;
     return (await tx.get(archiveCollection.where('document_id','==',data.document_id).limit(1))).docs.length>0;
    };
-   const categoryVisible=(document,bom,project,current)=>{
+   const categoryVisible=(document,bom,project,current,documentId=document.id)=>{
     if(current.customClaims.role==='admin'||current.email.toLowerCase().endsWith('@qualitastech.com'))return true;
     const ids=document.linkedBOMItems??[];if(!Array.isArray(ids)||!ids.every(validId))throw fault('invalid_project_document_state',409);
-    if(!ids.length)return true;
-    const categories=bom.data()?.categories;if(!Array.isArray(categories))throw fault('invalid_project_document_state',409);
-    const member=(Array.isArray(project.members)?project.members:[]).find(row=>row?.userId===current.uid),scope=member?.categoryScope;
-    if(!Array.isArray(scope)||!scope.length)return false;
-    for(const id of ids){let matches=0;for(const category of categories){if(!plain(category)||typeof category.name!=='string'||!Array.isArray(category.items))throw fault('invalid_project_document_state',409);for(const item of category.items){if(!plain(item)||!validId(item.id))throw fault('invalid_project_document_state',409);if(item.id===id){matches++;if(!Array.isArray(scope)||!scope.includes(category.name))return false;}}}if(matches!==1)return false;}
-    return true;
+    const categories=bom.data()?.categories??[];if(!Array.isArray(categories))throw fault('invalid_project_document_state',409);
+    const member=(Array.isArray(project.members)?project.members:[]).find(row=>row?.userId===current.uid),scope=member?.categoryScope,field={'vendor-quote':'linkedQuoteDocumentId','vendor-po':'linkedPODocumentId','vendor-invoice':'linkedInvoiceDocumentId'}[document.type],linked=[];
+    for(const category of categories){if(!plain(category)||typeof category.name!=='string'||!Array.isArray(category.items))throw fault('invalid_project_document_state',409);for(const item of category.items){if(!plain(item)||!validId(item.id))throw fault('invalid_project_document_state',409);if(ids.includes(item.id)||field&&item[field]===documentId)linked.push({item,category:category.name});}}
+    if(ids.some(id=>!categories.some(category=>category.items.some(item=>item.id===id))))return false;
+    return (!linked.length&&!ids.length)||Array.isArray(scope)&&linked.every(row=>scope.includes(row.category));
    };
    const isoDate=value=>{try{if(value&&typeof value.toDate==='function')value=value.toDate();return value instanceof Date?value.toISOString():typeof value==='string'&&Number.isFinite(Date.parse(value))?new Date(value).toISOString():null;}catch{return null;}};
    const actorNow=async project=>{
@@ -79,7 +99,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
      if((await tx.get(db.collection('pulseProjectDocumentMutations').doc(data.project_id).collection('restorations').doc(row.id))).exists)continue;
      if(raw.document.type==='customer-po'&&current.customClaims.role!=='admin')continue;
      if(!TYPES.includes(raw.document.type))throw fault('invalid_project_document_state',409);
-     if(!categoryVisible(raw.document,bom,project.snapshot.data(),current))continue;
+     if(!categoryVisible(raw.document,bom,project.snapshot.data(),current,raw.document_id))continue;
      deleted_documents.push({archive_id:row.id,document:view(raw.document_id,raw.document),deleted_at:isoDate(raw.at),opening:{project_version:version(project.snapshot),bom_version:version(bom),archive_version:version(row)}});
     }
     await actorNow(project.snapshot.data());
@@ -98,7 +118,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
      if(old){if(old.actor_uid!==actor.uid||old.actor_email!==actor.email.trim().toLowerCase()||old.payload_hash!==payloadHash||old.archive_id!==data.archive_id)throw fault('project_document_operation_conflict',409);control(mode,true);typeAccess(old.document_type,await actorNow(project.snapshot.data()));return{result:old.result};}
      if(restored.exists)throw fault('project_document_archive_already_restored',409);
      control(mode);typeAccess(archiveResult.raw.document_type,project.actor);
-     if(!categoryVisible(archiveResult.raw.document,bom,project.snapshot.data(),project.actor))throw fault('project_document_forbidden',403);
+     if(!categoryVisible(archiveResult.raw.document,bom,project.snapshot.data(),project.actor,archiveResult.raw.document_id))throw fault('project_document_forbidden',403);
      if(version(project.snapshot)!==data.expected_project_version||version(bom)!==data.expected_bom_version||version(archiveResult.archive)!==data.expected_archive_version)throw fault('project_document_version_conflict',409);
      const active=await tx.get(db.collection('projectDocuments').doc(archiveResult.raw.document_id));if(active.exists)throw fault('project_document_identity_conflict',409);
      const marker=archiveResult.raw.document.pulseNativeDocument;if(marker&&(!plain(marker)||typeof marker.operation_id!=='string'||!/^[-\w]{1,128}$/.test(marker.operation_id)||typeof marker.path!=='string'||typeof marker.generation!=='string'))throw fault('invalid_project_document_state',409);
@@ -113,13 +133,16 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
      if(String(metadata.generation)!==marker.generation||Number(metadata.size)!==proof.byte_size)throw fault('project_document_integrity_failed',409);
      const stream=bucket.file(marker.path,{generation:marker.generation}).createReadStream({validation:'crc32c'}),chunks=[];let size=0;for await(const chunk of stream){size+=chunk.length;if(size>proof.byte_size||size>=MAX_BYTES){stream.destroy();throw fault('project_document_integrity_failed',409);}chunks.push(chunk);}
      if(size!==proof.byte_size||hash(Buffer.concat(chunks,size))!==proof.sha256)throw fault('project_document_integrity_failed',409);
+    }else{
+     if(!initial.raw.storage_proof)throw fault('project_document_integrity_unverified',409);
+     await verifyFirebaseStorageObject(bucket,initial.raw.document.url,initial.raw.storage_proof);
     }
     return await db.runTransaction(async tx=>{
      const project=await readProject(tx),bom=await tx.get(bomRef),archiveResult=await checkArchive(tx),receipt=await tx.get(receiptRef),restored=await tx.get(restoreMarkerRef),mode=await tx.get(controlRef),old=receipt.exists?receipt.data():null;
      if(old){if(old.actor_uid!==actor.uid||old.actor_email!==actor.email.trim().toLowerCase()||old.payload_hash!==payloadHash||old.archive_id!==data.archive_id)throw fault('project_document_operation_conflict',409);control(mode,true);typeAccess(old.document_type,await actorNow(project.snapshot.data()));return old.result;}
      if(restored.exists)throw fault('project_document_archive_already_restored',409);
      control(mode);typeAccess(archiveResult.raw.document_type,project.actor);
-     if(!categoryVisible(archiveResult.raw.document,bom,project.snapshot.data(),project.actor))throw fault('project_document_forbidden',403);
+     if(!categoryVisible(archiveResult.raw.document,bom,project.snapshot.data(),project.actor,archiveResult.raw.document_id))throw fault('project_document_forbidden',403);
      if(version(project.snapshot)!==initial.project_version||version(bom)!==initial.bom_version||version(archiveResult.archive)!==initial.archive_version||version(project.snapshot)!==data.expected_project_version||version(bom)!==data.expected_bom_version||version(archiveResult.archive)!==data.expected_archive_version)throw fault('project_document_version_conflict',409);
      const active=await tx.get(initial.documentRef);if(active.exists)throw fault('project_document_identity_conflict',409);
      if(initial.proofRef){const proof=await tx.get(initial.proofRef);if(!proof.exists||proof.data().finalized?.generation!==initial.raw.document.pulseNativeDocument.generation||proof.data().final_path!==initial.raw.document.pulseNativeDocument.path)throw fault('project_document_integrity_failed',409);}
@@ -128,6 +151,22 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
      assertDocumentBudget([{path:initial.documentRef.path,data:archiveResult.raw.document},{path:receiptRef.path,data:{...identity,result}},{path:restoreMarkerRef.path,data:marker},{path:journal.collection('audit').doc(`restore-${data.operation_id}`).path,data:audit}]);
      tx.create(initial.documentRef,archiveResult.raw.document);tx.create(receiptRef,{...identity,result});tx.create(restoreMarkerRef,marker);tx.create(journal.collection('audit').doc(`restore-${data.operation_id}`),audit);return result;
     });
+   }
+   let storageProof=null;
+   if(data.operation==='delete'){
+    const candidate=await db.runTransaction(async tx=>{
+     const project=await readProject(tx),bom=await tx.get(bomRef),journal=db.collection('pulseProjectDocumentMutations').doc(data.project_id),receipt=await tx.get(journal.collection('receipts').doc(data.operation_id));
+     if(receipt.exists)return{replay:true};
+     const document=await tx.get(documentRef),mode=await tx.get(controlRef);control(mode);
+     if(!document.exists)throw fault('project_document_not_found',404);
+     const raw=document.data();if(raw.projectId!==data.project_id)throw fault('project_document_forbidden',403);
+     typeAccess(raw.type,project.actor);
+     if(version(project.snapshot)!==data.expected_project_version||version(bom)!==data.expected_bom_version||version(document)!==data.expected_document_version)throw fault('project_document_version_conflict',409);
+     assertDeletion({...raw,id:data.document_id},bom.data(),project.snapshot.data(),await actorNow(project.snapshot.data()));
+     const marker=raw.pulseNativeDocument;if(marker&&(!plain(marker)||typeof marker.operation_id!=='string'||!/^[-\w]{1,128}$/.test(marker.operation_id)||typeof marker.path!=='string'||typeof marker.generation!=='string'))throw fault('invalid_project_document_state',409);
+     return{raw,native:!!marker};
+    });
+    if(!candidate.replay&&!candidate.native)storageProof=await verifyFirebaseStorageObject(bucket,candidate.raw.url);
    }
    if(['delete','resolve_delete'].includes(data.operation))return await db.runTransaction(async tx=>{
     const project=await readProject(tx),bom=await tx.get(bomRef),document=await tx.get(documentRef);
@@ -151,7 +190,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
     const archiveWriteRef=!legacyArchive.exists&&!priorArchives.docs.length?legacyArchiveRef:archiveRef;
     assertDeletion({...raw,id:data.document_id},bom.data(),project.snapshot.data(),await actorNow(project.snapshot.data()));
     const result={ok:true,document_id:data.document_id,operation_id:data.operation_id,resolution:'committed'};
-    const archive={...identityRecord,document:raw,document_version:version(document),bom_version:version(bom),project_version:version(project.snapshot),at:getServerTimestamp()};
+    const archive={...identityRecord,document:raw,...(storageProof?{storage_proof:storageProof}:{}),document_version:version(document),bom_version:version(bom),project_version:version(project.snapshot),at:getServerTimestamp()};
     const receiptValue={...identityRecord,result,at:getServerTimestamp()},audit={...identityRecord,event:'project_document_deleted',archive_path:archiveWriteRef.path,previous_version:version(document),at:getServerTimestamp()};
     assertDocumentBudget([{path:archiveWriteRef.path,data:archive},{path:receiptRef.path,data:receiptValue},{path:journal.collection('audit').doc(data.operation_id).path,data:audit}]);
     tx.create(archiveWriteRef,archive);tx.delete(documentRef);tx.create(receiptRef,receiptValue);tx.create(journal.collection('audit').doc(data.operation_id),audit);return result;
