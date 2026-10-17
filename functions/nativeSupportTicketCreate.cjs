@@ -15,10 +15,12 @@ const normalizeEmail = value => typeof value === 'string' ? value.trim().toLower
 const supportTicketCreateEnabled = env => ['BOM_MATERIAL_MUTATIONS_ENABLED', 'BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED', 'BOM_NATIVE_SUPPORT_TICKET_CREATE_ENABLED'].every(key => env[key] === 'true');
 const access = (project, actor) => {
   // Matches projects/{projectId}/{subcollection=**} in firestore.rules: approved
-  // actors are checked by currentNativeActor; admins bypass members, and null or
-  // absent memberIds retain the legacy fallback. Support has no category scope.
-  if (actor.customClaims.role !== 'admin' && project.memberIds != null
-    && (!Array.isArray(project.memberIds) || !project.memberIds.includes(actor.uid))) {
+  // actors are checked by currentNativeActor and admins bypass membership. The
+  // rule's direct resource.data.memberIds access denies a missing field; only an
+  // explicit null receives the legacy fallback. Support has no category scope.
+  if (actor.customClaims.role !== 'admin'
+    && (!Object.hasOwn(project, 'memberIds')
+      || (project.memberIds !== null && (!Array.isArray(project.memberIds) || !project.memberIds.includes(actor.uid))))) {
     throw fault('support_ticket_project_forbidden', 403);
   }
 };

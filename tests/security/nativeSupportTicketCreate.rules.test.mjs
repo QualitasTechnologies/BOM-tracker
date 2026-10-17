@@ -26,13 +26,12 @@ test('actual rules allow approved project member ticket and activity writes, wit
   await assertSucceeds(setDoc(doc(db, 'projects/P/supportTickets/test/activities/created'), { type: 'created', createdBy: 'alice' }));
 });
 
-test('actual rules accept explicit null memberIds and reveal whether a missing memberIds field receives the legacy fallback', async () => {
+test('actual rules retain explicit-null fallback and deny an absent memberIds field', async () => {
   await seedProject({ memberIds: null });
   await assertSucceeds(writeTicket('outsider'));
   await env.clearFirestore();
   await seedProject({});
-  const result = await writeTicket('outsider').then(() => 'allowed', () => 'denied');
-  assert.equal(result, 'allowed', 'checked-in rules describe missing memberIds as a legacy null fallback');
+  await assertFails(writeTicket('outsider'));
 });
 
 test('actual rules reject a nonmember and an unapproved member', async () => {

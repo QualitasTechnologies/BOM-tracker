@@ -25,10 +25,11 @@ test('atomically creates a ticket, created activity, receipt and audit with serv
   assert.equal(f.docs.size, 5);
 });
 
-test('approved admins bypass membership; approved members including viewers may create; project rules fallback for absent or null memberIds', async () => {
+test('approved admins bypass membership, viewers need listed membership, explicit null keeps fallback and absent memberIds denies', async () => {
   assert.equal((await fixture({ uid: 'admin', project: { projectId: 'P', memberIds: [] } }).call()).ok, true);
+  assert.equal((await fixture({ uid: 'admin', project: { projectId: 'P' } }).call()).ok, true);
   assert.equal((await fixture({ uid: 'alice', project: { projectId: 'P', memberIds: ['alice'] } }).call()).ok, true);
-  assert.equal((await fixture({ uid: 'outsider', project: { projectId: 'P' } }).call()).ok, true);
+  assert.equal((await fixture({ uid: 'outsider', project: { projectId: 'P' } }).call()).error, 'support_ticket_project_forbidden');
   assert.equal((await fixture({ uid: 'outsider', project: { projectId: 'P', memberIds: null } }).call()).ok, true);
 });
 
