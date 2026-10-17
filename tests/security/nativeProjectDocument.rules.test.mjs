@@ -86,6 +86,21 @@ test('private project document namespaces are denied to every client including a
   await assertFails(setDoc(doc(context.firestore(),path),{state:'finalized'}));await assertFails(getDoc(doc(context.firestore(),path)));
  }
 });
+test('spec-search receipts and audit records are unreadable and unwritable to members and admins',async()=>{
+ const paths=['pulseSpecSearchReceipts/receipt-1','pulseSpecSearchAudit/audit-1'];
+ await env.withSecurityRulesDisabled(async context=>{
+  const db=context.firestore();
+  await setDoc(doc(db,paths[0]),{actor_uid:'alice',project_id:'P',item_id:'i1',state:'completed'});
+  await setDoc(doc(db,paths[1]),{actor_uid:'alice',project_id:'P',item_id:'i1',outcome:'completed'});
+ });
+ for(const context of [actor(),actor('alice',{role:'admin'})])for(const path of paths){
+  const reference=doc(context.firestore(),path);
+  await assertFails(getDoc(reference));
+  await assertFails(setDoc(reference,{state:'forged'}));
+  await assertFails(updateDoc(reference,{state:'forged'}));
+  await assertFails(deleteDoc(reference));
+ }
+});
 test('legacy all-type SDK queries remain available during coexistence',async()=>{
  await env.withSecurityRulesDisabled(async context=>{
   const db=context.firestore();await setDoc(doc(db,'projects/P'),{memberIds:['alice']});
