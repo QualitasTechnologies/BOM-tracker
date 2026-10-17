@@ -1,12 +1,13 @@
 const assert=require('node:assert/strict'),{Readable}=require('node:stream'),{createHash}=require('node:crypto');
 const clone=value=>value instanceof Date?new Date(value):Array.isArray(value)?value.map(clone):value&&typeof value==='object'&&[Object.prototype,null].includes(Object.getPrototypeOf(value))?Object.fromEntries(Object.entries(value).map(([key,row])=>[key,clone(row)])):value;
+const freeze=value=>{if(Array.isArray(value)||value&&typeof value==='object'&&[Object.prototype,null].includes(Object.getPrototypeOf(value))){if(!Object.isFrozen(value)){for(const row of Object.values(value))freeze(row);Object.freeze(value);}}return value;};
 function fixture(options={}){
  let factory;try{factory=require('./nativeProjectDocumentOperations.cjs').createNativeProjectDocumentOperations;}catch(error){if(error.code!=='MODULE_NOT_FOUND'||!error.message.includes("'./nativeProjectDocumentOperations.cjs'"))throw error;}
  assert.equal(typeof factory,'function','native project document factory must exist');
  const actor={uid:'alice',email:'alice@qualitastech.com',emailVerified:true,customClaims:{role:'viewer',status:'approved'}};
  const docs=new Map([['projects/P',{projectId:'P',memberIds:['alice'],members:[]}],['projects/P/bom/data',{categories:[{name:'Parts',items:[{id:'bolt',name:'Bolt',status:'not-ordered'}]}]}]]),versions=new Map([...docs.keys()].map(path=>[path,1]));let clock=1;
  const ref=(path,settings={})=>({path,...settings,doc:id=>ref(`${path}/${id}`),collection:name=>ref(`${path}/${name}`),where:(key,op,value)=>{assert.equal(op,'==');return ref(path,{...settings,filter:[key,value],query:true});},orderBy:key=>{assert.equal(key,'__name__');return ref(path,{...settings,query:true});},limit:n=>ref(path,{...settings,max:n,query:true}),startAfter:cursor=>ref(path,{...settings,cursor,query:true})});
- const snap=path=>({id:path.split('/').at(-1),ref:ref(path),exists:docs.has(path),data:()=>clone(docs.get(path)),updateTime:{seconds:10,nanoseconds:versions.get(path)||1}});
+ const snap=path=>{const exists=docs.has(path),data=exists?freeze(clone(docs.get(path))):undefined;return Object.freeze({id:path.split('/').at(-1),ref:ref(path),exists,data:()=>data,updateTime:Object.freeze({seconds:10,nanoseconds:versions.get(path)||1})});};
  const rows=r=>[...docs.keys()].filter(path=>path.startsWith(r.path+'/')&&!path.slice(r.path.length+1).includes('/')&&(!r.filter||docs.get(path)?.[r.filter[0]]===r.filter[1])&&(!r.cursor||path.split('/').at(-1)>r.cursor)).sort();
  const stamp=r=>JSON.stringify(r.query?rows(r).map(path=>[path,versions.get(path)]):[docs.has(r.path),versions.get(r.path)]);
  const db={collection:ref,runTransaction:async fn=>{

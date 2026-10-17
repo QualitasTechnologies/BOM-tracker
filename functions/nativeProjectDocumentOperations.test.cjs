@@ -213,14 +213,17 @@ test('new deletes refuse to archive non-native URLs whose storage identity canno
  assert.equal(result.error,'project_document_integrity_unverified');assert.equal(f.docs.has('projectDocuments/document-1'),true);assert.equal(f.docs.has('pulseDeletedProjectDocuments/P/documents/document-1'),false);
 });
 
-test('deleted archive pagination skips restored entries and revocation during listing is rechecked',async()=>{
+test('deleted archive pagination skips restored entries and applies current category scope',async()=>{
  const f=fixture();
  for(let i=0;i<205;i++)f.docs.set(`pulseDeletedProjectDocuments/P/documents/archive-${String(i).padStart(3,'0')}`,{project_id:'P',document_id:`doc-${i}`,document_type:'spec-sheet',document:{projectId:'P',name:`doc-${i}`,url:'https://example.test/file.pdf',type:'spec-sheet',linkedBOMItems:[]},at:new Date(2026,0,i+1)});
  f.docs.set('pulseProjectDocumentMutations/P/restorations/archive-000',{event:'project_document_archive_restored'});
  const seen=[];let cursor,rounds=0;do{const page=await f.call({operation:'list_deleted',...(cursor?{cursor}:{})});assert.equal(page.ok,true);seen.push(...page.deleted_documents.map(row=>row.archive_id));cursor=page.next_cursor;assert.ok(++rounds<=3);}while(cursor);
  assert.equal(rounds,3);assert.equal(seen.length,204);assert.equal(seen.includes('archive-000'),false);assert.equal(new Set(seen).size,204);
- const g=fixture();g.options.onRead=path=>{if(path==='pulseDeletedProjectDocuments/P/documents')g.docs.get('projects/P').memberIds=[];};
- assert.equal((await g.call({operation:'list_deleted'})).error,'project_document_forbidden');
+ const g=fixture();g.actor.email='viewer@customer.test';g.docs.get('projects/P').members=[{userId:'alice',categoryScope:['Other']}];
+ g.docs.set('pulseDeletedProjectDocuments/P/documents/scoped',{project_id:'P',document_id:'scoped-document',document_type:'spec-sheet',document:{projectId:'P',name:'scoped',url:'https://example.test/file.pdf',type:'spec-sheet',linkedBOMItems:['bolt']},at:new Date('2026-01-01')});
+ assert.equal((await g.call({operation:'list_deleted'})).deleted_documents.length,0);
+ const revoked=fixture();revoked.options.onRead=path=>{if(path==='pulseDeletedProjectDocuments/P/documents')revoked.actor.disabled=true;};
+ assert.equal((await revoked.call({operation:'list_deleted'})).error,'actor_forbidden');
 });
 
 test('restore rechecks project membership after verifying the original storage object',async()=>{
