@@ -28,7 +28,7 @@ function fixture(options={}){
  const auth={verifyIdToken:async()=>({uid:actor.uid,email:actor.email}),getUser:async()=>clone(actor)};
  const handler=factory({db,auth,bucket,enabled:()=>enabled,getServerTimestamp:()=>time,now:()=>time});
  const base={project_id:'P',document_id:'document-1',operation_id:'upload-1',expected_actor_uid:'alice'};
- const call=data=>handler({auth:{uid:'alice'},rawRequest:{get:()=> 'Bearer synthetic'},data:{...base,...data}});
+ const call=data=>{const payload={...base,...data};if(['get','list_deleted'].includes(payload.operation))delete payload.document_id;if(payload.operation==='list_deleted')delete payload.operation_id;if(payload.operation==='restore')delete payload.document_id;return handler({auth:{uid:'alice'},rawRequest:{get:()=> 'Bearer synthetic'},data:payload});};
  const bytes=Buffer.from('%PDF synthetic document');
  return{docs,versions,actor,options,objects,bytes,call,db,auth,bucket,off:()=>{enabled=false;},expire:()=>{time=new Date('2026-10-17');},publications:()=>publications,
   reserve:extra=>call({operation:'reserve',name:'quote.pdf',document_type:'vendor-quote',content_type:'application/pdf',byte_size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),...extra}),
