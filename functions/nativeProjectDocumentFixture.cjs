@@ -1,12 +1,13 @@
 const assert=require('node:assert/strict'),{Readable}=require('node:stream'),{createHash}=require('node:crypto');
 const clone=value=>value instanceof Date?new Date(value):Array.isArray(value)?value.map(clone):value&&typeof value==='object'&&[Object.prototype,null].includes(Object.getPrototypeOf(value))?Object.fromEntries(Object.entries(value).map(([key,row])=>[key,clone(row)])):value;
+const freeze=value=>{if(Array.isArray(value)||value&&typeof value==='object'&&[Object.prototype,null].includes(Object.getPrototypeOf(value))){if(!Object.isFrozen(value)){for(const row of Object.values(value))freeze(row);Object.freeze(value);}}return value;};
 function fixture(options={}){
  let factory;try{factory=require('./nativeProjectDocumentOperations.cjs').createNativeProjectDocumentOperations;}catch(error){if(error.code!=='MODULE_NOT_FOUND'||!error.message.includes("'./nativeProjectDocumentOperations.cjs'"))throw error;}
  assert.equal(typeof factory,'function','native project document factory must exist');
  const actor={uid:'alice',email:'alice@qualitastech.com',emailVerified:true,customClaims:{role:'viewer',status:'approved'}};
  const docs=new Map([['projects/P',{projectId:'P',memberIds:['alice'],members:[]}],['projects/P/bom/data',{categories:[{name:'Parts',items:[{id:'bolt',name:'Bolt',status:'not-ordered'}]}]}]]),versions=new Map([...docs.keys()].map(path=>[path,1]));let clock=1;
  const ref=(path,settings={})=>({path,...settings,doc:id=>ref(`${path}/${id}`),collection:name=>ref(`${path}/${name}`),where:(key,op,value)=>{assert.equal(op,'==');return ref(path,{...settings,filter:[key,value],query:true});},orderBy:key=>{assert.equal(key,'__name__');return ref(path,{...settings,query:true});},limit:n=>ref(path,{...settings,max:n,query:true}),startAfter:cursor=>ref(path,{...settings,cursor,query:true})});
- const snap=path=>({id:path.split('/').at(-1),ref:ref(path),exists:docs.has(path),data:()=>clone(docs.get(path)),updateTime:{seconds:10,nanoseconds:versions.get(path)||1}});
+ const snap=path=>{const exists=docs.has(path),data=exists?freeze(clone(docs.get(path))):undefined;return Object.freeze({id:path.split('/').at(-1),ref:ref(path),exists,data:()=>data,updateTime:Object.freeze({seconds:10,nanoseconds:versions.get(path)||1})});};
  const rows=r=>[...docs.keys()].filter(path=>path.startsWith(r.path+'/')&&!path.slice(r.path.length+1).includes('/')&&(!r.filter||docs.get(path)?.[r.filter[0]]===r.filter[1])&&(!r.cursor||path.split('/').at(-1)>r.cursor)).sort();
  const stamp=r=>JSON.stringify(r.query?rows(r).map(path=>[path,versions.get(path)]):[docs.has(r.path),versions.get(r.path)]);
  const db={collection:ref,runTransaction:async fn=>{
@@ -28,11 +29,11 @@ function fixture(options={}){
  const auth={verifyIdToken:async()=>({uid:actor.uid,email:actor.email}),getUser:async()=>clone(actor)};
  const handler=factory({db,auth,bucket,enabled:()=>enabled,getServerTimestamp:()=>time,now:()=>time});
  const base={project_id:'P',document_id:'document-1',operation_id:'upload-1',expected_actor_uid:'alice'};
- const call=data=>handler({auth:{uid:'alice'},rawRequest:{get:()=> 'Bearer synthetic'},data:{...base,...data}});
+ const call=data=>{const payload={...base,...data};if(['get','list_deleted'].includes(payload.operation))delete payload.document_id;if(payload.operation==='list_deleted')delete payload.operation_id;if(payload.operation==='restore')delete payload.document_id;return handler({auth:{uid:'alice'},rawRequest:{get:()=> 'Bearer synthetic'},data:payload});};
  const bytes=Buffer.from('%PDF synthetic document');
  return{docs,versions,actor,options,objects,bytes,call,db,auth,bucket,off:()=>{enabled=false;},expire:()=>{time=new Date('2026-10-17');},publications:()=>publications,
   reserve:extra=>call({operation:'reserve',name:'quote.pdf',document_type:'vendor-quote',content_type:'application/pdf',byte_size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),...extra}),
-  upload:(path,value=bytes,type='application/pdf')=>put(path,value,type),finalize:()=>call({operation:'finalize'}),get:extra=>handler({auth:{uid:'alice'},rawRequest:{get:()=> 'Bearer synthetic'},data:{operation:'get',project_id:'P',expected_actor_uid:'alice',...extra}}),
+  upload:(path,value=bytes,type='application/pdf',metadata={})=>put(path,value,type,metadata),finalize:()=>call({operation:'finalize'}),get:extra=>handler({auth:{uid:'alice'},rawRequest:{get:()=> 'Bearer synthetic'},data:{operation:'get',project_id:'P',expected_actor_uid:'alice',...extra}}),
  };
 }
 module.exports={fixture};
