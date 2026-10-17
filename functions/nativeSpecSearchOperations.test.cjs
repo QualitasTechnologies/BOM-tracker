@@ -105,15 +105,17 @@ test("approved admin, internal member and viewer can search; external members ne
   }
 });
 
-test("project access permits explicit null legacy fallback but rejects missing memberIds and non-members", async () => {
-  for (const project of [{memberIds: null}, {memberIds: ["alice"]}]) {
+test("project access preserves absent and null legacy memberIds while rejecting malformed or empty membership", async () => {
+  for (const project of [{}, {memberIds: null}, {memberIds: ["alice"]}]) {
     const f = fixture({actor: user(), project, categories: [{name: "Parts", items: [component]}]});
     assert.equal((await f.call()).ok, true);
   }
-  for (const project of [{}, {memberIds: []}]) {
+  for (const project of [{memberIds: []}, {memberIds: {alice: true}}]) {
     const f = fixture({actor: user(), project, categories: [{name: "Parts", items: [component]}]});
     assert.equal((await f.call()).error, "spec_search_forbidden");
   }
+  const admin = fixture({actor: user("admin", "admin"), project: {memberIds: []}, categories: [{name: "Parts", items: [component]}]});
+  assert.equal((await admin.call()).ok, true);
 });
 
 test("server derives search metadata and rejects caller-supplied item or webhook fields", async () => {

@@ -10,7 +10,7 @@ const uuid = (value) => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[
 const normalizedEmail = (value) => typeof value === "string" ? value.trim().toLowerCase() : "";
 const internal = (actor) => normalizedEmail(actor.email).endsWith("@qualitastech.com");
 const projectAccess = (project, actor) => actor.customClaims.role === "admin" ||
-  (Object.hasOwn(project, "memberIds") && project.memberIds === null) ||
+  project.memberIds == null ||
   (Array.isArray(project.memberIds) && project.memberIds.includes(actor.uid));
 const validPublicHttps = (value) => {
   if (typeof value !== "string" || value.length > 2048) return false;
