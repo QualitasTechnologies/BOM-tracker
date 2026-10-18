@@ -17,45 +17,57 @@ import {
 
 // Firebase Functions URLs
 const FUNCTIONS_BASE_URL = 'https://us-central1-visionbomtracker.cloudfunctions.net';
-const pendingSpecSearchOperations = new Map<string, string>();
 const SPEC_SEARCH_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+type SpecSearchOperationRecord = { operationId: string; state: 'pending' | 'terminal' };
+
+function isSpecSearchOperationRecord(value: unknown): value is SpecSearchOperationRecord {
+  return Boolean(value && typeof value === 'object' &&
+    ['pending', 'terminal'].includes((value as SpecSearchOperationRecord).state) &&
+    SPEC_SEARCH_OPERATION_ID.test((value as SpecSearchOperationRecord).operationId));
+}
 
 function specSearchOperationKey(request: Pick<SpecSearchRequest, 'userId' | 'projectId' | 'bomItemId'>): string {
   return `bom:spec-search:pending:${encodeURIComponent(request.userId)}:${encodeURIComponent(request.projectId)}:${encodeURIComponent(request.bomItemId)}`;
 }
 
-function getPendingSpecSearchOperation(key: string): string | undefined {
-  const inMemory = pendingSpecSearchOperations.get(key);
-  if (inMemory) return inMemory;
-
+function loadSpecSearchOperation(key: string): SpecSearchOperationRecord | undefined {
   try {
-    const stored = globalThis.localStorage?.getItem(key) || undefined;
-    if (stored && SPEC_SEARCH_OPERATION_ID.test(stored)) {
-      pendingSpecSearchOperations.set(key, stored);
-      return stored;
+    const stored = globalThis.localStorage.getItem(key);
+    if (!stored) return undefined;
+    let record: unknown;
+    try {
+      record = JSON.parse(stored);
+    } catch {
+      // Older client versions stored the pending UUID directly.
+      record = SPEC_SEARCH_OPERATION_ID.test(stored) ? { operationId: stored, state: 'pending' } : undefined;
     }
-    if (stored) globalThis.localStorage?.removeItem(key);
-  } catch {
-    // Fall back to this page's pending-operation cache if browser storage is unavailable.
-  }
-  return undefined;
-}
-
-function setPendingSpecSearchOperation(key: string, operationId: string): void {
-  pendingSpecSearchOperations.set(key, operationId);
-  try {
-    globalThis.localStorage?.setItem(key, operationId);
-  } catch {
-    // Keep the operation ID in memory so a retry in this page is still idempotent.
+    if (!isSpecSearchOperationRecord(record)) {
+      throw new Error('A previous specification search record cannot be safely recovered. Clear this site’s saved browser data before retrying.');
+    }
+    return record;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('cannot be safely recovered')) throw error;
+    throw new Error('Spec search cannot safely continue because browser storage is unavailable. Enable site storage and try again.');
   }
 }
 
-function clearPendingSpecSearchOperation(key: string, operationId: string): void {
-  if (pendingSpecSearchOperations.get(key) === operationId) pendingSpecSearchOperations.delete(key);
+function saveSpecSearchOperation(key: string, operationId: string, state: SpecSearchOperationRecord['state']): void {
   try {
-    if (globalThis.localStorage?.getItem(key) === operationId) globalThis.localStorage.removeItem(key);
+    globalThis.localStorage.setItem(key, JSON.stringify({ operationId, state }));
   } catch {
-    // The terminal result is still returned; inaccessible browser storage is harmless.
+    if (state === 'terminal') {
+      throw new Error('The spec search result arrived, but browser storage could not save its completion record. Retry to safely recover the result; the same operation ID will be reused.');
+    }
+    throw new Error('Spec search cannot safely start because browser storage could not save its retry record. Enable site storage and try again.');
+  }
+}
+
+function removeSpecSearchOperation(key: string): boolean {
+  try {
+    globalThis.localStorage.removeItem(key);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -130,8 +142,16 @@ export async function triggerSpecSearch(
     if (!request.userId) throw new Error('You must be signed in to search for a specification sheet.');
 
     const operationKey = specSearchOperationKey(request);
-    const operationId = getPendingSpecSearchOperation(operationKey) || crypto.randomUUID();
-    setPendingSpecSearchOperation(operationKey, operationId);
+    let savedOperation = loadSpecSearchOperation(operationKey);
+    if (savedOperation?.state === 'terminal') {
+      if (!removeSpecSearchOperation(operationKey)) {
+        throw new Error('Your previous spec search finished, but browser storage could not clear its record. Enable site storage and try again; no new search was started.');
+      }
+      savedOperation = undefined;
+    }
+    const operationId = savedOperation?.operationId || crypto.randomUUID();
+    // Confirm durable retry identity before any callable can dispatch the search.
+    saveSpecSearchOperation(operationKey, operationId, 'pending');
     const call = httpsCallable<
       { project_id: string; item_id: string; operation_id: string; expected_actor_uid: string },
       { ok: boolean; operation_id?: string; state: string; specificationUrl?: string | null; error?: string }
@@ -144,7 +164,10 @@ export async function triggerSpecSearch(
     });
 
     if (isTerminalSpecSearchState(data.state)) {
-      clearPendingSpecSearchOperation(operationKey, operationId);
+      // Persist the terminal marker before removal. If removal fails, the next
+      // deliberate click can refuse to reuse a completed receipt as a new search.
+      saveSpecSearchOperation(operationKey, operationId, 'terminal');
+      removeSpecSearchOperation(operationKey);
     }
 
     const completed = data.state === 'completed' || data.state === 'not_found';
