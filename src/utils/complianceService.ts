@@ -17,6 +17,51 @@ import {
 
 // Firebase Functions URLs
 const FUNCTIONS_BASE_URL = 'https://us-central1-visionbomtracker.cloudfunctions.net';
+const pendingSpecSearchOperations = new Map<string, string>();
+const SPEC_SEARCH_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function specSearchOperationKey(request: Pick<SpecSearchRequest, 'userId' | 'projectId' | 'bomItemId'>): string {
+  return `bom:spec-search:pending:${encodeURIComponent(request.userId)}:${encodeURIComponent(request.projectId)}:${encodeURIComponent(request.bomItemId)}`;
+}
+
+function getPendingSpecSearchOperation(key: string): string | undefined {
+  const inMemory = pendingSpecSearchOperations.get(key);
+  if (inMemory) return inMemory;
+
+  try {
+    const stored = globalThis.localStorage?.getItem(key) || undefined;
+    if (stored && SPEC_SEARCH_OPERATION_ID.test(stored)) {
+      pendingSpecSearchOperations.set(key, stored);
+      return stored;
+    }
+    if (stored) globalThis.localStorage?.removeItem(key);
+  } catch {
+    // Fall back to this page's pending-operation cache if browser storage is unavailable.
+  }
+  return undefined;
+}
+
+function setPendingSpecSearchOperation(key: string, operationId: string): void {
+  pendingSpecSearchOperations.set(key, operationId);
+  try {
+    globalThis.localStorage?.setItem(key, operationId);
+  } catch {
+    // Keep the operation ID in memory so a retry in this page is still idempotent.
+  }
+}
+
+function clearPendingSpecSearchOperation(key: string, operationId: string): void {
+  if (pendingSpecSearchOperations.get(key) === operationId) pendingSpecSearchOperations.delete(key);
+  try {
+    if (globalThis.localStorage?.getItem(key) === operationId) globalThis.localStorage.removeItem(key);
+  } catch {
+    // The terminal result is still returned; inaccessible browser storage is harmless.
+  }
+}
+
+function isTerminalSpecSearchState(state: string): boolean {
+  return ['completed', 'not_found', 'failed', 'conflict', 'project_not_found', 'item_not_found', 'bom_not_found'].includes(state);
+}
 
 /**
  * Run AI compliance check on BOM items
@@ -84,7 +129,9 @@ export async function triggerSpecSearch(
   try {
     if (!request.userId) throw new Error('You must be signed in to search for a specification sheet.');
 
-    const operationId = crypto.randomUUID();
+    const operationKey = specSearchOperationKey(request);
+    const operationId = getPendingSpecSearchOperation(operationKey) || crypto.randomUUID();
+    setPendingSpecSearchOperation(operationKey, operationId);
     const call = httpsCallable<
       { project_id: string; item_id: string; operation_id: string; expected_actor_uid: string },
       { ok: boolean; operation_id?: string; state: string; specificationUrl?: string | null; error?: string }
@@ -95,6 +142,10 @@ export async function triggerSpecSearch(
       operation_id: operationId,
       expected_actor_uid: request.userId,
     });
+
+    if (isTerminalSpecSearchState(data.state)) {
+      clearPendingSpecSearchOperation(operationKey, operationId);
+    }
 
     const completed = data.state === 'completed' || data.state === 'not_found';
     return {
