@@ -299,7 +299,31 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
             if (!document.exists || document.data().projectId !== id || document.data().type === 'customer-po' && actor.customClaims.role !== 'admin') throw fault('document_forbidden', 403);
             documents.set(documentId, document.data());
           };
-          for (const documentId of documentIds) await readDocument(documentId);
+          if (command.kind === 'delete_items') {
+            for (const itemId of command.item_ids) {
+              const ownerCategory = categories.find(category => category.items.some(item => item.id === itemId))?.name;
+              if (ownerCategory === undefined) throw fault('material_not_found', 404);
+              if (scope !== null && !scope.includes(ownerCategory)) throw fault('material_forbidden', 403);
+            }
+            const uniqueDocumentIds = new Set();
+            for (let offset = 0; offset < command.item_ids.length; offset += 30) {
+              const itemIds = command.item_ids.slice(offset, offset + 30);
+              const linkedRows = await transaction.get(db.collection('projectDocuments').where('projectId', '==', id)
+                .where('linkedBOMItems', 'array-contains-any', itemIds).limit(401));
+              if (linkedRows.docs.length > 400) throw fault('material_command_too_large');
+              for (const row of linkedRows.docs) {
+                if (uniqueDocumentIds.has(row.id)) continue;
+                uniqueDocumentIds.add(row.id);
+                if (uniqueDocumentIds.size > 400) throw fault('material_command_too_large');
+                const data = row.data();
+                if (!data || data.projectId !== id || data.type === 'customer-po' && actor.customClaims.role !== 'admin') throw fault('document_forbidden', 403);
+                documents.set(row.id, data);
+                if (!documentIds.includes(row.id)) documentIds.push(row.id);
+                if (documentIds.length > 400) throw fault('material_command_too_large');
+              }
+            }
+          }
+          for (const documentId of documentIds) if (!documents.has(documentId)) await readDocument(documentId);
           // Document type determines which old scalar link must also be read.
           for (const documentId of referencedDocuments(command, categories, documents)) if (!documents.has(documentId)) { await readDocument(documentId); documentIds.push(documentId); }
           const changes = applyCommand({ categories, command, scope, canonical, documents });

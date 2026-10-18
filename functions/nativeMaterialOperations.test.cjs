@@ -11,11 +11,17 @@ function fixture({ enabled, tokenError = false } = {}) {
     ['projects/A/bom/data', { categories: [{ name: 'Mech', items: [{ id: 'motor', name: 'Original', quantity: 1 }] }, { name: 'Other', items: [{ id: 'hidden' }] }] }]
   ]);
   let tick = 1; const checks = [];
-  const ref = path => ({ path, collection: name => ref(`${path}/${name}`), doc: name => ref(`${path}/${name}`) });
+  const query = (collection, filters = [], max = Infinity) => ({ collection, filters, max,
+    where(field, op, value) { return query(collection, [...filters, [field, op, value]], max); },
+    limit(value) { return query(collection, filters, value); } });
+  const ref = path => ({ path, collection: name => ref(`${path}/${name}`), doc: name => ref(`${path}/${name}`),
+    where(field, op, value) { return query(path, [[field, op, value]]); }, orderBy() { return query(path); }, limit(value) { return query(path, [], value); } });
   const db = { collection: name => ref(name), runTransaction: async fn => {
     const writes = [];
     const result = await fn({
-      get: async row => ({ exists: docs.has(row.path), data: () => structuredClone(docs.get(row.path)), updateTime: { seconds: 10, nanoseconds: tick } }),
+      get: async row => row.collection && row.filters
+        ? { docs: [...docs].filter(([path, data]) => path.startsWith(`${row.collection}/`) && row.filters.every(([field, op, value]) => op === '==' ? data[field] === value : op === 'array-contains-any' ? Array.isArray(data[field]) && value.some(item => data[field].includes(item)) : false)).slice(0, row.max).map(([path, data]) => ({ id: path.slice(row.collection.length + 1), data: () => structuredClone(data) })) }
+        : { exists: docs.has(row.path), data: () => structuredClone(docs.get(row.path)), updateTime: { seconds: 10, nanoseconds: tick } },
       update: (row, fields) => writes.push(() => docs.set(row.path, { ...docs.get(row.path), ...fields })),
       create: (row, data) => writes.push(() => docs.set(row.path, data))
     });

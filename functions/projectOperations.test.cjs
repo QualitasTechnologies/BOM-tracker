@@ -10,12 +10,22 @@ function fixture(options = {}) {
   }).map(([path, data]) => [path, { data, tick: 1 }]));
   let clock = 1;
   const snap = path => { const row = docs.get(path); return { exists: !!row, data: () => structuredClone(row?.data), updateTime: row ? { seconds: 10, nanoseconds: row.tick } : undefined }; };
-  const ref = path => ({ path, collection: name => ref(`${path}/${name}`), doc: name => ref(`${path}/${name}`), get: async () => snap(path) });
+  const ref = path => ({ path, collection: name => ref(`${path}/${name}`), doc: name => ref(`${path}/${name}`), get: async () => snap(path),
+    where(field, op, value) { return query(path, [[field, op, value]]); }, orderBy() { return query(path); }, limit(value) { return query(path, [], value); } });
+  const query = (collection, filters = [], max = Infinity) => ({ collection, filters, max,
+    where(field, op, value) { return query(collection, [...filters, [field, op, value]], max); },
+    limit(value) { return query(collection, filters, value); } });
   const db = { collection: name => ref(name), runTransaction: async fn => {
     for (let attempt = 0; attempt < 5; attempt++) {
       const staged = [];
       const reads = new Map();
-      const result = await fn({ get: async r => { if (staged.length) throw Error('reads after writes'); const row = snap(r.path); reads.set(r.path, docs.get(r.path)?.tick); return row; }, update: (r, data) => staged.push(['update', r.path, data]), create: (r, data) => { if (options.failAudit && r.path.includes('materialAudit')) throw Error('audit failure'); staged.push(['create', r.path, data]); } });
+      const result = await fn({ get: async r => { if (staged.length) throw Error('reads after writes');
+        if (r.collection && r.filters) {
+          const rows = [...docs].filter(([path, row]) => path.startsWith(`${r.collection}/`) && r.filters.every(([field, op, value]) => op === '==' ? row.data[field] === value : op === 'array-contains-any' ? Array.isArray(row.data[field]) && value.some(item => row.data[field].includes(item)) : false)).slice(0, r.max);
+          for (const [path] of rows) reads.set(path, docs.get(path)?.tick);
+          return { docs: rows.map(([path]) => ({ id: path.slice(r.collection.length + 1), data: () => structuredClone(docs.get(path).data) })) };
+        }
+        const row = snap(r.path); reads.set(r.path, docs.get(r.path)?.tick); return row; }, update: (r, data) => staged.push(['update', r.path, data]), create: (r, data) => { if (options.failAudit && r.path.includes('materialAudit')) throw Error('audit failure'); staged.push(['create', r.path, data]); } });
       if (options.beforeCommit) { const hook = options.beforeCommit; options.beforeCommit = null; hook(docs); }
       if ([...reads].some(([path, tick]) => docs.get(path)?.tick !== tick)) continue;
       for (const [kind, path] of staged) if (kind === 'create' && docs.has(path)) throw Error('already exists');
@@ -298,6 +308,52 @@ test('delete command replays after deletion but rejects revoked recorded categor
   const f = commandFixture(); const c = { kind: 'delete_items', item_ids: ['motor'] };
   const first = await f.command(c); assert.equal(first.status, 200); assert.deepEqual(await f.command(c), first); assert.equal(f.categories()[0].items.some(i => i.id === 'motor'), false);
   f.docs.get('projects/A').data.members[0].categoryScope = ['Dest']; assert.equal((await f.command(c)).status, 403);
+});
+test('delete command removes linked item IDs from every project document atomically and audits document changes', async () => {
+  const f = commandFixture();
+  f.categories()[0].items[0].linkedInvoiceDocumentId = 'invoice-scalar';
+  f.categories()[0].items[0].fulfillmentTranches = [{ quantity: 1, invoiceDocId: 'invoice-tranche' }];
+  f.docs.set('projectDocuments/quote-only', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor', 'historic', 'historic'], untouched: { keep: true } } });
+  f.docs.set('projectDocuments/invoice-scalar', { tick: 1, data: { projectId: 'A', type: 'vendor-invoice', linkedBOMItems: ['motor', 'other', 'motor'], metadata: 'keep' } });
+  f.docs.set('projectDocuments/invoice-tranche', { tick: 1, data: { projectId: 'A', type: 'vendor-invoice', linkedBOMItems: ['other', 'motor'], metadata: 'also keep' } });
+  const result = await f.command({ kind: 'delete_items', item_ids: ['motor'] });
+  assert.equal(result.status, 200);
+  assert.deepEqual(f.docs.get('projectDocuments/quote-only').data.linkedBOMItems, ['historic', 'historic']);
+  assert.deepEqual(f.docs.get('projectDocuments/invoice-scalar').data.linkedBOMItems, ['other']);
+  assert.deepEqual(f.docs.get('projectDocuments/invoice-tranche').data.linkedBOMItems, ['other']);
+  assert.deepEqual(f.docs.get('projectDocuments/quote-only').data.untouched, { keep: true });
+  assert.equal(f.docs.get('projectDocuments/invoice-scalar').data.metadata, 'keep');
+  assert.equal(f.docs.has('projectDocuments/quote-only'), true);
+  const audit = f.docs.get('pulseProjectMaterialOperations/A/materialAudit/command-1').data;
+  assert.deepEqual(audit.before.documents.map(row => row.document_id).sort(), ['invoice-scalar', 'invoice-tranche', 'quote-only']);
+  assert.deepEqual(audit.after.documents.map(row => [row.document_id, row.linkedBOMItems]).sort((a, b) => a[0].localeCompare(b[0])), [
+    ['invoice-scalar', ['other']], ['invoice-tranche', ['other']], ['quote-only', ['historic', 'historic']]
+  ]);
+  assert.deepEqual(audit.after.items, [{ item_id: 'motor', category: null, item: null }]);
+  assert.deepEqual(await f.command({ kind: 'delete_items', item_ids: ['motor'] }), result);
+});
+test('delete command keeps item and document links unchanged on audit failure or lost document authorization', async () => {
+  const failed = commandFixture({ failAudit: true });
+  failed.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor'] } });
+  assert.equal((await failed.command({ kind: 'delete_items', item_ids: ['motor'] })).status, 503);
+  assert.equal(failed.categories()[0].items.some(item => item.id === 'motor'), true);
+  assert.deepEqual(failed.docs.get('projectDocuments/quote').data.linkedBOMItems, ['motor']);
+
+  const denied = commandFixture();
+  denied.docs.set('projectDocuments/customer', { tick: 1, data: { projectId: 'A', type: 'customer-po', linkedBOMItems: ['motor'] } });
+  assert.equal((await denied.command({ kind: 'delete_items', item_ids: ['motor'] })).status, 403);
+  assert.equal(denied.categories()[0].items.some(item => item.id === 'motor'), true);
+  assert.deepEqual(denied.docs.get('projectDocuments/customer').data.linkedBOMItems, ['motor']);
+});
+test('delete command rechecks linked document authorization when the transaction retries', async () => {
+  const f = commandFixture({ beforeCommit: docs => {
+    const row = docs.get('projectDocuments/quote');
+    docs.set('projectDocuments/quote', { tick: 999, data: { ...row.data, type: 'customer-po' } });
+  } });
+  f.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor'] } });
+  assert.equal((await f.command({ kind: 'delete_items', item_ids: ['motor'] })).status, 403);
+  assert.equal(f.categories()[0].items.some(item => item.id === 'motor'), true);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
 });
 test('initialization creates missing BOM conditionally and distinguishes valid empty/malformed/nonempty', async () => {
   const c = { kind: 'add_items', items: [newMaterial()], initialize: true };
