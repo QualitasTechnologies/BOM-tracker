@@ -15,12 +15,17 @@ function fixture(options = {}) {
   const query = (collection, filters = [], max = Infinity) => ({ collection, filters, max,
     where(field, op, value) { return query(collection, [...filters, [field, op, value]], max); },
     limit(value) { return query(collection, filters, value); } });
+  const linkedItemQuerySizes = [];
   const db = { collection: name => ref(name), runTransaction: async fn => {
     for (let attempt = 0; attempt < 5; attempt++) {
       const staged = [];
       const reads = new Map();
       const result = await fn({ get: async r => { if (staged.length) throw Error('reads after writes');
         if (r.collection && r.filters) {
+          for (const [, op, value] of r.filters) if (op === 'array-contains-any') {
+            if (!Array.isArray(value) || value.length < 1 || value.length > 30) throw Error('array-contains-any accepts 1-30 values');
+            linkedItemQuerySizes.push(value.length);
+          }
           const rows = [...docs].filter(([path, row]) => path.startsWith(`${r.collection}/`) && r.filters.every(([field, op, value]) => op === '==' ? row.data[field] === value : op === 'array-contains-any' ? Array.isArray(row.data[field]) && value.some(item => row.data[field].includes(item)) : false)).slice(0, r.max);
           for (const [path] of rows) reads.set(path, docs.get(path)?.tick);
           return { docs: rows.map(([path]) => ({ id: path.slice(r.collection.length + 1), data: () => structuredClone(docs.get(path).data) })) };
@@ -43,7 +48,7 @@ function fixture(options = {}) {
     await handler(req, res); return { status, body: result };
   };
   const patch = (changes = {}, extra = {}) => call('PATCH', { item_id: 'motor', expected_version: '10:1', operation_id: 'op-1', patch: { name: 'New motor', ...changes }, ...extra });
-  return { call, patch, docs, actor, change(path, update) { const row = docs.get(path); docs.set(path, { data: { ...row.data, ...update }, tick: ++clock }); } };
+  return { call, patch, docs, actor, linkedItemQuerySizes, change(path, update) { const row = docs.get(path); docs.set(path, { data: { ...row.data, ...update }, tick: ++clock }); } };
 }
 
 test('materials handler factory exists', () => assert.equal(typeof createProjectOperationsHandler, 'function'));
@@ -331,6 +336,51 @@ test('delete command removes linked item IDs from every project document atomica
   ]);
   assert.deepEqual(audit.after.items, [{ item_id: 'motor', category: null, item: null }]);
   assert.deepEqual(await f.command({ kind: 'delete_items', item_ids: ['motor'] }), result);
+});
+test('delete command chunks linked-document lookups at Firestore array-contains-any limit', async () => {
+  const f = commandFixture();
+  const itemIds = Array.from({ length: 31 }, (_, index) => `item-${index}`);
+  f.categories()[0].items = itemIds.map(id => ({ id, name: id, itemType: 'component', quantity: 1 }));
+  itemIds.forEach((id, index) => f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [id] } }));
+
+  const result = await f.command({ kind: 'delete_items', item_ids: itemIds });
+
+  assert.equal(result.status, 200);
+  assert.deepEqual(f.linkedItemQuerySizes, [30, 1]);
+  for (let index = 0; index < itemIds.length; index++) assert.deepEqual(f.docs.get(`projectDocuments/linked-${index}`).data.linkedBOMItems, []);
+});
+test('delete command rejects more than 400 linked documents in one query without partial changes', async () => {
+  const f = commandFixture();
+  for (let index = 0; index < 401; index++) f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor'] } });
+
+  const result = await f.command({ kind: 'delete_items', item_ids: ['motor'] });
+
+  assert.equal(result.status, 503);
+  assert.equal(f.categories()[0].items.some(item => item.id === 'motor'), true);
+  assert.deepEqual(f.docs.get('projectDocuments/linked-0').data.linkedBOMItems, ['motor']);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialOperations/command-1'), false);
+});
+test('delete command rejects more than 400 unique linked documents across chunks without partial changes', async () => {
+  const f = commandFixture();
+  const itemIds = Array.from({ length: 200 }, (_, index) => `item-${index}`);
+  f.categories()[0].items = itemIds.map(id => ({ id, name: id, itemType: 'component', quantity: 1 }));
+  itemIds.forEach((id, itemIndex) => {
+    for (let copy = 0; copy < 3; copy++) {
+      const documentIndex = itemIndex * 3 + copy;
+      f.docs.set(`projectDocuments/linked-${documentIndex}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [id] } });
+    }
+  });
+
+  const result = await f.command({ kind: 'delete_items', item_ids: itemIds });
+
+  assert.equal(result.status, 503);
+  assert.equal(f.categories()[0].items.length, 200);
+  assert.deepEqual(f.docs.get('projectDocuments/linked-0').data.linkedBOMItems, ['item-0']);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialOperations/command-1'), false);
+  assert.ok(f.linkedItemQuerySizes.length > 1);
+  assert.ok(f.linkedItemQuerySizes.every(size => size >= 1 && size <= 30));
 });
 test('delete command keeps item and document links unchanged on audit failure or lost document authorization', async () => {
   const failed = commandFixture({ failAudit: true });
