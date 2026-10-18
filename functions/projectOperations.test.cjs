@@ -342,12 +342,31 @@ test('delete command chunks linked-document lookups at Firestore array-contains-
   const itemIds = Array.from({ length: 31 }, (_, index) => `item-${index}`);
   f.categories()[0].items = itemIds.map(id => ({ id, name: id, itemType: 'component', quantity: 1 }));
   itemIds.forEach((id, index) => f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [id] } }));
+  f.docs.set('projectDocuments/cross-chunk', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['item-0', 'item-30'] } });
 
   const result = await f.command({ kind: 'delete_items', item_ids: itemIds });
 
   assert.equal(result.status, 200);
   assert.deepEqual(f.linkedItemQuerySizes, [30, 1]);
   for (let index = 0; index < itemIds.length; index++) assert.deepEqual(f.docs.get(`projectDocuments/linked-${index}`).data.linkedBOMItems, []);
+  assert.deepEqual(f.docs.get('projectDocuments/cross-chunk').data.linkedBOMItems, []);
+  const audit = f.docs.get('pulseProjectMaterialOperations/A/materialAudit/command-1').data;
+  assert.equal(audit.before.documents.filter(row => row.document_id === 'cross-chunk').length, 1);
+});
+test('delete command accepts exactly 400 linked documents and records every change once', async () => {
+  const f = commandFixture();
+  for (let index = 0; index < 400; index++) f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor'] } });
+
+  const result = await f.command({ kind: 'delete_items', item_ids: ['motor'] });
+
+  assert.equal(result.status, 200);
+  assert.equal(f.categories()[0].items.some(item => item.id === 'motor'), false);
+  for (let index = 0; index < 400; index++) assert.deepEqual(f.docs.get(`projectDocuments/linked-${index}`).data.linkedBOMItems, []);
+  const audit = f.docs.get('pulseProjectMaterialOperations/A/materialAudit/command-1').data;
+  const receipt = f.docs.get('pulseProjectMaterialOperations/A/materialOperations/command-1').data;
+  assert.equal(audit.before.documents.length, 400);
+  assert.equal(audit.after.documents.length, 400);
+  assert.equal(receipt.document_ids.length, 400);
 });
 test('delete command rejects more than 400 linked documents in one query without partial changes', async () => {
   const f = commandFixture();
