@@ -9,13 +9,30 @@ function fixture(options = {}) {
     'projects/A/bom/data': { unknown: 'keep', categories: [{ name: 'Mech', extra: 'keep', items: [{ id: 'motor', name: 'Motor', quantity: 2, price: 9, itemType: 'component', status: 'ordered', vendors: [{ name: 'V' }], unknown: { x: 1 } }, { id: 'service', name: 'Labour', quantity: 1, itemType: 'service' }] }, { name: 'Secret', items: [{ id: 'secret', name: 'Hidden', quantity: 1 }] }] }
   }).map(([path, data]) => [path, { data, tick: 1 }]));
   let clock = 1;
+  const linkedItemQuerySizes = [];
   const snap = path => { const row = docs.get(path); return { exists: !!row, data: () => structuredClone(row?.data), updateTime: row ? { seconds: 10, nanoseconds: row.tick } : undefined }; };
-  const ref = path => ({ path, collection: name => ref(`${path}/${name}`), doc: name => ref(`${path}/${name}`), get: async () => snap(path) });
+  const query = (collection, filters = [], max = Infinity) => ({ collection, filters, max,
+    where(field, op, value) { return query(collection, [...filters, [field, op, value]], max); },
+    limit(value) { return query(collection, filters, value); } });
+  const ref = path => ({ path, collection: name => ref(`${path}/${name}`), doc: name => ref(`${path}/${name}`), get: async () => snap(path),
+    where(field, op, value) { return query(path, [[field, op, value]]); }, limit(value) { return query(path, [], value); } });
   const db = { collection: name => ref(name), runTransaction: async fn => {
     for (let attempt = 0; attempt < 5; attempt++) {
       const staged = [];
       const reads = new Map();
-      const result = await fn({ get: async r => { if (staged.length) throw Error('reads after writes'); const row = snap(r.path); reads.set(r.path, docs.get(r.path)?.tick); return row; }, update: (r, data) => staged.push(['update', r.path, data]), create: (r, data) => { if (options.failAudit && r.path.includes('materialAudit')) throw Error('audit failure'); staged.push(['create', r.path, data]); } });
+      const result = await fn({ get: async r => {
+        if (staged.length) throw Error('reads after writes');
+        if (r.collection && r.filters) {
+          for (const [, op, value] of r.filters) if (op === 'array-contains-any') {
+            if (!Array.isArray(value) || value.length < 1 || value.length > 30) throw Error('array-contains-any accepts 1-30 values');
+            linkedItemQuerySizes.push(value.length);
+          }
+          const rows = [...docs].filter(([path, row]) => path.startsWith(`${r.collection}/`) && r.filters.every(([field, op, value]) => op === '==' ? row.data[field] === value : op === 'array-contains-any' ? Array.isArray(row.data[field]) && value.some(item => row.data[field].includes(item)) : false)).slice(0, r.max);
+          for (const [path, row] of rows) reads.set(path, row.tick);
+          return { docs: rows.map(([path, row]) => ({ id: path.slice(r.collection.length + 1), data: () => structuredClone(row.data) })) };
+        }
+        const row = snap(r.path); reads.set(r.path, docs.get(r.path)?.tick); return row;
+      }, update: (r, data) => staged.push(['update', r.path, data]), create: (r, data) => { if (options.failAudit && r.path.includes('materialAudit')) throw Error('audit failure'); staged.push(['create', r.path, data]); } });
       if (options.beforeCommit) { const hook = options.beforeCommit; options.beforeCommit = null; hook(docs); }
       if ([...reads].some(([path, tick]) => docs.get(path)?.tick !== tick)) continue;
       for (const [kind, path] of staged) if (kind === 'create' && docs.has(path)) throw Error('already exists');
@@ -33,7 +50,7 @@ function fixture(options = {}) {
     await handler(req, res); return { status, body: result };
   };
   const patch = (changes = {}, extra = {}) => call('PATCH', { item_id: 'motor', expected_version: '10:1', operation_id: 'op-1', patch: { name: 'New motor', ...changes }, ...extra });
-  return { call, patch, docs, actor, change(path, update) { const row = docs.get(path); docs.set(path, { data: { ...row.data, ...update }, tick: ++clock }); } };
+  return { call, patch, docs, actor, linkedItemQuerySizes, change(path, update) { const row = docs.get(path); docs.set(path, { data: { ...row.data, ...update }, tick: ++clock }); } };
 }
 
 test('materials handler factory exists', () => assert.equal(typeof createProjectOperationsHandler, 'function'));
@@ -298,6 +315,96 @@ test('delete command replays after deletion but rejects revoked recorded categor
   const f = commandFixture(); const c = { kind: 'delete_items', item_ids: ['motor'] };
   const first = await f.command(c); assert.equal(first.status, 200); assert.deepEqual(await f.command(c), first); assert.equal(f.categories()[0].items.some(i => i.id === 'motor'), false);
   f.docs.get('projects/A').data.members[0].categoryScope = ['Dest']; assert.equal((await f.command(c)).status, 403);
+});
+test('delete atomically clears linked document IDs, keeps unrelated links, and audits removed receipt history', async () => {
+  const f = commandFixture();
+  f.categories()[0].items[0].linkedInvoiceDocumentId = 'invoice';
+  f.categories()[0].items[0].fulfillmentTranches = [{ id: 'receipt-1', quantity: 1, invoiceDocId: 'invoice', auditNote: 'preserve in audit' }];
+  f.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor', 'other', 'other'], metadata: 'preserve' } });
+  f.docs.set('projectDocuments/invoice', { tick: 1, data: { projectId: 'A', type: 'vendor-invoice', linkedBOMItems: ['motor', 'other'], metadata: 'preserve' } });
+
+  const result = await f.command({ kind: 'delete_items', item_ids: ['motor'] });
+
+  assert.equal(result.status, 200);
+  assert.equal(f.categories()[0].items.some(item => item.id === 'motor'), false);
+  assert.deepEqual(f.docs.get('projectDocuments/quote').data.linkedBOMItems, ['other', 'other']);
+  assert.deepEqual(f.docs.get('projectDocuments/invoice').data.linkedBOMItems, ['other']);
+  assert.equal(f.docs.get('projectDocuments/quote').data.metadata, 'preserve');
+  assert.equal(f.docs.get('projectDocuments/invoice').data.metadata, 'preserve');
+  const audit = f.docs.get('pulseProjectMaterialOperations/A/materialAudit/command-1').data;
+  assert.equal(audit.before.items[0].item.fulfillmentTranches[0].auditNote, 'preserve in audit');
+  assert.deepEqual(audit.after.documents.map(row => row.document_id).sort(), ['invoice', 'quote']);
+  assert.deepEqual(await f.command({ kind: 'delete_items', item_ids: ['motor'] }), result);
+});
+test('delete rejects excessive linked documents before any material or audit write', async () => {
+  const f = commandFixture();
+  for (let index = 0; index < 401; index++) f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor'] } });
+
+  const result = await f.command({ kind: 'delete_items', item_ids: ['motor'] });
+
+  assert.equal(result.status, 413);
+  assert.equal(result.body.error, 'material_command_too_large');
+  assert.equal(f.categories()[0].items.some(item => item.id === 'motor'), true);
+  assert.deepEqual(f.docs.get('projectDocuments/linked-0').data.linkedBOMItems, ['motor']);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialOperations/command-1'), false);
+});
+test('delete accepts the maximum of 400 linked documents and records each cleanup once', async () => {
+  const f = commandFixture();
+  for (let index = 0; index < 400; index++) f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor'] } });
+
+  const result = await f.command({ kind: 'delete_items', item_ids: ['motor'] });
+
+  assert.equal(result.status, 200);
+  assert.equal(f.categories()[0].items.some(item => item.id === 'motor'), false);
+  const audit = f.docs.get('pulseProjectMaterialOperations/A/materialAudit/command-1').data;
+  const receipt = f.docs.get('pulseProjectMaterialOperations/A/materialOperations/command-1').data;
+  assert.equal(audit.before.documents.length, 400);
+  assert.equal(audit.after.documents.length, 400);
+  assert.equal(receipt.document_ids.length, 400);
+  assert.deepEqual(f.docs.get('projectDocuments/linked-399').data.linkedBOMItems, []);
+});
+test('delete chunks linked-document lookups and audits cross-chunk documents once', async () => {
+  const f = commandFixture();
+  const itemIds = Array.from({ length: 31 }, (_, index) => `item-${index}`);
+  f.categories()[0].items = itemIds.map(id => ({ id, name: id, itemType: 'component', quantity: 1 }));
+  itemIds.forEach((id, index) => f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [id] } }));
+  f.docs.set('projectDocuments/cross-chunk', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['item-0', 'item-30'] } });
+
+  const result = await f.command({ kind: 'delete_items', item_ids: itemIds });
+
+  assert.equal(result.status, 200);
+  assert.deepEqual(f.linkedItemQuerySizes, [30, 1]);
+  assert.deepEqual(f.docs.get('projectDocuments/cross-chunk').data.linkedBOMItems, []);
+  assert.equal(f.docs.get('pulseProjectMaterialOperations/A/materialAudit/command-1').data.before.documents.filter(row => row.document_id === 'cross-chunk').length, 1);
+});
+test('delete keeps item and linked documents unchanged on audit failure or forbidden customer PO access', async () => {
+  const auditFailure = commandFixture({ failAudit: true });
+  auditFailure.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor'] } });
+  assert.equal((await auditFailure.command({ kind: 'delete_items', item_ids: ['motor'] })).status, 503);
+  assert.equal(auditFailure.categories()[0].items.some(item => item.id === 'motor'), true);
+  assert.deepEqual(auditFailure.docs.get('projectDocuments/quote').data.linkedBOMItems, ['motor']);
+
+  const forbidden = commandFixture();
+  forbidden.docs.set('projectDocuments/customer-po', { tick: 1, data: { projectId: 'A', type: 'customer-po', linkedBOMItems: ['motor'] } });
+  assert.equal((await forbidden.command({ kind: 'delete_items', item_ids: ['motor'] })).status, 403);
+  assert.equal(forbidden.categories()[0].items.some(item => item.id === 'motor'), true);
+  assert.deepEqual(forbidden.docs.get('projectDocuments/customer-po').data.linkedBOMItems, ['motor']);
+  assert.equal(forbidden.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
+});
+test('delete rechecks linked-document authorization if a transaction retries', async () => {
+  const f = commandFixture({ beforeCommit: docs => {
+    const row = docs.get('projectDocuments/quote');
+    docs.set('projectDocuments/quote', { tick: 999, data: { ...row.data, type: 'customer-po' } });
+  } });
+  f.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor'] } });
+
+  const result = await f.command({ kind: 'delete_items', item_ids: ['motor'] });
+
+  assert.equal(result.status, 403);
+  assert.equal(f.categories()[0].items.some(item => item.id === 'motor'), true);
+  assert.deepEqual(f.docs.get('projectDocuments/quote').data.linkedBOMItems, ['motor']);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
 });
 test('initialization creates missing BOM conditionally and distinguishes valid empty/malformed/nonempty', async () => {
   const c = { kind: 'add_items', items: [newMaterial()], initialize: true };

@@ -106,6 +106,19 @@ function indexOf(categories) {
 }
 function referencedDocuments(command, categories, documents = new Map()) {
   const index = indexOf(categories), result = new Set();
+  if (command.kind === 'delete_items') for (const itemId of command.item_ids) {
+    const item = index.get(itemId)?.item;
+    if (!item) continue;
+    for (const field of Object.keys(linkTypes)) if (item[field]) {
+      if (!validId(item[field])) throw fault('invalid_material_state', 409);
+      result.add(item[field]);
+    }
+    if (item.fulfillmentTranches !== undefined && !Array.isArray(item.fulfillmentTranches)) throw fault('invalid_material_state', 409);
+    for (const tranche of item.fulfillmentTranches || []) if (tranche?.invoiceDocId) {
+      if (!validId(tranche.invoiceDocId)) throw fault('invalid_material_state', 409);
+      result.add(tranche.invoiceDocId);
+    }
+  }
   if (command.kind === 'patch_items') for (const { item_id, patch } of command.updates) for (const field of Object.keys(linkTypes)) if (Object.hasOwn(patch, field)) {
     if (patch[field]) result.add(patch[field]); const old = index.get(item_id)?.item[field]; if (old) { if (!validId(old)) throw fault('invalid_material_state', 409); result.add(old); }
   }
@@ -117,7 +130,7 @@ function referencedDocuments(command, categories, documents = new Map()) {
       const old = index.get(id)?.item[field]; if (old) { if (!validId(old)) throw fault('invalid_material_state', 409); result.add(old); }
     }
   }
-  if (result.size > 400) throw fault('material_command_too_large');
+  if (result.size > 400) throw fault('material_command_too_large', 413);
   return [...result];
 }
 function receivedTotal(item) {
@@ -166,6 +179,9 @@ function applyCommand({ categories, command, scope, canonical = [], documents = 
     }
   } else if (command.kind === 'delete_items') {
     command.item_ids.forEach(find); const selected = new Set(command.item_ids);
+    for (const [documentId, value] of documents) for (const itemId of selected) {
+      if (Array.isArray(value.linkedBOMItems) && value.linkedBOMItems.includes(itemId)) delta(documentId, itemId, false, value.type);
+    }
     next = next.map(category => ({ ...category, items: category.items.filter(item => !selected.has(item.id)) }));
   } else if (command.kind === 'patch_items') {
     for (const { item_id, patch } of command.updates) {
