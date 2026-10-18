@@ -63,8 +63,8 @@ import {
 } from '@/components/ui/alert-dialog';
 
 interface OrderDialogData {
-  orderDate: string;
-  expectedArrival: string;
+  orderDate: string | null;
+  expectedArrival: string | null;
   poNumber?: string;
   linkedPODocumentId: string;
   vendor: {
@@ -756,8 +756,10 @@ const BOM = () => {
 
     const saved = await updateItemSafely(selectedItemForOrder.id, {
       status: 'ordered',
-      orderDate: data.orderDate,
-      expectedArrival: data.expectedArrival,
+      // null clears an unset date; the native material command accepts null for both fields.
+      // BOMItem types these as optional strings, so cast at this boundary.
+      orderDate: data.orderDate as string | undefined,
+      expectedArrival: data.expectedArrival as string | undefined,
       poNumber: data.poNumber,
       linkedPODocumentId: data.linkedPODocumentId,
       finalizedVendor: {

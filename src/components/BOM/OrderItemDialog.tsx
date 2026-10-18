@@ -32,7 +32,7 @@ import {
 } from '@/components/ui/command';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/components/ui/use-toast';
-import { BOMItem, calculateExpectedArrival, parseLeadTimeToDays } from '@/types/bom';
+import { BOMItem } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
 import { uploadProjectDocument, linkDocumentToBOMItems } from '@/utils/projectDocumentFirestore';
 import { auth } from '@/firebase';
@@ -47,8 +47,9 @@ interface OrderItemDialogProps {
   availablePODocuments: ProjectDocument[];
   vendors: Vendor[]; // List of all vendors (OEMs and Dealers)
   onConfirm: (data: {
-    orderDate: string;
-    expectedArrival: string;
+    orderDate: string | null; // null = not set (never defaulted or guessed)
+    expectedArrival: string | null; // null = no promised date
+
     poNumber: string;
     linkedPODocumentId: string;
     vendor: {
@@ -76,8 +77,6 @@ const OrderItemDialog = ({
   const [poNumber, setPONumber] = useState<string>('');
   const [linkedPODocumentId, setLinkedPODocumentId] = useState<string>('');
   const [expectedArrival, setExpectedArrival] = useState<string>('');
-  const [calculatedArrival, setCalculatedArrival] = useState<string>('');
-  const [leadTimeDays, setLeadTimeDays] = useState<number>(0);
   const [selectedVendorId, setSelectedVendorId] = useState<string>('');
   const [vendorPopoverOpen, setVendorPopoverOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -102,38 +101,15 @@ const OrderItemDialog = ({
       });
   }, [vendors]);
 
-  // Calculate expected arrival when order date or vendor changes
-  useEffect(() => {
-    if (item && orderDate && selectedVendor) {
-      const leadTime = selectedVendor.leadTime || '';
-      const days = parseLeadTimeToDays(leadTime);
-      setLeadTimeDays(days);
-
-      if (days > 0) {
-        const arrival = calculateExpectedArrival(orderDate, days);
-        setCalculatedArrival(arrival);
-        // Auto-update expected arrival if not manually modified
-        if (!expectedArrival || expectedArrival === calculatedArrival) {
-          setExpectedArrival(arrival);
-        }
-      } else {
-        setCalculatedArrival('');
-      }
-    } else if (!selectedVendor) {
-      setLeadTimeDays(0);
-      setCalculatedArrival('');
-    }
-  }, [item, orderDate, selectedVendor]);
-
-  // Reset form when dialog opens
+  // Reset form when dialog opens. Dates start from what the item already has; they are
+  // never defaulted to today or derived from vendor lead time.
   useEffect(() => {
     if (open && item) {
-      const today = new Date().toISOString().split('T')[0];
-      setOrderDate(today);
+      setOrderDate(item.orderDate || '');
       setPONumber(item.poNumber || '');
 
       // Check if item is already linked via item's linkedPODocumentId
-      let preSelectedDocId = item.linkedPODocumentId || '';
+      const preSelectedDocId = item.linkedPODocumentId || '';
       setLinkedPODocumentId(preSelectedDocId);
 
       // Pre-fill vendor if finalizedVendor exists - find matching vendor by name
@@ -145,9 +121,7 @@ const OrderItemDialog = ({
       } else {
         setSelectedVendorId('');
       }
-      setExpectedArrival('');
-      setCalculatedArrival('');
-      setLeadTimeDays(0);
+      setExpectedArrival(item.expectedArrival || '');
     }
   }, [open, item, vendors]);
 
@@ -205,8 +179,8 @@ const OrderItemDialog = ({
     if (!canSubmit || !selectedVendor) return;
 
     onConfirm({
-      orderDate,
-      expectedArrival,
+      orderDate: orderDate || null,
+      expectedArrival: expectedArrival || null,
       poNumber: poNumber.trim(),
       linkedPODocumentId,
       vendor: {
@@ -220,10 +194,9 @@ const OrderItemDialog = ({
     onOpenChange(false);
   };
 
-  const isExpectedArrivalModified = expectedArrival && calculatedArrival && expectedArrival !== calculatedArrival;
   const hasPODocument = linkedPODocumentId && linkedPODocumentId !== '__NONE__';
   const hasPONumber = poNumber.trim().length > 0;
-  const canSubmit = hasVendor && hasPODocument && hasPONumber && expectedArrival;
+  const canSubmit = hasVendor && hasPODocument && hasPONumber;
 
   if (!item) return null;
 
@@ -368,7 +341,7 @@ const OrderItemDialog = ({
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label htmlFor="orderDate" className="text-xs font-medium">
-                    Order Date <span className="text-red-500">*</span>
+                    Order Date
                   </Label>
                   <Input
                     id="orderDate"
@@ -377,13 +350,11 @@ const OrderItemDialog = ({
                     onChange={(e) => setOrderDate(e.target.value)}
                     className="h-8 text-sm"
                   />
+                  {!orderDate && <p className="text-xs text-gray-500">Date not set</p>}
                 </div>
                 <div className="space-y-1">
                   <Label htmlFor="expectedArrival" className="text-xs font-medium">
-                    Expected Arrival <span className="text-red-500">*</span>
-                    {isExpectedArrivalModified && (
-                      <span className="text-amber-600 ml-1">(edited)</span>
-                    )}
+                    Expected Arrival
                   </Label>
                   <Input
                     id="expectedArrival"
@@ -392,23 +363,9 @@ const OrderItemDialog = ({
                     onChange={(e) => setExpectedArrival(e.target.value)}
                     className="h-8 text-sm"
                   />
+                  {!expectedArrival && <p className="text-xs text-gray-500">Date not set</p>}
                 </div>
               </div>
-
-              {calculatedArrival && (
-                <p className="text-xs text-gray-500">
-                  Calculated: {leadTimeDays}d → {new Date(calculatedArrival).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                  {isExpectedArrivalModified && (
-                    <button
-                      type="button"
-                      className="text-blue-600 hover:underline ml-2"
-                      onClick={() => setExpectedArrival(calculatedArrival)}
-                    >
-                      Reset
-                    </button>
-                  )}
-                </p>
-              )}
 
               {/* PO Number */}
               <div className="space-y-1">
