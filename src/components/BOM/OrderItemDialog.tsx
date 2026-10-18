@@ -63,6 +63,14 @@ interface OrderItemDialogProps {
   onDocumentUploaded?: (doc: ProjectDocument) => void;
 }
 
+const dateInputValue = (value?: string): string => {
+  const match = /^(\d{4}-\d{2}-\d{2})(?:$|T)/.exec(value || '');
+  if (!match) return '';
+  const date = match[1];
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date ? date : '';
+};
+
 const OrderItemDialog = ({
   open,
   onOpenChange,
@@ -105,7 +113,7 @@ const OrderItemDialog = ({
   // never defaulted to today or derived from vendor lead time.
   useEffect(() => {
     if (open && item) {
-      setOrderDate(item.orderDate || '');
+      setOrderDate(dateInputValue(item.orderDate));
       setPONumber(item.poNumber || '');
 
       // Check if item is already linked via item's linkedPODocumentId
@@ -121,7 +129,7 @@ const OrderItemDialog = ({
       } else {
         setSelectedVendorId('');
       }
-      setExpectedArrival(item.expectedArrival || '');
+      setExpectedArrival(dateInputValue(item.expectedArrival));
     }
   }, [open, item, vendors]);
 

@@ -64,6 +64,18 @@ describe('OrderItemDialog dates', () => {
     expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ orderDate: '2026-03-01', expectedArrival: '2026-03-20' }));
   });
 
+  it('preserves legacy ISO timestamps by showing and submitting their date portion', () => {
+    const onConfirm = renderDialog({
+      ...baseItem,
+      orderDate: '2026-03-01T18:30:00.000Z',
+      expectedArrival: '2026-03-20T00:00:00.000Z',
+    });
+    expect(field('orderDate').value).toBe('2026-03-01');
+    expect(field('expectedArrival').value).toBe('2026-03-20');
+    confirm();
+    expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ orderDate: '2026-03-01', expectedArrival: '2026-03-20' }));
+  });
+
   it('allows missing dates and shows "Date not set" for each', () => {
     renderDialog(baseItem);
     expect(screen.getAllByText('Date not set')).toHaveLength(2);
