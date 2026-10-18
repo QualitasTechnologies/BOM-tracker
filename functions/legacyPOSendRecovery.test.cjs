@@ -91,13 +91,14 @@ test('dispatching, uncertain, provider accepted and reconciliation phases can ne
   assert.equal((await evidence.call()).error, 'legacy_send_phase_not_releasable');
 });
 
-test('stale pre-dispatch recovery can clear an orphaned lock after cutover without touching materials', async () => {
+test('stale pre-dispatch recovery refuses cutover projects without touching PO, audit, or artifacts', async () => {
   const cutover = fixture({ cutover: true });
-  const bomBefore = structuredClone(cutover.docs.get('projects/P/bom/data'));
-  assert.equal((await cutover.call()).released, true);
-  assert.equal(cutover.docs.get('projects/P/purchaseOrders/PO').legacySendAttemptId, null);
-  assert.deepEqual(cutover.docs.get('projects/P/bom/data'), bomBefore);
+  const poBefore = structuredClone(cutover.docs.get('projects/P/purchaseOrders/PO'));
+  assert.equal((await cutover.call()).error, 'material_cutover_required');
+  assert.deepEqual(cutover.docs.get('projects/P/purchaseOrders/PO'), poBefore);
   assert.equal(cutover.docs.has('pulseMaterialCutovers/P'), true);
+  assert.equal([...cutover.docs.keys()].some(path => path.startsWith('pulseLegacyPOSendRecoveries/')), false);
+  assert.deepEqual(cutover.removed, { pdf: [], attempt: [] });
 });
 
 test('non-admin and changed-attempt requests fail without mutating the PO', async () => {

@@ -32,10 +32,13 @@ function createLegacyPOSendRecovery({ db, auth, now = Date.now, staleAfterMs = S
       const { project_id: projectId, po_id: poId, attempt_id: attemptId } = data;
       const projectRef = db.collection('projects').doc(projectId);
       const poRef = projectRef.collection('purchaseOrders').doc(poId);
+      const cutoverRef = db.collection('pulseMaterialCutovers').doc(projectId);
       const receiptRef = db.collection('pulseLegacyPOSendRecoveries').doc(projectId)
         .collection('operations').doc(recoveryId(projectId, poId, attemptId));
 
       const result = await db.runTransaction(async transaction => {
+        const cutover = await transaction.get(cutoverRef);
+        if (cutover.exists) throw fault('material_cutover_required', 409);
         const receipt = await transaction.get(receiptRef);
         if (receipt.exists) {
           const saved = receipt.data();
