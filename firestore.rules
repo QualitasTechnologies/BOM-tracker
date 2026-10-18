@@ -2,6 +2,14 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Keep the legacy BOM UI writable during side-by-side operation. Once
+    // Pulse supports project lifecycle changes, the operator can enable this
+    // runtime fence so archive/status writes must use the native callable.
+    function projectStatusClientWritesFenced() {
+      return exists(/databases/$(database)/documents/pulseRuntimeControl/cutover)
+        && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.projectStatusClientWritesFenced == true;
+    }
+
     // Projects: admins see all; non-admins see only projects where their UID is in memberIds.
     // During migration window, projects without memberIds fall back to any authenticated user.
     match /projects/{projectId} {
@@ -18,9 +26,11 @@ service cloud.firestore {
 
       allow update: if request.auth != null
         && request.auth.token.status == 'approved'
-        // Archive state is server-owned: project lifecycle changes go through
-        // the gated native callable, while ordinary project edits stay open.
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'archivedAt'])
+        // Lifecycle writes stay available to the legacy BOM UI until the
+        // explicit runtime fence is enabled; after that they go through the
+        // gated native callable, while ordinary project edits stay open.
+        && (!projectStatusClientWritesFenced()
+            || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'archivedAt']))
         && (request.auth.token.role == 'admin'
             || (resource.data.memberIds == null)
             || request.auth.uid in resource.data.memberIds);
@@ -29,7 +39,9 @@ service cloud.firestore {
         && request.auth.token.role == 'admin';
 
       // Subcollections (BOM data, documents, POs, milestones, etc.)
-      match /{subcollection=**} {
+      // Require a subcollection segment so this grant cannot overlap the
+      // project root document and bypass its lifecycle-write fence.
+      match /{subcollection}/{document=**} {
         allow read, write: if request.auth != null
           && request.auth.token.status == 'approved'
           && (request.auth.token.role == 'admin'
