@@ -77,7 +77,8 @@ test('audit failure rolls back requeue, lost reply safely replays, and removal d
   assert.equal((await f.retry(status)).error,'notification_service_unavailable');
   assert.equal(f.docs.get(parentPath).state,'blocked');
   f.db.runTransaction=originalCreate;settings.loseCommitReply=true;
-  assert.equal((await f.retry(status)).ok,false);const replay=await f.retry(status);assert.equal(replay.ok,true);
+  const recovered=await f.retry(status);assert.equal(recovered.ok,true);
+  const replay=await f.retry(status);assert.deepEqual(replay,recovered);
   assert.equal([...f.docs.keys()].filter(path=>path.startsWith('pulsePOApprovalNotificationOperations/')).length,1);
   settings.onRead=async path=>{if(path===parentPath)f.users.get('admin').disabled=true;};
   assert.equal((await f.retry(status)).error,'actor_forbidden');

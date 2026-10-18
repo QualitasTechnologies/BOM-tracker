@@ -19,6 +19,10 @@ repository root:
 firebase emulators:exec --project demo-bom-native-security --config firebase.security-test.json --only "firestore,storage" "npm --prefix tests/security test"
 ```
 
+Pull requests run this same isolated suite with Java 17 and Firebase CLI 14.9.0.
+CI installs only the Functions and security-test lockfiles required by the
+emulator-backed tests; no credentials or production Firebase project are used.
+
 Quote the comma-separated emulator list in PowerShell. The configuration binds
 Firestore to `127.0.0.1:18080`, Storage to `127.0.0.1:19199`, and the emulator hub
 to `127.0.0.1:14400` (Firestore websocket `18150`, logging `14500`). Use free
@@ -81,6 +85,8 @@ Settled emulator suite15/15 passed, script exit0 and all owned emulators stopped
 ## Verified provider evidence follow-up (October15)
 
 Settled16/16 emulator tests passed, script exit0, owned emulators stopped. The added actual Firestore case verifies two concurrent evidence recordings produce one receipt/audit, leave frozen mail/hash/key/recipients/first-dispatch unchanged, aggregate parent acceptance, replay without another provider lookup after flagoff/read_only and PO/project deletion, and atomically cancel an uncommitted nonce after live deletion/unknown control. A fake provider callback supplies the saved email; it never calls Resend. SDK clients, including admins, cannot read/write the new reconciliation receipt namespace. Actual backend299 tests passed. This proves isolated metadata/receipt behavior, not live provider schema/read permissions, real Auth/IAM or all-user acceptance.
+
+October 18 security-emulator run: 56/56 tests passed, including concurrent operator retry receipt recovery. A lost transaction reply is recovered only after fresh actor verification and a transactional read confirms the matching durable receipt; the Functions regression test covers this recovery. CI now runs the emulator suite on pull requests with Firebase CLI 14.9.0 and loopback demo project settings.
 
 ## Delivery schedule transaction checks (October15)
 

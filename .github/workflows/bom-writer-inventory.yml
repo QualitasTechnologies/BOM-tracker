@@ -47,3 +47,22 @@ jobs:
           cache-dependency-path: mcp-server/package-lock.json
       - run: npm ci --prefix mcp-server --include=dev
       - run: npm --prefix mcp-server test
+
+  security-emulator-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            functions/package-lock.json
+            tests/security/package-lock.json
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: npm ci --prefix functions --include=dev
+      - run: npm ci --prefix tests/security --ignore-scripts
+      - run: npx --yes firebase-tools@14.9.0 emulators:exec --project demo-bom-native-security --config firebase.security-test.json --only "firestore,storage" "npm --prefix tests/security test"

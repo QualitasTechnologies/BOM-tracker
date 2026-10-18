@@ -135,7 +135,7 @@ test('real notification operator retries have one audited receipt and preserve i
   assert.equal(status.deliveries[0].can_retry,true);
   const request={operation:'retry',notification_id:submitted.notification_id,expected_revision:status.revision,operation_id:'operator-retry',target_id:target};
   const [left,right]=await Promise.all([invoke(request),invoke(request)]);
-  assert.equal(left.ok,true);assert.deepEqual(right,left);
+  assert.equal(left.ok,true,JSON.stringify(left));assert.deepEqual(right,left);
   assert.equal((await db.collection('pulsePOApprovalNotificationOperations').get()).size,1);
   const after=(await db.doc(`pulsePOApprovalNotificationDeliveries/${target}`).get()).data();
   for(const key of ['mail','mail_hash','idempotency_key','recipients','first_dispatched_ms'])assert.deepEqual(after[key],before[key]);

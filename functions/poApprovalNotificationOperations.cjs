@@ -24,6 +24,7 @@ function createPOApprovalNotificationOperations({db,auth,enabled=false,reconcili
     }
   }
   return async request => {
+    let recovery;
     try {
       const actor=await actorOf(request),data=request.data;
       if(!plain(data)||!['status','retry'].includes(data.operation)||!id(data.project_id)||!id(data.po_id))throw fault('invalid_notification_request');
@@ -34,6 +35,7 @@ function createPOApprovalNotificationOperations({db,auth,enabled=false,reconcili
       const projectRef=db.collection('projects').doc(data.project_id),poRef=projectRef.collection('purchaseOrders').doc(data.po_id);
       const receiptRef=retry?db.collection('pulsePOApprovalNotificationOperations').doc(hash([actor.uid,data.project_id,data.operation_id])):null;
       const requestHash=hash(data);
+      if(retry)recovery={actorUid:actor.uid,projectRef,poRef,receiptRef,requestHash,request};
       return await db.runTransaction(async tx=>{
         const project=await tx.get(projectRef),po=await tx.get(poRef),control=await tx.get(db.collection('pulseRuntimeControl').doc('cutover'));
         const receipt=receiptRef?await tx.get(receiptRef):null;
@@ -97,7 +99,23 @@ function createPOApprovalNotificationOperations({db,auth,enabled=false,reconcili
         tx.update(targetRef,patch);tx.create(auditRef,audit);tx.create(receiptRef,stored);
         return response;
       },{readOnly:!retry});
-    }catch(error){return{ok:false,error:error?.[PUBLIC]?error.code:'notification_service_unavailable',status:error?.[PUBLIC]?error.status:503};}
+    }catch(error){
+      if(recovery&&!error?.[PUBLIC]){
+        try{
+          const current=await actorOf(recovery.request);
+          if(current.uid===recovery.actorUid&&current.customClaims?.role==='admin'){
+            const committed=await db.runTransaction(async tx=>{
+              const project=await tx.get(recovery.projectRef),po=await tx.get(recovery.poRef),receipt=await tx.get(recovery.receiptRef);
+              if(!project.exists||!po.exists||!receipt.exists)return null;
+              const record=receipt.data();
+              return record.actor_uid===recovery.actorUid&&record.request_hash===recovery.requestHash&&record.result?record.result:null;
+            },{readOnly:true});
+            if(committed)return committed;
+          }
+        }catch{}
+      }
+      return{ok:false,error:error?.[PUBLIC]?error.code:'notification_service_unavailable',status:error?.[PUBLIC]?error.status:503};
+    }
   };
 }
 module.exports={createPOApprovalNotificationOperations,notificationSnapshotRevision};
