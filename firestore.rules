@@ -7,7 +7,7 @@ service cloud.firestore {
     // runtime fence so archive/status writes must use the native callable.
     function projectStatusClientWritesFenced() {
       return exists(/databases/$(database)/documents/pulseRuntimeControl/cutover)
-        && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.projectStatusClientWritesFenced == true;
+        && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.get('projectStatusClientWritesFenced', false) == true;
     }
 
     // Projects: admins see all; non-admins see only projects where their UID is in memberIds.
@@ -16,7 +16,7 @@ service cloud.firestore {
       allow read: if request.auth != null
         && request.auth.token.status == 'approved'
         && (request.auth.token.role == 'admin'
-            || (resource.data.memberIds == null)
+            || (resource.data.get('memberIds', null) == null)
             || request.auth.uid in resource.data.memberIds);
 
       allow create: if request.auth != null
@@ -32,7 +32,7 @@ service cloud.firestore {
         && (!projectStatusClientWritesFenced()
             || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'archivedAt']))
         && (request.auth.token.role == 'admin'
-            || (resource.data.memberIds == null)
+            || (resource.data.get('memberIds', null) == null)
             || request.auth.uid in resource.data.memberIds);
 
       allow delete: if request.auth != null
@@ -45,7 +45,7 @@ service cloud.firestore {
         allow read, write: if request.auth != null
           && request.auth.token.status == 'approved'
           && (request.auth.token.role == 'admin'
-              || get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds == null
+              || get(/databases/$(database)/documents/projects/$(projectId)).data.get('memberIds', null) == null
               || request.auth.uid in get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds);
       }
     }

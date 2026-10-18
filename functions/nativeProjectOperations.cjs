@@ -97,7 +97,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
           const audit={actor_uid:current.uid,project_id:data.project_id,operation_id:data.operation_id,operation:`${command.kind}_cancelled`,payload_hash:payloadHash,created_at:getServerTimestamp()};
           assertDocumentBudget([{path:receiptRef.path,data:record},{path:auditRef.path,data:audit}]);transaction.create(receiptRef,record);transaction.create(auditRef,audit);return{...result,resolution:'cancelled'};
         }
-        const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),mode=control.exists?control.data()?.mode:'coexist';
+        const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),mode=control.exists?control.data()?.mode??'coexist':'coexist';
         if(!writesOn())throw fault('project_mutations_disabled',503);
         if(!['coexist','pulse_only'].includes(mode))throw fault('project_read_only',503);
         if(command.kind==='restore'){

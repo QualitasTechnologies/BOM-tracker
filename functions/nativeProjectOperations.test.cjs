@@ -145,6 +145,18 @@ test('archive restore is separately gated from receipt resolution and returns th
   assert.equal([...f.docs.keys()].filter(path => path.startsWith('pulseProjectOperations/P/audit/')).length, 2);
 });
 
+test('restore get permission and command agree when the cutover mode is absent', async () => {
+  const f = fixture();
+  f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' });
+  f.docs.set('pulseRuntimeControl/cutover', { projectStatusClientWritesFenced: true });
+  const opening = await f.call({ operation: 'get' });
+  assert.equal(opening.permissions.restore, true);
+  assert.equal((await f.call({
+    operation: 'command', expected_version: opening.version, operation_id: 'restore-no-mode', command: { kind: 'restore' },
+  })).ok, true);
+  assert.equal(f.docs.get('projects/P').status, 'Planning');
+});
+
 test('restore writes are blocked without the explicit legacy status-writer fence or allowed cutover', async () => {
   for (const control of [
     { mode: 'coexist' },
