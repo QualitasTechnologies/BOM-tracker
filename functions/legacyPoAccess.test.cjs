@@ -185,3 +185,24 @@ test('legacy PO without an entity id uses the project entity, and otherwise hono
   }).access;
   assert.equal((await defaultAccess.prepareSend(request('admin-1', validData))).companySettings.companyName, 'Default Entity');
 });
+
+test('legacy send is disabled while native procurement is enabled', async () => {
+  const { access, calls } = setup({ user: adminUser, project, po, billingEntity });
+  await assert.rejects(
+    access.prepareSend(request('admin-1', validData), { nativeEnabled: true }),
+    error => error.code === 'failed-precondition' && /native procurement/i.test(error.message),
+  );
+  assert.equal(calls.some(call => call[0] === 'get' && call[1] === 'settings'), false);
+});
+
+test('legacy send rejects a PO with an active native send attempt', async () => {
+  const access = setup({
+    user: adminUser, project,
+    po: { ...po, nativeSendAttemptId: 'attempt-1' },
+    billingEntity,
+  }).access;
+  await assert.rejects(
+    access.prepareSend(request('admin-1', validData)),
+    error => error.code === 'failed-precondition' && /send attempt/i.test(error.message),
+  );
+});

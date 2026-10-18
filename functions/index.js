@@ -5488,7 +5488,7 @@ exports.sendPurchaseOrder = onCall(
   { secrets: [resendApiKey] },
   async (request) => {
     const { uid, projectId, po, companySettings, companyLogoPath, recipientEmail, ccEmails } =
-      await legacyPoAccess.prepareSend(request);
+      await legacyPoAccess.prepareSend(request, { nativeEnabled: procurementEnabled(process.env) });
 
     try {
       logger.info('Sending PO via email', {

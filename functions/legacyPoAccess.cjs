@@ -58,7 +58,7 @@ function createLegacyPoAccess({ admin, functions }) {
     return { id: billingSnapshot.id || entityId, ...(billingSnapshot.data() || {}) };
   }
 
-  async function loadRequestContext(request, { adminOnly = false, requirePending = false } = {}) {
+  async function loadRequestContext(request, { adminOnly = false, requirePending = false, nativeEnabled = false } = {}) {
     const uid = request?.auth?.uid;
     if (!uid) fail('unauthenticated', 'Authentication required');
 
@@ -91,6 +91,12 @@ function createLegacyPoAccess({ admin, functions }) {
     const storedPO = poSnapshot.data() || {};
     if (storedPO.projectId && storedPO.projectId !== projectId) {
       fail('failed-precondition', 'Purchase Order does not belong to this project');
+    }
+    if (nativeEnabled) {
+      fail('failed-precondition', 'Native procurement is enabled. Reopen this project in Pulse to send the Purchase Order.');
+    }
+    if (requirePending && storedPO.nativeSendAttemptId) {
+      fail('failed-precondition', 'A native Purchase Order send attempt is already active');
     }
     if (requirePending && storedPO.status !== 'pending-approval') {
       fail('failed-precondition', 'Only POs pending approval can be sent');
@@ -137,8 +143,8 @@ function createLegacyPoAccess({ admin, functions }) {
   }
 
   return {
-    async prepareSend(request) {
-      const context = await loadRequestContext(request, { adminOnly: true, requirePending: true });
+    async prepareSend(request, { nativeEnabled = false } = {}) {
+      const context = await loadRequestContext(request, { adminOnly: true, requirePending: true, nativeEnabled });
       const recipientEmail = validateEmail(request?.data?.recipientEmail, 'Recipient');
       const ccEmails = request?.data?.ccEmails == null ? [] : request.data.ccEmails;
       if (!Array.isArray(ccEmails)) {

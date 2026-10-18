@@ -60,6 +60,8 @@ test('send callable validates authorization before invoking PDF, provider, or pe
     exports: { generatePOPDF: { run: async () => { sideEffects++; return { storagePath: 'po.pdf', pdfUrl: 'url' }; } } },
     onCall: (_options, callback) => callback,
     resendApiKey: 'secret',
+    process: { env: {} },
+    procurementEnabled: () => false,
     legacyPoAccess: { prepareSend: async () => { throw denied; } },
     functions: { https: { HttpsError: class extends Error {} } },
     logger: { info() {}, error() {} },
@@ -82,6 +84,43 @@ test('send callable validates authorization before invoking PDF, provider, or pe
   assert.equal(sideEffects, 0);
 });
 
+test('send callable passes the server-side native procurement gate into the shared legacy guard', async () => {
+  const start = source.indexOf('exports.sendPurchaseOrder = onCall(');
+  const end = source.indexOf('// ==================== SUPPORT TICKET COMMUNICATIONS', start);
+  let sideEffects = 0;
+  let receivedOptions;
+  const context = {
+    exports: { generatePOPDF: { run: async () => { sideEffects++; return { storagePath: 'po.pdf', pdfUrl: 'url' }; } } },
+    onCall: (_options, callback) => callback,
+    resendApiKey: 'secret',
+    process: { env: {} },
+    procurementEnabled: () => true,
+    legacyPoAccess: {
+      prepareSend: async (_request, options) => {
+        receivedOptions = options;
+        if (options?.nativeEnabled) throw Object.assign(new Error('Native procurement is enabled'), { code: 'failed-precondition' });
+        return {
+          uid: 'admin-1', projectId: 'project-1', po: { id: 'po-1', poNumber: 'PO-1', items: [] },
+          companySettings: { companyName: 'Stored Company' }, recipientEmail: 'vendor@example.com', ccEmails: [],
+        };
+      },
+    },
+    functions: { https: { HttpsError: class extends Error {} } },
+    logger: { info() {}, error() {} },
+    admin: { storage: () => ({ bucket: () => ({ file: () => ({ download: async () => { sideEffects++; return [Buffer.from('pdf')]; } }) }) }) },
+    Resend: class { constructor() { this.emails = { send: async () => { sideEffects++; } }; } },
+    getResendApiKey: () => 'secret',
+    buildPOEmailData: () => ({}),
+    generatePOPDFHandler: async () => { sideEffects++; return { storagePath: 'po.pdf', pdfUrl: 'url' }; },
+  };
+  vm.runInNewContext(source.slice(start, end), context);
+  await assert.rejects(context.exports.sendPurchaseOrder({ data: {
+    purchaseOrder: { id: 'po-1', projectId: 'project-1' }, recipientEmail: 'vendor@example.com',
+  } }), error => error.code === 'failed-precondition');
+  assert.equal(receivedOptions?.nativeEnabled, true);
+  assert.equal(sideEffects, 0);
+});
+
 test('valid admin send preserves response contract and uses prepared stored values for all sends and writes', async () => {
   const start = source.indexOf('exports.sendPurchaseOrder = onCall(');
   const end = source.indexOf('// ==================== SUPPORT TICKET COMMUNICATIONS', start);
@@ -96,6 +135,8 @@ test('valid admin send preserves response contract and uses prepared stored valu
     exports: {},
     onCall: (_options, callback) => callback,
     resendApiKey: 'secret',
+    process: { env: {} },
+    procurementEnabled: () => false,
     legacyPoAccess: { prepareSend: async () => prepared },
     functions: { https: { HttpsError: class extends Error {} } },
     logger: { info() {}, error() {} },
