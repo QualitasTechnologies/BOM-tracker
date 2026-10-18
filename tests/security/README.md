@@ -30,6 +30,18 @@ or mismatched capabilities, identity approval, current membership/category scope
 read-only controls, immutable native objects, confirmation-before-read, and
 client denial on protected intent/audit/receipt/control collections.
 
+The material Rules fence test covers the exact legacy document
+`projects/{projectId}/bom/data`. Its opt-in marker is
+`pulseRuntimeControl/cutover.blockLegacyMaterialClientWrites`; absent or false
+keeps existing member writes working, while exactly true denies browser SDK
+create/update/delete on that document. Reads and other project subcollections
+remain available. Admin SDK writes bypass Firestore Rules as expected, but
+callable operations still perform their own identity, project membership,
+category-scope, and mutation-enable checks. The emulator case proves the Rules
+bypass only; the separate `functions/nativeMaterialOperations.test.cjs` suite
+proves callable authorization behavior. The marker is not enabled or deployed
+by this change.
+
 Passing this suite proves those isolated rule scenarios. It does not prove live
 IAM/service bindings, revoked-token handling (covered by the callable's separate
 tests), artifact lifecycle cleanup, all legacy writers, or all-user acceptance.
