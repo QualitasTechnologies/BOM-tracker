@@ -5479,12 +5479,14 @@ function buildPOEmailData(purchaseOrder, companySettings, recipientEmail, ccEmai
  * Send Purchase Order via Email
  * Generates PDF and sends to vendor with the PO attached
  */
+const { authorizeLegacyPOSend } = require('./legacyPOSendGuard.cjs');
 exports.sendPurchaseOrder = onCall(
   { secrets: [resendApiKey] },
   async (request) => {
-    const { purchaseOrder, companySettings, companyLogo, companyLogoPath, recipientEmail, ccEmails } = request.data;
+    const { companySettings, companyLogo, companyLogoPath, recipientEmail, ccEmails } = request.data || {};
+    const requestedPO = request.data?.purchaseOrder;
 
-    if (!purchaseOrder || !companySettings || !recipientEmail) {
+    if (!requestedPO || !companySettings || !recipientEmail) {
       throw new functions.https.HttpsError(
         'invalid-argument',
         'purchaseOrder, companySettings, and recipientEmail are required'
@@ -5492,6 +5494,12 @@ exports.sendPurchaseOrder = onCall(
     }
 
     try {
+      const { purchaseOrder } = await authorizeLegacyPOSend({
+        db: admin.firestore(), auth: admin.auth(), request,
+        projectId: requestedPO.projectId, poId: requestedPO.id,
+        nativeEnabled: require('./nativePoRuntime.cjs').procurementEnabled(process.env),
+      });
+
       logger.info('Sending PO via email', {
         poNumber: purchaseOrder.poNumber,
         to: recipientEmail
@@ -5556,7 +5564,7 @@ exports.sendPurchaseOrder = onCall(
     } catch (error) {
       // Log full error for debugging
       logger.error('Failed to send PO email', {
-        poNumber: purchaseOrder?.poNumber,
+        poNumber: requestedPO?.poNumber,
         error: error.message,
         code: error.code,
         response: error.response?.body,
@@ -5568,11 +5576,27 @@ exports.sendPurchaseOrder = onCall(
       let userMessage = 'Failed to send Purchase Order';
       let troubleshooting = '';
 
-      if (error.code === 401 || error.message?.includes('Unauthorized') || error.message?.includes('Invalid API key')) {
+      if (error.code === 'actor_authentication_required' || error.code === 401 || error.message?.includes('Unauthorized')) {
+        errorCode = 'unauthenticated';
+        userMessage = 'Authentication required';
+        troubleshooting = error.message;
+      } else if (error.code === 'actor_forbidden' || error.code === 403 || error.message?.includes('Forbidden')) {
+        errorCode = 'permission-denied';
+        userMessage = 'You are not allowed to send this Purchase Order';
+        troubleshooting = error.message;
+      } else if (error.code === 'native_procurement_required') {
+        errorCode = 'failed-precondition';
+        userMessage = 'Legacy PO sending is disabled';
+        troubleshooting = error.message;
+      } else if (['purchase_order_not_found', 'purchase_order_not_approved', 'purchase_order_attempt_active'].includes(error.code)) {
+        errorCode = 'failed-precondition';
+        userMessage = 'Purchase Order cannot be sent';
+        troubleshooting = error.message;
+      } else if (error.code === 401 || error.message?.includes('Invalid API key')) {
         errorCode = 'unauthenticated';
         userMessage = 'Email service authentication failed';
         troubleshooting = 'The Resend API key is invalid or expired. Please contact your administrator.';
-      } else if (error.code === 403 || error.message?.includes('Forbidden') || error.message?.includes('Domain not verified')) {
+      } else if (error.code === 403 || error.message?.includes('Domain not verified')) {
         errorCode = 'permission-denied';
         userMessage = 'Email service access denied';
         troubleshooting = 'The sender email may not be verified in Resend.';
