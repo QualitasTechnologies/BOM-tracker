@@ -15,7 +15,7 @@ const finite = value => typeof value === 'number' && Number.isFinite(value);
 const exact = (value, keys) => { if (!plain(value) || Object.keys(value).some(key => !keys.includes(key))) throw fault('invalid_material_command'); };
 const ids = (values, allowEmpty = false) => {
   if (!Array.isArray(values) || !allowEmpty && !values.length || values.some(value => !validId(value)) || new Set(values).size !== values.length) throw fault('invalid_material_command');
-  if (values.length > MAX_ITEMS) throw fault('material_command_too_large');
+  if (values.length > MAX_ITEMS) throw fault('material_command_too_large', 413);
 };
 function vendor(value, finalized = false) {
   exact(value, ['name', 'price', 'leadTime', 'availability']);
@@ -46,7 +46,7 @@ function patchFields(patch, adding = false) {
 }
 function validateCommand(command) {
   let bytes; try { bytes = Buffer.byteLength(JSON.stringify(command), 'utf8'); } catch { throw fault('invalid_material_command'); }
-  if (bytes > MAX_INPUT_BYTES) throw fault('material_command_too_large');
+  if (bytes > MAX_INPUT_BYTES) throw fault('material_command_too_large', 413);
   if (!plain(command)) throw fault('invalid_material_command');
   switch (command.kind) {
     case 'add_items':
@@ -123,7 +123,7 @@ function referencedDocuments(command, categories, documents = new Map()) {
       const old = index.get(id)?.item[field]; if (old) { if (!validId(old)) throw fault('invalid_material_state', 409); result.add(old); }
     }
   }
-  if (result.size > 400) throw fault('material_command_too_large');
+  if (result.size > 400) throw fault('material_command_too_large', 413);
   return [...result];
 }
 function receivedTotal(item) {
@@ -220,7 +220,7 @@ function applyCommand({ categories, command, scope, canonical = [], documents = 
       replace(id, updated, entry.category);
     }
   }
-  if (affectedIds.size > MAX_ITEMS) throw fault('material_command_too_large');
+  if (affectedIds.size > MAX_ITEMS) throw fault('material_command_too_large', 413);
   const afterIndex = indexOf(next);
   const metadata = (rows, name) => { const row = rows.find(row => row.name === name); if (!row) return { name, value: null }; const { items, ...value } = row; return { name, value }; };
   const auditSide = (index, rows, after) => ({
@@ -237,7 +237,7 @@ function applyCommand({ categories, command, scope, canonical = [], documents = 
 function estimateDocumentBytes(data, path) {
   const stringSize = value => Buffer.byteLength(value, 'utf8') + 1;
   const valueSize = (value, depth = 0) => {
-    if (depth > 20) throw fault('material_document_too_large');
+    if (depth > 20) throw fault('material_document_too_large', 413);
     if (value === null || typeof value === 'boolean') return 1;
     if (typeof value === 'string') return stringSize(value);
     if (typeof value === 'number') return 8;
@@ -253,7 +253,7 @@ function estimateDocumentBytes(data, path) {
 }
 function assertDocumentBudget(documents) {
   let total = 0;
-  for (const { data, path } of documents) { const bytes = estimateDocumentBytes(data, path); if (bytes > MAX_DOCUMENT_BYTES) throw fault('material_document_too_large'); total += bytes; }
-  if (total > MAX_TRANSACTION_BYTES) throw fault('material_command_too_large');
+  for (const { data, path } of documents) { const bytes = estimateDocumentBytes(data, path); if (bytes > MAX_DOCUMENT_BYTES) throw fault('material_document_too_large', 413); total += bytes; }
+  if (total > MAX_TRANSACTION_BYTES) throw fault('material_command_too_large', 413);
 }
 module.exports = { validateCommand, canonicalCategories, referencedDocuments, applyCommand, estimateDocumentBytes, assertDocumentBudget, MAX_ITEMS, MAX_INPUT_BYTES, linkTypes };

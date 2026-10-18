@@ -261,7 +261,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         const body = req.body;
         if (!plain(body) || Object.keys(body).some(key => !['expected_version', 'operation_id', 'command'].includes(key))) throw fault('invalid_material_command', 400);
         validateBody({ item_id: 'command', expected_version: body.expected_version, operation_id: body.operation_id, patch: { name: 'validation' } });
-        if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_INPUT_BYTES) throw fault('material_command_too_large', 400);
+        if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_INPUT_BYTES) throw fault('material_command_too_large', 413);
         const command = validateCommand(body.command);
         const canonicalize = value => Array.isArray(value) ? value.map(canonicalize) : plain(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])])) : value;
         const payloadHash = digest(JSON.stringify({ operation: 'material_command', expected_version: body.expected_version, command: canonicalize(command) }));
@@ -310,16 +310,16 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
               const itemIds = command.item_ids.slice(offset, offset + 30);
               const linkedRows = await transaction.get(db.collection('projectDocuments').where('projectId', '==', id)
                 .where('linkedBOMItems', 'array-contains-any', itemIds).limit(401));
-              if (linkedRows.docs.length > 400) throw fault('material_command_too_large');
+              if (linkedRows.docs.length > 400) throw fault('material_command_too_large', 413);
               for (const row of linkedRows.docs) {
                 if (uniqueDocumentIds.has(row.id)) continue;
                 uniqueDocumentIds.add(row.id);
-                if (uniqueDocumentIds.size > 400) throw fault('material_command_too_large');
+                if (uniqueDocumentIds.size > 400) throw fault('material_command_too_large', 413);
                 const data = row.data();
                 if (!data || data.projectId !== id || data.type === 'customer-po' && actor.customClaims.role !== 'admin') throw fault('document_forbidden', 403);
                 documents.set(row.id, data);
                 if (!documentIds.includes(row.id)) documentIds.push(row.id);
-                if (documentIds.length > 400) throw fault('material_command_too_large');
+                if (documentIds.length > 400) throw fault('material_command_too_large', 413);
               }
             }
           }

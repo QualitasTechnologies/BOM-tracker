@@ -368,21 +368,38 @@ test('delete command accepts exactly 400 linked documents and records every chan
   assert.equal(audit.after.documents.length, 400);
   assert.equal(receipt.document_ids.length, 400);
 });
+test('delete command counts documents once when the same link appears in separate query chunks', async () => {
+  const f = commandFixture();
+  const itemIds = Array.from({ length: 31 }, (_, index) => `item-${index}`);
+  f.categories()[0].items = itemIds.map(id => ({ id, name: id, itemType: 'component', quantity: 1 }));
+  for (let index = 0; index < 400; index++) {
+    const linkedBOMItems = index === 0 ? ['item-0', 'item-30'] : [itemIds[index % itemIds.length]];
+    f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems } });
+  }
+
+  const result = await f.command({ kind: 'delete_items', item_ids: itemIds });
+
+  assert.equal(result.status, 200);
+  assert.equal(f.docs.get('pulseProjectMaterialOperations/A/materialAudit/command-1').data.before.documents.length, 400);
+  assert.equal(f.docs.get('pulseProjectMaterialOperations/A/materialOperations/command-1').data.document_ids.length, 400);
+  assert.deepEqual(f.docs.get('projectDocuments/linked-0').data.linkedBOMItems, []);
+});
 test('delete command counts scalar and tranche references together with queried links', async () => {
   const f = commandFixture();
   const itemIds = Array.from({ length: 200 }, (_, index) => `item-${index}`);
   f.categories()[0].items = itemIds.map((id, index) => ({ id, name: id, itemType: 'component', quantity: 1,
     linkedInvoiceDocumentId: `scalar-${index}`, fulfillmentTranches: [{ quantity: 1, invoiceDocId: `tranche-${index}` }] }));
   for (let index = 0; index < 200; index++) {
-    for (const documentId of [`scalar-${index}`, `tranche-${index}`]) f.docs.set(`projectDocuments/${documentId}`, { tick: 1, data: { projectId: 'A', type: 'vendor-invoice', linkedBOMItems: [] } });
+    for (const documentId of [`scalar-${index}`, `tranche-${index}`]) f.docs.set(`projectDocuments/${documentId}`, { tick: 1, data: { projectId: 'A', type: 'vendor-invoice', linkedBOMItems: ['unrelated'] } });
     f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [itemIds[index]] } });
   }
 
   const result = await f.command({ kind: 'delete_items', item_ids: itemIds });
 
-  assert.equal(result.status, 503);
+  assert.equal(result.status, 413);
+  assert.equal(result.body.error, 'material_command_too_large');
   assert.equal(f.categories()[0].items.length, 200);
-  assert.deepEqual(f.docs.get('projectDocuments/scalar-0').data.linkedBOMItems, []);
+  assert.deepEqual(f.docs.get('projectDocuments/scalar-0').data.linkedBOMItems, ['unrelated']);
   assert.deepEqual(f.docs.get('projectDocuments/linked-0').data.linkedBOMItems, [itemIds[0]]);
   assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
   assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialOperations/command-1'), false);
@@ -393,7 +410,8 @@ test('delete command rejects more than 400 linked documents in one query without
 
   const result = await f.command({ kind: 'delete_items', item_ids: ['motor'] });
 
-  assert.equal(result.status, 503);
+  assert.equal(result.status, 413);
+  assert.equal(result.body.error, 'material_command_too_large');
   assert.equal(f.categories()[0].items.some(item => item.id === 'motor'), true);
   assert.deepEqual(f.docs.get('projectDocuments/linked-0').data.linkedBOMItems, ['motor']);
   assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
@@ -412,7 +430,8 @@ test('delete command rejects more than 400 unique linked documents across chunks
 
   const result = await f.command({ kind: 'delete_items', item_ids: itemIds });
 
-  assert.equal(result.status, 503);
+  assert.equal(result.status, 413);
+  assert.equal(result.body.error, 'material_command_too_large');
   assert.equal(f.categories()[0].items.length, 200);
   assert.deepEqual(f.docs.get('projectDocuments/linked-0').data.linkedBOMItems, ['item-0']);
   assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
@@ -513,9 +532,21 @@ test('document delta does not inspect unrelated historical item links and retain
 });
 test('command refuses oversized resulting BOM/audit/documents before any staged mutation', async () => {
   const f = commandFixture(); f.docs.get('projects/A/bom/data').data.large = new Uint8Array(901 * 1024); const before = f.categories()[0].items.length;
-  assert.equal((await f.command({ kind: 'delete_items', item_ids: ['motor'] })).body.error, 'material_document_too_large'); assert.equal(f.categories()[0].items.length, before); assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
-  const g = commandFixture(); g.categories()[0].items[0].large = new Uint8Array(600 * 1024); assert.equal((await g.command({ kind: 'patch_items', updates: [{ item_id: 'motor', patch: { name: 'Changed' } }] })).body.error, 'material_document_too_large'); assert.equal(g.categories()[0].items[0].name, 'Motor');
-  const h = commandFixture(); h.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [], large: new Uint8Array(901 * 1024) } }); assert.equal((await h.command({ kind: 'link_document', document_id: 'quote', item_ids: ['motor'], action: 'add' })).body.error, 'material_document_too_large'); assert.equal(h.categories()[0].items[0].linkedQuoteDocumentId, undefined);
+  const oversizedBom = await f.command({ kind: 'delete_items', item_ids: ['motor'] }); assert.equal(oversizedBom.status, 413); assert.equal(oversizedBom.body.error, 'material_document_too_large'); assert.equal(f.categories()[0].items.length, before); assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
+  const g = commandFixture(); g.categories()[0].items[0].large = new Uint8Array(600 * 1024); const oversizedItem = await g.command({ kind: 'patch_items', updates: [{ item_id: 'motor', patch: { name: 'Changed' } }] }); assert.equal(oversizedItem.status, 413); assert.equal(oversizedItem.body.error, 'material_document_too_large'); assert.equal(g.categories()[0].items[0].name, 'Motor');
+  const h = commandFixture(); h.docs.set('projectDocuments/quote', { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [], large: new Uint8Array(901 * 1024) } }); const oversizedDocument = await h.command({ kind: 'link_document', document_id: 'quote', item_ids: ['motor'], action: 'add' }); assert.equal(oversizedDocument.status, 413); assert.equal(oversizedDocument.body.error, 'material_document_too_large'); assert.equal(h.categories()[0].items[0].linkedQuoteDocumentId, undefined);
+
+  const boundary = commandFixture();
+  for (let index = 0; index < 400; index++) {
+    const related = Array.from({ length: 20 }, (_, ref) => `ref-${index}-${ref}-${'x'.repeat(480)}`);
+    boundary.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor', ...related] } });
+  }
+  const oversizedAudit = await boundary.command({ kind: 'delete_items', item_ids: ['motor'] });
+  assert.equal(oversizedAudit.status, 413);
+  assert.equal(oversizedAudit.body.error, 'material_document_too_large');
+  assert.equal(boundary.categories()[0].items.some(item => item.id === 'motor'), true);
+  assert.deepEqual(boundary.docs.get('projectDocuments/linked-0').data.linkedBOMItems.slice(0, 1), ['motor']);
+  assert.equal(boundary.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
 });
 test('move category counts actual affected items and scope revocation cancels replay', async () => {
   const f = commandFixture(); f.categories()[0].items = Array.from({ length: 201 }, (_, i) => newMaterial({ id: `large-${i}` })); assert.equal((await f.command({ kind: 'move_category', category: 'Mech', destination: 'Dest' })).body.error, 'material_command_too_large'); assert.equal(f.categories()[0].items.length, 201);
