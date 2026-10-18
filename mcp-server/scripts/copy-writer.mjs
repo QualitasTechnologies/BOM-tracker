@@ -7,4 +7,5 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
 mkdirSync(dist, { recursive: true });
 copyFileSync(join(root, "src", "mcpMaterialWriter.cjs"), join(dist, "mcpMaterialWriter.cjs"));
+copyFileSync(join(root, "src", "mcpBomUser.cjs"), join(dist, "mcpBomUser.cjs"));
 copyFileSync(join(root, "..", "functions", "materialCommands.cjs"), join(dist, "materialCommands.cjs"));

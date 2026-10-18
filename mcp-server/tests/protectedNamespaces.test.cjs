@@ -14,8 +14,8 @@ test('MCP receipts and cutover controls have no client grant or generic root mat
   for (const prefix of ['pulseMcpOperations', 'pulseRuntimeControl']) assert.equal(topMatches.some(route => route.startsWith(`/${prefix}/`)), false);
   assert.equal(topMatches.some(route => route.startsWith('/{')), false);
 });
-test('packaged writer and command engine exactly match the reviewed source', () => {
-  for (const [source, packaged] of [['../src/mcpMaterialWriter.cjs', '../dist/mcpMaterialWriter.cjs'], ['../../functions/materialCommands.cjs', '../dist/materialCommands.cjs']]) {
+test('packaged writer, authenticated user resolver, and command engine exactly match the reviewed source', () => {
+  for (const [source, packaged] of [['../src/mcpMaterialWriter.cjs', '../dist/mcpMaterialWriter.cjs'], ['../src/mcpBomUser.cjs', '../dist/mcpBomUser.cjs'], ['../../functions/materialCommands.cjs', '../dist/materialCommands.cjs']]) {
     assert.equal(fs.readFileSync(path.join(__dirname, source), 'utf8'), fs.readFileSync(path.join(__dirname, packaged), 'utf8'));
   }
 });

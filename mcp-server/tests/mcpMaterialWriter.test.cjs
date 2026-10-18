@@ -48,12 +48,17 @@ function memoryDb({ failPath } = {}) {
 
 const history = { id: 'old-1', name: 'Relay', description: 'd', itemType: 'component', category: 'Electrical', quantity: 4, status: 'received', price: 10, vendors: [{ name: 'V', price: 9, leadTime: '2 weeks', availability: 'x' }], finalizedVendor: { name: 'V', price: 9, leadTime: '2 weeks' }, fulfillmentTranches: [{ id: 't1', quantity: 4, loggedAt: '2026-01-01' }], poNumber: 'PO-1', linkedPODocumentId: 'doc-1' };
 function seed(db) {
-  db.put(`projects/${P}`, { projectName: 'X' });
+  db.put(`projects/${P}`, { projectName: 'X', memberIds: ['alice'], members: [{ userId: 'alice', categoryScope: ['Electrical'] }] });
   db.put(BOM, { extra: 'keep', categories: [{ name: 'Electrical', isExpanded: false, items: [history] }, { name: 'Mechanical', items: [] }] });
 }
 const versionOf = (db, path = BOM) => { const t = db.docs.get(path).updateTime; return `${t.seconds}:${t.nanoseconds}`; };
-const principal = { id: 'google-sub-1', email: 'robot@example.iam.gserviceaccount.com' };
-const make = (db, p = principal) => createMcpMaterialWriter({ db, resolvePrincipal: async () => p, getServerTimestamp: () => new ServerTimestampTransform() });
+const user = { uid: 'alice', email: 'alice@customer.test', status: 'approved', role: 'viewer', disabled: false };
+const authInfo = { clientId: 'verified-mcp-client', token: 'verified-token', scopes: ['bom:write'], extra: { firebaseUid: 'alice' } };
+const make = (db, u = user) => {
+  const requestAuth = { ...authInfo, extra: { firebaseUid: u.uid } };
+  const writer = createMcpMaterialWriter({ db, resolveBomUser: async actual => { assert.deepEqual(actual, requestAuth); return u; }, getServerTimestamp: () => new ServerTimestampTransform() });
+  return { addItem: input => writer.addItem(input, requestAuth) };
+};
 const input = (db, extra = {}) => ({ project_id: P, category: 'electrical', name: 'Cable', description: 'Power', quantity: 2, price: 5, expected_version: db.docs.has(BOM) ? versionOf(db) : '1:1', operation_id: 'op-1', ...extra });
 const rejects = (promise, code) => assert.rejects(promise, error => error.code === code);
 
@@ -67,10 +72,10 @@ test('adds item with canonical category, deterministic id, audit and receipt; pr
   assert.equal(bom.categories[0].isExpanded, false);
   assert.equal(bom.categories[0].items[1].id, result.item_id);
   assert.equal(bom.categories[0].items[1].status, 'not-ordered');
-  assert.equal(db.docs.get(AUDIT('op-1')).data.actor.subject, 'google-sub-1');
-  assert.equal(db.docs.get(AUDIT('op-1')).data.actor.type, 'google-credential');
-  assert.equal(db.docs.get(RECEIPT('op-1')).data.principalId, 'google-sub-1');
-  assert.equal('uid' in db.docs.get(AUDIT('op-1')).data.actor, false);
+  assert.equal(db.docs.get(AUDIT('op-1')).data.actor.subject, 'alice');
+  assert.equal(db.docs.get(AUDIT('op-1')).data.actor.type, 'firebase-user');
+  assert.equal(db.docs.get(RECEIPT('op-1')).data.principalId, 'alice');
+  assert.equal(db.docs.get(AUDIT('op-1')).data.actor.uid, 'alice');
 });
 
 test('stale expected version rejects without writing', async () => {
@@ -106,10 +111,11 @@ test('matching receipt replays after the BOM version changed', async () => {
 
 test('changed payload or principal on an existing receipt is rejected', async () => {
   const db = memoryDb(); seed(db);
+  db.put(`projects/${P}`, { ...db.docs.get(`projects/${P}`).data, memberIds: ['alice', 'bob'], members: [{ userId: 'alice', categoryScope: ['Electrical'] }, { userId: 'bob', categoryScope: ['Electrical'] }] });
   const args = input(db);
   await make(db).addItem(args);
   await rejects(make(db).addItem({ ...args, quantity: 3 }), 'operation_id_conflict');
-  await rejects(make(db, { id: 'someone-else' }).addItem(args), 'operation_id_conflict');
+  await rejects(make(db, { ...user, uid: 'bob' }).addItem(args), 'operation_id_conflict');
   assert.equal(db.docs.get(BOM).data.categories[0].items.length, 2);
 });
 
@@ -144,7 +150,7 @@ test('missing project, BOM or category fail; no category is created', async () =
   const base = { ...input(memoryDb({}), {}) };
   let db = memoryDb(); db.put(BOM, { categories: [] });
   await rejects(make(db).addItem({ ...base, expected_version: '1:1' }), 'project_not_found');
-  db = memoryDb(); db.put(`projects/${P}`, {});
+  db = memoryDb(); db.put(`projects/${P}`, { memberIds: ['alice'], members: [{ userId: 'alice', categoryScope: ['Electrical'] }] });
   await rejects(make(db).addItem({ ...base, expected_version: '1:1' }), 'bom_not_found');
   db = memoryDb(); seed(db);
   await rejects(make(db).addItem(input(db, { category: 'Nope' })), 'material_category_not_found');
@@ -153,9 +159,50 @@ test('missing project, BOM or category fail; no category is created', async () =
 
 test('principal failure blocks writes', async () => {
   const db = memoryDb(); seed(db);
-  const writer = createMcpMaterialWriter({ db, resolvePrincipal: async () => { throw new Error('tokeninfo down'); }, getServerTimestamp: () => new ServerTimestampTransform() });
+  const writer = createMcpMaterialWriter({ db, resolveBomUser: async () => { throw Object.assign(Error('missing auth'), { code: 'mcp_principal_unavailable' }); }, getServerTimestamp: () => new ServerTimestampTransform() });
   await rejects(writer.addItem(input(db)), 'mcp_principal_unavailable');
-  await rejects(make(db, { id: '' }).addItem(input(db)), 'mcp_principal_unavailable');
+});
+
+test('replay rechecks current project membership and category scope', async () => {
+  const db = memoryDb(); seed(db); const args = input(db), writer = make(db);
+  await writer.addItem(args);
+  db.put(`projects/${P}`, { ...db.docs.get(`projects/${P}`).data, memberIds: ['other'] });
+  await rejects(writer.addItem(args), 'project_forbidden');
+  db.put(`projects/${P}`, { ...db.docs.get(`projects/${P}`).data, memberIds: ['alice'], members: [{ userId: 'alice', categoryScope: ['Mechanical'] }] });
+  await rejects(writer.addItem(args), 'material_forbidden');
+  assert.equal(db.docs.get(BOM).data.categories[0].items.length, 2);
+});
+
+test('unapproved or disabled MCP-authenticated users are rejected before project reads or writes', async () => {
+  const db = memoryDb(); seed(db);
+  await rejects(make(db, { ...user, status: 'pending' }).addItem(input(db)), 'mcp_user_unapproved');
+  await rejects(make(db, { ...user, disabled: true }).addItem(input(db)), 'mcp_user_disabled');
+  assert.equal(db.docs.get(BOM).data.categories[0].items.length, 1);
+  assert.equal(db.docs.has(RECEIPT('op-1')), false);
+});
+
+test('MCP add requires project membership even when the requested category is in scope', async () => {
+  const db = memoryDb(); seed(db); db.put(`projects/${P}`, { ...db.docs.get(`projects/${P}`).data, memberIds: ['other'] });
+  await rejects(make(db).addItem(input(db)), 'project_forbidden');
+  assert.equal(db.docs.get(BOM).data.categories[0].items.length, 1);
+  assert.equal(db.docs.has(AUDIT('op-1')), false);
+});
+
+test('MCP add enforces categoryScope and never accepts caller identity fields', async () => {
+  const db = memoryDb(); seed(db);
+  await rejects(make(db, { ...user, uid: 'other' }).addItem(input(db)), 'project_forbidden');
+  db.put(`projects/${P}`, { ...db.docs.get(`projects/${P}`).data, members: [{ userId: 'alice', categoryScope: ['Mechanical'] }] });
+  await rejects(make(db).addItem(input(db)), 'material_forbidden');
+  await rejects(make(db).addItem(input(db, { user_id: 'admin', uid: 'admin', actor: 'admin' })), 'invalid_mcp_input');
+  assert.equal(db.docs.get(BOM).data.categories[0].items.length, 1);
+});
+
+test('MCP administrator role follows BOM project access and keeps audited actor identity', async () => {
+  const db = memoryDb(); seed(db); db.put(`projects/${P}`, { ...db.docs.get(`projects/${P}`).data, memberIds: [] });
+  const admin = { uid: 'admin', email: 'admin@qualitastech.com', status: 'approved', role: 'admin', disabled: false };
+  const result = await make(db, admin).addItem(input(db));
+  assert.equal(result.replayed, false);
+  assert.equal(db.docs.get(AUDIT('op-1')).data.actor.uid, 'admin');
 });
 
 test('invalid inputs are rejected before any read', async () => {
@@ -183,7 +230,7 @@ test('case-insensitive category selection preserves the original first-match rul
 
 test('long existing project IDs accepted by the material API remain addressable', async () => {
   const db = memoryDb(), project = 'P'.repeat(240);
-  db.put('projects/'+project, { projectName: 'Long ID' });
+  db.put('projects/'+project, { projectName: 'Long ID', memberIds: ['alice'], members: [{ userId: 'alice', categoryScope: ['Electrical'] }] });
   const bom = 'projects/'+project+'/bom/data'; db.put(bom, { categories: [{ name: 'Electrical', items: [] }] });
   const time = db.docs.get(bom).updateTime;
   const result = await make(db).addItem({ ...input(db), project_id: project, expected_version: time.seconds+':'+time.nanoseconds });
@@ -192,7 +239,7 @@ test('long existing project IDs accepted by the material API remain addressable'
 
 test('one operation nonce reused in different projects cannot collide in legacy item file namespaces', async () => {
   const db = memoryDb(); seed(db); const first = await make(db).addItem(input(db));
-  const other = 'Other'; db.put('projects/'+other, { projectName: 'Other' });
+  const other = 'Other'; db.put('projects/'+other, { projectName: 'Other', memberIds: ['alice'], members: [{ userId: 'alice', categoryScope: ['Electrical'] }] });
   const bom = 'projects/'+other+'/bom/data'; db.put(bom, { categories: [{ name: 'Electrical', items: [] }] });
   const time = db.docs.get(bom).updateTime;
   const second = await make(db).addItem({ ...input(db), project_id: other, expected_version: time.seconds+':'+time.nanoseconds });

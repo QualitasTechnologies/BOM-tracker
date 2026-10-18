@@ -21,10 +21,11 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import { initializeApp, cert, applicationDefault } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { readFileSync } from "fs";
 import { createMcpMaterialWriter } from "./mcpMaterialWriter.cjs";
-import { resolveGooglePrincipal } from "./googlePrincipal.js";
+import { createMcpBomUserResolver } from "./mcpBomUser.cjs";
 
 // ─── Firebase Init ────────────────────────────────────────────────────────────
 
@@ -49,7 +50,7 @@ try {
 const db = getFirestore();
 const materialWriter = createMcpMaterialWriter({
   db,
-  resolvePrincipal: resolveGooglePrincipal,
+  resolveBomUser: createMcpBomUserResolver({ auth: getAuth() }),
   getServerTimestamp: () => FieldValue.serverTimestamp(),
 });
 
@@ -299,7 +300,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 // ─── Tool Dispatcher ──────────────────────────────────────────────────────────
 
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const { name, arguments: args } = req.params;
   const a = (args ?? {}) as Record<string, unknown>;
   try {
@@ -309,7 +310,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "daily_briefing": return await toolDailyBriefing();
       case "inward_tracking":return await toolInwardTracking(a);
       case "vendors_search": return await toolVendorsSearch(a);
-      case "bom_add_item":   return await toolBomAddItem(a);
+      case "bom_add_item":   return await toolBomAddItem(a, extra.authInfo);
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }
@@ -545,10 +546,10 @@ async function toolVendorsSearch(args: Record<string, unknown>) {
   return text(lines.join("\n"));
 }
 
-async function toolBomAddItem(args: Record<string, unknown>) {
+async function toolBomAddItem(args: Record<string, unknown>, authInfo: unknown) {
   let result;
   try {
-    result = await materialWriter.addItem(args);
+    result = await materialWriter.addItem(args, authInfo);
   } catch (err) {
     const code = (err as { code?: unknown }).code;
     if (typeof code === "string" && /^[a-z_]+$/.test(code)) {

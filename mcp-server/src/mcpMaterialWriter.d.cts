@@ -1,4 +1,4 @@
-export interface McpPrincipal { id: string; email?: string }
+export interface McpBomUser { uid: string; email?: string; role: string; status: string; disabled: boolean }
 export interface McpAddItemInput {
   project_id: string;
   category: string;
@@ -24,9 +24,9 @@ export interface McpAddItemResult {
 }
 export interface McpMaterialWriterOptions {
   db: { collection(path: string): any; runTransaction<T>(fn: (tx: any) => Promise<T>): Promise<T> };
-  resolvePrincipal: () => Promise<McpPrincipal>;
+  resolveBomUser: (authInfo: unknown) => Promise<McpBomUser>;
   getServerTimestamp: () => unknown;
 }
 export function createMcpMaterialWriter(options: McpMaterialWriterOptions): {
-  addItem(input: McpAddItemInput | Record<string, unknown>): Promise<McpAddItemResult>;
+  addItem(input: McpAddItemInput | Record<string, unknown>, authInfo?: unknown): Promise<McpAddItemResult>;
 };
