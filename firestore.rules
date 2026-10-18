@@ -96,8 +96,12 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Specification-search operation receipts and audit are callable-only.
+    // Specification-search receipts, per-item unresolved locks, and audit are callable-only.
     match /pulseSpecSearchReceipts/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /pulseSpecSearchLocks/{document=**} {
       allow read, write: if false;
     }
 

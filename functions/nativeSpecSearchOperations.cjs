@@ -29,6 +29,7 @@ const validPublicHttps = (value) => {
 };
 const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const operationDocumentKey = (operationId) => createHash("sha256").update(canonicalUuid(operationId) || operationId).digest("hex");
+const itemLockDocumentKey = (projectId, itemId) => hash([projectId, itemId]);
 const receiptExistsOrCannotBeChecked = async (db, operationId) => {
   const id = canonicalUuid(operationId);
   if (!id) return false;
@@ -79,6 +80,7 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
       const documentKey = operationDocumentKey(operationId);
       const receiptRef = db.collection("pulseSpecSearchReceipts").doc(documentKey);
       const auditRef = db.collection("pulseSpecSearchAudit").doc(documentKey);
+      const lockRef = db.collection("pulseSpecSearchLocks").doc(itemLockDocumentKey(projectId, itemId));
       const payloadHash = hash({actor_uid: actor.uid, project_id: projectId, item_id: itemId});
       const initial = await db.runTransaction(async (transaction) => {
         const projectSnap = await transaction.get(projectRef);
@@ -89,6 +91,15 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
         if (!bomSnap.exists) throw fault("bom_not_found", 404);
         const receiptSnap = await transaction.get(receiptRef);
         const savedReceipt = receiptSnap.exists ? receiptSnap.data() : null;
+        const lockSnap = await transaction.get(lockRef);
+        const savedLock = lockSnap.exists ? lockSnap.data() : null;
+        let lockedReceipt = null;
+        const lockedOperationId = canonicalUuid(savedLock?.operation_id);
+        if (savedLock && lockedOperationId && lockedOperationId !== operationId) {
+          const lockedReceiptRef = db.collection("pulseSpecSearchReceipts").doc(operationDocumentKey(lockedOperationId));
+          const lockedReceiptSnap = await transaction.get(lockedReceiptRef);
+          lockedReceipt = lockedReceiptSnap.exists ? lockedReceiptSnap.data() : null;
+        }
         if (savedReceipt && (savedReceipt.actor_uid !== actor.uid || savedReceipt.payload_hash !== payloadHash)) throw fault("operation_conflict", 409);
         const bom = bomSnap.data();
         const matches = [];
@@ -105,14 +116,28 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
           if (!Array.isArray(member?.categoryScope) || !member.categoryScope.includes(category.name)) throw fault("spec_search_forbidden", 403);
         }
         if (savedReceipt) return {replay: true, receipt: savedReceipt};
+        const lockedReceiptMatchesLock = lockedReceipt && lockedReceipt.actor_uid === savedLock.actor_uid &&
+          lockedReceipt.project_id === projectId && lockedReceipt.item_id === itemId && lockedReceipt.operation_id === lockedOperationId;
+        const unresolvedLock = savedLock && (!lockedReceiptMatchesLock || ["dispatching", "unresolved"].includes(lockedReceipt.status) || lockedReceipt.state === "outcome_unknown");
+        if (unresolvedLock) {
+          return savedLock.actor_uid === actor.uid && lockedReceiptMatchesLock
+            ? {replay: true, receipt: lockedReceipt, operationId: lockedOperationId, reusedOperation: true}
+            : {blocked: true};
+        }
         const itemSnapshot = {id: item.id, name: item.name, make: item.make || "", sku: item.sku || "", itemType: item.itemType || "component", category: category.name, specificationUrl: item.specificationUrl ?? null};
         const receipt = {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
           payload_hash: payloadHash, status: "dispatching", before_specification_url: itemSnapshot.specificationUrl,
           after_specification_url: null, created_at: getServerTimestamp(), updated_at: getServerTimestamp()};
         transaction.create(receiptRef, receipt);
+        transaction.set(lockRef, {actor_uid: actor.uid, operation_id: operationId, project_id: projectId, item_id: itemId,
+          created_at: getServerTimestamp(), updated_at: getServerTimestamp()});
         return {receipt, itemSnapshot};
       });
-      if (initial.replay) return operationResult(initial.receipt, operationId);
+      if (initial.blocked) return {ok: false, state: "outcome_unknown", operation_id: operationId, error: "spec_search_unresolved"};
+      if (initial.replay) {
+        const replay = operationResult(initial.receipt, initial.operationId || operationId);
+        return initial.reusedOperation ? {...replay, reused_operation: true} : replay;
+      }
       // From this point onward a receipt exists and the request may have reached
       // n8n. Any uncaught failure must preserve the operation ID as unresolved.
       dispatchReserved = true;
@@ -131,12 +156,14 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
         const outcome = status === "failed" ? "failed" : "unresolved";
         const finalizedReceipt = await db.runTransaction(async (transaction) => {
           const current = await transaction.get(receiptRef);
+          const lock = await transaction.get(lockRef);
           if (!current.exists) throw fault("spec_search_unavailable", 503);
           const persistedReceipt = current.data();
           if (persistedReceipt.status !== "dispatching") return persistedReceipt;
           const receipt = {...persistedReceipt, status, state: status === "failed" ? "failed" : "outcome_unknown", outcome,
             error_code: error.code === "invalid_specification_url" ? error.code : "dispatch_uncertain", updated_at: getServerTimestamp()};
           transaction.set(receiptRef, receipt);
+          if (status === "failed" && lock.exists && lock.data().operation_id === operationId) transaction.delete(lockRef);
           transaction.create(auditRef, {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
             before_specification_url: receipt.before_specification_url, after_specification_url: null, outcome,
             created_at: getServerTimestamp()});
@@ -151,6 +178,7 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
           const projectSnap = await transaction.get(projectRef);
           const currentReceiptSnap = await transaction.get(receiptRef);
           const bomSnap = await transaction.get(bomRef);
+          const lockSnap = await transaction.get(lockRef);
           if (!projectSnap.exists || !projectAccess(projectSnap.data(), actor)) throw fault("spec_search_forbidden", 403);
           if (!currentReceiptSnap.exists || !bomSnap.exists) throw fault("spec_search_conflict", 409);
           const currentReceipt = currentReceiptSnap.data();
@@ -181,6 +209,7 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
           const state = specificationUrl ? "completed" : "not_found";
           const receipt = {...currentReceipt, status: state, state, outcome: state, after_specification_url: specificationUrl, specification_url: specificationUrl, updated_at: getServerTimestamp()};
           transaction.set(receiptRef, receipt);
+          if (lockSnap.exists && lockSnap.data().operation_id === operationId) transaction.delete(lockRef);
           transaction.create(auditRef, {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
             before_specification_url: before.specificationUrl, after_specification_url: specificationUrl, outcome: state, created_at: getServerTimestamp()});
           return operationResult(receipt, operationId);
@@ -195,10 +224,12 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
         try {
           const persistedResult = await db.runTransaction(async (transaction) => {
             const receiptSnap = await transaction.get(receiptRef);
+            const lockSnap = await transaction.get(lockRef);
             const current = receiptSnap.exists ? receiptSnap.data() : null;
             if (!current || current.status !== "dispatching") return current ? operationResult(current, operationId) : null;
             const terminal = {...current, status, state, outcome, error_code: errorCode, updated_at: getServerTimestamp()};
             transaction.set(receiptRef, terminal);
+            if (state !== "outcome_unknown" && lockSnap.exists && lockSnap.data().operation_id === operationId) transaction.delete(lockRef);
             transaction.create(auditRef, {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
               before_specification_url: current.before_specification_url, after_specification_url: null, outcome, created_at: getServerTimestamp()});
             return operationResult(terminal, operationId);

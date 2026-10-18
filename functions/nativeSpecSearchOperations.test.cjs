@@ -6,6 +6,7 @@ const {isNativeSpecSearchEnabled} = require("./specSearchLegacyGuard.cjs");
 
 const clone = (value) => value === undefined ? undefined : structuredClone(value);
 const receiptKey = () => createHash("sha256").update("550e8400-e29b-41d4-a716-446655440000").digest("hex");
+const itemLockKey = (projectId = "P", itemId = "i1") => createHash("sha256").update(JSON.stringify([projectId, itemId])).digest("hex");
 function fixture({actor = {}, project = {}, categories = [], enabled = "true", response, fetchResponse, jsonError, beforeFetch, beforeReceiptRead, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P", failTransactionNumbers = [], timestamp = () => "server-time", receiptReadError = false, materializedReservationCreatedAt} = {}) {
   if (!Object.hasOwn(project, "members") && !actor.email?.toLowerCase().endsWith("@qualitastech.com") && actor.customClaims?.role !== "admin") {
     project = {...project, members: [{userId: actor.uid || "alice", categoryScope: ["Parts"]}]};
@@ -49,12 +50,16 @@ function fixture({actor = {}, project = {}, categories = [], enabled = "true", r
           updates.push({path: reference.path, fields: Object.keys(data)});
           writes.push(["update", reference.path, clone(data)]);
         },
+        delete(reference) {
+          writes.push(["delete", reference.path]);
+        },
       };
       const result = await callback(transaction);
       for (const [mode, path, data] of writes) {
         if (mode === "create" && docs.has(path)) throw Object.assign(new Error("already exists"), {code: 6});
         if (mode === "update" && !docs.has(path)) throw new Error("missing document");
-        docs.set(path, mode === "update" ? {...docs.get(path), ...data} : data);
+        if (mode === "delete") docs.delete(path);
+        else docs.set(path, mode === "update" ? {...docs.get(path), ...data} : data);
       }
       return result;
     },
@@ -160,8 +165,72 @@ test("same operation replay is saved and changed input conflicts without another
   assert.equal(f.calls.length, 1);
   assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, "https://docs.example.com/spec.pdf");
   assert.equal(f.docs.get(`pulseSpecSearchAudit/${receiptKey()}`).outcome, "completed");
+  assert.equal(f.docs.has(`pulseSpecSearchLocks/${itemLockKey()}`), false);
   assert.deepEqual(f.updates, [{path: "projects/P/bom/data", fields: ["categories"]}]);
   assert.equal(f.docs.get("projects/P/bom/data").updatedAt, undefined);
+});
+
+test("a new browser session cannot redispatch an unresolved project-item search", async () => {
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], fetchError: new Error("network timeout")});
+  const first = await f.call();
+  assert.equal(first.state, "outcome_unknown");
+
+  const second = await f.call({operation_id: "550e8400-e29b-41d4-a716-446655440001"});
+  assert.equal(second.state, "outcome_unknown");
+  assert.equal(second.operation_id, first.operation_id);
+  assert.equal(second.reused_operation, true);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.docs.get(`pulseSpecSearchLocks/${itemLockKey()}`).operation_id, first.operation_id);
+});
+
+test("a different authorized actor cannot inspect or redispatch another actor's unresolved item search", async () => {
+  const f = fixture({actor: user("alice"), project: {memberIds: ["alice", "bob"], members: [
+    {userId: "alice", categoryScope: ["Parts"]}, {userId: "bob", categoryScope: ["Parts"]},
+  ]}, categories: [{name: "Parts", items: [component]}], fetchError: new Error("network timeout")});
+  const first = await f.call();
+  f.setActor(user("bob"));
+
+  const second = await f.call({operation_id: "550e8400-e29b-41d4-a716-446655440001", expected_actor_uid: "bob"});
+  assert.equal(first.state, "outcome_unknown");
+  assert.equal(second.state, "outcome_unknown");
+  assert.equal(second.operation_id, "550e8400-e29b-41d4-a716-446655440001");
+  assert.equal(second.reused_operation, undefined);
+  assert.equal(f.calls.length, 1);
+});
+
+test("a stale or mismatched item lock never returns a receipt that does not match its actor and item", async () => {
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], fetchError: new Error("network timeout")});
+  const first = await f.call();
+  const savedReceipt = f.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`);
+  f.docs.set(`pulseSpecSearchReceipts/${receiptKey()}`, {...savedReceipt, item_id: "another-item"});
+
+  const second = await f.call({operation_id: "550e8400-e29b-41d4-a716-446655440001"});
+  assert.equal(first.state, "outcome_unknown");
+  assert.equal(second.state, "outcome_unknown");
+  assert.equal(second.operation_id, "550e8400-e29b-41d4-a716-446655440001");
+  assert.equal(second.reused_operation, undefined);
+  assert.equal(f.calls.length, 1);
+});
+
+test("a second operation ID cannot dispatch while the first item search is still running", async () => {
+  let markDispatchStarted;
+  let releaseDispatch;
+  const dispatchStarted = new Promise((resolve) => { markDispatchStarted = resolve; });
+  const waitForDispatch = new Promise((resolve) => { releaseDispatch = resolve; });
+  const f = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], beforeFetch: async () => {
+    markDispatchStarted();
+    await waitForDispatch;
+  }});
+  const firstPending = f.call();
+  await dispatchStarted;
+
+  const second = await f.call({operation_id: "550e8400-e29b-41d4-a716-446655440001"});
+  assert.equal(second.state, "outcome_unknown");
+  assert.equal(second.operation_id, "550e8400-e29b-41d4-a716-446655440000");
+  assert.equal(second.reused_operation, true);
+  assert.equal(f.calls.length, 1);
+  releaseDispatch();
+  assert.equal((await firstPending).state, "not_found");
 });
 
 test("UUID casing does not create a second operation receipt or n8n dispatch", async () => {
@@ -234,6 +303,7 @@ test("only valid public HTTPS URLs are stored", async () => {
     assert.deepEqual(replay, first);
     assert.equal(f.calls.length, 1);
     assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
+    assert.equal(f.docs.has(`pulseSpecSearchLocks/${itemLockKey()}`), false);
   }
 });
 
@@ -374,12 +444,14 @@ test("target identity edits conflict while unrelated edits made during search su
   }});
   assert.equal((await f3.call()).error, "spec_search_conflict");
   assert.equal(f3.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
+  assert.equal(f3.docs.has(`pulseSpecSearchLocks/${itemLockKey()}`), false);
   const f4 = fixture({actor: user(), project: {memberIds: ["alice"]}, categories: [{name: "Parts", items: [component]}], response: {success: true, specificationUrl: "https://docs.example.com/spec.pdf"}, beforeFetch: async ({docs}) => {
     docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl = "https://other.example.com/spec.pdf";
   }});
   assert.equal((await f4.call()).state, "conflict");
   assert.equal(f4.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, "https://other.example.com/spec.pdf");
   assert.equal(f4.docs.get(`pulseSpecSearchReceipts/${receiptKey()}`).state, "conflict");
+  assert.equal(f4.docs.has(`pulseSpecSearchLocks/${itemLockKey()}`), false);
 });
 
 test("replay rechecks current project and component-category access before returning a receipt", async () => {

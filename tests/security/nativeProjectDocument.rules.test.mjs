@@ -87,11 +87,12 @@ test('private project document namespaces are denied to every client including a
  }
 });
 test('spec-search receipts and audit records are unreadable and unwritable to members and admins',async()=>{
- const paths=['pulseSpecSearchReceipts/receipt-1','pulseSpecSearchAudit/audit-1'];
+ const paths=['pulseSpecSearchReceipts/receipt-1','pulseSpecSearchLocks/project-item-1','pulseSpecSearchAudit/audit-1'];
  await env.withSecurityRulesDisabled(async context=>{
   const db=context.firestore();
   await setDoc(doc(db,paths[0]),{actor_uid:'alice',project_id:'P',item_id:'i1',state:'completed'});
-  await setDoc(doc(db,paths[1]),{actor_uid:'alice',project_id:'P',item_id:'i1',outcome:'completed'});
+  await setDoc(doc(db,paths[1]),{actor_uid:'alice',project_id:'P',item_id:'i1',operation_id:'op-1'});
+  await setDoc(doc(db,paths[2]),{actor_uid:'alice',project_id:'P',item_id:'i1',outcome:'completed'});
  });
  for(const context of [actor(),actor('alice',{role:'admin'})])for(const path of paths){
   const reference=doc(context.firestore(),path);
