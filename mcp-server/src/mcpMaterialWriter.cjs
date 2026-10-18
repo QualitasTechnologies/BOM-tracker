@@ -72,15 +72,17 @@ function createMcpMaterialWriter({ db, resolvePrincipal, getServerTimestamp }) {
     const receiptRef = db.collection('pulseMcpOperations').doc(projectId).collection('receipts').doc(nonce);
     const auditRef = db.collection('pulseMcpOperations').doc(projectId).collection('audit').doc(nonce);
     const controlRef = db.collection('pulseRuntimeControl').doc('cutover');
+    const materialCutoverRef = db.collection('pulseMaterialCutovers').doc(projectId);
 
     return db.runTransaction(async tx => {
-      const [project, bom, receipt, control] = await Promise.all([tx.get(projectRef), tx.get(bomRef), tx.get(receiptRef), tx.get(controlRef)]);
+      const [project, bom, receipt, control, materialCutover] = await Promise.all([tx.get(projectRef), tx.get(bomRef), tx.get(receiptRef), tx.get(controlRef), tx.get(materialCutoverRef)]);
       const mode = assertMode(control);
       if (receipt.exists) {
         const stored = receipt.data();
         if (!plain(stored) || stored.principalId !== principal.id || stored.inputHash !== inputHash || !plain(stored.result)) throw fault('operation_id_conflict', 409);
         return { ...stored.result, replayed: true };
       }
+      if (!materialCutover.exists) throw fault('material_cutover_required', 503);
       if (mode === 'read_only') throw fault('mcp_writes_disabled', 403);
       if (!project.exists) throw fault('project_not_found', 404);
       if (!bom.exists) throw fault('bom_not_found', 404);

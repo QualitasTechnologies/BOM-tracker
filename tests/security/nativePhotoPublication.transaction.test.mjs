@@ -20,6 +20,7 @@ beforeEach(async()=>{
   bytes=Buffer.from([255,216,255,1,255,217]);staging=bytes;canonical=undefined;metadata=undefined;publications=0;enabled=true;beforePublish=null;beforeCreate=null;preconditionFailures=0;
   await db.doc('projects/P').set({projectId:'P',memberIds:['alice']});
   await db.doc('projects/P/bom/data').set({categories:[{name:'Parts',items:[{id:'bolt',quantity:2,itemType:'component',status:'ordered',unknown:'preserve'}]}]});
+  await db.doc('pulseMaterialCutovers/P').set({project_id:'P',established_by:'reviewed-operator',source:'reviewed_cutover'});
   await db.doc('projectDocuments/invoice').set({projectId:'P',type:'vendor-invoice'});
   class UserRecord{constructor(value){Object.assign(this,value);}}
   const auth={verifyIdToken:async()=>({uid:'alice',email:actor.email}),getUser:async()=>new UserRecord(actor)};

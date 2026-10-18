@@ -106,7 +106,7 @@ const PROCUREMENT_FIELDS = {
     'shipToAddress', 'shipToGstin', 'shipToStateCode', 'shipToStateName', 'items', 'subtotal', 'taxType', 'taxPercentage', 'igstAmount', 'cgstAmount', 'sgstAmount',
     'totalAmount', 'amountInWords', 'currency', 'paymentTerms', 'deliveryTerms', 'dispatchedThrough', 'destination', 'termsAndConditions', 'includeAnnexure',
     'poDate', 'expectedDeliveryDate', 'status', 'submittedForApprovalAt', 'submittedBy', 'changesRequestedAt', 'changesRequestedBy', 'changesRequestedNote',
-    'sentAt', 'sentBy', 'sentToEmail', 'closedAt', 'warnings', 'createdAt', 'createdBy', 'updatedAt'
+    'sentAt', 'actualSentDate', 'sentBy', 'sentToEmail', 'closedAt', 'warnings', 'createdAt', 'createdBy', 'updatedAt'
   ],
   purchaseOrderItem: ['bomItemId', 'slNo', 'description', 'itemCode', 'make', 'uom', 'quantity', 'rate', 'discountPercent', 'amount', 'dueDate', 'hsn'],
   purchaseOrderWarning: ['field', 'message', 'severity'],
@@ -137,7 +137,7 @@ const projectFields = (source, fields, readers) => Object.fromEntries(fields.map
 function purchaseOrderOf(id, projectId, data) {
   const item = row => projectFields(row, PROCUREMENT_FIELDS.purchaseOrderItem, key => key === 'dueDate' ? isoOrNull : ITEM_NUMBERS.has(key) ? finite : text);
   const warning = row => projectFields(row, PROCUREMENT_FIELDS.purchaseOrderWarning, () => text);
-  const reader = key => PO_DATES.has(key) ? isoOrNull : PO_NUMBERS.has(key) ? finite : PO_BOOLEANS.has(key) ? (value => typeof value === 'boolean' ? value : null)
+  const reader = key => key === 'actualSentDate' ? text : PO_DATES.has(key) ? isoOrNull : PO_NUMBERS.has(key) ? finite : PO_BOOLEANS.has(key) ? (value => typeof value === 'boolean' ? value : null)
     : key === 'items' ? (value => (Array.isArray(value) ? value : []).filter(plain).map(item)) : key === 'warnings' ? (value => (Array.isArray(value) ? value : []).filter(plain).map(warning)) : text;
   // The route id is authoritative; a stored projectId on a legacy record is never trusted.
   return { id, ...projectFields(data, PROCUREMENT_FIELDS.purchaseOrder, reader), projectId, has_pdf: typeof data.pdfUrl === 'string' && data.pdfUrl.length > 0 };
@@ -170,6 +170,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
       if (typeof id !== 'string' || !id || id.length > 512 || id.includes('/')) throw fault('invalid_project_id', 400);
       const projectRef = db.collection('projects').doc(id);
       const bomRef = projectRef.collection('bom').doc('data');
+      const materialCutoverRef = db.collection('pulseMaterialCutovers').doc(id);
       // Absent resource keeps the legacy materials contract; anything else must be exactly 'procurement'.
       const resource = req.query?.resource;
       if (resource === 'project_create') {
@@ -251,8 +252,9 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           if (!project.exists) throw fault('project_not_found', 404);
           const scope = scopeFor(project.data(), actor);
           const bom = await transaction.get(bomRef);
+          const materialCutover = await transaction.get(materialCutoverRef);
           const categories = (Array.isArray(bom.data()?.categories) ? bom.data().categories : []).filter(category => scope === null || scope.includes(category.name));
-          return { ok: true, project_id: id, categories, version: versionOf(bom), permissions: { review: true, edit: writesOn() && (scope === null || categories.length > 0), command: writesOn() && (scope === null || scope.length > 0) } };
+          return { ok: true, project_id: id, categories, version: versionOf(bom), permissions: { review: true, edit: writesOn() && materialCutover.exists && (scope === null || categories.length > 0), command: writesOn() && materialCutover.exists && (scope === null || scope.length > 0) } };
         });
         return res.json(response);
       }
@@ -266,9 +268,9 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         const canonicalize = value => Array.isArray(value) ? value.map(canonicalize) : plain(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])])) : value;
         const payloadHash = digest(JSON.stringify({ operation: 'material_command', expected_version: body.expected_version, command: canonicalize(command) }));
         const operations = db.collection('pulseProjectMaterialOperations').doc(id);
-        const receiptRef = operations.collection('materialOperations').doc(body.operation_id);
-        const auditRef = operations.collection('materialAudit').doc(body.operation_id);
-        const response = await db.runTransaction(async transaction => {
+      const receiptRef = operations.collection('materialOperations').doc(body.operation_id);
+      const auditRef = operations.collection('materialAudit').doc(body.operation_id);
+      const response = await db.runTransaction(async transaction => {
           const project = await transaction.get(projectRef);
           if (!project.exists) throw fault('project_not_found', 404);
           const scope = scopeFor(project.data(), actor);
@@ -286,6 +288,8 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
             }
             return recorded.result;
           }
+          const materialCutover = await transaction.get(materialCutoverRef);
+          if (!materialCutover.exists) throw fault('material_cutover_required', 503);
           const bom = await transaction.get(bomRef);
           if (versionOf(bom) !== body.expected_version) throw fault('material_version_conflict', 409);
           if (!bom.exists && command.kind !== 'add_items') throw fault('material_not_found', 404);
@@ -378,6 +382,8 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           if (recorded.actor_uid !== actor.uid || recorded.actor_email !== actor.email.trim().toLowerCase() || recorded.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
           return recorded.result;
         }
+        const materialCutover = await transaction.get(materialCutoverRef);
+        if (!materialCutover.exists) throw fault('material_cutover_required', 503);
         if (versionOf(bom) !== expectedVersion) throw fault('material_version_conflict', 409);
         const updated = fulfilling ? appendFulfillment(match.item, fulfillment, operationId) : { ...match.item, ...patch };
         for (const key of ['price', 'finalizedVendor']) if (Object.hasOwn(patch, key) && patch[key] === null) delete updated[key];

@@ -9,13 +9,15 @@ const versionValid = value => value === 'missing' || typeof value === 'string' &
 const freeze = value => value instanceof Date ? value.toISOString() : value && typeof value.toDate === 'function' ? value.toDate().toISOString()
   : Array.isArray(value) ? value.map(freeze) : plain(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, freeze(value[key])])) : value;
 const hash = value => createHash('sha256').update(JSON.stringify(freeze(value))).digest('hex');
-const business = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['status', 'updatedAt', 'sentAt', 'sentBy', 'sentToEmail', 'pdfUrl', 'nativeSendAttemptId', 'nativeSendPhase'].includes(key)));
+const business = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['status', 'updatedAt', 'sentAt', 'sentBy', 'sentToEmail', 'actualSentDate', 'pdfUrl', 'nativeSendAttemptId', 'nativeSendPhase'].includes(key)));
 const mail = value => typeof value === 'string' && value.length <= 254 && /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(value);
+const dateOnly = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+  && Number.isFinite(Date.parse(`${value}T00:00:00.000Z`)) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
 const RETRY_WINDOW = 23 * 60 * 60 * 1000;
 const LEASE = 5 * 60 * 1000;
 
 // The provider and artifact seams must be server-only and preserve immutable bytes.
-function createNativeProcurementOperations({ db, auth, enabled = false, now = Date.now, getServerTimestamp, resolveBilling, prepareArtifact, sendEmail }) {
+function createNativeProcurementOperations({ db, auth, enabled = false, now = Date.now, timestampFromMillis = millis => new Date(millis), getServerTimestamp, resolveBilling, prepareArtifact, sendEmail }) {
   const writesOn = () => (typeof enabled === 'function' ? enabled() : enabled) === true;
   return async request => {
     try {
@@ -25,19 +27,20 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
       if (!plain(data) || !['open', 'send', 'recover', 'reconcile', 'cancel'].includes(data.operation) || !id(data.project_id) || !id(data.po_id)) throw fault('invalid_procurement_request');
       if (data.expected_actor_uid !== actor.uid) throw fault('actor_session_changed', 403);
       const shared = ['operation', 'project_id', 'po_id', 'expected_actor_uid'];
-      const fields = data.operation === 'send' ? [...shared, 'attempt_id', 'expected_po_version', 'expected_material_version', 'mode', 'recipient_email', 'cc_emails']
+      const fields = data.operation === 'send' ? [...shared, 'attempt_id', 'expected_po_version', 'expected_material_version', 'mode', 'recipient_email', 'cc_emails', ...(data.mode === 'mark' ? ['actual_sent_date'] : [])]
         : data.operation === 'reconcile' ? [...shared, 'attempt_id', 'expected_material_version'] : ['recover', 'cancel'].includes(data.operation) ? [...shared, 'attempt_id'] : shared;
       if (Object.keys(data).some(key => !fields.includes(key))) throw fault('invalid_procurement_request');
       const projectRef = db.collection('projects').doc(data.project_id);
       const poRef = projectRef.collection('purchaseOrders').doc(data.po_id);
       const bomRef = projectRef.collection('bom').doc('data');
+      const cutoverRef = db.collection('pulseMaterialCutovers').doc(data.project_id);
       const attempts = db.collection('pulseProcurementOperations').doc(data.project_id).collection('attempts');
       const audits = db.collection('pulseProcurementOperations').doc(data.project_id).collection('audit');
       const read = async transaction => {
-        const project = await transaction.get(projectRef), po = await transaction.get(poRef), bom = await transaction.get(bomRef);
+        const project = await transaction.get(projectRef), po = await transaction.get(poRef), bom = await transaction.get(bomRef), cutover = await transaction.get(cutoverRef);
         if (!project.exists || !po.exists) throw fault('purchase_order_not_found', 404);
         if (po.data().projectId && po.data().projectId !== data.project_id) throw fault('procurement_forbidden', 403);
-        return { project, po, bom };
+        return { project, po, bom, cutover };
       };
       const publicAttempt = attempt => ({ ok: true, project_id: data.project_id, po_id: data.po_id, attempt_id: attempt.attempt_id,
         phase: attempt.phase === 'dispatching' ? attempt.lease_until > now() ? 'pending' : 'uncertain' : attempt.phase,
@@ -50,7 +53,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
         return { ok: true, project_id: data.project_id, po_id: data.po_id, po_version: version(state.po), material_version: version(state.bom),
           purchase_order: { ...freeze(state.po.data()), id: data.po_id, projectId: data.project_id },
           material_items: (Array.isArray(state.bom.data()?.categories) ? state.bom.data().categories : []).flatMap(category => (Array.isArray(category.items) ? category.items : []).filter(item => state.po.data().items?.some(row => row.bomItemId === item.id)).map(item => ({ id: item.id, name: item.name ?? '', status: item.status ?? '', quantity: item.quantity ?? 0, category: category.name }))),
-          permissions: { send: writesOn() }, attempt: attempt?.exists ? publicAttempt(attempt.data()) : null };
+          permissions: { send: writesOn() && state.cutover.exists }, attempt: attempt?.exists ? publicAttempt(attempt.data()) : null };
       });
       if (!writesOn()) throw fault('procurement_mutations_disabled', 503);
       let attemptId = data.attempt_id;
@@ -58,10 +61,12 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
       if (data.operation === 'send') {
         if (!attemptId || !versionValid(data.expected_po_version) || !versionValid(data.expected_material_version)
           || !['email', 'mark'].includes(data.mode) || !mail(data.recipient_email) || !Array.isArray(data.cc_emails) || data.cc_emails.length > 100 || data.cc_emails.some(value => !mail(value))) throw fault('invalid_procurement_request');
+        if (data.mode === 'mark' ? !dateOnly(data.actual_sent_date) : Object.hasOwn(data, 'actual_sent_date')) throw fault('invalid_procurement_request');
         const intent = { po_id: data.po_id, expected_po_version: data.expected_po_version, expected_material_version: data.expected_material_version,
-          mode: data.mode, recipient_email: data.recipient_email.trim().toLowerCase(), cc_emails: [...new Set([...data.cc_emails.map(value => value.trim().toLowerCase()), actor.email])].filter(value => value !== data.recipient_email.trim().toLowerCase()).sort() };
+          mode: data.mode, ...(data.mode === 'mark' ? { actual_sent_date: data.actual_sent_date } : {}), recipient_email: data.recipient_email.trim().toLowerCase(), cc_emails: [...new Set([...data.cc_emails.map(value => value.trim().toLowerCase()), actor.email])].filter(value => value !== data.recipient_email.trim().toLowerCase()).sort() };
         await db.runTransaction(async transaction => {
           const state = await read(transaction), previous = await transaction.get(attempts.doc(attemptId));
+          if (!state.cutover.exists) throw fault('material_cutover_required', 503);
           if (previous.exists) {
             const record = previous.data();
             if (record.po_id !== data.po_id || record.actor_uid !== actor.uid || record.intent_hash !== hash(intent)) throw fault('operation_conflict', 409);
@@ -88,6 +93,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
       const attemptRef = attempts.doc(attemptId);
       if (data.operation === 'cancel') return await db.runTransaction(async transaction => {
         const state = await read(transaction), stored = await transaction.get(attemptRef);
+        if (!state.cutover.exists) throw fault('material_cutover_required', 503);
         if (!stored.exists || stored.data().po_id !== data.po_id) throw fault('procurement_attempt_not_found', 404);
         const record = stored.data();
         if (record.phase === 'cancelled') return publicAttempt(record);
@@ -100,6 +106,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
       const claim = randomUUID();
       const attempt = await db.runTransaction(async transaction => {
         const state = await read(transaction), stored = await transaction.get(attemptRef);
+        if (!state.cutover.exists) throw fault('material_cutover_required', 503);
         if (!stored.exists || stored.data().po_id !== data.po_id || state.po.data().nativeSendAttemptId !== attemptId) throw fault('procurement_attempt_not_found', 404);
         const record = stored.data();
         if (record.phase === 'complete') return record;
@@ -126,6 +133,11 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
       try {
         if (!['accepted', 'material_pending', 'metadata_pending'].includes(attempt.phase)) {
           if (!attempt.artifact && attempt.mode === 'email') {
+            await db.runTransaction(async transaction => {
+              const state = await read(transaction), stored = await transaction.get(attemptRef);
+              if (!state.cutover.exists) throw fault('material_cutover_required', 503);
+              if (!stored.exists || stored.data().lease_owner !== claim) throw fault('procurement_lease_lost', 409);
+            });
             const artifact = await prepareArtifact(attempt.po_snapshot, attempt.billing, { project_id: data.project_id, po_id: data.po_id, attempt_id: attemptId, payload_hash: attempt.intent_hash, artifact_key: attempt.artifact_key });
             if (!plain(artifact) || typeof artifact.path !== 'string' || typeof artifact.generation !== 'string' || !/^[a-f0-9]{64}$/.test(artifact.sha256) || !Number.isSafeInteger(artifact.size) || artifact.size <= 0 || typeof artifact.url !== 'string') throw fault('invalid_procurement_artifact', 503);
             await store({ artifact }); attempt.artifact = artifact;
@@ -137,7 +149,10 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
             const state = await read(transaction), stored = await transaction.get(attemptRef);
             if (stored.data().lease_owner !== claim) throw fault('procurement_lease_lost', 409);
             if (state.po.data().status !== 'pending-approval' || hash(business({ ...state.po.data(), id: data.po_id, projectId: data.project_id })) !== attempt.po_hash) throw fault('purchase_order_changed', 409);
-            transaction.update(attemptRef, { dispatched_ms: attempt.dispatched_ms ?? now(), phase: 'dispatching' });
+            if (!state.cutover.exists) throw fault('material_cutover_required', 503);
+            const sendTimestampMs = attempt.send_timestamp_ms ?? now();
+            transaction.update(attemptRef, { dispatched_ms: attempt.dispatched_ms ?? sendTimestampMs, send_timestamp_ms: sendTimestampMs, phase: 'dispatching' });
+            attempt.send_timestamp_ms = sendTimestampMs;
           });
           let providerId = 'marked-by-admin';
           if (attempt.mode === 'email') {
@@ -146,7 +161,9 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
             if (!provider || typeof provider.id !== 'string' || !provider.id || provider.id.length > 512) throw fault('provider_outcome_unconfirmed', 503);
             providerId = provider.id;
           }
-          await store({ phase: 'accepted', provider_id: providerId }, 'accepted'); attempt.phase = 'accepted';
+          const acceptedMs = now();
+          await store({ phase: 'accepted', provider_id: providerId, accepted_ms: attempt.accepted_ms ?? acceptedMs }, 'accepted');
+          attempt.accepted_ms ??= acceptedMs; attempt.phase = 'accepted';
         }
         const finalActor = await currentNativeActor(auth, request);
         if (finalActor.customClaims.role !== 'admin') throw fault('procurement_forbidden', 403);
@@ -168,18 +185,22 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
             try {
               const categories = state.bom.data()?.categories;
               const ids = [...new Set(record.po_snapshot.items.map(item => item.bomItemId))];
-              const updates = ids.map(item_id => { const item = categories.flatMap(category => category.items).find(item => item.id === item_id); return { item_id, patch: { ...(item?.status === 'received' ? {} : { status: 'ordered' }), poNumber: record.po_snapshot.poNumber || '' } }; });
+              const orderDate = record.mode === 'mark' ? record.actual_sent_date : new Date(record.accepted_ms).toISOString().slice(0, 10);
+              const updates = ids.map(item_id => { const item = categories.flatMap(category => category.items).find(item => item.id === item_id); return { item_id, patch: { ...(item?.status === 'received' ? {} : { status: 'ordered' }), poNumber: record.po_snapshot.poNumber || '', orderDate } }; });
               changes = applyCommand({ categories, command: { kind: 'patch_items', updates }, scope: null }); nextCategories = changes.categories;
             } catch (error) { problem = error.code || 'material_state_conflict'; }
           }
           const phase = nextCategories ? 'complete' : 'material_pending';
-          const sentFields = { status: 'sent', sentBy: record.actor_uid, sentToEmail: record.recipient_email, nativeSendPhase: phase,
-            ...(state.po.data().sentAt ? {} : { sentAt: getServerTimestamp() }), ...(record.artifact ? { pdfUrl: record.artifact.url } : {}) };
+          const actualSentDate = record.mode === 'mark' ? record.actual_sent_date : new Date(record.accepted_ms).toISOString().slice(0, 10);
+          const sentAt = record.mode === 'email' ? { sentAt: timestampFromMillis(record.accepted_ms) } : {};
+          const sentFields = { status: 'sent', sentBy: record.actor_uid, sentToEmail: record.recipient_email, actualSentDate, nativeSendPhase: phase, ...sentAt,
+            ...(record.artifact ? { pdfUrl: record.artifact.url } : {}) };
           const generated = record.artifact ? { projectId: data.project_id, name: `${record.po_snapshot.poNumber || 'PO'}.pdf`, type: 'vendor-po', url: record.artifact.url,
             uploadedAt: getServerTimestamp(), uploadedBy: record.actor_uid, linkedBOMItems: [...new Set(record.po_snapshot.items.map(item => item.bomItemId))], fileSize: record.artifact.size } : null;
           if (document?.exists && (document.data().projectId !== data.project_id || document.data().url !== record.artifact.url)) throw fault('procurement_document_conflict', 409);
           const finalAudit = { operation: 'finalize_po_send', actor_uid: actor.uid, sending_actor_uid: record.actor_uid, project_id: data.project_id, po_id: data.po_id, attempt_id: attemptId,
             material_before: changes?.before ?? null, material_after: changes?.after ?? null, phase, created_at: getServerTimestamp() };
+          if (!state.cutover.exists) throw fault('material_cutover_required', 503);
           assertDocumentBudget([{ path: poRef.path, data: { ...state.po.data(), ...sentFields } }, { path: auditRef.path, data: finalAudit },
             ...(generated ? [{ path: docRef.path, data: generated }] : []), ...(nextCategories ? [{ path: bomRef.path, data: { ...state.bom.data(), categories: nextCategories } }] : [])]);
           transaction.update(poRef, sentFields);
@@ -196,6 +217,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
         });
         return result;
       } catch (error) {
+        if (error.code === 'material_cutover_required') return { ok: false, error: error.code };
         // Never downgrade a persisted provider acknowledgment into a failed send.
         await db.runTransaction(async transaction => {
           const stored = await transaction.get(attemptRef);

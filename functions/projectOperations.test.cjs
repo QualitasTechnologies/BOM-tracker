@@ -6,6 +6,7 @@ function fixture(options = {}) {
   const actor = { uid: 'alice', email: 'alice@example.com', emailVerified: true, customClaims: { role: 'viewer', status: 'approved' }, ...options.actor };
   const docs = new Map(Object.entries({
     'projects/A': { memberIds: ['alice'], members: [{ userId: 'alice', categoryScope: ['Mech'] }] },
+    ...(options.cutover === false ? {} : { 'pulseMaterialCutovers/A': { project_id: 'A', source: 'reviewed_cutover' } }),
     'projects/A/bom/data': { unknown: 'keep', categories: [{ name: 'Mech', extra: 'keep', items: [{ id: 'motor', name: 'Motor', quantity: 2, price: 9, itemType: 'component', status: 'ordered', vendors: [{ name: 'V' }], unknown: { x: 1 } }, { id: 'service', name: 'Labour', quantity: 1, itemType: 'service' }] }, { name: 'Secret', items: [{ id: 'secret', name: 'Hidden', quantity: 1 }] }] }
   }).map(([path, data]) => [path, { data, tick: 1 }]));
   let clock = 1;
@@ -41,6 +42,13 @@ test('read scopes categories and preserves stored item details and timestamp ver
   const f = fixture(); const r = await f.call(); assert.equal(r.status, 200); assert.equal(r.body.version, '10:1'); assert.deepEqual(r.body.categories.map(c => c.name), ['Mech']); assert.equal(r.body.categories[0].items[0].vendors[0].name, 'V'); assert.equal(r.body.permissions.edit, true);
 });
 test('writes default off, while reads continue', async () => { for (const options of [{ enabled: false }, { defaultWrites: true }]) { const f = fixture(options); assert.equal((await f.patch()).status, 503); assert.equal((await f.call()).body.permissions.edit, false); } });
+test('native material edits stay disabled before an explicit reviewed project cutover', async () => {
+  const f = fixture({ cutover: false });
+  assert.equal((await f.call()).body.permissions.edit, false);
+  assert.equal((await f.patch()).status, 503);
+  assert.equal(f.docs.has('pulseMaterialCutovers/A'), false);
+  assert.equal(f.docs.get('projects/A/bom/data').data.categories[0].items[0].name, 'Motor');
+});
 test('viewer writes narrowly and creates an atomic immutable audit and receipt', async () => {
   const f = fixture(); assert.equal((await f.patch({ quantity: 3 })).status, 200);
   const row = f.docs.get('projects/A/bom/data').data; assert.equal(row.unknown, 'keep'); assert.equal(row.categories[0].extra, 'keep'); assert.deepEqual(row.categories[0].items[0].unknown, { x: 1 }); assert.equal(row.categories[1].items[0].name, 'Hidden'); assert.equal(row.categories[0].items[0].status, 'ordered');
@@ -49,6 +57,7 @@ test('viewer writes narrowly and creates an atomic immutable audit and receipt',
   assert.equal(audit.previous_version, '10:1');
   assert.deepEqual(audit.permission, { role: 'viewer', category: 'Mech', scope: ['Mech'] });
   assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialOperations/op-1'), true);
+  assert.equal(f.docs.get('pulseMaterialCutovers/A').data.source, 'reviewed_cutover');
   assert.equal([...f.docs.keys()].some(path => /^projects\/A\/(materialAudit|materialOperations)\//.test(path)), false);
 });
 test('scope and membership are enforced including on replay', async () => {
@@ -65,25 +74,25 @@ test('fresh actor checks reject disabled unapproved unverified changed email rev
 });
 test('strict patch and request validation', async () => {
   for (const patch of [{ status: 'received' }, { vendors: [] }, { id: 'change' }, { itemType: 'unknown' }, { category: '' }, { name: '' }, { name: 'x'.repeat(501) }, { description: 'x'.repeat(4001) }, { quantity: 0 }, { quantity: Infinity }, { price: -1 }, { price: NaN }, { unit: null }, {}, JSON.parse('{"__proto__":{"admin":true}}'), { constructor: 'x' }]) {
-    const f = fixture(); const r = await f.patch({}, { patch }); assert.equal(r.status, 400, JSON.stringify(patch)); assert.equal(f.docs.size, 2);
+    const f = fixture(); const r = await f.patch({}, { patch }); assert.equal(r.status, 400, JSON.stringify(patch)); assert.equal(f.docs.size, 3);
   }
   for (const extra of [{ expected_version: '10:1000000000' }, { expected_version: '10:01' }, { expected_version: 'bogus' }, { operation_id: '../x' }, { item_id: '' }, { evil: true }]) assert.equal((await fixture().patch({}, extra)).status, 400);
   assert.equal((await fixture().patch({ quantity: 0.4 }, { item_id: 'service' })).status, 400);
 });
-test('legacy writes change snapshot version and reject stale writes without audit', async () => { const f = fixture(); f.change('projects/A/bom/data', { oldClient: true }); assert.equal((await f.patch()).status, 409); assert.equal(f.docs.size, 2); });
+test('legacy writes change snapshot version and reject stale writes without audit', async () => { const f = fixture(); f.change('projects/A/bom/data', { oldClient: true }); assert.equal((await f.patch()).status, 409); assert.equal(f.docs.size, 3); });
 test('same actor and payload replay is stable while changed body and actor collide', async () => {
-  const f = fixture(); const first = await f.patch(); assert.deepEqual(await f.patch(), first); assert.equal(f.docs.size, 4); assert.equal((await f.patch({ name: 'Another' })).status, 409);
+  const f = fixture(); const first = await f.patch(); assert.deepEqual(await f.patch(), first); assert.equal(f.docs.size, 5); assert.equal((await f.patch({ name: 'Another' })).status, 409);
   f.actor.uid = 'bob'; f.change('projects/A', { memberIds: ['bob'], members: [{ userId: 'bob', categoryScope: ['Mech'] }] }); assert.equal((await f.patch()).status, 409);
 });
-test('audit failure rolls back item and receipt', async () => { const f = fixture({ failAudit: true }); assert.equal((await f.patch()).status, 503); assert.equal(f.docs.size, 2); assert.equal(f.docs.get('projects/A/bom/data').data.categories[0].items[0].name, 'Motor'); });
-test('concurrent same-version edits allow one commit and one stale conflict', async () => { const f = fixture(); const r = await Promise.all([f.patch(), f.patch({ name: 'Other' }, { operation_id: 'op-2' })]); assert.deepEqual(r.map(x => x.status).sort(), [200, 409]); assert.equal(f.docs.size, 4); });
-test('duplicate item identities conflict even if one duplicate is outside scope', async () => { const f = fixture(); const row = f.docs.get('projects/A/bom/data').data; row.categories[1].items[0].id = 'motor'; assert.equal((await f.patch()).status, 409); assert.equal(f.docs.size, 2); });
+test('audit failure rolls back item and receipt', async () => { const f = fixture({ failAudit: true }); assert.equal((await f.patch()).status, 503); assert.equal(f.docs.size, 3); assert.equal(f.docs.get('projects/A/bom/data').data.categories[0].items[0].name, 'Motor'); });
+test('concurrent same-version edits allow one commit and one stale conflict', async () => { const f = fixture(); const r = await Promise.all([f.patch(), f.patch({ name: 'Other' }, { operation_id: 'op-2' })]); assert.deepEqual(r.map(x => x.status).sort(), [200, 409]); assert.equal(f.docs.size, 5); });
+test('duplicate item identities conflict even if one duplicate is outside scope', async () => { const f = fixture(); const row = f.docs.get('projects/A/bom/data').data; row.categories[1].items[0].id = 'motor'; assert.equal((await f.patch()).status, 409); assert.equal(f.docs.size, 3); });
 test('missing BOM has explicit missing version and cannot create arbitrary items', async () => { const f = fixture(); f.docs.delete('projects/A/bom/data'); assert.equal((await f.call()).body.version, 'missing'); assert.equal((await f.patch({}, { expected_version: 'missing' })).status, 404); });
 test('transaction retry rechecks membership after concurrent project access removal', async () => {
   const f = fixture({ beforeCommit: docs => { const row = docs.get('projects/A'); docs.set('projects/A', { data: { ...row.data, memberIds: [] }, tick: 999 }); } });
-  assert.equal((await f.patch()).status, 403); assert.equal(f.docs.size, 2); assert.equal(f.docs.get('projects/A/bom/data').data.categories[0].items[0].name, 'Motor');
+  assert.equal((await f.patch()).status, 403); assert.equal(f.docs.size, 3); assert.equal(f.docs.get('projects/A/bom/data').data.categories[0].items[0].name, 'Motor');
 });
-test('concurrent identical operation ids return one receipt and one audit', async () => { const f = fixture(); const r = await Promise.all([f.patch(), f.patch()]); assert.deepEqual(r[0], r[1]); assert.equal(r[0].status, 200); assert.equal(f.docs.size, 4); });
+test('concurrent identical operation ids return one receipt and one audit', async () => { const f = fixture(); const r = await Promise.all([f.patch(), f.patch()]); assert.deepEqual(r[0], r[1]); assert.equal(r[0].status, 200); assert.equal(f.docs.size, 5); });
 test('replay rechecks current category scope', async () => { const f = fixture(); assert.equal((await f.patch()).status, 200); f.change('projects/A', { members: [] }); assert.equal((await f.patch()).status, 403); });
 test('snapshot nanos remain opaque and malformed timestamps fail closed', async () => { const f = fixture(); f.docs.get('projects/A/bom/data').tick = 999999999; assert.equal((await f.call()).body.version, '10:999999999'); f.docs.get('projects/A/bom/data').tick = 1000000000; assert.equal((await f.call()).status, 503); });
 
@@ -193,10 +202,10 @@ test('receipt appends atomically with proof, legacy metadata and immutable serve
 });
 test('receipts validate shape, quantity, real dates, invoice and project photo namespace', async () => {
   for (const fulfillment of [{ quantity: 0 }, { quantity: 0.5 }, { quantity: Infinity }, { loggedAt: '2026-02-30' }, { loggedAt: undefined }, { invoiceDocId: undefined }, { photoUrl: undefined }, { photoUrl: 'https://evil.example/photo' }, { photoUrl: receiptPhoto.replace('%2FA%2F', '%2FB%2F') }, { actor_uid: 'admin' }, { kind: 'unknown' }]) {
-    const f = receiptFixture(); assert.equal((await f.fulfill(fulfillment)).status, 400, JSON.stringify(fulfillment)); assert.equal(f.docs.size, 3);
+    const f = receiptFixture(); assert.equal((await f.fulfill(fulfillment)).status, 400, JSON.stringify(fulfillment)); assert.equal(f.docs.size, 4);
   }
   for (const update of [{ projectId: 'B' }, { type: 'vendor-po' }]) {
-    const f = receiptFixture(); Object.assign(f.docs.get('projectDocuments/invoice').data, update); assert.equal((await f.fulfill()).status, 403); assert.equal(f.docs.size, 3);
+    const f = receiptFixture(); Object.assign(f.docs.get('projectDocuments/invoice').data, update); assert.equal((await f.fulfill()).status, 403); assert.equal(f.docs.size, 4);
   }
 });
 test('receipt replay reloads invoice project ownership and project/category membership', async () => {
@@ -206,7 +215,7 @@ test('receipt replay reloads invoice project ownership and project/category memb
 });
 test('receipt preserves legacy received totals and fails closed on corrupt tranche state', async () => {
   for (const update of [{ status: 'received' }, { fulfillmentTranches: 'bad' }, { fulfillmentTranches: [{ quantity: -1 }] }, { fulfillmentTranches: [{ quantity: NaN }] }, { fulfillmentTranches: [{ quantity: 3 }] }, { quantity: NaN }]) {
-    const f = receiptFixture(); Object.assign(f.item(), update); assert.equal((await f.fulfill()).status, 409); assert.equal(f.docs.size, 3);
+    const f = receiptFixture(); Object.assign(f.item(), update); assert.equal((await f.fulfill()).status, 409); assert.equal(f.docs.size, 4);
   }
   const f = receiptFixture(); f.item().itemType = 'service'; assert.equal((await f.fulfill()).status, 400);
 });
@@ -226,7 +235,7 @@ test('receipt namespace collides with patch and stale concurrent appends commit 
   const g = receiptFixture(); const results = await Promise.all([g.fulfill(), g.fulfill({}, { operation_id: 'receipt-2' })]); assert.deepEqual(results.map(r => r.status).sort(), [200, 409]); assert.equal(g.item().fulfillmentTranches.length, 1);
 });
 test('receipt audit failure and proof revocation during transaction retry roll back append', async () => {
-  const f = receiptFixture({ failAudit: true }); assert.equal((await f.fulfill()).status, 503); assert.equal(f.item().fulfillmentTranches, undefined); assert.equal(f.docs.size, 3);
+  const f = receiptFixture({ failAudit: true }); assert.equal((await f.fulfill()).status, 503); assert.equal(f.item().fulfillmentTranches, undefined); assert.equal(f.docs.size, 4);
   const g = receiptFixture({ beforeCommit: docs => { const row = docs.get('projectDocuments/invoice'); docs.set('projectDocuments/invoice', { tick: 999, data: { ...row.data, projectId: 'B' } }); } });
   assert.equal((await g.fulfill()).status, 403); assert.equal(g.item().fulfillmentTranches, undefined);
 });
@@ -237,7 +246,7 @@ test('newly uploaded project invoices with no existing links remain usable in or
 });
 test('legacy malformed received state and duplicate tranche identities fail closed', async () => {
   for (const update of [{ status: 'received', quantity: '2' }, { status: 'received', fulfillmentTranches: [{ id: 'same', quantity: 0.5 }, { id: 'same', quantity: 0.5 }] }, { fulfillmentTranches: [{ id: 'tranche-receipt-1', quantity: 0.5 }] }, { itemType: 'unknown' }]) {
-    const f = receiptFixture(); Object.assign(f.item(), update); assert.equal((await f.fulfill()).status, 409); assert.equal(f.docs.size, 3);
+    const f = receiptFixture(); Object.assign(f.item(), update); assert.equal((await f.fulfill()).status, 409); assert.equal(f.docs.size, 4);
   }
 });
 test('receipt handles stale version, duplicate item identities and uncertain identical concurrent retries', async () => {

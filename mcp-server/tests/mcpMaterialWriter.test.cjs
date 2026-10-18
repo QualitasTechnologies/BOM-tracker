@@ -47,9 +47,10 @@ function memoryDb({ failPath } = {}) {
 }
 
 const history = { id: 'old-1', name: 'Relay', description: 'd', itemType: 'component', category: 'Electrical', quantity: 4, status: 'received', price: 10, vendors: [{ name: 'V', price: 9, leadTime: '2 weeks', availability: 'x' }], finalizedVendor: { name: 'V', price: 9, leadTime: '2 weeks' }, fulfillmentTranches: [{ id: 't1', quantity: 4, loggedAt: '2026-01-01' }], poNumber: 'PO-1', linkedPODocumentId: 'doc-1' };
-function seed(db) {
+function seed(db, { cutover = true } = {}) {
   db.put(`projects/${P}`, { projectName: 'X' });
   db.put(BOM, { extra: 'keep', categories: [{ name: 'Electrical', isExpanded: false, items: [history] }, { name: 'Mechanical', items: [] }] });
+  if (cutover) db.put(`pulseMaterialCutovers/${P}`, { project_id: P, established_by: 'reviewed-operator', source: 'reviewed_cutover' });
 }
 const versionOf = (db, path = BOM) => { const t = db.docs.get(path).updateTime; return `${t.seconds}:${t.nanoseconds}`; };
 const principal = { id: 'google-sub-1', email: 'robot@example.iam.gserviceaccount.com' };
@@ -70,7 +71,18 @@ test('adds item with canonical category, deterministic id, audit and receipt; pr
   assert.equal(db.docs.get(AUDIT('op-1')).data.actor.subject, 'google-sub-1');
   assert.equal(db.docs.get(AUDIT('op-1')).data.actor.type, 'google-credential');
   assert.equal(db.docs.get(RECEIPT('op-1')).data.principalId, 'google-sub-1');
+  assert.equal(db.docs.get(`pulseMaterialCutovers/${P}`).data.established_by, 'reviewed-operator');
+  assert.equal(db.docs.get(`pulseMaterialCutovers/${P}`).data.source, 'reviewed_cutover');
   assert.equal('uid' in db.docs.get(AUDIT('op-1')).data.actor, false);
+});
+
+test('MCP material writer refuses uncut projects without activating cutover itself', async () => {
+  const db = memoryDb(); seed(db, { cutover: false });
+  const original = structuredClone(db.docs.get(BOM).data);
+  await rejects(make(db).addItem(input(db)), 'material_cutover_required');
+  assert.deepEqual(db.docs.get(BOM).data, original);
+  assert.equal(db.docs.has(`pulseMaterialCutovers/${P}`), false);
+  assert.equal(db.docs.has(RECEIPT('op-1')), false);
 });
 
 test('stale expected version rejects without writing', async () => {
@@ -143,8 +155,10 @@ test('control record is never written', async () => {
 test('missing project, BOM or category fail; no category is created', async () => {
   const base = { ...input(memoryDb({}), {}) };
   let db = memoryDb(); db.put(BOM, { categories: [] });
+  db.put(`pulseMaterialCutovers/${P}`, { project_id: P, established_by: 'reviewed-operator' });
   await rejects(make(db).addItem({ ...base, expected_version: '1:1' }), 'project_not_found');
   db = memoryDb(); db.put(`projects/${P}`, {});
+  db.put(`pulseMaterialCutovers/${P}`, { project_id: P, established_by: 'reviewed-operator' });
   await rejects(make(db).addItem({ ...base, expected_version: '1:1' }), 'bom_not_found');
   db = memoryDb(); seed(db);
   await rejects(make(db).addItem(input(db, { category: 'Nope' })), 'material_category_not_found');
@@ -184,6 +198,7 @@ test('case-insensitive category selection preserves the original first-match rul
 test('long existing project IDs accepted by the material API remain addressable', async () => {
   const db = memoryDb(), project = 'P'.repeat(240);
   db.put('projects/'+project, { projectName: 'Long ID' });
+  db.put(`pulseMaterialCutovers/${project}`, { project_id: project, established_by: 'reviewed-operator' });
   const bom = 'projects/'+project+'/bom/data'; db.put(bom, { categories: [{ name: 'Electrical', items: [] }] });
   const time = db.docs.get(bom).updateTime;
   const result = await make(db).addItem({ ...input(db), project_id: project, expected_version: time.seconds+':'+time.nanoseconds });
@@ -193,6 +208,7 @@ test('long existing project IDs accepted by the material API remain addressable'
 test('one operation nonce reused in different projects cannot collide in legacy item file namespaces', async () => {
   const db = memoryDb(); seed(db); const first = await make(db).addItem(input(db));
   const other = 'Other'; db.put('projects/'+other, { projectName: 'Other' });
+  db.put(`pulseMaterialCutovers/${other}`, { project_id: other, established_by: 'reviewed-operator' });
   const bom = 'projects/'+other+'/bom/data'; db.put(bom, { categories: [{ name: 'Electrical', items: [] }] });
   const time = db.docs.get(bom).updateTime;
   const second = await make(db).addItem({ ...input(db), project_id: other, expected_version: time.seconds+':'+time.nanoseconds });

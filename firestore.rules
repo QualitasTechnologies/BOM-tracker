@@ -20,14 +20,14 @@ service cloud.firestore {
     function purchaseOrderCreateIsNotSent() {
       return !purchaseOrderPostSendStatus(request.resource.data.get('status', null))
         && !request.resource.data.keys().hasAny([
-          'sentAt', 'sentBy', 'sentToEmail',
+          'sentAt', 'actualSentDate', 'sentBy', 'sentToEmail',
           'nativeSendAttemptId', 'nativeSendPhase', 'pdfUrl'
         ]);
     }
 
     function purchaseOrderHasBeenSent() {
       return purchaseOrderPostSendStatus(resource.data.get('status', null))
-        || resource.data.keys().hasAny(['sentAt', 'sentBy', 'sentToEmail'])
+        || resource.data.keys().hasAny(['sentAt', 'actualSentDate', 'sentBy', 'sentToEmail'])
         || resource.data.get('nativeSendPhase', null) in [
           'dispatching', 'uncertain', 'needs_reconciliation', 'accepted',
           'material_pending', 'metadata_pending', 'complete'
@@ -77,7 +77,7 @@ service cloud.firestore {
           : !purchaseOrderPostSendStatus(request.resource.data.get('status', null)))
         && purchaseOrderPostSendFieldsAreLimited()
         && !changed.hasAny([
-          'sentAt', 'sentBy', 'sentToEmail',
+          'sentAt', 'actualSentDate', 'sentBy', 'sentToEmail',
           'nativeSendAttemptId', 'nativeSendPhase', 'pdfUrl'
         ]);
     }
@@ -105,13 +105,27 @@ service cloud.firestore {
       allow delete: if request.auth != null
         && request.auth.token.role == 'admin';
 
-      // All project subcollections except purchaseOrders preserve the former
+      // All project subcollections except purchaseOrders and bom preserve the former
       // recursive wildcard's exact project-access predicate. Naming the first
       // collection segment is necessary: a deny overlapping the old recursive
       // wildcard would be additive and therefore ineffective.
       match /{projectCollection}/{document=**} {
-        allow read, write: if projectCollection != 'purchaseOrders'
+        allow read, write: if projectCollection != 'purchaseOrders' && projectCollection != 'bom'
           && projectSubcollectionAccess(projectId);
+      }
+
+      // The legacy client writes BOM data with a full-array replacement. Once a
+      // server-side native write establishes the project marker, clients retain
+      // reads but can no longer overwrite projects/{id}/bom/data. Other BOM
+      // documents and all nested subcollections keep their existing access.
+      match /bom/{documentId} {
+        allow read: if projectSubcollectionAccess(projectId);
+        allow write: if projectSubcollectionAccess(projectId)
+          && (documentId != 'data' || !exists(/databases/$(database)/documents/pulseMaterialCutovers/$(projectId)));
+      }
+
+      match /bom/{documentId}/{subcollection}/{document=**} {
+        allow read, write: if projectSubcollectionAccess(projectId);
       }
 
       // PO create/update/delete and nested records retain project member/admin
@@ -176,6 +190,11 @@ service cloud.firestore {
     // Internal routing and deduplication state is only accessed through the
     // Admin SDK in Cloud Functions.
     match /stakeholderIndex/{document=**} {
+      allow read, write: if false;
+    }
+
+    // A one-way cutover marker is created only by trusted server writers.
+    match /pulseMaterialCutovers/{projectId} {
       allow read, write: if false;
     }
 

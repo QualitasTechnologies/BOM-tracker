@@ -89,9 +89,93 @@ test('protected artifact attestation key never leaves the public attempt respons
 
 test('mark as sent preserves the original workflow without billing or an email provider', async () => {
   const f = fixture({ billingFailure: true }); const opening = await f.call({ operation: 'open' });
-  const result = await f.call({ operation: 'send', attempt_id: 'mark-one', expected_po_version: opening.po_version, expected_material_version: opening.material_version, mode: 'mark', recipient_email: 'vendor@example.com', cc_emails: [] });
+  const result = await f.call({ operation: 'send', attempt_id: 'mark-one', expected_po_version: opening.po_version, expected_material_version: opening.material_version, mode: 'mark', actual_sent_date: '2026-10-10', recipient_email: 'vendor@example.com', cc_emails: [] });
   assert.equal(result.phase, 'complete'); assert.equal(f.calls.length, 0);
   assert.equal([...f.docs.keys()].some(path => path.startsWith('projectDocuments/')), false);
+  assert.equal(f.docs.get('projects/P/purchaseOrders/PO').actualSentDate, '2026-10-10');
+  assert.equal(f.docs.get('projects/P/purchaseOrders/PO').sentAt, undefined);
+  assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].orderDate, '2026-10-10');
+});
+
+test('manual sent date is required, calendar-valid, and immutable across attempt retries', async () => {
+  const f = fixture(); const opening = await f.call({ operation: 'open' });
+  const base = { operation: 'send', attempt_id: 'mark-date', expected_po_version: opening.po_version, expected_material_version: opening.material_version, mode: 'mark', recipient_email: 'vendor@example.com', cc_emails: [] };
+  assert.equal((await f.call(base)).error, 'invalid_procurement_request');
+  assert.equal((await f.call({ ...base, actual_sent_date: '2026-02-30' })).error, 'invalid_procurement_request');
+  const accepted = await f.call({ ...base, actual_sent_date: '2026-10-10' });
+  assert.equal(accepted.phase, 'complete');
+  assert.equal((await f.call({ ...base, actual_sent_date: '2026-10-11' })).error, 'operation_conflict');
+});
+
+test('accepted provider time is the stable send timestamp and linked-material order date', async () => {
+  const f = fixture(); f.advance(1234); const result = await f.send();
+  assert.equal(result.phase, 'complete');
+  const accepted = f.docs.get('pulseProcurementOperations/P/attempts/attempt-1').accepted_ms;
+  assert.equal(f.docs.get('projects/P/purchaseOrders/PO').sentAt.getTime(), accepted);
+  assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].orderDate, new Date(1001234).toISOString().slice(0, 10));
+  f.advance(500000); assert.equal((await f.call({ operation: 'recover' })).phase, 'complete');
+  assert.equal(f.docs.get('projects/P/purchaseOrders/PO').sentAt.getTime(), accepted);
+});
+
+test('PO send respects the pre-existing irreversible legacy-writer fence', async () => {
+  const f = fixture(); const result = await f.send(); assert.equal(result.phase, 'complete');
+  assert.equal(f.docs.get('pulseMaterialCutovers/P').project_id, 'P');
+  assert.equal(f.docs.get('pulseMaterialCutovers/P').established_by, 'reviewed-operator');
+});
+
+test('PO send refuses to activate an uncut project or dispatch before the explicit marker exists', async () => {
+  const f = fixture({ cutover: false });
+  const opening = await f.call({ operation: 'open' }); assert.equal(opening.permissions.send, false);
+  const result = await f.send();
+  assert.equal(result.error, 'material_cutover_required');
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.docs.has('pulseMaterialCutovers/P'), false);
+  assert.equal(f.docs.has('pulseProcurementOperations/P/attempts/attempt-1'), false);
+});
+
+test('cutover loss before artifact preparation leaves the attempt and lease untouched and creates no artifact', async () => {
+  let attemptAtCutoverLoss;
+  const f = fixture({ beforeTransaction: (number, docs) => { if (number === 4) { attemptAtCutoverLoss = structuredClone(docs.get('pulseProcurementOperations/P/attempts/attempt-1')); docs.delete('pulseMaterialCutovers/P'); } } });
+  assert.equal((await f.send()).error, 'material_cutover_required');
+  const attempt = f.docs.get('pulseProcurementOperations/P/attempts/attempt-1');
+  assert.equal(attempt.phase, 'prepared');
+  assert.deepEqual(attempt, attemptAtCutoverLoss);
+  assert.equal(f.artifactCalls(), 0);
+  assert.equal(f.calls.length, 0);
+});
+
+test('recovery refuses to mutate PO or material data if the explicit cutover marker is absent', async () => {
+  const f = fixture({ prepare: () => { throw Error('interrupt before dispatch'); } });
+  assert.equal((await f.send()).phase, 'prepared');
+  f.removeCutover();
+  const beforeAttempt = structuredClone(f.docs.get('pulseProcurementOperations/P/attempts/attempt-1'));
+  const beforePo = structuredClone(f.docs.get('projects/P/purchaseOrders/PO'));
+  assert.equal((await f.call({ operation: 'recover' })).error, 'material_cutover_required');
+  assert.deepEqual(f.docs.get('projects/P/purchaseOrders/PO'), beforePo);
+  assert.deepEqual(f.docs.get('pulseProcurementOperations/P/attempts/attempt-1'), beforeAttempt);
+  assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].orderDate, undefined);
+  assert.equal(f.calls.length, 0);
+});
+
+test('reconcile and cancel refuse unmarked attempts without changing leases, PO, or audit records', async () => {
+  const prepared = fixture({ prepare: () => { throw Error('interrupt before dispatch'); } });
+  await prepared.send(); prepared.removeCutover();
+  const beforeAttempt = structuredClone(prepared.docs.get('pulseProcurementOperations/P/attempts/attempt-1'));
+  const beforePo = structuredClone(prepared.docs.get('projects/P/purchaseOrders/PO'));
+  assert.equal((await prepared.call({ operation: 'cancel', attempt_id: 'attempt-1' })).error, 'material_cutover_required');
+  assert.equal((await prepared.call({ operation: 'recover', attempt_id: 'attempt-1' })).error, 'material_cutover_required');
+  assert.deepEqual(prepared.docs.get('projects/P/purchaseOrders/PO'), beforePo);
+  assert.deepEqual(prepared.docs.get('pulseProcurementOperations/P/attempts/attempt-1'), beforeAttempt);
+  assert.equal([...prepared.docs.keys()].filter(path => path.includes('/audit/')).length, 1);
+
+  const completed = fixture(); await completed.send(); completed.removeCutover();
+  const completedAttempt = structuredClone(completed.docs.get('pulseProcurementOperations/P/attempts/attempt-1'));
+  const completedPo = structuredClone(completed.docs.get('projects/P/purchaseOrders/PO'));
+  const opening = await completed.call({ operation: 'open' });
+  assert.equal((await completed.call({ operation: 'reconcile', attempt_id: 'attempt-1', expected_material_version: opening.material_version })).error, 'material_cutover_required');
+  assert.deepEqual(completed.docs.get('projects/P/purchaseOrders/PO'), completedPo);
+  assert.deepEqual(completed.docs.get('pulseProcurementOperations/P/attempts/attempt-1'), completedAttempt);
+  assert.equal(completed.calls.length, 1);
 });
 
 test('reservation audit failure leaves no attempt or PO pointer and never sends', async () => {
