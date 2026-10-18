@@ -2472,156 +2472,18 @@ Match the quote line items to BOM items. Flag any price or quantity mismatches.`
   }
 );
 
-/**
- * Trigger spec sheet search via n8n workflow
- * This function sends a request to n8n which will search for spec sheets
- * and then updates Firestore with the result
- */
+/** Retired public spec-search writer. Use the authenticated native callable. */
 exports.triggerSpecSearch = onRequest(
-  async (request, response) => {
-    // Enable CORS
+  (request, response) => {
     response.set('Access-Control-Allow-Origin', '*');
-    response.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    response.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
     response.set('Access-Control-Allow-Headers', 'Content-Type');
-
     if (request.method === 'OPTIONS') {
       response.status(204).send('');
       return;
     }
-
-    if (request.method !== 'POST') {
-      response.status(405).json({ error: 'Method not allowed. Use POST.' });
-      return;
-    }
-
-    const { rejectLegacySpecSearch, isNativeSpecSearchEnabled } = require('./specSearchLegacyGuard.cjs');
-    if (rejectLegacySpecSearch(response, () => isNativeSpecSearchEnabled(process.env.BOM_NATIVE_SPEC_SEARCH_ENABLED))) return;
-
-    try {
-      const { bomItemId, projectId, itemName, make, sku, userId } = request.body;
-
-      // Validate required fields
-      if (!bomItemId || !projectId || !itemName) {
-        response.status(400).json({
-          error: 'Missing required fields: bomItemId, projectId, itemName'
-        });
-        return;
-      }
-
-      // Production n8n webhook URL (workflow must be activated in n8n for this to work)
-      const n8nWebhookUrl = 'https://n8n.qualitastech.com/webhook/spec-search';
-
-      // Generate a unique search ID
-      const searchId = `spec-search-${bomItemId}-${Date.now()}`;
-
-      // Prepare the payload for n8n
-      const n8nPayload = {
-        searchId,
-        bomItemId,
-        projectId,
-        itemName,
-        make: make || '',
-        sku: sku || '',
-        userId: userId || 'system',
-        timestamp: new Date().toISOString()
-      };
-
-      logger.info('Triggering n8n spec search', {
-        searchId,
-        bomItemId,
-        itemName,
-        make
-      });
-
-      // Call n8n webhook
-      const n8nResponse = await fetch(n8nWebhookUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(n8nPayload)
-      });
-
-      if (!n8nResponse.ok) {
-        const errorText = await n8nResponse.text();
-        logger.error('n8n webhook error:', { status: n8nResponse.status, error: errorText });
-        response.status(500).json({
-          success: false,
-          error: 'Failed to trigger spec search workflow'
-        });
-        return;
-      }
-
-      // Parse the n8n response which contains the spec URL
-      const n8nResult = await n8nResponse.json();
-      logger.info('n8n response:', n8nResult);
-
-      // If n8n returned a specificationUrl, update the BOM item in Firestore
-      if (n8nResult.success && n8nResult.specificationUrl) {
-        try {
-          // Get the BOM data document
-          const bomDocRef = admin.firestore()
-            .collection('projects')
-            .doc(projectId)
-            .collection('bom')
-            .doc('data');
-
-          const bomDoc = await bomDocRef.get();
-
-          if (bomDoc.exists) {
-            const bomData = bomDoc.data();
-            let updated = false;
-
-            // Find and update the item in categories
-            if (bomData.categories && Array.isArray(bomData.categories)) {
-              for (const category of bomData.categories) {
-                if (category.items && Array.isArray(category.items)) {
-                  const itemIndex = category.items.findIndex(item => item.id === bomItemId);
-                  if (itemIndex !== -1) {
-                    category.items[itemIndex].specificationUrl = n8nResult.specificationUrl;
-                    category.items[itemIndex].updatedAt = new Date().toISOString();
-                    updated = true;
-                    break;
-                  }
-                }
-              }
-            }
-
-            if (updated) {
-              await bomDocRef.update({
-                categories: bomData.categories,
-                updatedAt: admin.firestore.FieldValue.serverTimestamp()
-              });
-              logger.info('Updated BOM item with spec URL', {
-                bomItemId,
-                specificationUrl: n8nResult.specificationUrl
-              });
-            }
-          }
-        } catch (firestoreError) {
-          logger.error('Error updating Firestore:', firestoreError);
-          // Don't fail the whole request, just log the error
-        }
-      }
-
-      // Return success response
-      response.status(200).json({
-        success: true,
-        searchId,
-        status: 'completed',
-        specificationUrl: n8nResult.specificationUrl || null,
-        message: n8nResult.specificationUrl
-          ? 'Spec sheet found and saved!'
-          : 'Search completed but no spec sheet found.'
-      });
-
-    } catch (error) {
-      logger.error('Error triggering spec search:', error);
-      response.status(500).json({
-        error: 'Internal server error',
-        details: error.message
-      });
-    }
+    const { rejectLegacySpecSearch } = require('./specSearchLegacyGuard.cjs');
+    rejectLegacySpecSearch(response, () => true);
   }
 );
 

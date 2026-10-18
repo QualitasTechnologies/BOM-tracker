@@ -5,6 +5,8 @@
 
 import { BOMItem, BOMCategory } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '@/firebase';
 import {
   ComplianceCheckRequest,
   ComplianceCheckResponse,
@@ -80,20 +82,28 @@ export async function triggerSpecSearch(
   request: SpecSearchRequest
 ): Promise<SpecSearchResponse> {
   try {
-    const response = await fetch(`${FUNCTIONS_BASE_URL}/triggerSpecSearch`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(request)
+    if (!request.userId) throw new Error('You must be signed in to search for a specification sheet.');
+
+    const operationId = crypto.randomUUID();
+    const call = httpsCallable<
+      { project_id: string; item_id: string; operation_id: string; expected_actor_uid: string },
+      { ok: boolean; operation_id?: string; state: string; specificationUrl?: string | null; error?: string }
+    >(functions, 'nativeSpecSearchOperation');
+    const { data } = await call({
+      project_id: request.projectId,
+      item_id: request.bomItemId,
+      operation_id: operationId,
+      expected_actor_uid: request.userId,
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || `HTTP ${response.status}`);
-    }
-
-    return await response.json();
+    const completed = data.state === 'completed' || data.state === 'not_found';
+    return {
+      success: data.ok && completed,
+      searchId: data.operation_id || operationId,
+      status: completed ? 'completed' : 'failed',
+      ...(data.specificationUrl ? { specificationUrl: data.specificationUrl } : {}),
+      ...(!data.ok || !completed ? { errorMessage: data.error || data.state || 'Search failed' } : {}),
+    };
   } catch (error) {
     console.error('Spec search trigger failed:', error);
     throw error;

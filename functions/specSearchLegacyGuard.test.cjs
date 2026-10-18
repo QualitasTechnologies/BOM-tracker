@@ -30,7 +30,7 @@ test("legacy spec search is fenced before side effects when native gate is on", 
   assert.deepEqual(body, {success: false, error: "native_spec_search_enabled"});
 });
 
-test("triggerSpecSearch endpoint runs the native fence before n8n or Firestore", async () => {
+test("public triggerSpecSearch endpoint is retired before n8n or Firestore, even while native search is gated off", async () => {
   const source = fs.readFileSync(require.resolve("./index.js"), "utf8");
   const start = source.indexOf("exports.triggerSpecSearch = onRequest(");
   const end = source.indexOf("// ==================== BOM STATUS DIGEST", start);
@@ -41,7 +41,7 @@ test("triggerSpecSearch endpoint runs the native fence before n8n or Firestore",
   let firestoreCalls = 0;
   const context = {
     exports: {},
-    process: {env: {BOM_NATIVE_SPEC_SEARCH_ENABLED: "true"}},
+    process: {env: {BOM_NATIVE_SPEC_SEARCH_ENABLED: "false"}},
     onRequest: (value) => { handler = value; return value; },
     require: () => require("./specSearchLegacyGuard.cjs"),
     fetch: async () => { fetchCalls++; },
