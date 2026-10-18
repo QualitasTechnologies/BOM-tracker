@@ -1,0 +1,108 @@
+{
+  "_metadata": {
+    "scope": "Direct browser SDK calls under src/: named/namespace imports and set/update/delete operations on inline-recognized Firestore batch/transaction receivers. Counts by file and method, not individual call identity. It misses assigned writer aliases (for example const w = setDoc), batch receiver aliases, named transaction callbacks, wrappers, computed property calls, Functions/Admin SDK, MCP, callable/provider writes, REST and Realtime Database writes. This is a drift tripwire, not a write-safety fence.",
+    "snapshotBranch": "codex/bom-po-inward-integrated",
+    "snapshotCommit": "8a652ec"
+  },
+  "firestore": {
+    "src/components/Project/EditProjectDialog.tsx": {
+      "updateDoc": 1
+    },
+    "src/utils/brandFirestore.ts": {
+      "addDoc": 1,
+      "deleteDoc": 1,
+      "updateDoc": 1
+    },
+    "src/utils/delayLogFirestore.ts": {
+      "setDoc": 1
+    },
+    "src/utils/engineerRatesFirestore.ts": {
+      "deleteDoc": 1,
+      "setDoc": 1
+    },
+    "src/utils/milestoneFirestore.ts": {
+      "batch.set": 1,
+      "batch.update": 2,
+      "deleteDoc": 1,
+      "setDoc": 1,
+      "updateDoc": 3,
+      "writeBatch": 3
+    },
+    "src/utils/overheadFirestore.ts": {
+      "setDoc": 6
+    },
+    "src/utils/poFirestore.ts": {
+      "addDoc": 1,
+      "deleteDoc": 1,
+      "updateDoc": 6
+    },
+    "src/utils/projectContextFirestore.ts": {
+      "deleteDoc": 1,
+      "setDoc": 2,
+      "updateDoc": 3
+    },
+    "src/utils/projectDocumentFirestore.ts": {
+      "addDoc": 1,
+      "deleteDoc": 1,
+      "updateDoc": 1
+    },
+    "src/utils/projectFirestore.ts": {
+      "deleteDoc": 1,
+      "setDoc": 2,
+      "updateDoc": 11
+    },
+    "src/utils/quotationFirestore.ts": {
+      "addDoc": 1,
+      "deleteDoc": 1,
+      "updateDoc": 2
+    },
+    "src/utils/settingsFirestore.ts": {
+      "addDoc": 4,
+      "deleteDoc": 4,
+      "setDoc": 3,
+      "updateDoc": 7
+    },
+    "src/utils/supportFirestore.ts": {
+      "addDoc": 3,
+      "deleteDoc": 1,
+      "updateDoc": 2
+    },
+    "src/utils/transcriptFirestore.ts": {
+      "deleteDoc": 1,
+      "setDoc": 3,
+      "updateDoc": 4
+    },
+    "src/utils/userService.ts": {
+      "setDoc": 1
+    }
+  },
+  "storage": {
+    "src/components/BOM/LogFulfillmentDialog.tsx": {
+      "uploadBytes": 1
+    },
+    "src/components/BOM/LogTravelVisitDialog.tsx": {
+      "uploadBytes": 1
+    },
+    "src/components/BOM/ReceiveItemDialog.tsx": {
+      "uploadBytes": 1
+    },
+    "src/utils/brandFirestore.ts": {
+      "deleteObject": 1
+    },
+    "src/utils/imageUpload.ts": {
+      "uploadBytes": 1
+    },
+    "src/utils/projectDocumentFirestore.ts": {
+      "deleteObject": 1,
+      "uploadBytes": 1
+    },
+    "src/utils/quotationFirestore.ts": {
+      "deleteObject": 1,
+      "uploadBytes": 1
+    },
+    "src/utils/supportFirestore.ts": {
+      "deleteObject": 1,
+      "uploadBytes": 1
+    }
+  }
+}
