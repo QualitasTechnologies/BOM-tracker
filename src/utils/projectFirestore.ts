@@ -16,6 +16,7 @@ import {
 } from "firebase/firestore";
 import type { BOMItem, BOMCategory, BOMStatus } from "@/types/bom";
 import { sanitizeBOMItemForFirestore } from "@/types/bom";
+import { isNativeMaterialCommandEnabled, submitNativeMaterialCommand } from '@/utils/nativeMaterialCommands';
 import type { SupportProjectProfile } from "@/types/support";
 
 export type { BOMItem, BOMCategory, BOMStatus };
@@ -366,6 +367,9 @@ const deepCleanUndefined = <T>(obj: T): T => {
 };
 
 export const updateBOMData = async (projectId: string, categories: BOMCategory[]) => {
+  if (isNativeMaterialCommandEnabled()) {
+    throw new Error('Whole-BOM replacement is disabled for native material editing. Use a versioned material command.');
+  }
   const bomRef = doc(db, 'projects', projectId, 'bom', 'data');
   // Sanitize items then deep clean to remove any undefined values in nested objects/arrays
   const sanitizedCategories = categories.map(category => ({
@@ -376,7 +380,27 @@ export const updateBOMData = async (projectId: string, categories: BOMCategory[]
   await setDoc(bomRef, { categories: cleanedCategories }, { merge: true });
 };
 
-export const updateBOMItem = async (projectId: string, categories: BOMCategory[], itemId: string, updates: Partial<BOMItem>) => {
+export const updateBOMItem = async (projectId: string, categories: BOMCategory[], itemId: string, updates: Partial<BOMItem>, displayedVersion?: string) => {
+  if (isNativeMaterialCommandEnabled()) {
+    const current = categories.flatMap(category => category.items).find(item => item.id === itemId);
+    if (!current) throw new Error('This BOM item is no longer available. Refresh the page and try again.');
+    const supported = new Set(['itemType', 'name', 'description', 'make', 'sku', 'unit', 'category', 'quantity', 'price', 'status', 'order', 'vendors', 'finalizedVendor', 'poNumber', 'orderDate', 'expectedArrival', 'expectedDelivery', 'thumbnailUrl', 'specificationUrl', 'linkedQuoteDocumentId', 'linkedPODocumentId', 'linkedSpecDocumentId', 'linkedInvoiceDocumentId']);
+    const patch: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(updates)) {
+      if (key === 'id' || value === undefined) continue;
+      if (!supported.has(key)) {
+        if (JSON.stringify((current as unknown as Record<string, unknown>)[key]) !== JSON.stringify(value)) {
+          throw new Error(`Updating “${key}” is not available in native BOM editing yet. No changes were saved.`);
+        }
+        continue;
+      }
+      if (JSON.stringify((current as unknown as Record<string, unknown>)[key]) === JSON.stringify(value)) continue;
+      patch[key] = ['linkedQuoteDocumentId', 'linkedPODocumentId', 'linkedSpecDocumentId', 'linkedInvoiceDocumentId'].includes(key) && value === '' ? null : value;
+    }
+    if (!Object.keys(patch).length) return;
+    await submitNativeMaterialCommand(projectId, { kind: 'patch_items', updates: [{ item_id: itemId, patch }] }, displayedVersion);
+    return;
+  }
   // Filter out undefined values from updates to prevent Firestore errors
   const cleanUpdates = Object.fromEntries(
     Object.entries(updates).filter(([_, value]) => value !== undefined)
@@ -391,7 +415,11 @@ export const updateBOMItem = async (projectId: string, categories: BOMCategory[]
   await updateBOMData(projectId, updatedCategories);
 };
 
-export const deleteBOMItem = async (projectId: string, categories: BOMCategory[], itemId: string) => {
+export const deleteBOMItem = async (projectId: string, categories: BOMCategory[], itemId: string, displayedVersion?: string) => {
+  if (isNativeMaterialCommandEnabled()) {
+    await submitNativeMaterialCommand(projectId, { kind: 'delete_items', item_ids: [itemId] }, displayedVersion);
+    return;
+  }
   const updatedCategories = categories.map(category => ({
     ...category,
     items: category.items.filter(item => item.id !== itemId)
@@ -434,6 +462,10 @@ export const updateMultipleBOMItemsStatus = async (
   itemIds: string[],
   newStatus: BOMStatus
 ): Promise<void> => {
+  if (isNativeMaterialCommandEnabled()) {
+    await submitNativeMaterialCommand(projectId, { kind: 'patch_items', updates: itemIds.map(item_id => ({ item_id, patch: { status: newStatus } })) });
+    return;
+  }
   const updatedCategories = batchUpdateItemStatus(categories, itemIds, newStatus);
   await updateBOMData(projectId, updatedCategories);
 };

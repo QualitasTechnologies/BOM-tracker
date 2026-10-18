@@ -342,6 +342,18 @@ test('document link deltas update both representations and preserve unrelated li
   const version = `10:${f.docs.get('projects/A/bom/data').tick}`;
   assert.equal((await f.command({ kind: 'link_document', document_id: 'quote', item_ids: ['motor'], action: 'remove' }, { expected_version: version, operation_id: 'command-2' })).status, 200); assert.equal(Object.hasOwn(f.categories()[0].items[0], 'linkedQuoteDocumentId'), false); assert.deepEqual(f.docs.get('projectDocuments/quote').data.linkedBOMItems, ['unrelated']);
 });
+test('native patch can unlink an invoice scalar while retaining historical receipt attribution', async () => {
+  const f = commandFixture();
+  const motor = f.categories()[0].items[0];
+  motor.linkedInvoiceDocumentId = 'invoice';
+  motor.fulfillmentTranches = [{ id: 'receipt-1', quantity: 1, invoiceDocId: 'invoice' }];
+  f.docs.set('projectDocuments/invoice', { tick: 1, data: { projectId: 'A', type: 'vendor-invoice', linkedBOMItems: ['motor', 'other'] } });
+  const result = await f.command({ kind: 'patch_items', updates: [{ item_id: 'motor', patch: { linkedInvoiceDocumentId: null } }] });
+  assert.equal(result.status, 200);
+  assert.equal(Object.hasOwn(f.categories()[0].items[0], 'linkedInvoiceDocumentId'), false);
+  assert.equal(f.categories()[0].items[0].fulfillmentTranches[0].invoiceDocId, 'invoice');
+  assert.deepEqual(f.docs.get('projectDocuments/invoice').data.linkedBOMItems, ['other']);
+});
 test('all commands reject forbidden item scope, duplicate identities and operation namespace collisions', async () => {
   const f = commandFixture(); assert.equal((await f.command({ kind: 'delete_items', item_ids: ['motor', 'secret'] })).status, 403); assert.equal(f.categories()[0].items.length, 2);
   const g = commandFixture(); g.categories()[1].items[0].id = 'motor'; assert.equal((await g.command({ kind: 'delete_items', item_ids: ['motor'] })).status, 409);

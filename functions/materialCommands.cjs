@@ -27,7 +27,7 @@ function patchFields(patch, adding = false) {
   if (!plain(patch) || !Object.keys(patch).length) throw fault('invalid_material_command');
   for (const [key, value] of Object.entries(patch)) {
     if (adding && key === 'id') { if (!validId(value)) throw fault('invalid_material_command'); continue; }
-    if (value === null && !adding && ['make', 'sku', 'unit', 'price', 'finalizedVendor', 'poNumber', 'order', 'orderDate', 'expectedArrival', 'expectedDelivery', 'thumbnailUrl', 'specificationUrl', 'linkedQuoteDocumentId', 'linkedPODocumentId', 'linkedSpecDocumentId'].includes(key)) continue;
+    if (value === null && !adding && ['make', 'sku', 'unit', 'price', 'finalizedVendor', 'poNumber', 'order', 'orderDate', 'expectedArrival', 'expectedDelivery', 'thumbnailUrl', 'specificationUrl', 'linkedQuoteDocumentId', 'linkedPODocumentId', 'linkedSpecDocumentId', 'linkedInvoiceDocumentId'].includes(key)) continue;
     if (Object.hasOwn(textLimits, key)) {
       if (typeof value !== 'string' || value.length > textLimits[key] || ['name', 'category'].includes(key) && !value.trim()) throw fault('invalid_material_command');
     } else if (key === 'itemType') { if (!['component', 'service'].includes(value)) throw fault('invalid_material_command'); }

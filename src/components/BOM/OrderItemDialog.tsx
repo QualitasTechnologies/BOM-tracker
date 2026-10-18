@@ -36,6 +36,7 @@ import { BOMItem, calculateExpectedArrival, parseLeadTimeToDays } from '@/types/
 import { ProjectDocument } from '@/types/projectDocument';
 import { uploadProjectDocument, linkDocumentToBOMItems } from '@/utils/projectDocumentFirestore';
 import { auth } from '@/firebase';
+import { isNativeMaterialCommandEnabled } from '@/utils/nativeMaterialCommands';
 import { Vendor } from '@/utils/settingsFirestore';
 
 interface OrderItemDialogProps {
@@ -176,8 +177,9 @@ const OrderItemDialog = ({
 
       const newDoc = await uploadProjectDocument(file, projectId, 'vendor-po', user.uid);
       
-      // Link the document to this BOM item
-      await linkDocumentToBOMItems(newDoc.id, [item.id]);
+      // In native mode, the audited order command links the document and material together
+      // when the user confirms the order. Do not write the document link independently here.
+      if (!isNativeMaterialCommandEnabled()) await linkDocumentToBOMItems(newDoc.id, [item.id]);
       
       onDocumentUploaded?.(newDoc);
       setLinkedPODocumentId(newDoc.id);

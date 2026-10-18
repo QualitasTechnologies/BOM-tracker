@@ -13,6 +13,7 @@ import AddProjectDialog from "@/components/Project/AddProjectDialog";
 import EditProjectDialog from "@/components/Project/EditProjectDialog";
 import DeleteProjectDialog from "@/components/Project/DeleteProjectDialog";
 import { addProject, subscribeToProjects, updateProject, archiveProject, updateBOMData } from "@/utils/projectFirestore";
+import { isNativeMaterialCommandEnabled, submitNativeMaterialCommand } from '@/utils/nativeMaterialCommands';
 import { getTemplate, subscribeToClients, Client } from "@/utils/settingsFirestore";
 import type { EditableProjectInput, FirestoreProject, NewProjectFormData, ProjectViewMode } from "@/types/project";
 import type { BOMCategory, BOMItem } from "@/types/bom";
@@ -40,6 +41,7 @@ const Projects = () => {
   const [selectedProject, setSelectedProject] = useState<FirestoreProject | null>(null);
   const [projects, setProjects] = useState<FirestoreProject[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
+  const [projectTemplateError, setProjectTemplateError] = useState<string | null>(null);
 
   useEffect(() => {
     // Subscribe to Firestore projects (filtered by membership for non-admins).
@@ -134,12 +136,21 @@ const Projects = () => {
             })
           );
 
-          // Save to Firestore
-          await updateBOMData(newProject.id, categories);
+          // Initialize a BOM template with one audited command when native editing is staged on.
+          if (isNativeMaterialCommandEnabled()) {
+            await submitNativeMaterialCommand(newProject.id, {
+              kind: 'add_items',
+              initialize: true,
+              items: categories.flatMap(category => category.items) as unknown as Array<Record<string, unknown>>,
+            });
+            setProjectTemplateError(null);
+          } else {
+            await updateBOMData(newProject.id, categories);
+          }
         }
       } catch (error) {
         console.error('Error applying template:', error);
-        // Project is still created, just without template items
+        setProjectTemplateError(error instanceof Error ? `Project created, but its BOM template could not be applied: ${error.message}` : 'Project created, but its BOM template could not be applied.');
       }
     }
   };
@@ -416,6 +427,7 @@ const Projects = () => {
             </div>
           </div>
         </div>
+        {projectTemplateError && <div role="alert" className="mx-6 mt-4 rounded border border-destructive bg-destructive/10 p-3 text-sm text-destructive">{projectTemplateError}</div>}
 
         {/* Content */}
         <div className="container mx-auto px-6 py-8">

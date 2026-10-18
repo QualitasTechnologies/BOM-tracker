@@ -40,6 +40,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { getVisibleCategories } from '@/utils/accessControl';
 import ProjectMembersTab from '@/components/Project/ProjectMembersTab';
 import { ProjectCommunicationsTab } from '@/components/Project/ProjectCommunicationsTab';
+import { isNativeMaterialCommandEnabled, loadNativeMaterialSnapshot, submitNativeMaterialCommand, submitNativeMaterialFulfillment } from '@/utils/nativeMaterialCommands';
 import OverheadsTab from '@/components/BOM/OverheadsTab';
 import ProjectCostBar from '@/components/BOM/ProjectCostBar';
 import { fetchAllUsers } from '@/utils/userService';
@@ -81,6 +82,7 @@ const BOM = () => {
 
   const [searchTerm, setSearchTerm] = useState('');
   const [categories, setCategories] = useState<BOMCategory[]>([]);
+  const [nativeMaterialVersion, setNativeMaterialVersion] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState(initialTab);
   const [groupBy, setGroupBy] = useState<'category' | 'vendor'>('category');
   const [expandedVendors, setExpandedVendors] = useState<Set<string>>(new Set());
@@ -129,6 +131,7 @@ const BOM = () => {
   });
   const [categoryForPart, setCategoryForPart] = useState<string | null>(null);
   const [addPartError, setAddPartError] = useState<string | null>(null);
+  const [materialActionError, setMaterialActionError] = useState<string | null>(null);
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState<string | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -159,17 +162,34 @@ const BOM = () => {
   // Load BOM data when project ID changes
   useEffect(() => {
     if (!projectId) return;
+    const nativeMode = isNativeMaterialCommandEnabled();
 
-    // Initial load
-    const loadBOMData = async () => {
-      const data = await getBOMData(projectId);
-      setCategories(data);
+    const refreshBOM = async () => {
+      if (nativeMode) {
+        try {
+          const snapshot = await loadNativeMaterialSnapshot(projectId);
+          setCategories(snapshot.categories as BOMCategory[]);
+          setNativeMaterialVersion(snapshot.version);
+          setMaterialActionError(null);
+        } catch (error) {
+          setMaterialActionError(error instanceof Error ? error.message : 'Could not load the current BOM revision.');
+        }
+      } else {
+        const data = await getBOMData(projectId);
+        setCategories(data);
+        setNativeMaterialVersion(null);
+      }
     };
-    loadBOMData();
+    refreshBOM();
 
     // Subscribe to real-time updates
     const unsubscribe = subscribeToBOM(projectId, (updatedCategories) => {
-      setCategories(updatedCategories);
+      if (nativeMode) {
+        // The version and categories must come from the same trusted server snapshot.
+        refreshBOM();
+      } else {
+        setCategories(updatedCategories);
+      }
     });
 
     return () => unsubscribe();
@@ -257,6 +277,19 @@ const BOM = () => {
 
   const toggleCategory = async (categoryName: string) => {
     if (!projectId) return;
+
+    if (isNativeMaterialCommandEnabled()) {
+      try {
+        const current = categories.find(cat => cat.name === categoryName);
+        if (!current) return;
+        if (!nativeMaterialVersion) throw new Error('BOM revision is still loading. Refresh the page before editing.');
+        await submitNativeMaterialCommand(projectId, { kind: 'category_state', category: categoryName, isExpanded: !current.isExpanded }, nativeMaterialVersion);
+        setMaterialActionError(null);
+      } catch (error) {
+        setMaterialActionError(error instanceof Error ? error.message : 'Could not update this BOM category.');
+      }
+      return;
+    }
     
     const updatedCategories = categories.map(cat => 
       cat.name === categoryName 
@@ -266,9 +299,22 @@ const BOM = () => {
     await updateBOMData(projectId, updatedCategories);
   };
 
+  const updateItemSafely = async (itemId: string, updates: Partial<BOMItem>) => {
+    if (!projectId) return;
+    try {
+      if (isNativeMaterialCommandEnabled() && !nativeMaterialVersion) throw new Error('BOM revision is still loading. Refresh the page before editing.');
+      await updateBOMItem(projectId, categories, itemId, updates, isNativeMaterialCommandEnabled() ? nativeMaterialVersion ?? undefined : undefined);
+      setMaterialActionError(null);
+      return true;
+    } catch (error) {
+      setMaterialActionError(error instanceof Error ? error.message : 'Could not update this BOM item.');
+      return false;
+    }
+  };
+
   const handleQuantityChange = async (itemId: string, newQuantity: number) => {
     if (!projectId) return;
-    await updateBOMItem(projectId, categories, itemId, { quantity: newQuantity });
+    await updateItemSafely(itemId, { quantity: newQuantity });
   };
 
   const handleAddPart = async () => {
@@ -296,29 +342,40 @@ const BOM = () => {
       updatedCategories = [...categories, { name: finalCategory, isExpanded: true, items: [] }];
     }
 
+    const addedItem: BOMItem = {
+      id: Date.now().toString(),
+      itemType: newPart.itemType,
+      name: newPart.name,
+      description: newPart.description,
+      category: finalCategory || '',
+      quantity: newPart.quantity,
+      vendors: [],
+      status: 'not-ordered' as BOMStatus,
+      ...(newPart.price !== undefined && { price: newPart.price }),
+      ...(newPart.itemType === 'component' && newPart.make && { make: newPart.make }),
+      ...(newPart.itemType === 'component' && newPart.sku && { sku: newPart.sku }),
+    };
     const newCategories = updatedCategories.map(cat =>
       cat.name === finalCategory
         ? {
             ...cat,
-            items: [...cat.items, {
-              id: Date.now().toString(),
-              itemType: newPart.itemType,
-              name: newPart.name,
-              description: newPart.description,
-              category: finalCategory || '',
-              quantity: newPart.quantity,
-              vendors: [],
-              status: 'not-ordered' as BOMStatus,
-              // Only include optional fields if they have values (Firestore doesn't accept undefined)
-              ...(newPart.price !== undefined && { price: newPart.price }),
-              ...(newPart.itemType === 'component' && newPart.make && { make: newPart.make }),
-              ...(newPart.itemType === 'component' && newPart.sku && { sku: newPart.sku })
-            } as BOMItem]
+            items: [...cat.items, addedItem]
           }
         : cat
     );
 
-    await updateBOMData(projectId, newCategories);
+    if (isNativeMaterialCommandEnabled()) {
+      try {
+        if (!nativeMaterialVersion) throw new Error('BOM revision is still loading. Refresh the page before editing.');
+        await submitNativeMaterialCommand(projectId, { kind: 'add_items', items: [addedItem as unknown as Record<string, unknown>] }, nativeMaterialVersion);
+        setMaterialActionError(null);
+      } catch (error) {
+        setMaterialActionError(error instanceof Error ? error.message : 'Could not add this BOM item.');
+        return;
+      }
+    } else {
+      await updateBOMData(projectId, newCategories);
+    }
 
     // Reset form
     setNewPart({ itemType: 'component', name: '', make: '', description: '', sku: '', quantity: 1, price: undefined });
@@ -356,22 +413,38 @@ const BOM = () => {
       });
     }
 
-    await updateBOMData(projectId, remainingCategories);
+    if (isNativeMaterialCommandEnabled()) {
+      try {
+        if (!nativeMaterialVersion) throw new Error('BOM revision is still loading. Refresh the page before editing.');
+        await submitNativeMaterialCommand(projectId, { kind: 'move_category', category: oldName, destination: newName }, nativeMaterialVersion);
+        setMaterialActionError(null);
+      } catch (error) {
+        setMaterialActionError(error instanceof Error ? error.message : 'Could not rename this BOM category.');
+      }
+    } else {
+      await updateBOMData(projectId, remainingCategories);
+    }
   };
 
   const handleDeletePart = async (itemId: string) => {
     if (!projectId) return;
-    await deleteBOMItem(projectId, categories, itemId);
+    try {
+      if (isNativeMaterialCommandEnabled() && !nativeMaterialVersion) throw new Error('BOM revision is still loading. Refresh the page before editing.');
+      await deleteBOMItem(projectId, categories, itemId, isNativeMaterialCommandEnabled() ? nativeMaterialVersion ?? undefined : undefined);
+      setMaterialActionError(null);
+    } catch (error) {
+      setMaterialActionError(error instanceof Error ? error.message : 'Could not delete this BOM item.');
+    }
   };
 
   const handleUpdatePart = async (updatedPart: BOMItem) => {
     if (!projectId) return;
-    await updateBOMItem(projectId, categories, updatedPart.id, updatedPart);
+    await updateItemSafely(updatedPart.id, updatedPart);
   };
 
   const handleEditPart = async (itemId: string, updates: Partial<BOMItem>) => {
     if (!projectId) return;
-    await updateBOMItem(projectId, categories, itemId, updates);
+    await updateItemSafely(itemId, updates);
   };
 
   // Calculate document count for a BOM item
@@ -440,6 +513,13 @@ const BOM = () => {
     if (!doc) return;
 
     try {
+      if (projectId && isNativeMaterialCommandEnabled()) {
+        if (!nativeMaterialVersion) throw new Error('BOM revision is still loading. Refresh the page before editing.');
+        await submitNativeMaterialCommand(projectId, { kind: 'link_document_delta', document_id: documentId, add_item_ids: [], remove_item_ids: [itemId] }, nativeMaterialVersion);
+        setProjectDocuments(prev => prev.map(d => d.id === documentId ? { ...d, linkedBOMItems: (d.linkedBOMItems || []).filter(id => id !== itemId) } : d));
+        setMaterialActionError(null);
+        return;
+      }
       // Check if document is linked via linkedBOMItems
       if (doc.linkedBOMItems && doc.linkedBOMItems.includes(itemId)) {
         const updatedLinkedItems = doc.linkedBOMItems.filter(id => id !== itemId);
@@ -470,7 +550,7 @@ const BOM = () => {
               updates.linkedInvoiceDocumentId = '' as any; // Empty string to clear
             }
             if (Object.keys(updates).length > 0) {
-              await updateBOMItem(projectId, categories, itemId, updates);
+              await updateItemSafely(itemId, updates);
             }
             break;
           }
@@ -478,6 +558,7 @@ const BOM = () => {
       }
     } catch (error) {
       console.error('Error unlinking document:', error);
+      setMaterialActionError(error instanceof Error ? error.message : 'Could not unlink this document from the BOM.');
     }
   };
 
@@ -508,7 +589,17 @@ const BOM = () => {
       }
       targetCategory.items.push(partToMove);
       
-      await updateBOMData(projectId, updatedCategories);
+      if (isNativeMaterialCommandEnabled()) {
+        try {
+          if (!nativeMaterialVersion) throw new Error('BOM revision is still loading. Refresh the page before editing.');
+          await submitNativeMaterialCommand(projectId, { kind: 'patch_items', updates: [{ item_id: itemId, patch: { category: newCategory } }] }, nativeMaterialVersion);
+          setMaterialActionError(null);
+        } catch (error) {
+          setMaterialActionError(error instanceof Error ? error.message : 'Could not move this BOM item.');
+        }
+      } else {
+        await updateBOMData(projectId, updatedCategories);
+      }
     }
   };
 
@@ -663,7 +754,7 @@ const BOM = () => {
       return;
     }
 
-    await updateBOMItem(projectId, categories, selectedItemForOrder.id, {
+    const saved = await updateItemSafely(selectedItemForOrder.id, {
       status: 'ordered',
       orderDate: data.orderDate,
       expectedArrival: data.expectedArrival,
@@ -676,8 +767,13 @@ const BOM = () => {
         availability: data.vendor.availability,
       },
     });
+    if (saved === false) return;
 
     try {
+      if (isNativeMaterialCommandEnabled()) {
+        setOrderDialogOpen(false);
+        return;
+      }
       const updatedDocs = await syncPODocumentLinks({
         itemId: selectedItemForOrder.id,
         newDocumentId: data.linkedPODocumentId,
@@ -695,6 +791,7 @@ const BOM = () => {
 
   return (
     <div className="min-h-screen bg-background">
+      {materialActionError && <div role="alert" className="mx-4 mt-4 rounded border border-destructive bg-destructive/10 p-3 text-sm text-destructive">{materialActionError}</div>}
       <main className="p-4">
         <div className="max-w-full mx-auto px-2">
             {/* BOM Header */}
@@ -829,7 +926,7 @@ const BOM = () => {
                       existingCategories={canonicalCategoryNames}
                       onFixApplied={async (itemId, updates) => {
                         if (!projectId) return;
-                        await updateBOMItem(projectId, categories, itemId, updates);
+                        await updateItemSafely(itemId, updates);
                       }}
                     />}
                   </div>
@@ -882,8 +979,18 @@ const BOM = () => {
                       onDeleteCategory={(categoryName) => {
                         // Handle category deletion - remove the entire category
                         if (projectId) {
-                          const updatedCategories = categories.filter(cat => cat.name !== categoryName);
-                          updateBOMData(projectId, updatedCategories);
+                          if (isNativeMaterialCommandEnabled()) {
+                            if (!nativeMaterialVersion) {
+                              setMaterialActionError('BOM revision is still loading. Refresh the page before editing.');
+                              return;
+                            }
+                            submitNativeMaterialCommand(projectId, { kind: 'delete_category', category: categoryName }, nativeMaterialVersion)
+                              .then(() => setMaterialActionError(null))
+                              .catch(error => setMaterialActionError(error instanceof Error ? error.message : 'Could not delete this BOM category.'));
+                          } else {
+                            const updatedCategories = categories.filter(cat => cat.name !== categoryName);
+                            updateBOMData(projectId, updatedCategories);
+                          }
                         }
                       }}
                       onStatusChange={(itemId, newStatus) => {
@@ -903,7 +1010,7 @@ const BOM = () => {
                         if (newStatus === 'ordered' && targetItem) {
                           // Services don't use the PO order dialog.
                           if (targetItem.itemType === 'service') {
-                            updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                            updateItemSafely(itemId, { status: newStatus as BOMStatus });
                             return;
                           }
                           // Refresh documents to get latest linkedBOMItems data
@@ -927,7 +1034,7 @@ const BOM = () => {
                         }
 
                         // For other status changes, update directly
-                        updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                        updateItemSafely(itemId, { status: newStatus as BOMStatus });
                       }}
                       onEditPart={handleEditPart}
                       onPartCategoryChange={handlePartCategoryChange}
@@ -997,7 +1104,7 @@ const BOM = () => {
                                       if (newStatus === 'ordered' && targetItem) {
                                         // Services don't use the PO order dialog.
                                         if (targetItem.itemType === 'service') {
-                                          updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                                          updateItemSafely(itemId, { status: newStatus as BOMStatus });
                                           return;
                                         }
                                         getProjectDocuments(projectId).then(docs => {
@@ -1019,7 +1126,7 @@ const BOM = () => {
                                       }
 
                                       // For other status changes, update directly
-                                      updateBOMItem(projectId, categories, itemId, { status: newStatus as BOMStatus });
+                                      updateItemSafely(itemId, { status: newStatus as BOMStatus });
                                     }}
                                     onEdit={handleEditPart}
                                     onCategoryChange={handlePartCategoryChange}
@@ -1078,7 +1185,7 @@ const BOM = () => {
                   }}
                   onUpdatePONumber={(itemId, poNumber) => {
                     if (projectId) {
-                      updateBOMItem(projectId, categories, itemId, { poNumber });
+                      updateItemSafely(itemId, { poNumber });
                     }
                   }}
                   fullPage={true}
@@ -1105,6 +1212,7 @@ const BOM = () => {
                 {projectId && (
                   <ProjectDocuments
                     projectId={projectId}
+                    materialVersion={nativeMaterialVersion}
                     bomItems={visibleCategories.flatMap(cat => cat.items)}
                     filterItemIds={isPartner ? visibleItemIds : undefined}
                     onDocumentsChange={() => {
@@ -1113,7 +1221,7 @@ const BOM = () => {
                     }}
                     onBOMItemUpdate={async (itemId: string, updates: Partial<BOMItem>) => {
                       if (projectId) {
-                        await updateBOMItem(projectId, categories, itemId, updates);
+                        await updateItemSafely(itemId, updates);
                       }
                     }}
                     fullPage={true}
@@ -1126,15 +1234,20 @@ const BOM = () => {
                             // Update linked BOM items in one write:
                             // - mark as ordered
                             // - persist PO number so Inward Tracking can show it
-                            const updatedCategories = categories.map((category) => ({
-                              ...category,
-                              items: category.items.map((item) =>
-                                bomItemIds.includes(item.id)
-                                  ? { ...item, status: 'ordered' as BOMStatus, poNumber }
-                                  : item
-                              ),
-                            }));
-                            await updateBOMData(projectId, updatedCategories);
+                            if (isNativeMaterialCommandEnabled()) {
+                              if (!nativeMaterialVersion) throw new Error('BOM revision is still loading. Refresh the page before editing.');
+                              await submitNativeMaterialCommand(projectId, { kind: 'patch_items', updates: bomItemIds.map(item_id => ({ item_id, patch: { status: 'ordered', poNumber } })) }, nativeMaterialVersion);
+                            } else {
+                              const updatedCategories = categories.map((category) => ({
+                                ...category,
+                                items: category.items.map((item) =>
+                                  bomItemIds.includes(item.id)
+                                    ? { ...item, status: 'ordered' as BOMStatus, poNumber }
+                                    : item
+                                ),
+                              }));
+                              await updateBOMData(projectId, updatedCategories);
+                            }
                           }}
                         />
                       )
@@ -1472,12 +1585,22 @@ const BOM = () => {
             });
 
             console.log('Final updated categories:', updatedCategories);
-            updateBOMData(projectId, updatedCategories);
-            setImportBOMOpen(false);
-            
-            // Show success message
-            setImportSuccess(`Successfully imported ${importedItems.length} BOM items!`);
-            setTimeout(() => setImportSuccess(null), 5000);
+            const showSuccess = () => {
+              setImportBOMOpen(false);
+              setImportSuccess(`Successfully imported ${importedItems.length} BOM items!`);
+              setTimeout(() => setImportSuccess(null), 5000);
+            };
+            if (isNativeMaterialCommandEnabled()) {
+              if (!nativeMaterialVersion) {
+                setMaterialActionError('BOM revision is still loading. Refresh the page before importing.');
+                return;
+              }
+              submitNativeMaterialCommand(projectId, { kind: 'add_items', items: importedItems as unknown as Array<Record<string, unknown>> }, nativeMaterialVersion)
+                .then(() => { setMaterialActionError(null); showSuccess(); })
+                .catch(error => setMaterialActionError(error instanceof Error ? error.message : 'Could not import these BOM items.'));
+            } else {
+              updateBOMData(projectId, updatedCategories).then(showSuccess).catch(error => setMaterialActionError(error instanceof Error ? error.message : 'Could not import these BOM items.'));
+            }
           }
         }}
       />
@@ -1536,6 +1659,16 @@ const BOM = () => {
           onConfirm={(data) => {
             if (selectedItemForReceive && projectId) {
               const item = selectedItemForReceive;
+              if (isNativeMaterialCommandEnabled()) {
+                if (!nativeMaterialVersion) throw new Error('BOM revision is still loading. Refresh the page before recording receipt.');
+                submitNativeMaterialFulfillment(projectId, item.id, {
+                  kind: item.itemType === 'service' ? 'fulfillment' : 'receipt', quantity: data.receivedQty,
+                  ...(item.itemType !== 'service' && { loggedAt: data.actualArrival, invoiceDocId: data.linkedInvoiceDocumentId, photoUrl: data.receivedPhotoUrl }),
+                }, nativeMaterialVersion).then(() => setMaterialActionError(null))
+                  .catch(error => setMaterialActionError(error instanceof Error ? error.message : 'Could not record this receipt.'));
+                setSelectedItemForReceive(null);
+                return;
+              }
               const newTranche: FulfillmentTranche = {
                 id: `tranche-${Date.now()}`,
                 quantity: data.receivedQty,
@@ -1544,7 +1677,7 @@ const BOM = () => {
               };
               const allTranches = [...(item.fulfillmentTranches || []), newTranche];
               const totalReceived = allTranches.reduce((sum, t) => sum + t.quantity, 0);
-              updateBOMItem(projectId, categories, item.id, {
+              updateItemSafely(item.id, {
                 status: totalReceived >= item.quantity ? 'received' : 'ordered',
                 actualArrival: item.actualArrival || data.actualArrival,
                 linkedInvoiceDocumentId: data.linkedInvoiceDocumentId,

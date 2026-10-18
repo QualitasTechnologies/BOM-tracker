@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/components/ui/use-toast';
 import { auth } from '@/firebase';
+import { isNativeMaterialCommandEnabled, submitNativeMaterialCommand } from '@/utils/nativeMaterialCommands';
 import {
   uploadProjectDocument,
   getProjectDocuments,
@@ -28,9 +29,10 @@ interface ProjectDocumentsProps {
   sections?: DocumentTypeSection[]; // Document sections to show (defaults to BOM_DOCUMENT_SECTIONS)
   renderAfterSection?: { sectionType: DocumentType; content: React.ReactNode }; // Render content after specific section
   filterItemIds?: string[]; // When set, only show documents linked to these BOM item IDs (used for partner scoping)
+  materialVersion?: string | null;
 }
 
-const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate, fullPage = false, sections = BOM_DOCUMENT_SECTIONS, renderAfterSection, filterItemIds }: ProjectDocumentsProps) => {
+const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate, fullPage = false, sections = BOM_DOCUMENT_SECTIONS, renderAfterSection, filterItemIds, materialVersion }: ProjectDocumentsProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -136,35 +138,30 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
     if (!selectedDocument) return;
 
     try {
-      await linkDocumentToBOMItems(selectedDocument.id, selectedItemIds);
-
       // Get previous linked items to know which ones to unlink
       const previousLinkedIds = selectedDocument.linkedBOMItems || [];
       const unlinkedIds = previousLinkedIds.filter(id => !selectedItemIds.includes(id));
 
-      // For vendor-quote documents, update BOM items' linkedQuoteDocumentId field
-      if (selectedDocument.type === 'vendor-quote' && onBOMItemUpdate) {
-        // Update items that are now linked: set their linkedQuoteDocumentId
-        for (const itemId of selectedItemIds) {
-          await onBOMItemUpdate(itemId, { linkedQuoteDocumentId: selectedDocument.id });
+      if (isNativeMaterialCommandEnabled()) {
+        if (!materialVersion) throw new Error('BOM revision is still loading. Refresh the page before changing document links.');
+        const addedIds = selectedItemIds.filter(id => !previousLinkedIds.includes(id));
+        if (addedIds.length || unlinkedIds.length) {
+          await submitNativeMaterialCommand(projectId, {
+            kind: 'link_document_delta', document_id: selectedDocument.id,
+            add_item_ids: addedIds, remove_item_ids: unlinkedIds,
+          }, materialVersion);
+        }
+      } else {
+        await linkDocumentToBOMItems(selectedDocument.id, selectedItemIds);
+
+        if (selectedDocument.type === 'vendor-quote' && onBOMItemUpdate) {
+          for (const itemId of selectedItemIds) await onBOMItemUpdate(itemId, { linkedQuoteDocumentId: selectedDocument.id });
+          for (const itemId of unlinkedIds) await onBOMItemUpdate(itemId, { linkedQuoteDocumentId: undefined });
         }
 
-        // Update items that are no longer linked: clear their linkedQuoteDocumentId
-        for (const itemId of unlinkedIds) {
-          await onBOMItemUpdate(itemId, { linkedQuoteDocumentId: undefined });
-        }
-      }
-
-      // For vendor-po documents, update BOM items' linkedPODocumentId field
-      if (selectedDocument.type === 'vendor-po' && onBOMItemUpdate) {
-        // Update items that are now linked: set their linkedPODocumentId
-        for (const itemId of selectedItemIds) {
-          await onBOMItemUpdate(itemId, { linkedPODocumentId: selectedDocument.id });
-        }
-
-        // Update items that are no longer linked: clear their linkedPODocumentId
-        for (const itemId of unlinkedIds) {
-          await onBOMItemUpdate(itemId, { linkedPODocumentId: undefined });
+        if (selectedDocument.type === 'vendor-po' && onBOMItemUpdate) {
+          for (const itemId of selectedItemIds) await onBOMItemUpdate(itemId, { linkedPODocumentId: selectedDocument.id });
+          for (const itemId of unlinkedIds) await onBOMItemUpdate(itemId, { linkedPODocumentId: undefined });
         }
       }
       
@@ -182,7 +179,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
       console.error('Error updating links:', error);
       toast({
         title: 'Error',
-        description: 'Failed to update document links',
+        description: error instanceof Error ? error.message : 'Failed to update document links',
         variant: 'destructive'
       });
     }
