@@ -8,6 +8,7 @@
     "start": "npm run shell",
     "test:legacy-po-send": "node --test legacyPOSendGuard.test.cjs legacyPOMarkOperations.test.cjs legacyPOEmailFinalize.test.cjs legacyPOEmailRecovery.test.cjs legacyPOSendRecovery.test.cjs legacyPOResendOutcome.test.cjs legacyPOEmailRetry.test.cjs legacyPOEmailRetryPdf.test.cjs",
     "test:bom-cutover": "node --test nativeProcurementOperations.test.cjs projectOperations.test.cjs legacySpecSearch.test.cjs purchaseOrderAcceptanceDate.test.cjs calendarDate.test.cjs legacyPOSendGuard.test.cjs legacyPOMarkOperations.test.cjs legacyPOEmailFinalize.test.cjs legacyPOEmailRecovery.test.cjs legacyPOSendRecovery.test.cjs legacyPOResendOutcome.test.cjs legacyPOEmailRetry.test.cjs legacyPOEmailRetryPdf.test.cjs",
+    "test:native-workflows": "node --test native*.test.cjs poApproval*.test.cjs expenseApproval*.test.cjs",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log"
   },

@@ -3,13 +3,14 @@ const assert = require('node:assert/strict');
 let createNativeMaterialOperations;
 try { ({ createNativeMaterialOperations } = require('./nativeMaterialOperations.cjs')); } catch {}
 
-function fixture({ enabled, tokenError = false } = {}) {
+function fixture({ enabled, tokenError = false, cutover = false } = {}) {
   const actor = { uid: 'native-uid', email: 'partner@example.com', emailVerified: true, disabled: false, customClaims: { role: 'viewer', status: 'approved' } };
   const token = { uid: actor.uid, email: actor.email, auth_time: 1800000000 };
   const docs = new Map([
     ['projects/A', { memberIds: [actor.uid], members: [{ userId: actor.uid, categoryScope: ['Mech'] }] }],
     ['projects/A/bom/data', { categories: [{ name: 'Mech', items: [{ id: 'motor', name: 'Original', quantity: 1 }] }, { name: 'Other', items: [{ id: 'hidden' }] }] }]
   ]);
+  if (cutover) docs.set('pulseMaterialCutovers/A', { project_id: 'A', source: 'reviewed_cutover' });
   let tick = 1; const checks = [];
   const ref = path => ({ path, collection: name => ref(`${path}/${name}`), doc: name => ref(`${path}/${name}`) });
   const db = { collection: name => ref(name), runTransaction: async fn => {
@@ -27,7 +28,8 @@ function fixture({ enabled, tokenError = false } = {}) {
   const request = { auth: { uid: actor.uid }, rawRequest: { get: name => name.toLowerCase() === 'authorization' ? 'Bearer actual-token' : undefined }, data: { operation: 'get', project_id: 'A' } };
   const invoke = data => call({ ...request, data: data || request.data });
   const patch = { operation: 'patch', project_id: 'A', item_id: 'motor', expected_version: '10:1', operation_id: 'stable-op', patch: { name: 'Changed' } };
-  return { actor, token, docs, checks, request, call, invoke, patch };
+  const establishCutover = () => docs.set('pulseMaterialCutovers/A', { project_id: 'A', source: 'reviewed_cutover' });
+  return { actor, token, docs, checks, request, call, invoke, patch, establishCutover };
 }
 
 test('native material transport reuses Firebase identity, scoped engine and displayed version', async () => {
@@ -42,13 +44,19 @@ test('native writes default off even with an approved Firebase viewer', async ()
   const f = fixture(); assert.deepEqual(await f.invoke(f.patch), { ok: false, error: 'material_mutations_disabled' }); assert.equal(f.docs.size, 2);
 });
 
+test('native material writes require an established per-project cutover marker', async () => {
+  const f = fixture({ enabled: true });
+  assert.deepEqual(await f.invoke(f.patch), { ok: false, error: 'material_cutover_required' });
+  assert.equal(f.docs.size, 2);
+});
+
 test('native patch creates actual Firebase UID audit and idempotent receipt using the existing engine', async () => {
-  const f = fixture({ enabled: true }); const first = await f.invoke(f.patch);
+  const f = fixture({ enabled: true, cutover: true }); const first = await f.invoke(f.patch);
   assert.equal(first.ok, true); assert.deepEqual(await f.invoke(f.patch), first);
   const audit = f.docs.get('pulseProjectMaterialOperations/A/materialAudit/stable-op');
   assert.equal(audit.actor_uid, f.actor.uid); assert.equal(audit.actor_email, f.actor.email);
   assert.deepEqual(audit.before, { name: 'Original' }); assert.deepEqual(audit.after, { name: 'Changed' });
-  assert.equal(f.docs.size, 4);
+  assert.equal(f.docs.size, 5);
 });
 
 test('native token and callable identities must agree; request-selected actors are rejected', async () => {
@@ -77,7 +85,7 @@ test('native BOM admin rights do not depend on Pulse directory or company domain
 });
 
 test('native patch preserves current membership/category, revision and operation collision safeguards', async () => {
-  const f = fixture({ enabled: true });
+  const f = fixture({ enabled: true, cutover: true });
   assert.deepEqual(await f.invoke({ ...f.patch, expected_version: '10:0' }), { ok: false, error: 'material_version_conflict' });
   assert.deepEqual(await f.invoke({ ...f.patch, item_id: 'hidden' }), { ok: false, error: 'material_forbidden' });
   assert.equal((await f.invoke(f.patch)).ok, true);
@@ -94,7 +102,7 @@ test('native request validation rejects extra resources and malformed operations
 });
 
 test('native fulfill uses displayed revision, native actor and shared audit engine', async () => {
-  const f = fixture({ enabled: true });
+  const f = fixture({ enabled: true, cutover: true });
   f.docs.get('projects/A/bom/data').categories[0].items[0].itemType = 'service';
   const data = { operation: 'fulfill', project_id: 'A', item_id: 'motor', expected_version: '10:1', operation_id: 'fulfill-1', fulfillment: { kind: 'fulfillment', quantity: 1 } };
   const result = await f.invoke(data); assert.equal(result.ok, true); assert.equal(result.item.status, 'received');
@@ -111,6 +119,7 @@ test('fulfillment actor assertion rejects SDK account switches before business w
   f.actor.uid = 'second-authorized-uid'; f.token.uid = f.actor.uid; f.request.auth.uid = f.actor.uid;
   f.docs.get('projects/A').memberIds.push(f.actor.uid); f.docs.get('projects/A').members.push({ userId: f.actor.uid, categoryScope: ['Mech'] });
   assert.deepEqual(await f.invoke(data), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.size, 2);
+  f.establishCutover();
   const result = await f.invoke({ ...data, expected_actor_uid: f.actor.uid }); assert.equal(result.ok, true);
   assert.equal(f.docs.get('pulseProjectMaterialOperations/A/materialAudit/bound-op').actor_uid, f.actor.uid);
 });
@@ -121,6 +130,7 @@ test('fulfillment actor assertion cannot select a forged actor or accept malform
     assert.deepEqual(await f.invoke(data), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.size, 2);
   }
   const f = fixture({ enabled: true });
+  f.establishCutover();
   assert.equal((await f.invoke({ ...f.patch, expected_actor_uid: f.actor.uid })).ok, true);
   assert.deepEqual(await f.invoke({ ...f.request.data, expected_actor_uid: f.actor.uid }), { ok: false, error: 'invalid_material_request' });
 });
@@ -130,6 +140,7 @@ test('patch actor assertion rejects an authorized account switch and audits only
   f.actor.uid = 'second-authorized-uid'; f.token.uid = f.actor.uid; f.request.auth.uid = f.actor.uid;
   f.docs.get('projects/A').memberIds.push(f.actor.uid); f.docs.get('projects/A').members.push({ userId: f.actor.uid, categoryScope: ['Mech'] });
   assert.deepEqual(await f.invoke({ ...f.patch, expected_actor_uid: openingUid }), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.size, 2);
+  f.establishCutover();
   assert.equal((await f.invoke({ ...f.patch, expected_actor_uid: f.actor.uid })).ok, true);
   assert.equal(f.docs.get('pulseProjectMaterialOperations/A/materialAudit/stable-op').actor_uid, f.actor.uid);
 });
@@ -143,6 +154,7 @@ test('native bounded command uses current verified identity, displayed revision 
   const f = fixture({ enabled: true });
   const data = { operation: 'command', project_id: 'A', expected_version: '10:1', operation_id: 'delete-command', expected_actor_uid: f.actor.uid, command: { kind: 'delete_items', item_ids: ['motor'] } };
   assert.deepEqual(await f.invoke({ ...data, expected_actor_uid: 'another' }), { ok: false, error: 'actor_session_changed' }); assert.equal(f.docs.size, 2);
+  f.establishCutover();
   const result = await f.invoke(data); assert.deepEqual(result, { ok: true, project_id: 'A', operation_id: 'delete-command', command_kind: 'delete_items' }); assert.deepEqual(await f.invoke(data), result);
   assert.equal(f.docs.get('pulseProjectMaterialOperations/A/materialAudit/delete-command').actor_uid, f.actor.uid);
   f.docs.get('projects/A').members = []; assert.deepEqual(await f.invoke(data), { ok: false, error: 'material_forbidden' });
