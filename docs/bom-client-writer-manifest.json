@@ -1,6 +1,6 @@
 {
   "_metadata": {
-    "scope": "Direct browser SDK calls under src/: named/namespace imports and set/update/delete operations on inline-recognized Firestore batch/transaction receivers. Counts by file and method, not individual call identity. It misses assigned writer aliases (for example const w = setDoc), batch receiver aliases, named transaction callbacks, wrappers, computed property calls, Functions/Admin SDK, MCP, callable/provider writes, REST and Realtime Database writes. This is a drift tripwire, not a write-safety fence.",
+    "scope": "Direct browser SDK calls under src/: named/namespace imports and set/update/delete operations on inline-recognized Firestore batch/transaction receivers. Test/fixture directories and *.test.*/*.spec.* files are excluded. Counts by file and method, not individual call identity. It misses assigned writer aliases (for example const w = setDoc), batch receiver aliases, named transaction callbacks, wrappers, computed property calls, Functions/Admin SDK, MCP, callable/provider writes, REST and Realtime Database writes. This is a drift tripwire, not a write-safety fence.",
     "snapshotBranch": "codex/bom-po-inward-integrated",
     "snapshotCommit": "8a652ec"
   },
