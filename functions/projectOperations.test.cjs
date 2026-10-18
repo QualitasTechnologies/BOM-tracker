@@ -349,6 +349,27 @@ test('delete rejects excessive linked documents before any material or audit wri
   assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
   assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialOperations/command-1'), false);
 });
+test('delete enforces the 400-document cap globally across multiple query chunks', async () => {
+  const f = commandFixture();
+  const itemIds = Array.from({ length: 200 }, (_, index) => `item-${index}`);
+  f.categories()[0].items = itemIds.map(id => ({ id, name: id, itemType: 'component', quantity: 1 }));
+  itemIds.forEach((id, itemIndex) => {
+    for (let copy = 0; copy < 3; copy++) {
+      const documentIndex = itemIndex * 3 + copy;
+      f.docs.set(`projectDocuments/linked-${documentIndex}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [id] } });
+    }
+  });
+
+  const result = await f.command({ kind: 'delete_items', item_ids: itemIds });
+
+  assert.equal(result.status, 413);
+  assert.equal(result.body.error, 'material_command_too_large');
+  assert.equal(f.categories()[0].items.length, 200);
+  assert.deepEqual(f.docs.get('projectDocuments/linked-0').data.linkedBOMItems, ['item-0']);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialOperations/command-1'), false);
+  assert.deepEqual(f.linkedItemQuerySizes, [30, 30, 30, 30, 30]);
+});
 test('delete accepts the maximum of 400 linked documents and records each cleanup once', async () => {
   const f = commandFixture();
   for (let index = 0; index < 400; index++) f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor'] } });
