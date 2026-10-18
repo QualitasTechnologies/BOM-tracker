@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   writer-inventory:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -22,7 +22,7 @@ jobs:
       - run: npm run test:writer-inventory
 
   functions-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -37,7 +37,7 @@ jobs:
       - run: node --test functions/*.test.js functions/*.test.cjs
 
   mcp-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
