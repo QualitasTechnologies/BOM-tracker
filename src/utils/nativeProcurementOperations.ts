@@ -19,7 +19,7 @@ export interface POSendSnapshot {
   po_id: string;
   po_version: string;
   material_version: string;
-  purchase_order: Record<string, any>;
+  purchase_order: Record<string, unknown>;
   material_items: Array<{ id: string; name: string; status: string; quantity: number; category: string }>;
   permissions: { send: boolean };
   attempt: POSendOutcome | null;
@@ -27,7 +27,7 @@ export interface POSendSnapshot {
 export interface POSendIntent { mode: 'email' | 'mark'; recipient_email: string; cc_emails: string[]; }
 
 const phases: POSendPhase[] = ['prepared', 'pending', 'uncertain', 'accepted', 'material_pending', 'metadata_pending', 'needs_reconciliation', 'complete', 'cancelled'];
-const isRecord = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value);
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const isVersion = (value: unknown) => value === 'missing' || typeof value === 'string' && /^(0|[1-9]\d*):(0|[1-9]\d*)$/.test(value);
 const nativeError = (code: string, message: string) => Object.assign(new Error(message), { code });
 const invalidResponse = () => nativeError('native-procurement/invalid-response', 'The PO service returned an unexpected result.');
@@ -55,10 +55,12 @@ const call = async (operation: string, projectId: string, poId: string, uid: str
   return data;
 };
 
-const parseOutcome = (data: Record<string, any>, expectedAttempt?: string): POSendOutcome => {
+const parseOutcome = (data: Record<string, unknown>, expectedAttempt?: string): POSendOutcome => {
+  const phase = data.phase;
   if (typeof data.attempt_id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(data.attempt_id)
-    || (expectedAttempt && data.attempt_id !== expectedAttempt) || !phases.includes(data.phase)) throw invalidResponse();
-  return data as POSendOutcome;
+    || (expectedAttempt && data.attempt_id !== expectedAttempt) || typeof phase !== 'string'
+    || !phases.includes(phase as POSendPhase)) throw invalidResponse();
+  return data as unknown as POSendOutcome;
 };
 
 export const createNativePOSendSession = (projectId: string, poId: string, expectedUid?: string, isContextCurrent: () => boolean = () => true) => {

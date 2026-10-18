@@ -1,6 +1,7 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { PurchaseOrder } from '@/utils/poFirestore';
 import POListSection from '../POListSection';
 
 const mocks = vi.hoisted(() => ({
@@ -12,7 +13,7 @@ const mocks = vi.hoisted(() => ({
   deletePurchaseOrder: vi.fn(),
   poStatus: 'pending-approval',
   poNativeFields: {},
-  session: null as any,
+  session: null as unknown as ReturnType<typeof session>,
   createSession: vi.fn(),
 }));
 
@@ -25,8 +26,8 @@ vi.mock('@/utils/nativeProcurementOperations', () => ({
   isNativePOSendEnabled: () => import.meta.env.VITE_BOM_NATIVE_PO_SEND_ENABLED === 'true',
 }));
 vi.mock('@/utils/poFirestore', () => ({
-  subscribeToPurchaseOrders: (_projectId: string, callback: (orders: any[]) => void) => {
-    callback([{ id: 'po-1', poNumber: 'PO-1', vendorName: 'Acme', vendorEmail: 'vendor@acme.com', status: mocks.poStatus, items: [], ...mocks.poNativeFields }]);
+  subscribeToPurchaseOrders: (_projectId: string, callback: (orders: PurchaseOrder[]) => void) => {
+    callback([{ id: 'po-1', poNumber: 'PO-1', vendorName: 'Acme', vendorEmail: 'vendor@acme.com', status: mocks.poStatus, items: [], ...mocks.poNativeFields } as PurchaseOrder]);
     return () => {};
   },
   deletePurchaseOrder: (...args: unknown[]) => mocks.deletePurchaseOrder(...args),
@@ -37,18 +38,18 @@ vi.mock('@/utils/poFirestore', () => ({
   requestPOChanges: vi.fn(),
   notifyPOApproval: vi.fn(),
 }));
-vi.mock('@/utils/settingsFirestore', () => ({ billingEntityToCompanySettings: (value: any) => value, getBillingEntity: vi.fn().mockResolvedValue({ companyName: 'Co' }) }));
+vi.mock('@/utils/settingsFirestore', () => ({ billingEntityToCompanySettings: (value: unknown) => value, getBillingEntity: vi.fn().mockResolvedValue({ companyName: 'Co' }) }));
 vi.mock('@/utils/projectFirestore', () => ({
   getProject: (...args: unknown[]) => mocks.getProject(...args),
   getNotificationRecipients: () => [{ name: 'Alex', email: 'alex@example.com' }],
 }));
 vi.mock('../EditPODialog', () => ({ default: () => null }));
 vi.mock('@/components/ui/dialog', () => {
-  const Dialog = ({ open, children }: any) => open ? <div role="dialog">{children}</div> : null;
+  const Dialog = ({ open, children }: { open: boolean; children?: React.ReactNode }) => open ? <div role="dialog">{children}</div> : null;
   return {
-    Dialog, DialogContent: ({ children }: any) => <div>{children}</div>,
-    DialogHeader: ({ children }: any) => <div>{children}</div>, DialogTitle: ({ children }: any) => <h2>{children}</h2>,
-    DialogDescription: ({ children }: any) => <p>{children}</p>, DialogFooter: ({ children }: any) => <div>{children}</div>,
+    Dialog, DialogContent: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+    DialogHeader: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>, DialogTitle: ({ children }: { children?: React.ReactNode }) => <h2>{children}</h2>,
+    DialogDescription: ({ children }: { children?: React.ReactNode }) => <p>{children}</p>, DialogFooter: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   };
 });
 vi.mock('@/components/ui/alert-dialog', () => {
@@ -56,11 +57,11 @@ vi.mock('@/components/ui/alert-dialog', () => {
   return { AlertDialog: Nil, AlertDialogAction: Nil, AlertDialogCancel: Nil, AlertDialogContent: Nil, AlertDialogDescription: Nil, AlertDialogFooter: Nil, AlertDialogHeader: Nil, AlertDialogTitle: Nil };
 });
 vi.mock('@/components/ui/dropdown-menu', () => {
-  const Wrapper = ({ children }: any) => <div>{children}</div>;
-  const Item = ({ children, onClick, disabled, title }: any) => <button type="button" onClick={onClick} disabled={disabled} title={title}>{children}</button>;
+  const Wrapper = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
+  const Item = ({ children, onClick, disabled, title }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button type="button" onClick={onClick} disabled={disabled} title={title}>{children}</button>;
   return { DropdownMenu: Wrapper, DropdownMenuContent: Wrapper, DropdownMenuItem: Item, DropdownMenuSeparator: () => <hr />, DropdownMenuTrigger: Wrapper };
 });
-vi.mock('@/components/ui/checkbox', () => ({ Checkbox: ({ checked, onCheckedChange }: any) => <input type="checkbox" checked={!!checked} onChange={(event) => onCheckedChange(event.target.checked)} /> }));
+vi.mock('@/components/ui/checkbox', () => ({ Checkbox: ({ checked, onCheckedChange }: { checked?: boolean; onCheckedChange?: (checked: boolean) => void }) => <input type="checkbox" checked={!!checked} onChange={(event) => onCheckedChange?.(event.target.checked)} /> }));
 
 const session = (permissionsSend = true, phase = 'complete') => ({
   load: vi.fn().mockResolvedValue({
