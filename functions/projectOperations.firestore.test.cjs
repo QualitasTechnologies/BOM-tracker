@@ -7,7 +7,7 @@ const { createProjectOperationsHandler } = require('./projectOperations.cjs');
 
 const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
 
-test('real Firestore transactions chunk linked-document queries and enforce the write budget', {
+test('real Firestore transactions chunk linked-document queries and enforce the document-count limit', {
   skip: !emulatorHost ? 'Set FIRESTORE_EMULATOR_HOST to an isolated Firestore emulator.' : false
 }, async t => {
   assert.match(emulatorHost, /^(127\.0\.0\.1|localhost):\d+$/, 'This integration test must only use a local emulator.');
@@ -25,20 +25,36 @@ test('real Firestore transactions chunk linked-document queries and enforce the 
   });
   const projectRef = db.collection('projects').doc(projectId);
   const operationsRef = db.collection('pulseProjectMaterialOperations').doc(projectId);
+  const settingsRef = db.collection('settings').doc('bom');
+  let savedSettings, hadSettings = false, settingsCaptured = false;
 
   t.after(async () => {
-    for (const id of projectIds) {
-      await db.recursiveDelete(db.collection('projects').doc(id));
-      await db.recursiveDelete(db.collection('pulseProjectMaterialOperations').doc(id));
-      const linkedDocs = await db.collection('projectDocuments').where('projectId', '==', id).get();
-      if (!linkedDocs.empty) {
-        const batch = db.batch();
-        linkedDocs.docs.forEach(row => batch.delete(row.ref));
-        await batch.commit();
+    try {
+      for (const id of projectIds) {
+        await db.recursiveDelete(db.collection('projects').doc(id));
+        await db.recursiveDelete(db.collection('pulseProjectMaterialOperations').doc(id));
+        const linkedDocs = await db.collection('projectDocuments').where('projectId', '==', id).get();
+        if (!linkedDocs.empty) {
+          const batch = db.batch();
+          linkedDocs.docs.forEach(row => batch.delete(row.ref));
+          await batch.commit();
+        }
+      }
+    } finally {
+      try {
+        if (settingsCaptured) {
+          if (hadSettings) await settingsRef.set(savedSettings);
+          else await settingsRef.delete();
+        }
+      } finally {
+        await deleteApp(app);
       }
     }
-    await deleteApp(app);
   });
+  const previousSettings = await settingsRef.get();
+  hadSettings = previousSettings.exists;
+  savedSettings = hadSettings ? previousSettings.data() : null;
+  settingsCaptured = true;
 
   const seed = async ({ items, linkedDocuments }) => {
     await projectRef.set({ memberIds: [actor.uid], members: [] });
@@ -110,6 +126,7 @@ test('real Firestore transactions chunk linked-document queries and enforce the 
     assert.deepEqual((await secondProject.collection('bom').doc('data').get()).data().categories[0].items.map(row => row.id), ['boundary']);
     assert.equal((await db.collection('projectDocuments').doc(`${secondProjectId}-linked-0`).get()).data().linkedBOMItems[0], 'boundary');
     assert.equal((await secondOperations.collection('materialAudit').doc('delete-401').get()).exists, false);
+    assert.equal((await secondOperations.collection('materialOperations').doc('delete-401').get()).exists, false);
   });
 
   async function runForProject(id, operations, itemId, operationHandler, currentActor) {
