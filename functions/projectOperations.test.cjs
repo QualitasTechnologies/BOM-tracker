@@ -368,6 +368,25 @@ test('delete command accepts exactly 400 linked documents and records every chan
   assert.equal(audit.after.documents.length, 400);
   assert.equal(receipt.document_ids.length, 400);
 });
+test('delete command counts scalar and tranche references together with queried links', async () => {
+  const f = commandFixture();
+  const itemIds = Array.from({ length: 200 }, (_, index) => `item-${index}`);
+  f.categories()[0].items = itemIds.map((id, index) => ({ id, name: id, itemType: 'component', quantity: 1,
+    linkedInvoiceDocumentId: `scalar-${index}`, fulfillmentTranches: [{ quantity: 1, invoiceDocId: `tranche-${index}` }] }));
+  for (let index = 0; index < 200; index++) {
+    for (const documentId of [`scalar-${index}`, `tranche-${index}`]) f.docs.set(`projectDocuments/${documentId}`, { tick: 1, data: { projectId: 'A', type: 'vendor-invoice', linkedBOMItems: [] } });
+    f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: [itemIds[index]] } });
+  }
+
+  const result = await f.command({ kind: 'delete_items', item_ids: itemIds });
+
+  assert.equal(result.status, 503);
+  assert.equal(f.categories()[0].items.length, 200);
+  assert.deepEqual(f.docs.get('projectDocuments/scalar-0').data.linkedBOMItems, []);
+  assert.deepEqual(f.docs.get('projectDocuments/linked-0').data.linkedBOMItems, [itemIds[0]]);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialAudit/command-1'), false);
+  assert.equal(f.docs.has('pulseProjectMaterialOperations/A/materialOperations/command-1'), false);
+});
 test('delete command rejects more than 400 linked documents in one query without partial changes', async () => {
   const f = commandFixture();
   for (let index = 0; index < 401; index++) f.docs.set(`projectDocuments/linked-${index}`, { tick: 1, data: { projectId: 'A', type: 'vendor-quote', linkedBOMItems: ['motor'] } });
