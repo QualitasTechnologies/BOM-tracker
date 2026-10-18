@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { createNativeProcurementOperations } = require('./nativeProcurementOperations.cjs');
 function fixture(options = {}) {
-  let time = 1000000, revision = 1, actorUid = 'admin', transactionNumber = 0, artifactCalls = 0;
+  let time = options.now ?? 1000000, revision = 1, actorUid = 'admin', transactionNumber = 0, artifactCalls = 0;
   const docs = new Map([
     ['projects/P', { memberIds: ['admin'] }],
     ...(options.cutover === false ? [] : [['pulseMaterialCutovers/P', { project_id: 'P', established_by: 'reviewed-operator', source: 'reviewed_cutover' }]]),

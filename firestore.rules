@@ -20,14 +20,17 @@ service cloud.firestore {
     function purchaseOrderCreateIsNotSent() {
       return !purchaseOrderPostSendStatus(request.resource.data.get('status', null))
         && !request.resource.data.keys().hasAny([
-          'sentAt', 'actualSentDate', 'sentBy', 'sentToEmail',
-          'nativeSendAttemptId', 'nativeSendPhase', 'pdfUrl'
+          'sentAt', 'acceptedAt', 'actualSentDate', 'sentBy', 'sentToEmail',
+          'nativeSendAttemptId', 'nativeSendPhase', 'legacySendAttemptId', 'legacySendPhase', 'legacySendAcceptedAt',
+          'legacySendPreparingAt', 'legacySendDispatchStartedAt', 'legacySendProviderId', 'legacySendActorUid',
+          'legacySendRecipientEmail', 'legacySendPdfUrl', 'legacySendFileSize', 'legacySendDocumentId',
+          'legacySendRetryPayloadReady', 'pdfUrl'
         ]);
     }
 
     function purchaseOrderHasBeenSent() {
       return purchaseOrderPostSendStatus(resource.data.get('status', null))
-        || resource.data.keys().hasAny(['sentAt', 'actualSentDate', 'sentBy', 'sentToEmail'])
+        || resource.data.keys().hasAny(['sentAt', 'acceptedAt', 'actualSentDate', 'sentBy', 'sentToEmail'])
         || resource.data.get('nativeSendPhase', null) in [
           'dispatching', 'uncertain', 'needs_reconciliation', 'accepted',
           'material_pending', 'metadata_pending', 'complete'
@@ -42,11 +45,13 @@ service cloud.firestore {
       // attempt reaches complete, even though sent metadata is already set.
       let phase = resource.data.get('nativeSendPhase', null);
       let attemptId = resource.data.get('nativeSendAttemptId', null);
+      let legacyAttemptId = resource.data.get('legacySendAttemptId', null);
       return phase in [
           'prepared', 'dispatching', 'uncertain', 'needs_reconciliation',
           'accepted', 'material_pending', 'metadata_pending'
         ]
-        || (attemptId != null && phase != 'complete' && phase != 'cancelled');
+        || (attemptId != null && phase != 'complete' && phase != 'cancelled')
+        || legacyAttemptId != null;
     }
 
     function purchaseOrderPostSendTransitionIsAllowed() {
@@ -77,8 +82,11 @@ service cloud.firestore {
           : !purchaseOrderPostSendStatus(request.resource.data.get('status', null)))
         && purchaseOrderPostSendFieldsAreLimited()
         && !changed.hasAny([
-          'sentAt', 'actualSentDate', 'sentBy', 'sentToEmail',
-          'nativeSendAttemptId', 'nativeSendPhase', 'pdfUrl'
+          'sentAt', 'acceptedAt', 'actualSentDate', 'sentBy', 'sentToEmail',
+          'nativeSendAttemptId', 'nativeSendPhase', 'legacySendAttemptId', 'legacySendPhase', 'legacySendAcceptedAt',
+          'legacySendPreparingAt', 'legacySendDispatchStartedAt', 'legacySendProviderId', 'legacySendActorUid',
+          'legacySendRecipientEmail', 'legacySendPdfUrl', 'legacySendFileSize', 'legacySendDocumentId',
+          'legacySendRetryPayloadReady', 'pdfUrl'
         ]);
     }
 

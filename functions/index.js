@@ -5339,10 +5339,15 @@ function buildPOEmailData(purchaseOrder, companySettings, recipientEmail, ccEmai
  * Send Purchase Order via Email
  * Generates PDF and sends to vendor with the PO attached
  */
-const { authorizeLegacyPOSend } = require('./legacyPOSendGuard.cjs');
+const { authorizeLegacyPOSend, beginLegacyPOSendDispatch, releaseLegacyPOSend, updateLegacyPOSend, rejectLegacyPOSend } = require('./legacyPOSendGuard.cjs');
+const { finalizeLegacyPOEmail } = require('./legacyPOEmailFinalize.cjs');
+const { createLegacyPOEmailRecovery } = require('./legacyPOEmailRecovery.cjs');
+const { createLegacyPOEmailRetry } = require('./legacyPOEmailRetry.cjs');
+const { freezeLegacyPOEmailPdf } = require('./legacyPOEmailRetryPdf.cjs');
+const { isDefinitiveResendRejection } = require('./legacyPOResendOutcome.cjs');
 const { purchaseOrderAcceptanceDate } = require('./purchaseOrderAcceptanceDate.cjs');
 exports.sendPurchaseOrder = onCall(
-  { secrets: [resendApiKey] },
+  { secrets: [resendApiKey], timeoutSeconds: 540 },
   async (request) => {
     const { companySettings, companyLogo, companyLogoPath, recipientEmail, ccEmails } = request.data || {};
     const requestedPO = request.data?.purchaseOrder;
@@ -5354,12 +5359,20 @@ exports.sendPurchaseOrder = onCall(
       );
     }
 
+    const db = admin.firestore();
+    let reservedPOSend = null;
+    let providerAttempted = false;
+    let acceptance = null;
+    let providerId = null;
+    let recoveryPayload = null;
+    let retryPdfFile = null;
     try {
-      const { purchaseOrder } = await authorizeLegacyPOSend({
-        db: admin.firestore(), auth: admin.auth(), request,
+      reservedPOSend = await authorizeLegacyPOSend({
+        db, auth: admin.auth(), request,
         projectId: requestedPO.projectId, poId: requestedPO.id,
-        nativeEnabled: require('./nativePoRuntime.cjs').procurementEnabled(process.env),
+        getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
       });
+      const { purchaseOrder, attemptId } = reservedPOSend;
 
       logger.info('Sending PO via email', {
         poNumber: purchaseOrder.poNumber,
@@ -5376,41 +5389,66 @@ exports.sendPurchaseOrder = onCall(
       const file = bucket.file(pdfResult.storagePath);
       const [pdfBuffer] = await file.download();
 
+      // Preserve the exact attachment bytes for an idempotent retry. The regular
+      // PO PDF path is reused, so it is not a safe recovery source after edits.
+      const frozenPdf = await freezeLegacyPOEmailPdf({ bucket, projectId: purchaseOrder.projectId, attemptId, pdfBuffer });
+      retryPdfFile = frozenPdf.file;
+      const retryPdfPath = frozenPdf.path;
+
       // Initialize Resend
       const resend = new Resend(getResendApiKey());
 
       const emailData = buildPOEmailData(purchaseOrder, companySettings, recipientEmail, ccEmails, pdfBuffer);
-
-      await resend.emails.send(emailData);
-      const acceptance = purchaseOrderAcceptanceDate(Date.now());
-
-      // Update PO status to 'sent' in Firestore
-      const db = admin.firestore();
-      await db.collection('projects').doc(purchaseOrder.projectId).collection('purchaseOrders').doc(purchaseOrder.id).update({
-        status: 'sent',
-        sentAt: admin.firestore.Timestamp.fromMillis(acceptance.sentAtMillis),
-        acceptedAt: acceptance.acceptedAt,
-        actualSentDate: acceptance.actualSentDate,
-        sentBy: request.auth?.uid || 'system',
-        sentToEmail: recipientEmail,
-        pdfUrl: pdfResult.pdfUrl
+      const documentId = db.collection('projectDocuments').doc().id;
+      recoveryPayload = {
+        legacySendActorUid: request.auth?.uid || 'system',
+        legacySendRecipientEmail: recipientEmail,
+        legacySendPdfUrl: frozenPdf.downloadUrl,
+        legacySendFileSize: frozenPdf.size,
+        legacySendDocumentId: documentId,
+      };
+      const attachment = emailData.attachments?.[0];
+      const retryPayload = {
+        email: { from: emailData.from, to: emailData.to, cc: emailData.cc || [],
+          subject: emailData.subject, html: emailData.html },
+        attachment: { filename: attachment?.filename, type: attachment?.type || 'application/pdf' },
+        pdfStoragePath: retryPdfPath,
+        pdfSha256: frozenPdf.sha256,
+        pdfFileSize: frozenPdf.size,
+      };
+      const phaseSaved = await beginLegacyPOSendDispatch({ db, projectId: purchaseOrder.projectId, poId: purchaseOrder.id,
+        attemptId, actorUid: request.auth?.uid || 'system',
+        retryPayload,
+        getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+        patch: { legacySendPhase: 'dispatching',
+          legacySendDispatchStartedAt: admin.firestore.FieldValue.serverTimestamp(), ...recoveryPayload } });
+      if (!phaseSaved.dispatched) throw Object.assign(new Error(phaseSaved.error), { code: phaseSaved.error, status: 409 });
+      providerAttempted = true;
+      // A repeated dispatch for this reservation must map to the same Resend email.
+      const sendResult = await resend.emails.send(emailData, { idempotencyKey: attemptId });
+      if (sendResult?.error) {
+        const rejection = new Error(sendResult.error.message || 'Resend returned an error for the Purchase Order email');
+        rejection.resendDefinitiveRejection = isDefinitiveResendRejection(sendResult.error);
+        rejection.resendErrorName = sendResult.error.name;
+        throw rejection;
+      }
+      providerId = sendResult?.data?.id;
+      if (typeof providerId !== 'string' || !providerId.trim()) throw new Error('Resend response did not include an email ID; delivery outcome is uncertain');
+      acceptance = purchaseOrderAcceptanceDate(Date.now());
+      const acceptedSaved = await updateLegacyPOSend({ db, projectId: purchaseOrder.projectId, poId: purchaseOrder.id, attemptId,
+        requireNoAcceptedAt: true, providerId,
+        patch: { legacySendPhase: 'provider_accepted', legacySendAcceptedAt: acceptance.acceptedAt, legacySendProviderId: providerId } });
+      if (!acceptedSaved) throw Object.assign(new Error('purchase_order_attempt_active'), { code: 'purchase_order_attempt_active', status: 409 });
+      await finalizeLegacyPOEmail({ db, projectId: purchaseOrder.projectId, poId: purchaseOrder.id, attemptId,
+        actorUid: request.auth?.uid || 'system', recipientEmail, acceptedMs: acceptance.sentAtMillis,
+        pdfUrl: frozenPdf.downloadUrl, fileSize: recoveryPayload.legacySendFileSize, documentId: recoveryPayload.legacySendDocumentId,
+        providerId,
+        getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('pulseLegacyPOSendAttempts').doc(purchaseOrder.projectId).collection('attempts').doc(attemptId).delete().catch(error => {
+        logger.warn('Failed to remove frozen PO retry record after finalization', { poNumber: purchaseOrder.poNumber, error: error.message });
       });
-
-      // Create ProjectDocument entry for the generated PO PDF
-      // This makes the PO appear in the "Vendor POs" documents section
-      const projectDocRef = await db.collection('projectDocuments').add({
-        projectId: purchaseOrder.projectId,
-        name: (purchaseOrder.poNumber || 'PO') + '.pdf',
-        url: pdfResult.pdfUrl,
-        type: 'vendor-po',
-        uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
-        uploadedBy: request.auth?.uid || 'system',
-        linkedBOMItems: purchaseOrder.items.map(item => item.bomItemId),
-        fileSize: pdfResult.size || 0
-      });
-
       logger.info('ProjectDocument created for PO', {
-        documentId: projectDocRef.id,
+        documentId,
         poNumber: purchaseOrder.poNumber
       });
 
@@ -5422,12 +5460,46 @@ exports.sendPurchaseOrder = onCall(
       return {
         success: true,
         message: `Purchase Order ${purchaseOrder.poNumber} sent to ${recipientEmail}`,
-        pdfUrl: pdfResult.pdfUrl,
+        pdfUrl: frozenPdf.downloadUrl,
         acceptedAt: acceptance.acceptedAt,
         actualSentDate: acceptance.actualSentDate,
       };
 
     } catch (error) {
+      const ambiguousProviderOutcome = providerAttempted && !error.resendDefinitiveRejection;
+      let reservationReleased = false;
+      if (reservedPOSend?.attemptId) {
+        try {
+          if (ambiguousProviderOutcome) {
+            await updateLegacyPOSend({ db, projectId: requestedPO.projectId, poId: requestedPO.id,
+              attemptId: reservedPOSend.attemptId, patch: {
+                legacySendPhase: acceptance ? 'needs_reconciliation' : 'uncertain',
+                ...(acceptance ? { legacySendAcceptedAt: acceptance.acceptedAt } : {}),
+                ...(providerId ? { legacySendProviderId: providerId } : {}),
+                ...(recoveryPayload || {}),
+              }, requireNoAcceptedAt: !!acceptance, providerId });
+          } else if (error.resendDefinitiveRejection) {
+            reservationReleased = await rejectLegacyPOSend({ db, projectId: requestedPO.projectId, poId: requestedPO.id,
+              attemptId: reservedPOSend.attemptId, actorUid: request.auth?.uid || 'system',
+              rejectionName: error.resendErrorName || 'unknown',
+              getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp() });
+            reservationReleased = true;
+          } else {
+            reservationReleased = await releaseLegacyPOSend({ db, projectId: requestedPO.projectId, poId: requestedPO.id,
+              attemptId: reservedPOSend.attemptId });
+          }
+        } catch (lockError) {
+          logger.error('Failed to update legacy PO send reservation', { poNumber: requestedPO?.poNumber, error: lockError.message });
+        }
+      }
+      if (reservationReleased) {
+        if (retryPdfFile) await retryPdfFile.delete({ ignoreNotFound: true }).catch(cleanupError => {
+          logger.warn('Failed to remove unused frozen PO retry PDF', { poNumber: requestedPO?.poNumber, error: cleanupError.message });
+        });
+        await db.collection('pulseLegacyPOSendAttempts').doc(requestedPO.projectId).collection('attempts').doc(reservedPOSend.attemptId).delete().catch(cleanupError => {
+          logger.warn('Failed to remove unused frozen PO retry record', { poNumber: requestedPO?.poNumber, error: cleanupError.message });
+        });
+      }
       // Log full error for debugging
       logger.error('Failed to send PO email', {
         poNumber: requestedPO?.poNumber,
@@ -5438,11 +5510,21 @@ exports.sendPurchaseOrder = onCall(
       });
 
       // Provide user-friendly error messages based on error type
-      let errorCode = 'internal';
-      let userMessage = 'Failed to send Purchase Order';
-      let troubleshooting = '';
+      let errorCode = ambiguousProviderOutcome ? 'failed-precondition' : 'internal';
+      let userMessage = ambiguousProviderOutcome
+        ? acceptance
+          ? 'The email service accepted the Purchase Order, but Pulse could not finish saving it. Verify delivery before contacting an administrator to reconcile the PO'
+          : 'Email delivery could not be confirmed. Check with an administrator before retrying this PO'
+        : 'Failed to send Purchase Order';
+      let troubleshooting = ambiguousProviderOutcome ? 'The PO is locked to prevent a duplicate send.' : '';
 
-      if (error.code === 'actor_authentication_required' || error.code === 401 || error.message?.includes('Unauthorized')) {
+      if (ambiguousProviderOutcome) {
+        // Provider outcomes may be ambiguous; do not suggest retrying and risking a duplicate order.
+      } else if (error.resendDefinitiveRejection) {
+        errorCode = error.resendErrorName === 'rate_limit_exceeded' ? 'unavailable' : 'invalid-argument';
+        userMessage = 'Resend rejected the Purchase Order email';
+        troubleshooting = error.message;
+      } else if (error.code === 'actor_authentication_required' || error.code === 401 || error.message?.includes('Unauthorized')) {
         errorCode = 'unauthenticated';
         userMessage = 'Authentication required';
         troubleshooting = error.message;
@@ -5454,7 +5536,7 @@ exports.sendPurchaseOrder = onCall(
         errorCode = 'failed-precondition';
         userMessage = 'Legacy PO sending is disabled';
         troubleshooting = error.message;
-      } else if (['purchase_order_not_found', 'purchase_order_not_approved', 'purchase_order_attempt_active'].includes(error.code)) {
+      } else if (['purchase_order_not_found', 'purchase_order_not_approved', 'purchase_order_attempt_active', 'material_cutover_required'].includes(error.code)) {
         errorCode = 'failed-precondition';
         userMessage = 'Purchase Order cannot be sent';
         troubleshooting = error.message;
@@ -5487,6 +5569,57 @@ exports.sendPurchaseOrder = onCall(
       );
     }
   }
+);
+
+// Manual PO marking is a server transaction so the protected sent fields and
+// linked BOM dates/status change together. It is only available before a
+// reviewed per-project material cutover; afterwards the native PO workflow owns it.
+const { createLegacyPOMarkOperation } = require('./legacyPOMarkOperations.cjs');
+exports.legacyMarkPurchaseOrderSent = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createLegacyPOMarkOperation({
+    db: admin.firestore(), auth: admin.auth(),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
+
+const { createLegacyPOSendRecovery } = require('./legacyPOSendRecovery.cjs');
+exports.recoverStaleLegacyPOSend = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createLegacyPOSendRecovery({
+    db: admin.firestore(), auth: admin.auth(),
+    removePdf: async path => admin.storage().bucket().file(path).delete({ ignoreNotFound: true }),
+    removeAttempt: (projectId, attemptId) => admin.firestore()
+      .collection('pulseLegacyPOSendAttempts').doc(projectId).collection('attempts').doc(attemptId).delete(),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
+
+exports.recoverAcceptedLegacyPOSend = onCall(
+  { region: 'us-central1', timeoutSeconds: 60, maxInstances: 5 },
+  createLegacyPOEmailRecovery({
+    db: admin.firestore(), auth: admin.auth(),
+    removeAttempt: (projectId, attemptId) => admin.firestore()
+      .collection('pulseLegacyPOSendAttempts').doc(projectId).collection('attempts').doc(attemptId).delete(),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
+
+exports.retryUncertainLegacyPOSend = onCall(
+  { region: 'us-central1', timeoutSeconds: 540, maxInstances: 5, secrets: [resendApiKey] },
+  createLegacyPOEmailRetry({
+    db: admin.firestore(), auth: admin.auth(),
+    readPdf: async path => {
+      const [buffer] = await admin.storage().bucket().file(path).download();
+      return buffer;
+    },
+    removePdf: async path => admin.storage().bucket().file(path).delete({ ignoreNotFound: true }),
+    removeAttempt: (projectId, attemptId) => admin.firestore()
+      .collection('pulseLegacyPOSendAttempts').doc(projectId).collection('attempts').doc(attemptId).delete(),
+    sendEmail: (email, options) => new Resend(getResendApiKey()).emails.send(email, options),
+    getEmail: id => new Resend(getResendApiKey()).emails.get(id),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
 );
 
 // ==================== SUPPORT TICKET COMMUNICATIONS ====================

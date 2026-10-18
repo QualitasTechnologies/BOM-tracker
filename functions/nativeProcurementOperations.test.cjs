@@ -96,6 +96,18 @@ test('mark as sent preserves the original workflow without billing or an email p
   assert.equal(f.docs.get('projects/P/purchaseOrders/PO').sentAt, undefined);
   assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].orderDate, '2026-10-10');
 });
+test('native procurement cannot claim a PO reserved by a legacy email send', async () => {
+  const f = fixture();
+  f.docs.get('projects/P/purchaseOrders/PO').legacySendAttemptId = 'legacy-in-flight';
+  assert.equal((await f.send()).error, 'purchase_order_attempt_active');
+  assert.equal(f.calls.length, 0);
+});
+test('an uncut project advertises its legacy PO path during the staged native rollout', async () => {
+  const f = fixture({ cutover: false });
+  const opening = await f.call({ operation: 'open' });
+  assert.equal(opening.permissions.send, false);
+  assert.equal(opening.permissions.legacy_send, true);
+});
 
 test('manual sent date is required, calendar-valid, and immutable across attempt retries', async () => {
   const f = fixture(); const opening = await f.call({ operation: 'open' });
@@ -108,13 +120,54 @@ test('manual sent date is required, calendar-valid, and immutable across attempt
 });
 
 test('accepted provider time is the stable send timestamp and linked-material order date', async () => {
-  const f = fixture(); f.advance(1234); const result = await f.send();
+  const acceptedAt = Date.parse('2026-10-18T18:30:00.000Z');
+  const f = fixture({ now: acceptedAt }); const result = await f.send();
   assert.equal(result.phase, 'complete');
   const accepted = f.docs.get('pulseProcurementOperations/P/attempts/attempt-1').accepted_ms;
   assert.equal(f.docs.get('projects/P/purchaseOrders/PO').sentAt.getTime(), accepted);
-  assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].orderDate, new Date(1001234).toISOString().slice(0, 10));
+  assert.equal(f.docs.get('projects/P/purchaseOrders/PO').actualSentDate, '2026-10-19');
+  assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].orderDate, '2026-10-19');
   f.advance(500000); assert.equal((await f.call({ operation: 'recover' })).phase, 'complete');
   assert.equal(f.docs.get('projects/P/purchaseOrders/PO').sentAt.getTime(), accepted);
+});
+
+test('native PO send uses item promise before header promise and preserves arrival when no promise exists', async () => {
+  const f = fixture();
+  const po = f.docs.get('projects/P/purchaseOrders/PO');
+  po.items = [{ bomItemId: 'bolt', dueDate: new Date('2026-11-02T00:00:00.000Z') }, { bomItemId: 'washer' }, { bomItemId: 'nut' }];
+  po.expectedDeliveryDate = new Date('2026-11-10T00:00:00.000Z');
+  const categories = f.docs.get('projects/P/bom/data').categories;
+  categories[0].items[0].expectedArrival = '2026-12-01';
+  categories[0].items.push(
+    { id: 'washer', itemType: 'component', name: 'Washer', quantity: 1, status: 'not-ordered' },
+    { id: 'nut', itemType: 'component', name: 'Nut', quantity: 1, status: 'not-ordered', expectedArrival: '2026-12-03' },
+  );
+  assert.equal((await f.send()).phase, 'complete');
+  const saved = f.docs.get('projects/P/bom/data').categories[0].items;
+  assert.equal(saved.find(item => item.id === 'bolt').expectedArrival, '2026-11-02');
+  assert.equal(saved.find(item => item.id === 'washer').expectedArrival, '2026-11-10');
+  assert.equal(saved.find(item => item.id === 'nut').expectedArrival, '2026-11-10');
+});
+
+test('native PO promise dates with timezone offsets keep their encoded calendar date', async () => {
+  const f = fixture();
+  const po = f.docs.get('projects/P/purchaseOrders/PO');
+  po.items = [{ bomItemId: 'bolt', dueDate: '2026-11-02T00:00:00+05:30' }];
+  delete po.expectedDeliveryDate;
+
+  assert.equal((await f.send()).phase, 'complete');
+  assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].expectedArrival, '2026-11-02');
+});
+
+test('native PO send preserves existing arrival date when neither item nor PO promise is set', async () => {
+  const f = fixture();
+  const po = f.docs.get('projects/P/purchaseOrders/PO');
+  delete po.expectedDeliveryDate;
+  po.items = [{ bomItemId: 'bolt' }];
+  const item = f.docs.get('projects/P/bom/data').categories[0].items[0];
+  item.expectedArrival = '2026-12-01';
+  assert.equal((await f.send()).phase, 'complete');
+  assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].expectedArrival, '2026-12-01');
 });
 
 test('PO send respects the pre-existing irreversible legacy-writer fence', async () => {

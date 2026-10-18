@@ -35,11 +35,23 @@ beforeEach(async () => {
     await setDoc(doc(db, 'projects/P/purchaseOrders/sent'), {
       status: 'sent',
       sentAt: Timestamp.fromMillis(1_760_000_000_000),
+      acceptedAt: '2026-10-10T00:00:00.000Z',
       actualSentDate: '2026-10-10',
       sentBy: 'admin',
       sentToEmail: 'vendor@example.com',
       nativeSendAttemptId: 'attempt-existing',
       nativeSendPhase: 'complete',
+      legacySendPhase: 'complete',
+      legacySendAcceptedAt: Timestamp.fromMillis(1_760_000_000_000),
+      legacySendPreparingAt: Timestamp.fromMillis(1_760_000_000_000),
+      legacySendDispatchStartedAt: Timestamp.fromMillis(1_760_000_000_000),
+      legacySendProviderId: 'provider-existing',
+      legacySendActorUid: 'admin',
+      legacySendRecipientEmail: 'vendor@example.com',
+      legacySendPdfUrl: 'https://example.test/recovery.pdf',
+      legacySendFileSize: 1200,
+      legacySendDocumentId: 'recovery-document',
+      legacySendRetryPayloadReady: true,
       pdfUrl: 'https://example.test/po.pdf',
       paymentTerms: 'Net 30',
     });
@@ -230,6 +242,7 @@ test('clients cannot delete or recreate a sent PO under the same id', async () =
 test('clients cannot delete an in-flight attempt, overwrite a sent PO, or edit sent business fields', async () => {
   const db = member().firestore();
   const inFlight = doc(db, 'projects/P/purchaseOrders/in-flight');
+  const legacyInFlight = doc(db, 'projects/P/purchaseOrders/legacy-in-flight');
   const materialPending = doc(db, 'projects/P/purchaseOrders/material-pending');
   const cancelled = doc(db, 'projects/P/purchaseOrders/cancelled-attempt');
   const acknowledged = doc(db, 'projects/P/purchaseOrders/acknowledged');
@@ -239,6 +252,11 @@ test('clients cannot delete an in-flight attempt, overwrite a sent PO, or edit s
       status: 'pending-approval',
       nativeSendAttemptId: 'attempt-active',
       nativeSendPhase: 'prepared',
+    });
+    await setDoc(doc(context.firestore(), legacyInFlight.path), {
+      status: 'pending-approval',
+      legacySendAttemptId: 'legacy-attempt-active',
+      legacySendPhase: 'dispatching',
     });
     await setDoc(doc(context.firestore(), cancelled.path), {
       status: 'draft',
@@ -265,6 +283,9 @@ test('clients cannot delete an in-flight attempt, overwrite a sent PO, or edit s
   await assertFails(updateDoc(inFlight, { status: 'cancelled' }));
   await assertFails(updateDoc(inFlight, { status: 'draft' }));
   await assertFails(updateDoc(inFlight, { paymentTerms: 'Net 45' }));
+  await assertFails(deleteDoc(legacyInFlight));
+  await assertFails(updateDoc(legacyInFlight, { status: 'cancelled' }));
+  await assertFails(updateDoc(legacyInFlight, { paymentTerms: 'Net 45' }));
   await assertFails(deleteDoc(materialPending));
   await assertFails(updateDoc(materialPending, { status: 'acknowledged' }));
   await assertFails(updateDoc(materialPending, { paymentTerms: 'Net 45' }));
@@ -294,11 +315,24 @@ test('clients cannot create a PO as sent or create its sent metadata', async () 
     await assertFails(setDoc(doc(db, `projects/P/purchaseOrders/${role}-forged-sent`), { status: 'sent' }));
     const forged = [
       ['sent-at', 'sentAt', sentAt],
+      ['accepted-at', 'acceptedAt', '2026-10-10T00:00:00.000Z'],
       ['actual-sent-date', 'actualSentDate', '2026-10-10'],
       ['sent-by', 'sentBy', 'alice'],
       ['sent-to', 'sentToEmail', 'vendor@example.com'],
       ['attempt-id', 'nativeSendAttemptId', 'forged-attempt'],
       ['attempt-phase', 'nativeSendPhase', 'prepared'],
+      ['legacy-attempt-id', 'legacySendAttemptId', 'legacy-attempt'],
+      ['legacy-attempt-phase', 'legacySendPhase', 'dispatching'],
+      ['legacy-accepted-at', 'legacySendAcceptedAt', '2026-10-10T00:00:00.000Z'],
+      ['legacy-preparing-at', 'legacySendPreparingAt', Timestamp.fromMillis(1_760_000_000_000)],
+      ['legacy-dispatch-started-at', 'legacySendDispatchStartedAt', Timestamp.fromMillis(1_760_000_000_000)],
+      ['legacy-provider-id', 'legacySendProviderId', 'provider-id'],
+      ['legacy-actor-uid', 'legacySendActorUid', 'alice'],
+      ['legacy-recipient', 'legacySendRecipientEmail', 'vendor@example.com'],
+      ['legacy-pdf-url', 'legacySendPdfUrl', 'https://example.test/recovery.pdf'],
+      ['legacy-file-size', 'legacySendFileSize', 1200],
+      ['legacy-document-id', 'legacySendDocumentId', 'recovery-doc'],
+      ['legacy-retry-ready', 'legacySendRetryPayloadReady', true],
       ['pdf-url', 'pdfUrl', 'https://example.test/forged.pdf'],
     ];
     for (const [suffix, field, value] of forged) {
@@ -323,11 +357,14 @@ test('clients cannot transition a PO to sent or change sent metadata, while unre
       sentToEmail: 'vendor@example.com',
     }));
     await assertFails(updateDoc(draft, { sentAt }));
+    await assertFails(updateDoc(draft, { acceptedAt: '2026-10-10T00:00:00.000Z' }));
     await assertFails(updateDoc(draft, { actualSentDate: '2026-10-10' }));
     await assertFails(updateDoc(draft, { sentBy: 'alice' }));
     await assertFails(updateDoc(draft, { sentToEmail: 'vendor@example.com' }));
     await assertFails(updateDoc(draft, { nativeSendAttemptId: 'forged-attempt' }));
     await assertFails(updateDoc(draft, { nativeSendPhase: 'prepared' }));
+    await assertFails(updateDoc(draft, { legacySendPreparingAt: Timestamp.fromMillis(1_760_000_000_000) }));
+    await assertFails(updateDoc(draft, { legacySendDispatchStartedAt: Timestamp.fromMillis(1_760_000_000_000) }));
     await assertFails(updateDoc(draft, { pdfUrl: 'https://example.test/forged.pdf' }));
     await assertFails(updateDoc(sent, { sentAt: Timestamp.fromMillis(1_760_000_000_001) }));
     await assertFails(updateDoc(sent, { sentAt: deleteField() }));
@@ -336,15 +373,51 @@ test('clients cannot transition a PO to sent or change sent metadata, while unre
     await assertFails(updateDoc(sent, { sentToEmail: 'attacker@example.com' }));
     await assertFails(updateDoc(sent, { nativeSendAttemptId: 'forged-attempt' }));
     await assertFails(updateDoc(sent, { nativeSendPhase: 'prepared' }));
+    await assertFails(updateDoc(sent, { legacySendAttemptId: 'forged-attempt' }));
+    await assertFails(updateDoc(sent, { legacySendProviderId: 'forged-provider' }));
+    await assertFails(updateDoc(sent, { legacySendActorUid: 'forged-actor' }));
+    await assertFails(updateDoc(sent, { legacySendRecipientEmail: 'attacker@example.com' }));
+    await assertFails(updateDoc(sent, { legacySendPdfUrl: 'https://example.test/forged.pdf' }));
+    await assertFails(updateDoc(sent, { legacySendFileSize: 9999 }));
+    await assertFails(updateDoc(sent, { legacySendDocumentId: 'forged-document' }));
+    await assertFails(updateDoc(sent, { legacySendRetryPayloadReady: false }));
+    await assertFails(updateDoc(sent, { legacySendPreparingAt: Timestamp.fromMillis(1_760_000_000_001) }));
+    await assertFails(updateDoc(sent, { legacySendDispatchStartedAt: Timestamp.fromMillis(1_760_000_000_001) }));
     await assertFails(updateDoc(sent, { pdfUrl: 'https://example.test/forged.pdf' }));
-    for (const field of ['sentAt', 'actualSentDate', 'sentBy', 'sentToEmail', 'nativeSendAttemptId', 'nativeSendPhase', 'pdfUrl']) {
-      await assertFails(updateDoc(sent, { [field]: deleteField() }));
-    }
     await assertSucceeds(updateDoc(draft, { paymentTerms: 'Net 60' }));
     await assertSucceeds(updateDoc(sent, { status: 'partially-received', updatedAt: Timestamp.fromMillis(1_760_000_000_001) }));
     await assertFails(updateDoc(sent, { vendorEmail: 'attacker@example.com' }));
     await assertFails(updateDoc(sent, { items: [{ bomItemId: 'other', quantity: 99, rate: 0 }] }));
     await assertFails(updateDoc(sent, { totalAmount: 0 }));
+  }
+
+  await env.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'projects/P/purchaseOrders/sent-delete'), {
+      status: 'sent',
+      sentAt: Timestamp.fromMillis(1_760_000_000_000),
+      acceptedAt: '2026-10-10T00:00:00.000Z',
+      actualSentDate: '2026-10-10',
+      sentBy: 'admin',
+      sentToEmail: 'vendor@example.com',
+      nativeSendAttemptId: 'attempt-existing',
+      nativeSendPhase: 'complete',
+      legacySendPhase: 'complete',
+      legacySendAcceptedAt: Timestamp.fromMillis(1_760_000_000_000),
+      legacySendPreparingAt: Timestamp.fromMillis(1_760_000_000_000),
+      legacySendDispatchStartedAt: Timestamp.fromMillis(1_760_000_000_000),
+      legacySendProviderId: 'provider-existing',
+      legacySendActorUid: 'admin',
+      legacySendRecipientEmail: 'vendor@example.com',
+      legacySendPdfUrl: 'https://example.test/recovery.pdf',
+      legacySendFileSize: 1200,
+      legacySendDocumentId: 'recovery-document',
+      legacySendRetryPayloadReady: true,
+      pdfUrl: 'https://example.test/po.pdf',
+    });
+  });
+  const sentDelete = doc(member().firestore(), 'projects/P/purchaseOrders/sent-delete');
+  for (const field of ['sentAt', 'acceptedAt', 'actualSentDate', 'sentBy', 'sentToEmail', 'nativeSendAttemptId', 'nativeSendPhase', 'legacySendPreparingAt', 'legacySendDispatchStartedAt', 'legacySendAcceptedAt', 'legacySendPhase', 'legacySendProviderId', 'legacySendActorUid', 'legacySendRecipientEmail', 'legacySendPdfUrl', 'legacySendFileSize', 'legacySendDocumentId', 'legacySendRetryPayloadReady', 'pdfUrl']) {
+    await assertFails(updateDoc(sentDelete, { [field]: deleteField() }));
   }
 });
 

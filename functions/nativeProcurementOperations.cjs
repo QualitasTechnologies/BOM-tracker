@@ -1,6 +1,8 @@
 const { createHash, randomUUID } = require('node:crypto');
 const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
 const { applyCommand, assertDocumentBudget } = require('./materialCommands.cjs');
+const { purchaseOrderAcceptanceDate } = require('./purchaseOrderAcceptanceDate.cjs');
+const { calendarDate, isDateOnly } = require('./calendarDate.cjs');
 const fault = (code, status = 400) => Object.assign(new Error(code), { code, status });
 const plain = value => value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const id = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\/\x00-\x1f]/.test(value) && !['.', '..'].includes(value) && !/^__.*__$/.test(value);
@@ -9,10 +11,8 @@ const versionValid = value => value === 'missing' || typeof value === 'string' &
 const freeze = value => value instanceof Date ? value.toISOString() : value && typeof value.toDate === 'function' ? value.toDate().toISOString()
   : Array.isArray(value) ? value.map(freeze) : plain(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, freeze(value[key])])) : value;
 const hash = value => createHash('sha256').update(JSON.stringify(freeze(value))).digest('hex');
-const business = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['status', 'updatedAt', 'sentAt', 'sentBy', 'sentToEmail', 'actualSentDate', 'pdfUrl', 'nativeSendAttemptId', 'nativeSendPhase'].includes(key)));
+const business = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['status', 'updatedAt', 'sentAt', 'acceptedAt', 'sentBy', 'sentToEmail', 'actualSentDate', 'pdfUrl', 'nativeSendAttemptId', 'nativeSendPhase', 'legacySendAttemptId', 'legacySendPhase', 'legacySendAcceptedAt', 'legacySendPreparingAt', 'legacySendDispatchStartedAt', 'legacySendProviderId', 'legacySendActorUid', 'legacySendRecipientEmail', 'legacySendPdfUrl', 'legacySendFileSize', 'legacySendDocumentId', 'legacySendRetryPayloadReady'].includes(key)));
 const mail = value => typeof value === 'string' && value.length <= 254 && /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(value);
-const dateOnly = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
-  && Number.isFinite(Date.parse(`${value}T00:00:00.000Z`)) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
 const RETRY_WINDOW = 23 * 60 * 60 * 1000;
 const LEASE = 5 * 60 * 1000;
 
@@ -53,7 +53,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
         return { ok: true, project_id: data.project_id, po_id: data.po_id, po_version: version(state.po), material_version: version(state.bom),
           purchase_order: { ...freeze(state.po.data()), id: data.po_id, projectId: data.project_id },
           material_items: (Array.isArray(state.bom.data()?.categories) ? state.bom.data().categories : []).flatMap(category => (Array.isArray(category.items) ? category.items : []).filter(item => state.po.data().items?.some(row => row.bomItemId === item.id)).map(item => ({ id: item.id, name: item.name ?? '', status: item.status ?? '', quantity: item.quantity ?? 0, category: category.name }))),
-          permissions: { send: writesOn() && state.cutover.exists }, attempt: attempt?.exists ? publicAttempt(attempt.data()) : null };
+          permissions: { send: writesOn() && state.cutover.exists, legacy_send: !state.cutover.exists }, attempt: attempt?.exists ? publicAttempt(attempt.data()) : null };
       });
       if (!writesOn()) throw fault('procurement_mutations_disabled', 503);
       let attemptId = data.attempt_id;
@@ -61,7 +61,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
       if (data.operation === 'send') {
         if (!attemptId || !versionValid(data.expected_po_version) || !versionValid(data.expected_material_version)
           || !['email', 'mark'].includes(data.mode) || !mail(data.recipient_email) || !Array.isArray(data.cc_emails) || data.cc_emails.length > 100 || data.cc_emails.some(value => !mail(value))) throw fault('invalid_procurement_request');
-        if (data.mode === 'mark' ? !dateOnly(data.actual_sent_date) : Object.hasOwn(data, 'actual_sent_date')) throw fault('invalid_procurement_request');
+        if (data.mode === 'mark' ? !isDateOnly(data.actual_sent_date) : Object.hasOwn(data, 'actual_sent_date')) throw fault('invalid_procurement_request');
         const intent = { po_id: data.po_id, expected_po_version: data.expected_po_version, expected_material_version: data.expected_material_version,
           mode: data.mode, ...(data.mode === 'mark' ? { actual_sent_date: data.actual_sent_date } : {}), recipient_email: data.recipient_email.trim().toLowerCase(), cc_emails: [...new Set([...data.cc_emails.map(value => value.trim().toLowerCase()), actor.email])].filter(value => value !== data.recipient_email.trim().toLowerCase()).sort() };
         await db.runTransaction(async transaction => {
@@ -72,7 +72,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
             if (record.po_id !== data.po_id || record.actor_uid !== actor.uid || record.intent_hash !== hash(intent)) throw fault('operation_conflict', 409);
             return;
           }
-          if (state.po.data().nativeSendAttemptId) throw fault('purchase_order_attempt_active', 409);
+          if (state.po.data().nativeSendAttemptId || state.po.data().legacySendAttemptId) throw fault('purchase_order_attempt_active', 409);
           if (state.po.data().status !== 'pending-approval') throw fault('purchase_order_not_approved', 409);
           if (version(state.po) !== data.expected_po_version || version(state.bom) !== data.expected_material_version) throw fault('procurement_version_conflict', 409);
           const billing = data.mode === 'email' ? await resolveBilling(state.po.data(), state.project.data(), transaction) : {};
@@ -185,13 +185,19 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
             try {
               const categories = state.bom.data()?.categories;
               const ids = [...new Set(record.po_snapshot.items.map(item => item.bomItemId))];
-              const orderDate = record.mode === 'mark' ? record.actual_sent_date : new Date(record.accepted_ms).toISOString().slice(0, 10);
-              const updates = ids.map(item_id => { const item = categories.flatMap(category => category.items).find(item => item.id === item_id); return { item_id, patch: { ...(item?.status === 'received' ? {} : { status: 'ordered' }), poNumber: record.po_snapshot.poNumber || '', orderDate } }; });
+              const orderDate = record.mode === 'mark' ? record.actual_sent_date : purchaseOrderAcceptanceDate(record.accepted_ms).actualSentDate;
+              const updates = ids.map(item_id => {
+                const item = categories.flatMap(category => category.items).find(item => item.id === item_id);
+                const linePromise = record.po_snapshot.items.find(poItem => poItem.bomItemId === item_id)?.dueDate;
+                const promise = calendarDate(linePromise) || calendarDate(record.po_snapshot.expectedDeliveryDate);
+                return { item_id, patch: { ...(item?.status === 'received' ? {} : { status: 'ordered' }), poNumber: record.po_snapshot.poNumber || '', orderDate,
+                  ...(promise ? { expectedArrival: promise } : {}) } };
+              });
               changes = applyCommand({ categories, command: { kind: 'patch_items', updates }, scope: null }); nextCategories = changes.categories;
             } catch (error) { problem = error.code || 'material_state_conflict'; }
           }
           const phase = nextCategories ? 'complete' : 'material_pending';
-          const actualSentDate = record.mode === 'mark' ? record.actual_sent_date : new Date(record.accepted_ms).toISOString().slice(0, 10);
+          const actualSentDate = record.mode === 'mark' ? record.actual_sent_date : purchaseOrderAcceptanceDate(record.accepted_ms).actualSentDate;
           const sentAt = record.mode === 'email' ? { sentAt: timestampFromMillis(record.accepted_ms) } : {};
           const sentFields = { status: 'sent', sentBy: record.actor_uid, sentToEmail: record.recipient_email, actualSentDate, nativeSendPhase: phase, ...sentAt,
             ...(record.artifact ? { pdfUrl: record.artifact.url } : {}) };
