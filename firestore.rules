@@ -25,6 +25,17 @@ service cloud.firestore {
       allow delete: if request.auth != null
         && request.auth.token.role == 'admin';
 
+      // Pulse creates no cutover record by default. Only the exact versioned
+      // per-project contract fences browser writes to this legacy BOM record.
+      function legacyMaterialDataWriteFenceEnabled() {
+        let cutoverPath = /databases/$(database)/documents/pulseMaterialCutovers/$(projectId);
+        return exists(cutoverPath)
+          && ('fence' in get(cutoverPath).data)
+          && ('version' in get(cutoverPath).data)
+          && get(cutoverPath).data.fence == 'legacy_bom_data_writes'
+          && get(cutoverPath).data.version == 1;
+      }
+
       // Subcollections (BOM data, documents, POs, milestones, etc.)
       match /{subcollection=**} {
         allow read: if request.auth != null
@@ -33,18 +44,14 @@ service cloud.firestore {
               || get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds == null
               || request.auth.uid in get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds);
 
-        // Opt-in fence for the legacy materials document only. The marker is
-        // intentionally absent by default so coexistence keeps its current
-        // access behavior until a staged cutover explicitly enables it.
+        // Opt-in fence for the legacy materials document only. Missing or
+        // malformed per-project markers leave coexistence grants unchanged.
         allow write: if request.auth != null
           && request.auth.token.status == 'approved'
           && (request.auth.token.role == 'admin'
               || get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds == null
               || request.auth.uid in get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds)
-          && (subcollection != /bom/data
-              || !exists(/databases/$(database)/documents/pulseRuntimeControl/cutover)
-              || !('blockLegacyMaterialClientWrites' in get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data)
-              || get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.blockLegacyMaterialClientWrites != true);
+          && (subcollection != /bom/data || !legacyMaterialDataWriteFenceEnabled());
       }
     }
 

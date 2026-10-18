@@ -28,26 +28,37 @@ async function seed(marker, { bom = true } = {}) {
     const db = context.firestore();
     await setDoc(doc(db, 'projects/P'), { memberIds: ['alice'] });
     if (marker !== 'absent') {
-      await setDoc(doc(db, 'pulseRuntimeControl/cutover'), marker === 'missing-field' ? {} : { blockLegacyMaterialClientWrites: marker });
+      const { path = 'pulseMaterialCutovers/P', data = marker } = marker;
+      await setDoc(doc(db, path), data);
     }
     if (bom) await setDoc(doc(db, 'projects/P/bom/data'), { categories: [{ name: 'Electrical', items: [] }] });
   });
 }
 
-test('absent and false material client-write markers preserve the existing member write flow', async () => {
-  for (const marker of ['absent', 'missing-field', false]) {
+test('missing, wrong-project, wrong-fence, wrong-version, and incomplete markers preserve coexistence writes', async () => {
+  const unrecognizedMarkers = [
+    'absent',
+    { path: 'pulseMaterialCutovers/OTHER', data: { fence: 'legacy_bom_data_writes', version: 1 } },
+    { path: 'pulseMaterialCutovers/P', data: { fence: 'different_fence', version: 1 } },
+    { path: 'pulseMaterialCutovers/P', data: { fence: 'legacy_bom_data_writes', version: 2 } },
+    { path: 'pulseMaterialCutovers/P', data: { fence: 'legacy_bom_data_writes' } },
+    { path: 'pulseMaterialCutovers/P', data: { version: 1 } },
+    { path: 'pulseMaterialCutovers/P', data: { fence: 12, version: '1' } },
+  ];
+  for (const [index, marker] of unrecognizedMarkers.entries()) {
     await seed(marker);
     const data = doc(actor().firestore(), 'projects/P/bom/data');
-    await assertSucceeds(updateDoc(data, { categories: [{ name: 'Electrical', items: [{ id: marker, name: 'Fuse' }] }] }));
+    await assertSucceeds(updateDoc(data, { categories: [{ name: 'Electrical', items: [{ id: `marker-${index}`, name: 'Fuse' }] }] }));
     await env.clearFirestore();
   }
 });
 
-test('enabled material client-write marker denies direct member create, update, and delete', async () => {
-  await seed(true, { bom: false });
+test('exact per-project material fence denies direct member create, update, and delete', async () => {
+  const exactMarker = { fence: 'legacy_bom_data_writes', version: 1 };
+  await seed({ path: 'pulseMaterialCutovers/P', data: exactMarker }, { bom: false });
   const db = actor().firestore();
   await assertFails(setDoc(doc(db, 'projects/P/bom/data'), { categories: [] }));
-  await seed(true);
+  await seed({ path: 'pulseMaterialCutovers/P', data: exactMarker });
   const updatedDb = actor().firestore();
   await assertFails(updateDoc(doc(updatedDb, 'projects/P/bom/data'), { categories: [] }));
   await assertFails(deleteDoc(doc(updatedDb, 'projects/P/bom/data')));
@@ -55,15 +66,15 @@ test('enabled material client-write marker denies direct member create, update, 
   await assertFails(updateDoc(doc(clientAdminDb, 'projects/P/bom/data'), { categories: [] }));
 });
 
-test('enabled material client-write marker leaves other project subcollection writes available', async () => {
-  await seed(true);
+test('exact per-project material fence leaves other project subcollection writes available', async () => {
+  await seed({ path: 'pulseMaterialCutovers/P', data: { fence: 'legacy_bom_data_writes', version: 1 } });
   const db = actor().firestore();
   await assertSucceeds(setDoc(doc(db, 'projects/P/bom/metadata'), { note: 'legacy settings remain writable' }));
   await assertSucceeds(setDoc(doc(db, 'projects/P/purchaseOrders/order-1'), { status: 'draft' }));
 });
 
-test('Admin SDK style server writes bypass Firestore Rules while the client fence is enabled', async () => {
-  await seed(true);
+test('Admin SDK style server writes bypass Firestore Rules while the per-project fence is enabled', async () => {
+  await seed({ path: 'pulseMaterialCutovers/P', data: { fence: 'legacy_bom_data_writes', version: 1 } });
   await env.withSecurityRulesDisabled(async context => {
     await setDoc(doc(context.firestore(), 'projects/P/bom/data'), { categories: [{ name: 'Electrical', items: [{ id: 'server', name: 'Fuse' }] }] });
   });
