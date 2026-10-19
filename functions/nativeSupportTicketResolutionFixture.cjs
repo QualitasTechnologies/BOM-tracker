@@ -1,7 +1,8 @@
 const assert = require('node:assert/strict');
 const { createNativeSupportTicketResolution } = require('./nativeSupportTicketResolution.cjs');
 
-function fixture({ uid = 'alice', enabled = true, project = { projectId: 'P', memberIds: ['alice'] }, ticket = {}, runtimeMode, failPath } = {}) {
+function fixture({ uid = 'alice', enabled = true, project = { projectId: 'P', memberIds: ['alice'] }, ticket = {}, runtimeMode,
+  cutoverMarker = { fence: 'legacy_support_resolution_writes', version: 1 }, failPath } = {}) {
   const users = new Map([
     ['alice', { uid: 'alice', email: 'alice@example.com', displayName: 'Alice Auth', emailVerified: true, customClaims: { role: 'viewer', status: 'approved' } }],
     ['outsider', { uid: 'outsider', email: 'outsider@example.com', displayName: 'Outsider', emailVerified: true, customClaims: { role: 'user', status: 'approved' } }],
@@ -11,6 +12,7 @@ function fixture({ uid = 'alice', enabled = true, project = { projectId: 'P', me
   const docs = new Map([
     ['projects/P', project],
     ['projects/P/supportTickets/T', { projectId: 'P', ticketNumber: 'SUP-2026-ABC123', status: 'open', rootCause: '', correctiveAction: '', preventiveAction: '', resolutionSummary: '', title: 'Existing ticket', ...ticket }],
+    ...(cutoverMarker ? [['pulseSupportCutovers/P', cutoverMarker]] : []),
     ...(runtimeMode ? [['pulseRuntimeControl/cutover', { mode: runtimeMode }]] : []),
   ]);
   const versions = new Map([['projects/P/supportTickets/T', { seconds: 100, nanoseconds: 1 }]]);
@@ -54,6 +56,10 @@ function fixture({ uid = 'alice', enabled = true, project = { projectId: 'P', me
     docs, users, call,
     setEnabled(value) { enabled = value; },
     setProject(value) { docs.set('projects/P', value); },
+    setCutoverMarker(value) {
+      if (value == null) docs.delete('pulseSupportCutovers/P');
+      else docs.set('pulseSupportCutovers/P', value);
+    },
     setTicket(value) {
       docs.set('projects/P/supportTickets/T', value);
       const old = versions.get('projects/P/supportTickets/T');

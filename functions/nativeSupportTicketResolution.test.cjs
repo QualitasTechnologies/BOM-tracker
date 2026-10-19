@@ -34,6 +34,7 @@ test('get returns the current version and exactly the four editable resolution f
   assert.deepEqual(result, { ok: true, project_id: 'P', ticket_id: 'T', version: '100:1', resolution_record: {
     rootCause: 'Cause', correctiveAction: 'Fix', preventiveAction: 'Prevent', resolutionSummary: 'Result',
   } });
+  assert.equal((await fixture({ cutoverMarker: null }).call({ operation: 'get', project_id: 'P', ticket_id: 'T', expected_actor_uid: 'alice' })).ok, true);
 });
 
 test('allows clearing all four fields with empty strings', async () => {
@@ -82,6 +83,17 @@ test('rechecks project access on receipt replay and permits approved members and
 
 test('fails closed for disabled gates and cutover modes', async () => {
   assert.equal((await fixture({ enabled: false }).call()).error, 'support_ticket_resolution_disabled');
+  for (const cutoverMarker of [null, {}, { fence: 'wrong', version: 1 }, { fence: 'legacy_support_resolution_writes', version: 2 },
+    { fence: 'legacy_support_resolution_writes', version: '1' }]) {
+    const f = fixture({ cutoverMarker });
+    assert.equal((await f.call()).error, 'support_ticket_resolution_cutover_not_ready');
+    assert.equal(f.docs.get('projects/P/supportTickets/T').rootCause, '');
+    assert.equal([...f.docs.keys()].some(path => path.includes('/receipts/') || path.includes('/audit/') || path.includes('/activities/')), false);
+  }
+  const removedAfterCommit = fixture();
+  await removedAfterCommit.call();
+  removedAfterCommit.setCutoverMarker(null);
+  assert.equal((await removedAfterCommit.call()).resolution, 'replayed');
   assert.equal((await fixture({ runtimeMode: 'read_only' }).call()).error, 'support_ticket_resolution_read_only');
   assert.equal((await fixture({ runtimeMode: 'unknown' }).call()).error, 'support_ticket_control_unavailable');
   const keys = ['BOM_MATERIAL_MUTATIONS_ENABLED', 'BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED', 'BOM_NATIVE_SUPPORT_TICKET_RESOLUTION_ENABLED'];

@@ -133,6 +133,11 @@ function createNativeSupportTicketResolution({ db, auth, enabled = false, getSer
           return { ...old.result, resolution: 'replayed' };
         }
         if (!writesOn()) throw fault('support_ticket_resolution_disabled', 503);
+        const cutoverSnapshot = await transaction.get(db.collection('pulseSupportCutovers').doc(projectId));
+        const cutover = cutoverSnapshot.exists ? cutoverSnapshot.data() : null;
+        if (cutover?.fence !== 'legacy_support_resolution_writes' || cutover?.version !== 1) {
+          throw fault('support_ticket_resolution_cutover_not_ready', 503);
+        }
         const control = await transaction.get(db.collection('pulseRuntimeControl').doc('cutover'));
         const mode = control.exists ? control.data()?.mode : 'coexist';
         if (!['coexist', 'pulse_only'].includes(mode)) {

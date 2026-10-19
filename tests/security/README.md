@@ -85,3 +85,23 @@ Settled16/16 emulator tests passed, script exit0, owned emulators stopped. The a
 ## Delivery schedule transaction checks (October15)
 
 The isolated runner now includes nativeMilestone.transaction.test.mjs; settled19/19 cases passed and emulators stopped. Three new real Firestore cases verify concurrent baseline/add serialization, milestone status/cancellation race, full deletion archive preserving unknown Firestore Timestamp fields, and atomic baselined project deadline/history with metadata confirmation in read_only. Synthetic Auth returns a UserRecord-like class; no real Auth/project/provider access. SDK clients including admins cannot read/write schedule state/audit/receipts or deleted-milestone archives. Initial18/19 run found a root-edited upload fixture path mistake, corrected before the settled run; it was not a production failure. Actual backend337 tests pass; native capacity and calendar/DST cases are separate pure tests. This is isolated evidence, not all-user/live IAM/cutover acceptance.
+
+## Support resolution write fence
+
+The focused Support fence scenario uses a separate loopback Firestore port so it
+can run without disturbing an application emulator that is already using port
+18080:
+
+```sh
+firebase emulators:exec --project demo-bom-native-security --config firebase.support-resolution-test.json --only firestore "npm --prefix tests/security run test:support-resolution-fence"
+```
+
+It loads the checked-in `firestore.rules` and tests the versioned per-project
+marker `pulseSupportCutovers/{projectId}` with
+`{ fence: 'legacy_support_resolution_writes', version: 1 }`. An absent or
+unrecognized marker preserves coexistence writes. The exact marker blocks
+browser edits to the four RCA fields and forged canonical resolution activities,
+while retaining membership checks, customer-confirmation activities, unrelated
+Support fields and nested records. The native callable also fails closed until
+the same marker exists. This is emulator evidence only; no marker was written to
+any live Firebase project.
