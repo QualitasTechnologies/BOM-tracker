@@ -2,6 +2,7 @@ const { createHash } = require('node:crypto');
 const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
 const { assertDocumentBudget, MAX_INPUT_BYTES } = require('./materialCommands.cjs');
 const { supportTicketProjectAccess } = require('./nativeSupportTicketCreate.cjs');
+const { resolveSupportTicketAssignee } = require('./nativeSupportTicketAssignee.cjs');
 
 const PUBLIC = Symbol('native-support-ticket-assignment');
 const fault = (code, status = 400, details = {}) => Object.assign(new Error(code), { code, status, details, [PUBLIC]: true });
@@ -33,29 +34,6 @@ const supportTicketAssignmentEnabled = env => [
 
 function exact(data, keys) {
   if (!plain(data) || Object.keys(data).some(key => !keys.includes(key))) throw fault('invalid_support_ticket_assignment_request');
-}
-
-function assigneeFor(project, actor, userId) {
-  if (userId === actor.uid) {
-    const email = typeof actor.email === 'string' ? actor.email.trim() : '';
-    const name = typeof actor.displayName === 'string' && actor.displayName.trim() ? actor.displayName.trim() : email || actor.uid;
-    return { userId, name, email };
-  }
-  const member = Array.isArray(project.members)
-    ? project.members.find(candidate => plain(candidate) && candidate.userId === userId)
-    : null;
-  if (!member || !validId(member.userId)) throw fault('support_ticket_assignee_not_in_project', 422);
-  if ((Object.hasOwn(member, 'email') && typeof member.email !== 'string')
-    || (Object.hasOwn(member, 'displayName') && typeof member.displayName !== 'string')) {
-    throw fault('support_ticket_assignee_not_in_project', 422);
-  }
-  const email = typeof member.email === 'string' ? member.email.trim() : '';
-  const displayName = typeof member.displayName === 'string' ? member.displayName.trim() : '';
-  if (email.length > 254 || (email && !/^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(email))
-    || displayName.length > 300) {
-    throw fault('support_ticket_assignee_not_in_project', 422);
-  }
-  return { userId, name: displayName || email || userId, email };
 }
 
 function createNativeSupportTicketAssignment({ db, auth, enabled = false, getServerTimestamp }) {
@@ -166,7 +144,7 @@ function createNativeSupportTicketAssignment({ db, auth, enabled = false, getSer
           transaction.create(receiptRef, receiptData);
           return { ...result, resolution: 'committed' };
         }
-        const nextAssignee = command.assignee_user_id === null ? null : assigneeFor(currentProject, actor, command.assignee_user_id);
+        const nextAssignee = command.assignee_user_id === null ? null : resolveSupportTicketAssignee(currentProject, actor, command.assignee_user_id, fault);
         const current = await currentActor();
         const patch = { assignee: nextAssignee, updatedAt: getServerTimestamp() };
         const activityId = `assignee-${operationId}`;
