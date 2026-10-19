@@ -7360,6 +7360,18 @@ exports.nativeSupportTicketAssignment = onCall(
   }),
 );
 
+// Native Support ticket resolution fields are separately gated and default off.
+const { createNativeSupportTicketResolution, supportTicketResolutionEnabled } = require('./nativeSupportTicketResolution.cjs');
+exports.nativeSupportTicketResolution = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeSupportTicketResolution({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    enabled: () => supportTicketResolutionEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
 // Native materials stage. Writes require explicit server configuration.
 const { createProjectOperationsHandler } = require('./projectOperations.cjs');
 const bomProjectOperationsKey = defineSecret('BOM_PROJECT_OPERATIONS_KEY');

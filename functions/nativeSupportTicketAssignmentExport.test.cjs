@@ -16,7 +16,7 @@ test('Support ticket assignment callable is provider-free and strictly default-o
     onCall: (settings, handler) => { config = settings; return handler; },
   };
   const start = source.indexOf('// Native Support ticket assignment');
-  const end = source.indexOf('// Native materials stage', start);
+  const end = source.indexOf('// Native Support ticket resolution', start);
   assert.ok(start >= 0 && end > start);
   vm.runInNewContext(source.slice(start, end), context);
   assert.equal(context.exports.nativeSupportTicketAssignment, 'handler');
