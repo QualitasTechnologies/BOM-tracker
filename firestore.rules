@@ -13,6 +13,10 @@ service cloud.firestore {
             || request.auth.uid in get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds);
     }
 
+    function projectMembershipFieldsUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['memberIds', 'members']);
+    }
+
     // Pulse creates no cutover record by default. Only the exact versioned
     // per-project contract fences browser writes to the legacy BOM data doc.
     function legacyMaterialDataWriteFenceEnabled(projectId) {
@@ -110,8 +114,9 @@ service cloud.firestore {
       allow update: if request.auth != null
         && request.auth.token.status == 'approved'
         && (request.auth.token.role == 'admin'
-            || (resource.data.memberIds == null)
-            || request.auth.uid in resource.data.memberIds);
+            || ((resource.data.memberIds == null
+                 || request.auth.uid in resource.data.memberIds)
+                && projectMembershipFieldsUnchanged()));
 
       allow delete: if request.auth != null
         && request.auth.token.role == 'admin';
