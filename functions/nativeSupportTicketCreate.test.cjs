@@ -42,6 +42,27 @@ test('rejects nonmembers and unapproved actors without writes', async () => {
   assert.equal(pending.docs.size, 1);
 });
 
+test('rejects a forged initial assignee who is not in the project roster', async () => {
+  const f = fixture({ project: {
+    projectId: 'P', memberIds: ['alice'], members: [{ userId: 'bob', displayName: 'Bob Member', email: 'bob@example.com' }],
+  } });
+  const result = await f.call({ ...validInput, assignee: { userId: 'outsider', name: 'Forged', email: 'outsider@example.com' } });
+  assert.equal(result.error, 'support_ticket_assignee_not_in_project');
+  assert.equal(result.status, 422);
+  assert.deepEqual([...f.docs.keys()], ['projects/P']);
+});
+
+test('stores initial assignee identity from the current project roster, not caller-supplied text', async () => {
+  const f = fixture({ project: {
+    projectId: 'P', memberIds: ['alice'], members: [{ userId: 'bob', displayName: 'Bob Member', email: 'bob@example.com' }],
+  } });
+  const result = await f.call({ ...validInput, assignee: { userId: 'bob', name: 'Forged', email: 'forged@example.com' } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(f.docs.get(`projects/P/supportTickets/${result.ticket_id}`).assignee, {
+    userId: 'bob', name: 'Bob Member', email: 'bob@example.com',
+  });
+});
+
 test('operation replay returns original identity, rejects another payload and rechecks current access', async () => {
   const f = fixture(); const first = await f.call();
   const replay = await f.call();

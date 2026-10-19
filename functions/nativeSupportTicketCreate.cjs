@@ -1,5 +1,6 @@
 const { createHash } = require('node:crypto');
 const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
+const { resolveSupportTicketAssignee } = require('./nativeSupportTicketAssignee.cjs');
 
 const PUBLIC = Symbol('native-support-ticket-create');
 const fault = (code, status = 400) => Object.assign(new Error(code), { code, status, [PUBLIC]: true });
@@ -116,8 +117,10 @@ function createNativeSupportTicketCreate({ db, auth, enabled = false, getServerT
         const ticketNumber = `SUP-${createdAt.getUTCFullYear()}-${ticketRef.id.slice(0, 6).toUpperCase()}`;
         const reportedAt = createdAt;
         const hours = { critical: [2, 8], high: [4, 24], medium: [8, 72], low: [24, 120] }[input.priority];
+        const ticketInput = { ...input };
+        if (input.assignee) ticketInput.assignee = resolveSupportTicketAssignee(project, current, input.assignee.userId, fault);
         const ticket = {
-          ...input, reportedAt, status: 'open', createdAt: getServerTimestamp(), updatedAt: getServerTimestamp(),
+          ...ticketInput, reportedAt, status: 'open', createdAt: getServerTimestamp(), updatedAt: getServerTimestamp(),
           createdBy: current.uid, createdByName: (current.displayName || current.email || current.uid).trim(),
           ticketNumber, customerConfirmation: 'pending',
           firstResponseTargetAt: new Date(reportedAt.getTime() + hours[0] * 3600000),
