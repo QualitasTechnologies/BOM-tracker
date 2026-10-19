@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { deleteDoc, deleteField, doc, getDoc, setDoc, Timestamp, updateDoc } from 'firebase/firestore';
 
-assert.equal(process.env.FIRESTORE_EMULATOR_HOST, '127.0.0.1:18080');
+assert.equal(new URL(`http://${process.env.FIRESTORE_EMULATOR_HOST}`).hostname, '127.0.0.1');
 
 let env;
 const memberClaims = { status: 'approved', role: 'viewer' };

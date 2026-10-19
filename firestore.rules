@@ -13,6 +13,17 @@ service cloud.firestore {
             || request.auth.uid in get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds);
     }
 
+    // Pulse creates no cutover record by default. Only the exact versioned
+    // per-project contract fences browser writes to the legacy BOM data doc.
+    function legacyMaterialDataWriteFenceEnabled(projectId) {
+      let cutoverPath = /databases/$(database)/documents/pulseMaterialCutovers/$(projectId);
+      return exists(cutoverPath)
+        && ('fence' in get(cutoverPath).data)
+        && ('version' in get(cutoverPath).data)
+        && get(cutoverPath).data.fence == 'legacy_bom_data_writes'
+        && get(cutoverPath).data.version == 1;
+    }
+
     function purchaseOrderPostSendStatus(status) {
       return status in ['sent', 'acknowledged', 'partially-received', 'completed', 'cancelled'];
     }
@@ -106,12 +117,16 @@ service cloud.firestore {
         && request.auth.token.role == 'admin';
 
       // All project subcollections except purchaseOrders preserve the former
-      // recursive wildcard's exact project-access predicate. Naming the first
-      // collection segment is necessary: a deny overlapping the old recursive
-      // wildcard would be additive and therefore ineffective.
+      // recursive wildcard's exact project-access predicate. The material
+      // fence is part of this grant because Firestore combines overlapping
+      // matching allows; a separate deny could not revoke this permission.
       match /{projectCollection}/{document=**} {
-        allow read, write: if projectCollection != 'purchaseOrders'
+        allow read: if projectCollection != 'purchaseOrders'
           && projectSubcollectionAccess(projectId);
+        allow write: if projectCollection != 'purchaseOrders'
+          && projectSubcollectionAccess(projectId)
+          && (projectCollection != 'bom' || document != /data
+            || !legacyMaterialDataWriteFenceEnabled(projectId));
       }
 
       // PO create/update/delete and nested records retain project member/admin

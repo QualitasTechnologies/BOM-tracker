@@ -34,6 +34,19 @@ or mismatched capabilities, identity approval, current membership/category scope
 read-only controls, immutable native objects, confirmation-before-read, and
 client denial on protected intent/audit/receipt/control collections.
 
+The material Rules fence test covers the exact legacy document
+`projects/{projectId}/bom/data`. It uses Pulse's per-project marker
+`pulseMaterialCutovers/{projectId}` with `{ fence: 'legacy_bom_data_writes',
+version: 1 }`. Missing, wrong-project, incomplete, malformed, or mismatched
+markers leave existing member writes working; only the exact expected marker
+denies browser SDK create/update/delete on that project's material document.
+Reads and other project subcollections remain available. Admin SDK writes bypass
+Firestore Rules as expected, but callable operations still perform their own
+identity, project membership, category-scope, and mutation-enable checks. The
+emulator case proves the Rules bypass only; the separate
+`functions/nativeMaterialOperations.test.cjs` suite proves callable
+authorization behavior. No project marker is created or enabled by this change.
+
 Passing this suite proves those isolated rule scenarios. It does not prove live
 IAM/service bindings, revoked-token handling (covered by the callable's separate
 tests), artifact lifecycle cleanup, all legacy writers, or all-user acceptance.
