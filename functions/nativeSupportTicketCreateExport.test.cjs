@@ -16,7 +16,7 @@ test('Support ticket callable export is provider-free and strictly default-off b
     onCall: (settings, handler) => { config = settings; return handler; },
   };
   const start = source.indexOf('// Native Support ticket creation');
-  const end = source.indexOf('// Native materials stage', start);
+  const end = source.indexOf('// Native Support ticket status changes', start);
   assert.ok(start >= 0 && end > start);
   vm.runInNewContext(source.slice(start, end), context);
   assert.equal(context.exports.nativeSupportTicketCreate, 'handler');

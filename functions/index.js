@@ -7336,6 +7336,18 @@ exports.nativeSupportTicketCreate = onCall(
   }),
 );
 
+// Native Support ticket status changes are separately gated and default off.
+const { createNativeSupportTicketStatus, supportTicketStatusEnabled } = require('./nativeSupportTicketStatus.cjs');
+exports.nativeSupportTicketStatus = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeSupportTicketStatus({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    enabled: () => supportTicketStatusEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
 // Native materials stage. Writes require explicit server configuration.
 const { createProjectOperationsHandler } = require('./projectOperations.cjs');
 const bomProjectOperationsKey = defineSecret('BOM_PROJECT_OPERATIONS_KEY');

@@ -13,7 +13,7 @@ const sort = value => Array.isArray(value) ? value.map(sort)
 const hash = value => createHash('sha256').update(JSON.stringify(sort(value))).digest('hex');
 const normalizeEmail = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
 const supportTicketCreateEnabled = env => ['BOM_MATERIAL_MUTATIONS_ENABLED', 'BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED', 'BOM_NATIVE_SUPPORT_TICKET_CREATE_ENABLED'].every(key => env[key] === 'true');
-const access = (project, actor) => {
+const supportTicketProjectAccess = (project, actor) => {
   // Matches projects/{projectId}/{subcollection=**} in firestore.rules: approved
   // actors are checked by currentNativeActor and admins bypass membership. The
   // rule's direct resource.data.memberIds access denies a missing field; only an
@@ -92,12 +92,12 @@ function createNativeSupportTicketCreate({ db, auth, enabled = false, getServerT
         if (!projectSnapshot.exists) throw fault('support_ticket_project_not_found', 404);
         const project = projectSnapshot.data();
         if (project.projectId && project.projectId !== projectId) throw fault('support_ticket_project_identity_conflict', 409);
-        access(project, actor);
+        supportTicketProjectAccess(project, actor);
         const receipt = await transaction.get(receiptRef);
         const currentActor = async () => {
           const current = await actorOf(request);
           if (current.uid !== actor.uid || normalizeEmail(current.email) !== normalizeEmail(actor.email)) throw fault('actor_session_changed', 403);
-          access(project, current);
+          supportTicketProjectAccess(project, current);
           return current;
         };
         if (receipt.exists) {
@@ -139,4 +139,4 @@ function createNativeSupportTicketCreate({ db, auth, enabled = false, getServerT
   };
 }
 
-module.exports = { createNativeSupportTicketCreate, supportTicketCreateEnabled };
+module.exports = { createNativeSupportTicketCreate, supportTicketCreateEnabled, supportTicketProjectAccess };
