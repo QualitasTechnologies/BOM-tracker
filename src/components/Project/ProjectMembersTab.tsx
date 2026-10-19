@@ -189,7 +189,7 @@ const ProjectMembersTab = ({
 
   const handleToggleMemberNotifications = async (member: ProjectMember, enabled: boolean) => {
     try {
-      await toggleMemberNotifications(projectId, project, member.userId, enabled);
+      await toggleMemberNotifications(projectId, member.userId, enabled);
       onProjectUpdated({
         ...project,
         members: (project.members || []).map(m =>
@@ -352,6 +352,7 @@ const ProjectMembersTab = ({
                     <Switch
                       checked={notifOn}
                       onCheckedChange={enabled => handleToggleMemberNotifications(member, enabled)}
+                      disabled={!isAdmin && !isSelf}
                       aria-label={notifOn ? 'Disable notifications' : 'Enable notifications'}
                     />
                   </td>

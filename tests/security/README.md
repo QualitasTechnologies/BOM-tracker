@@ -50,8 +50,12 @@ authorization behavior. No project marker is created or enabled by this change.
 The project-membership Rules test verifies that approved non-admin project
 members cannot change `members` or `memberIds` (including their own
 `categoryScope`), while project admins can still manage membership and ordinary
-member project updates remain available. This protects the category scope that
-native material and document commands use for authorization.
+member project updates remain available. It also verifies clients cannot forge
+or read notification-operation audit receipts. The notification preference
+callable permits an approved member to change only their own preference and
+admins to change any project member's preference; each request is transactionally
+audited and idempotent. This protects the category scope that native material
+and document commands use for authorization.
 
 Passing this suite proves those isolated rule scenarios. It does not prove live
 IAM/service bindings, revoked-token handling (covered by the callable's separate

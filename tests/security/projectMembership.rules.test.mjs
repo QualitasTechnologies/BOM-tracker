@@ -2,7 +2,7 @@ import { after, before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { doc, setDoc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 
 const emulator = new URL(`http://${process.env.FIRESTORE_EMULATOR_HOST}`);
 assert.equal(emulator.hostname, '127.0.0.1');
@@ -68,4 +68,12 @@ test('legacy projects without memberIds still cannot be self-expanded by non-adm
     memberIds: ['alice'],
     members: [{ userId: 'alice', categoryScope: ['Mech', 'Electrical'] }],
   }));
+});
+
+test('notification audit receipts are not directly readable or writable by Firebase clients', async () => {
+  await seedProject();
+  const client = actor('alice').firestore();
+  const receipt = doc(client, 'pulseProjectMemberNotificationOperations/P/events/op-1');
+  await assertFails(setDoc(receipt, { actor_uid: 'alice', before: true, after: false }));
+  await assertFails(getDoc(receipt));
 });

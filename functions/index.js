@@ -7390,6 +7390,16 @@ exports.nativeProjectOperations = onCall(
   })
 );
 
+// Member notification preferences are self-service; membership arrays remain admin-only.
+const { createProjectMemberNotifications } = require('./projectMemberNotifications.cjs');
+exports.updateProjectMemberNotifications = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createProjectMemberNotifications({
+    db: admin.firestore(), auth: admin.auth(),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
+
 // Native receipt photos: protected reservation + verified finalization; off by default.
 const { createNativeUploadOperations } = require('./nativeUploadOperations.cjs');
 exports.nativeUploadOperations = onCall(

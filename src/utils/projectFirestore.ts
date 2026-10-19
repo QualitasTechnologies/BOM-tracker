@@ -1,4 +1,4 @@
-import { db } from "@/firebase";
+import { auth, db, functions } from "@/firebase";
 import {
   collection,
   addDoc,
@@ -14,6 +14,7 @@ import {
   Unsubscribe,
   getDoc
 } from "firebase/firestore";
+import { httpsCallable } from 'firebase/functions';
 import type { BOMItem, BOMCategory, BOMStatus } from "@/types/bom";
 import { sanitizeBOMItemForFirestore } from "@/types/bom";
 import { isNativeMaterialCommandEnabled, submitNativeMaterialCommand } from '@/utils/nativeMaterialCommands';
@@ -260,14 +261,26 @@ export const updateProjectMemberScope = async (
 
 export const toggleMemberNotifications = async (
   projectId: string,
-  project: Project,
   userId: string,
   enabled: boolean
 ): Promise<void> => {
-  const updatedMembers = (project.members || []).map(m =>
-    m.userId === userId ? { ...m, notificationsEnabled: enabled } : m
-  );
-  await updateDoc(doc(projectsCol, projectId), { members: updatedMembers });
+  const actorUid = auth.currentUser?.uid;
+  if (!actorUid) throw new Error('Sign in again to change notification preferences');
+  const call = httpsCallable<{
+    project_id: string;
+    member_uid: string;
+    notifications_enabled: boolean;
+    expected_actor_uid: string;
+    operation_id: string;
+  }, { ok: boolean; error?: string }>(functions, 'updateProjectMemberNotifications');
+  const response = await call({
+    project_id: projectId,
+    member_uid: userId,
+    notifications_enabled: enabled,
+    expected_actor_uid: actorUid,
+    operation_id: crypto.randomUUID(),
+  });
+  if (!response.data.ok) throw new Error(response.data.error || 'Failed to update notifications');
 };
 
 export const addExternalRecipient = async (
