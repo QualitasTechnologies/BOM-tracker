@@ -15,7 +15,8 @@ function versionOf(snapshot) {
 }
 
 function scopeFor(project, actor) {
-  if (actor.customClaims.role !== 'admin' && (!Array.isArray(project.memberIds) || !project.memberIds.includes(actor.uid))) throw fault('project_forbidden', 403);
+  if (actor.customClaims.role !== 'admin' && (!Object.hasOwn(project, 'memberIds') || (project.memberIds !== null
+    && (!Array.isArray(project.memberIds) || !project.memberIds.includes(actor.uid))))) throw fault('project_forbidden', 403);
   if (actor.customClaims.role === 'admin' || actor.email.trim().toLowerCase().endsWith('@qualitastech.com')) return null;
   const member = (Array.isArray(project.members) ? project.members : []).find(row => row.userId === actor.uid);
   return Array.isArray(member?.categoryScope) ? member.categoryScope : [];

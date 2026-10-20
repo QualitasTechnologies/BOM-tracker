@@ -13,7 +13,7 @@ const hash=value=>createHash('sha256').update(value).digest('hex');
 const typeAccess=(type,actor)=>{if(type==='customer-po'&&actor.customClaims.role!=='admin')throw fault('project_document_forbidden',403);};
 const projectAccess=(project,actor,projectId)=>{
  if(project.projectId&&project.projectId!==projectId)throw fault('project_document_project_identity_conflict',409);
- if(actor.customClaims.role!=='admin'&&project.memberIds!=null&&(!Array.isArray(project.memberIds)||!project.memberIds.includes(actor.uid)))throw fault('project_document_forbidden',403);
+ if(actor.customClaims.role!=='admin'&&(!Object.hasOwn(project,'memberIds')||project.memberIds!==null&&(!Array.isArray(project.memberIds)||!project.memberIds.includes(actor.uid))))throw fault('project_document_forbidden',403);
 };
 function assertDeletion(document,bom,project,actor){
  typeAccess(document.type,actor);

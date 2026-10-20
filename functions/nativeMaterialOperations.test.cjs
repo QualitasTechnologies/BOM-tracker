@@ -44,6 +44,38 @@ test('native material transport reuses Firebase identity, scoped engine and disp
   assert.deepEqual(f.checks, [{ value: 'actual-token', revoked: true }]);
 });
 
+test('explicit-null project membership preserves legacy material access with unchanged category scope and audited replay', async () => {
+  for (const internal of [false, true]) {
+    const f = fixture({ enabled: true });
+    if (internal) f.actor.email = f.token.email = 'member@qualitastech.com';
+    f.docs.get('projects/A').memberIds = null;
+    const read = await f.invoke();
+    assert.equal(read.ok, true);
+    assert.deepEqual(read.categories.map(row => row.name), internal ? ['Mech', 'Other'] : ['Mech']);
+    const saved = await f.invoke(f.patch);
+    assert.equal(saved.ok, true);
+    assert.deepEqual(await f.invoke(f.patch), saved);
+    assert.equal(f.docs.size, 4);
+    delete f.docs.get('projects/A').memberIds;
+    const before = structuredClone(f.docs);
+    assert.deepEqual(await f.invoke(), { ok: false, error: 'project_forbidden' });
+    assert.deepEqual(await f.invoke(f.patch), { ok: false, error: 'project_forbidden' });
+    assert.deepEqual(f.docs, before);
+  }
+});
+
+test('explicit-null project access does not invent an external category grant', async () => {
+  const f = fixture({ enabled: true });
+  f.docs.get('projects/A').memberIds = null;
+  f.docs.get('projects/A').members = [];
+  const read = await f.invoke();
+  assert.equal(read.ok, true);
+  assert.deepEqual(read.categories, []);
+  const before = structuredClone(f.docs);
+  assert.deepEqual(await f.invoke(f.patch), { ok: false, error: 'material_forbidden' });
+  assert.deepEqual(f.docs, before);
+});
+
 test('native writes default off even with an approved Firebase viewer', async () => {
   const f = fixture(); assert.deepEqual(await f.invoke(f.patch), { ok: false, error: 'material_mutations_disabled' }); assert.equal(f.docs.size, 2);
 });

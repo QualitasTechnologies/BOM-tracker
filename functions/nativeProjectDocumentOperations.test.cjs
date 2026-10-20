@@ -15,7 +15,32 @@ test('empty files and Office MIME types retain original size/type without transc
 });
 test('new customer PO actions require the original admin role while other project documents allow approved viewers',async()=>{
  const f=fixture();assert.equal((await f.reserve({document_type:'customer-po'})).error,'project_document_forbidden');f.actor.customClaims.role='admin';assert.equal((await f.reserve({document_type:'customer-po'})).ok,true);
- const g=fixture();delete g.docs.get('projects/P').memberIds;assert.equal((await g.reserve()).ok,true);g.docs.get('projects/P').memberIds=[];assert.equal((await g.finalize()).error,'project_document_forbidden');
+ const g=fixture();g.docs.get('projects/P').memberIds=null;assert.equal((await g.reserve()).ok,true);g.docs.get('projects/P').memberIds=[];assert.equal((await g.finalize()).error,'project_document_forbidden');
+});
+test('missing, malformed and empty membership deny every non-admin document operation without writes while explicit null and admins retain access',async()=>{
+ for(const memberIds of [undefined,[],{},'alice']){
+  const f=fixture();if(memberIds===undefined)delete f.docs.get('projects/P').memberIds;else f.docs.get('projects/P').memberIds=memberIds;
+  assert.equal((await f.get()).error,'project_document_forbidden');
+  assert.equal((await f.reserve()).error,'project_document_forbidden');
+  assert.equal(f.docs.has('pulseProjectDocumentUploads/P/receipts/upload-1'),false);
+  assert.equal(f.docs.has('pulseProjectDocumentMutations/P/audit/upload-1_reserve'),false);
+ }
+ const f=fixture(),reserved=await f.reserve();assert.equal(reserved.ok,true);f.upload(reserved.path);
+ const project=f.docs.get('projects/P');delete project.memberIds;
+ assert.equal((await f.finalize()).error,'project_document_forbidden');
+ assert.equal(f.docs.has('projectDocuments/document-1'),false);
+ assert.equal(f.docs.get('pulseProjectDocumentUploads/P/receipts/upload-1').finalized,undefined);
+ project.memberIds=['alice'];assert.equal((await f.finalize()).ok,true);const row=(await f.get()).documents[0];
+ delete project.memberIds;
+ assert.equal((await f.finalize()).error,'project_document_forbidden');
+ const versions=opening(row);
+ assert.equal((await f.call({operation:'delete',operation_id:'delete-1',...versions})).error,'project_document_forbidden');
+ assert.equal((await f.call({operation:'resolve_delete',operation_id:'resolve-1',...versions})).error,'project_document_forbidden');
+ assert.equal(f.docs.has('pulseDeletedProjectDocuments/P/documents/document-1'),false);
+ assert.equal(f.docs.has('pulseProjectDocumentMutations/P/receipts/delete-1'),false);
+ assert.equal(f.docs.has('pulseProjectDocumentMutations/P/receipts/resolve-1'),false);
+ const explicitNull=fixture();explicitNull.docs.get('projects/P').memberIds=null;assert.equal((await explicitNull.reserve()).ok,true);
+ const admin=fixture();delete admin.docs.get('projects/P').memberIds;admin.actor.customClaims.role='admin';assert.equal((await admin.reserve()).ok,true);
 });
 test('wrong bytes, claimed identity and duplicate metadata IDs cannot be attached or overwritten',async()=>{
  const f=fixture(),reserved=await f.reserve();f.upload(reserved.path,Buffer.alloc(f.bytes.length));assert.equal((await f.finalize()).error,'project_document_integrity_failed');assert.equal(f.docs.has('projectDocuments/document-1'),false);
