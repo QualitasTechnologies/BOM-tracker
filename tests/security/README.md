@@ -144,3 +144,24 @@ firebase emulators:exec --project demo-bom-native-security --config firebase.sec
 The Support marker protects resolution fields only. It does not fence legacy
 ticket creation, status or assignment. Keep native Support mutation flags off
 until those independent writer paths and their deployed clients are covered.
+
+## Membership and self-notification safety integration (October 20)
+
+`projectMembership.rules.test.mjs` composes the non-admin membership/scope fence
+with the existing lifecycle, Materials, Support and PO protections. It tests
+explicit-null legacy membership separately from an absent/malformed access field.
+It also verifies browser clients cannot access notification audit receipts.
+
+`projectMemberNotifications.transaction.test.mjs` runs the real callable engine
+against loopback demo Firestore, with synthetic Auth only. It covers concurrent
+identical retries, competing openings, durable no-op replay after later changes,
+resolve-vs-late-save races, and rollback when audit staging fails. Unknown raw
+member Timestamp, document reference, geographical point and binary values are
+preserved. This is transaction evidence, not live authentication acceptance.
+
+The dedicated preference callable uses runtime cutover pauses but deliberately
+works independently of the broader native material/project mutation flags, so
+existing external/legacy members retain their self-service preference. Deploy
+the callable and compatible clients before the membership SDK rules. Legacy
+admin array writers, all-user/category read parity and production rollout remain
+separate gates. No runtime controls or production data were changed by this stage.

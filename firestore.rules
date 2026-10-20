@@ -12,6 +12,11 @@ service cloud.firestore {
             || request.auth.uid in get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds);
     }
 
+    // Only admins may alter membership or category scope through legacy SDK writes.
+    function projectMembershipFieldsUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['memberIds', 'members']);
+    }
+
     // Existing clients retain lifecycle writes until this exact boolean fence
     // is enabled after the native lifecycle client and these rules are ready.
     function projectStatusClientWritesFenced() {
@@ -146,8 +151,8 @@ service cloud.firestore {
         && (!projectStatusClientWritesFenced()
           || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'archivedAt']))
         && (request.auth.token.role == 'admin'
-            || (resource.data.memberIds == null)
-            || request.auth.uid in resource.data.memberIds);
+            || ((resource.data.memberIds == null || request.auth.uid in resource.data.memberIds)
+              && projectMembershipFieldsUnchanged()));
 
       allow delete: if request.auth != null
         && request.auth.token.role == 'admin';

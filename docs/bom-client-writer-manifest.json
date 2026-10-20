@@ -49,7 +49,7 @@
     "src/utils/projectFirestore.ts": {
       "deleteDoc": 1,
       "setDoc": 2,
-      "updateDoc": 11
+      "updateDoc": 10
     },
     "src/utils/quotationFirestore.ts": {
       "addDoc": 1,

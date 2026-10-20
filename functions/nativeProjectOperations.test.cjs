@@ -82,7 +82,7 @@ test('stale versions and changed operation payloads cannot overwrite a project',
 });
 test('original internal viewer edit/notification access stays, but membership is admin-only', async () => {
   const f = fixture({ uid: 'alice' }); assert.equal((await f.command({ kind: 'archive' })).ok, true);
-  assert.equal((await f.command({ kind: 'member_notifications', user_id: 'partner', enabled: true }, { operation_id: 'two' })).ok, true);
+  assert.equal((await f.command({ kind: 'member_notifications', user_id: 'alice', enabled: true }, { operation_id: 'two' })).ok, true);
   assert.equal((await f.command({ kind: 'member_remove', user_id: 'partner' }, { operation_id: 'three' })).error, 'project_management_forbidden');
   const p = fixture({ uid: 'partner' }); assert.equal((await p.command({ kind: 'metadata', patch: { projectName: 'No' } })).error, 'project_edit_forbidden');
 });

@@ -36,3 +36,14 @@ test('mixed document delta requires explicit disjoint bounded lists and exact ke
   ]) assert.throws(() => commands.validateCommand(command), { code: 'invalid_material_command' });
   assert.throws(() => commands.validateCommand({ kind: 'link_document_delta', document_id: 'quote', add_item_ids: Array.from({ length: 101 }, (_, i) => `a-${i}`), remove_item_ids: Array.from({ length: 100 }, (_, i) => `r-${i}`) }), { code: 'material_command_too_large' });
 });
+
+
+test('Firestore budget accepts preserved document references and geographical points without flattening them', () => {
+  class DocumentReference { constructor(path) { this.path = path; } isEqual() { return false; } }
+  class GeoPoint { constructor(latitude, longitude) { this.latitude = latitude; this.longitude = longitude; } isEqual() { return false; } }
+  const ref = new DocumentReference('legacy/kept'), point = new GeoPoint(12, 34);
+  const data = { ref, point };
+  // Document name16+path strings; point16. Include outer names and doc32.
+  assert.equal(commands.estimateDocumentBytes(data, 'c/d'), 16 + 4 + 32 + 4 + 16 + 7 + 5 + 6 + 16);
+  assert.equal(data.ref, ref); assert.equal(data.point, point);
+});

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pencil, Trash2, UserPlus, AlertCircle, Bell, BellOff, Mail, Send } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -32,12 +32,13 @@ import {
   addProjectMember,
   removeProjectMember,
   updateProjectMemberScope,
-  toggleMemberNotifications,
+  getProject,
   addExternalRecipient,
   removeExternalRecipient,
   toggleExternalRecipientNotifications,
 } from '@/utils/projectFirestore';
 import { isInternalUser } from '@/utils/accessControl';
+import { memberNotificationOperations } from '@/utils/memberNotificationOperations';
 
 interface AppUserOption {
   uid: string;
@@ -57,7 +58,7 @@ interface ProjectMembersTabProps {
 
 const ProjectMembersTab = ({
   projectId,
-  project,
+  project: inputProject,
   currentUserId,
   isAdmin,
   categoryNames,
@@ -65,7 +66,101 @@ const ProjectMembersTab = ({
   onProjectUpdated,
 }: ProjectMembersTabProps) => {
   const { toast } = useToast();
+  const preferenceContext = useRef({ projectId, currentUserId, epoch: 0 });
+  if (preferenceContext.current.projectId !== projectId || preferenceContext.current.currentUserId !== currentUserId) {
+    preferenceContext.current = { projectId, currentUserId, epoch: preferenceContext.current.epoch + 1 };
+  }
+  const preferenceGeneration = useRef(0);
+  const preferenceBusyRef = useRef(false);
+  const preferenceLockRef = useRef(false);
+  const [memberPreferences, setMemberPreferences] = useState<Record<string, boolean>>({});
+  const [preferenceVersion, setPreferenceVersion] = useState<string | null>(null);
+  const [preferenceLoadedContext, setPreferenceLoadedContext] = useState<{ projectId: string; currentUserId: string } | null>(null);
+  const [preferenceReady, setPreferenceReady] = useState(false);
+  const [preferencePending, setPreferencePending] = useState(false);
+  const [preferenceBusy, setPreferenceBusy] = useState(false);
+  const [preferenceError, setPreferenceError] = useState<string | null>(null);
+  const [projectRefreshFailed, setProjectRefreshFailed] = useState(false);
+  const [authoritativeProject, setAuthoritativeProject] = useState<Project | null>(null);
+  const publicationEpoch = preferenceContext.current.epoch;
+  const publishProject = (updated: Project) => {
+    if (preferenceContext.current.epoch !== publicationEpoch) return;
+    setAuthoritativeProject(updated);
+    onProjectUpdated(updated);
+  };
+  const assertPreferenceContext = (expected: { projectId: string; currentUserId: string }) => {
+    const epoch = preferenceContext.current.epoch;
+    const check = () => preferenceContext.current.projectId === expected.projectId
+      && preferenceContext.current.currentUserId === expected.currentUserId && preferenceContext.current.epoch === epoch;
+    const assert = () => { if (!check()) throw new Error('The project context changed. Reopen it before continuing.'); };
+    return Object.assign(assert, { isCurrent: check });
+  };
+  const refreshPreferences = async (expected = preferenceContext.current) => {
+    const generation = ++preferenceGeneration.current;
+    const assertContext = assertPreferenceContext(expected);
+    try {
+      const snapshot = await memberNotificationOperations.load(expected.projectId, expected.currentUserId, assertContext);
+      assertContext();
+      if (generation !== preferenceGeneration.current) return;
+      if (!snapshot || snapshot.project_id !== expected.projectId) throw new Error('The notification service returned an unexpected project.');
+      setMemberPreferences(Object.fromEntries(snapshot.preferences.map(item => [item.member_uid, item.notifications_enabled])));
+      setPreferenceVersion(snapshot.version);
+      setPreferenceLoadedContext(expected);
+      setPreferenceReady(true);
+      setPreferenceError(null);
+      const hasPending = memberNotificationOperations.hasPending(expected.projectId, expected.currentUserId);
+      preferenceLockRef.current = hasPending;
+      setPreferencePending(hasPending);
+    } catch (err: any) {
+      if (generation === preferenceGeneration.current && preferenceContext.current.projectId === expected.projectId
+        && preferenceContext.current.currentUserId === expected.currentUserId) {
+        setPreferenceReady(false);
+        setPreferenceError(err?.message || 'Failed to load notification preferences');
+      }
+    }
+  };
+  const refreshProjectAfterPreference = async (
+    expected: { projectId: string; currentUserId: string },
+    assertContext: (() => void) & { isCurrent: () => boolean }
+  ) => {
+    try {
+      const updated = await getProject(expected.projectId, expected.currentUserId, assertContext);
+      assertContext();
+      if (!updated) throw new Error('Failed to reload the saved project. Retry before editing members.');
+      setAuthoritativeProject(updated);
+      publishProject(updated);
+      setProjectRefreshFailed(false);
+    } catch (err) {
+      if (assertContext.isCurrent()) setProjectRefreshFailed(true);
+      throw err;
+    }
+  };
+  useEffect(() => {
+    const expected = { projectId, currentUserId };
+    preferenceBusyRef.current = false;
+    preferenceLockRef.current = false;
+    setPreferenceBusy(false);
+    setPreferencePending(false);
+    setProjectRefreshFailed(false);
+    setAuthoritativeProject(null);
+    setMemberPreferences({});
+    setPreferenceVersion(null);
+    setPreferenceLoadedContext(null);
+    setPreferenceReady(false);
+    setPreferencePending(false);
+    setPreferenceError(null);
+    void refreshPreferences(expected);
+    void refreshProjectAfterPreference(expected, assertPreferenceContext(expected)).catch(err => {
+      if (preferenceContext.current.projectId === expected.projectId && preferenceContext.current.currentUserId === expected.currentUserId) {
+        setPreferenceError(err?.message || 'Failed to load the saved project. Retry before editing members.');
+      }
+    });
+    return () => { preferenceGeneration.current++; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, currentUserId]);
+  const project = authoritativeProject || inputProject;
   const members: ProjectMember[] = project.members || [];
+  const preferenceContextMatches = preferenceLoadedContext?.projectId === projectId && preferenceLoadedContext.currentUserId === currentUserId;
   const externalRecipients: ExternalRecipient[] = project.externalRecipients || [];
 
   // Add member dialog
@@ -130,7 +225,7 @@ const ProjectMembersTab = ({
         ...(isExternal(selectedUser.email) ? { categoryScope: selectedCategories } : {}),
       };
       await addProjectMember(projectId, project, newMember);
-      onProjectUpdated({
+      publishProject({
         ...project,
         memberIds: [...(project.memberIds || []), selectedUser.uid],
         members: [...(project.members || []), newMember],
@@ -154,7 +249,7 @@ const ProjectMembersTab = ({
     setSaving(true);
     try {
       await updateProjectMemberScope(projectId, project, editMember.userId, editCategories);
-      onProjectUpdated({
+      publishProject({
         ...project,
         members: (project.members || []).map(m =>
           m.userId === editMember.userId ? { ...m, categoryScope: editCategories } : m
@@ -176,7 +271,7 @@ const ProjectMembersTab = ({
     }
     try {
       await removeProjectMember(projectId, project, member.userId);
-      onProjectUpdated({
+      publishProject({
         ...project,
         memberIds: (project.memberIds || []).filter(id => id !== member.userId),
         members: (project.members || []).filter(m => m.userId !== member.userId),
@@ -188,16 +283,84 @@ const ProjectMembersTab = ({
   };
 
   const handleToggleMemberNotifications = async (member: ProjectMember, enabled: boolean) => {
+    if (preferenceLockRef.current || preferenceBusyRef.current || !preferenceReady || !preferenceContextMatches || !preferenceVersion || preferencePending || projectRefreshFailed) return;
+    if (!isAdmin && member.userId !== currentUserId) return;
+    const expected = { projectId, currentUserId };
+    const assertContext = assertPreferenceContext(expected);
+    preferenceLockRef.current = true;
+    preferenceBusyRef.current = true;
+    setPreferenceBusy(true);
+    setPreferenceError(null);
     try {
-      await toggleMemberNotifications(projectId, project, member.userId, enabled);
-      onProjectUpdated({
-        ...project,
-        members: (project.members || []).map(m =>
-          m.userId === member.userId ? { ...m, notificationsEnabled: enabled } : m
-        ),
-      });
-    } catch {
-      toast({ title: 'Error', description: 'Failed to update notifications', variant: 'destructive' });
+      await memberNotificationOperations.setPreference(projectId, member.userId, enabled, preferenceVersion, currentUserId, assertContext);
+      assertContext();
+      preferenceLockRef.current = false;
+      await refreshProjectAfterPreference(expected, assertContext);
+      await refreshPreferences(expected);
+      assertContext();
+    } catch (err: any) {
+      if (!assertContext.isCurrent()) return;
+      const message = err?.message || 'Failed to update notifications';
+      try {
+        const hasPending = memberNotificationOperations.hasPending(projectId, currentUserId);
+        preferenceLockRef.current = hasPending;
+        setPreferencePending(hasPending);
+      } catch (storageError: any) { preferenceLockRef.current = true; setPreferenceError(storageError?.message || message); return; }
+      setPreferenceError(message);
+      toast({ title: 'Error', description: message, variant: 'destructive' });
+    } finally {
+      if (assertContext.isCurrent()) {
+        preferenceBusyRef.current = false;
+        setPreferenceBusy(false);
+      }
+    }
+  };
+
+  const handleResolveNotification = async () => {
+    const expected = { projectId, currentUserId };
+    const assertContext = assertPreferenceContext(expected);
+    if (preferenceBusyRef.current) return;
+    preferenceBusyRef.current = true;
+    setPreferenceBusy(true);
+    setPreferenceError(null);
+    try {
+      await memberNotificationOperations.resolvePending(projectId, currentUserId, assertContext);
+      assertContext();
+      setPreferencePending(false);
+      await refreshProjectAfterPreference(expected, assertContext);
+      await refreshPreferences(expected);
+      assertContext();
+    } catch (err: any) {
+      if (!assertContext.isCurrent()) return;
+      setPreferenceError(err?.message || 'Could not confirm the previous notification update');
+    } finally {
+      if (assertContext.isCurrent()) {
+        preferenceBusyRef.current = false;
+        setPreferenceBusy(false);
+      }
+    }
+  };
+
+  const handleRetryPreferenceRefresh = async () => {
+    const expected = { projectId, currentUserId };
+    const assertContext = assertPreferenceContext(expected);
+    if (preferenceBusyRef.current) return;
+    preferenceBusyRef.current = true;
+    preferenceLockRef.current = true;
+    setPreferenceBusy(true);
+    setPreferenceError(null);
+    try {
+      await refreshProjectAfterPreference(expected, assertContext);
+      await refreshPreferences(expected);
+      assertContext();
+    } catch (err: any) {
+      if (assertContext.isCurrent()) setPreferenceError(err?.message || 'Failed to refresh saved project data');
+    } finally {
+      if (assertContext.isCurrent()) {
+        preferenceBusyRef.current = false;
+        preferenceLockRef.current = preferencePending;
+        setPreferenceBusy(false);
+      }
     }
   };
 
@@ -220,7 +383,7 @@ const ProjectMembersTab = ({
     try {
       await addExternalRecipient(projectId, project, { name: extName.trim(), email: extEmail.trim() });
       const newRecipient: ExternalRecipient = { name: extName.trim(), email: extEmail.trim(), notificationsEnabled: true };
-      onProjectUpdated({
+      publishProject({
         ...project,
         externalRecipients: [...(project.externalRecipients || []), newRecipient],
       });
@@ -236,7 +399,7 @@ const ProjectMembersTab = ({
   const handleRemoveExternal = async (email: string) => {
     try {
       await removeExternalRecipient(projectId, project, email);
-      onProjectUpdated({
+      publishProject({
         ...project,
         externalRecipients: (project.externalRecipients || []).filter(r => r.email !== email),
       });
@@ -249,7 +412,7 @@ const ProjectMembersTab = ({
   const handleToggleExternalNotifications = async (email: string, enabled: boolean) => {
     try {
       await toggleExternalRecipientNotifications(projectId, project, email, enabled);
-      onProjectUpdated({
+      publishProject({
         ...project,
         externalRecipients: (project.externalRecipients || []).map(r =>
           r.email.toLowerCase() === email.toLowerCase() ? { ...r, notificationsEnabled: enabled } : r
@@ -284,6 +447,7 @@ const ProjectMembersTab = ({
   };
 
   const selectedIsExternal = selectedUser ? isExternal(selectedUser.email) : false;
+  const canManageMembers = isAdmin && Boolean(authoritativeProject) && !preferenceLockRef.current && !preferenceBusy && !preferencePending && !projectRefreshFailed;
 
   return (
     <div className="space-y-6">
@@ -298,7 +462,7 @@ const ProjectMembersTab = ({
               {sendingDigest ? 'Sending…' : 'Send Update Now'}
             </Button>
           )}
-          {isAdmin && (
+          {canManageMembers && (
             <Button size="sm" onClick={handleAddOpen}>
               <UserPlus className="h-4 w-4 mr-1.5" />
               Add Member
@@ -308,6 +472,16 @@ const ProjectMembersTab = ({
       </div>
 
       {/* Unified table */}
+      {preferenceError && <p role="alert" className="text-sm text-destructive">{preferenceError}</p>}
+      {preferencePending && preferenceContextMatches && (
+        <div className="flex items-center gap-2 text-sm" role="status">
+          <span>The previous notification update is unconfirmed.</span>
+          <Button variant="outline" size="sm" onClick={handleResolveNotification} disabled={preferenceBusy}>Check previous update</Button>
+        </div>
+      )}
+      {preferenceError && !preferencePending && (
+        <Button variant="outline" size="sm" onClick={handleRetryPreferenceRefresh} disabled={preferenceBusy}>Refresh saved project and preferences</Button>
+      )}
       <div className="border rounded-md overflow-hidden">
         <table className="w-full text-sm">
           <thead>
@@ -317,14 +491,16 @@ const ProjectMembersTab = ({
               <th className="text-center px-4 py-2.5 font-medium">
                 <span className="flex items-center justify-center gap-1"><Bell className="h-3.5 w-3.5" /> Notify</span>
               </th>
-              {isAdmin && <th className="px-4 py-2.5" />}
+              {canManageMembers && <th className="px-4 py-2.5" />}
             </tr>
           </thead>
           <tbody className="divide-y">
             {members.map(member => {
               const external = isExternal(member.email);
               const isSelf = member.userId === currentUserId;
-              const notifOn = member.notificationsEnabled !== false;
+              const notifOn = isAdmin || isSelf
+                ? preferenceContextMatches && memberPreferences[member.userId] === true
+                : member.notificationsEnabled !== false;
               return (
                 <tr key={member.userId} className="hover:bg-muted/30">
                   <td className="px-4 py-3">
@@ -352,10 +528,11 @@ const ProjectMembersTab = ({
                     <Switch
                       checked={notifOn}
                       onCheckedChange={enabled => handleToggleMemberNotifications(member, enabled)}
+                      disabled={!preferenceReady || !preferenceContextMatches || !!preferenceError || preferenceBusy || preferencePending || (!isAdmin && !isSelf)}
                       aria-label={notifOn ? 'Disable notifications' : 'Enable notifications'}
                     />
                   </td>
-                  {isAdmin && (
+                  {canManageMembers && (
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1 justify-end">
                         {external && (
@@ -396,10 +573,11 @@ const ProjectMembersTab = ({
                   <Switch
                     checked={r.notificationsEnabled !== false}
                     onCheckedChange={enabled => handleToggleExternalNotifications(r.email, enabled)}
+                    disabled={preferenceBusy || preferencePending}
                     aria-label="Toggle notifications"
                   />
                 </td>
-                {isAdmin && (
+                {canManageMembers && (
                   <td className="px-4 py-3">
                     <div className="flex justify-end">
                       <Button
@@ -408,6 +586,7 @@ const ProjectMembersTab = ({
                         className="h-7 w-7 text-destructive hover:text-destructive"
                         title="Remove recipient"
                         onClick={() => handleRemoveExternal(r.email)}
+                        disabled={preferenceBusy || preferencePending || preferenceLockRef.current}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
@@ -419,7 +598,7 @@ const ProjectMembersTab = ({
 
             {members.length === 0 && externalRecipients.length === 0 && (
               <tr>
-                <td colSpan={isAdmin ? 4 : 3} className="px-4 py-8 text-center text-muted-foreground">
+              <td colSpan={canManageMembers ? 4 : 3} className="px-4 py-8 text-center text-muted-foreground">
                   No members yet. Add members to grant project access.
                 </td>
               </tr>
@@ -427,7 +606,7 @@ const ProjectMembersTab = ({
           </tbody>
         </table>
 
-        {isAdmin && (
+        {canManageMembers && (
           <div className="px-4 py-2 border-t bg-muted/20 flex justify-end">
             <Button variant="ghost" size="sm" onClick={handleExtOpen} className="text-xs text-muted-foreground">
               <Mail className="h-3.5 w-3.5 mr-1.5" />

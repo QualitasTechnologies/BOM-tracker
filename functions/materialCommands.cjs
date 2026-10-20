@@ -249,6 +249,9 @@ function estimateDocumentBytes(data, path) {
     if (typeof value === 'string') return stringSize(value);
     if (typeof value === 'number') return 8;
     if (value instanceof Date || value && typeof value.toDate === 'function' && Number.isInteger(value.seconds) && Number.isInteger(value.nanoseconds)) return 8;
+    // Preserve native Firestore values while accounting for their stored size.
+    if (value?.constructor?.name === 'DocumentReference' && typeof value.path === 'string' && typeof value.isEqual === 'function') return value.path.split('/').reduce((sum, part) => sum + stringSize(part), 16);
+    if (value?.constructor?.name === 'GeoPoint' && Number.isFinite(value.latitude) && Number.isFinite(value.longitude)) return 16;
     if (Buffer.isBuffer(value) || value instanceof Uint8Array) return value.byteLength;
     if (Array.isArray(value)) return value.reduce((sum, row) => sum + valueSize(row, depth + 1), 0);
     if (plain(value)) return Object.entries(value).reduce((sum, [key, row]) => sum + stringSize(key) + valueSize(row, depth + 1), 0);

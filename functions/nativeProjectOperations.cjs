@@ -64,6 +64,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
       const manage = ['member_add', 'member_remove', 'member_scope', 'recipient_add', 'recipient_remove'].includes(command.kind);
       if (manage && actor.customClaims.role !== 'admin') throw fault('project_management_forbidden', 403);
       if (!manage && !canEdit) throw fault('project_edit_forbidden', 403);
+      if (command.kind === 'member_notifications' && actor.customClaims.role !== 'admin' && command.user_id !== actor.uid) throw fault('member_notification_forbidden', 403);
       if (command.kind.startsWith('member_') && (!validId(command.user_id) || command.user_id.length > 128)) throw fault('invalid_project_command');
       if (command.kind.endsWith('_notifications') && typeof command.enabled !== 'boolean') throw fault('invalid_project_command');
       if (command.kind.startsWith('recipient_') && !mail(normalizeEmail(command.email))) throw fault('invalid_project_command');
@@ -88,6 +89,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
           assertAccess(project, current);
           if (manage && current.customClaims.role !== 'admin') throw fault('project_management_forbidden', 403);
           if (!manage && current.customClaims.role !== 'admin' && !internal(current)) throw fault('project_edit_forbidden', 403);
+          if (command.kind === 'member_notifications' && current.customClaims.role !== 'admin' && command.user_id !== current.uid) throw fault('member_notification_forbidden', 403);
           const old = receipt.data();
           if (old.actor_uid !== actor.uid || old.actor_email !== normalizeEmail(actor.email) || old.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
           if(resolving)return{...old.result,resolution:old.cancelled?'cancelled':'committed'};
@@ -215,6 +217,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
         assertAccess(project, current);
         if (manage && current.customClaims.role !== 'admin') throw fault('project_management_forbidden', 403);
         if (!manage && current.customClaims.role !== 'admin' && !internal(current)) throw fault('project_edit_forbidden', 403);
+        if (command.kind === 'member_notifications' && current.customClaims.role !== 'admin' && command.user_id !== current.uid) throw fault('member_notification_forbidden', 403);
         transaction.update(projectRef, { ...patch, ...Object.fromEntries(removeFields.map(key => [key, getDeleteField()])) });
         if(delayLog)transaction.create(delayLog.ref,delayLog.data);
         transaction.create(auditRef, audit); transaction.create(receiptRef, recorded);

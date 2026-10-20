@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test --test-concurrency=1 nativeUpload.rules.test.mjs nativePhotoPublication.transaction.test.mjs nativePOResolution.transaction.test.mjs nativeMilestone.transaction.test.mjs nativeOverhead.transaction.test.mjs nativeExpenseReceipt.rules.test.mjs nativeExpenseReceipt.transaction.test.mjs nativeProjectDocument.rules.test.mjs nativeProjectDocument.transaction.test.mjs purchaseOrderSentStatus.rules.test.mjs nativeMaterial.rules.test.mjs nativeSupportTicketCreate.rules.test.mjs nativeSupportResolutionFence.rules.test.mjs nativePermissionFences.rules.test.mjs nativeProjectArchiveRestore.rules.test.mjs",
+    "test": "node --test --test-concurrency=1 nativeUpload.rules.test.mjs nativePhotoPublication.transaction.test.mjs nativePOResolution.transaction.test.mjs nativeMilestone.transaction.test.mjs nativeOverhead.transaction.test.mjs nativeExpenseReceipt.rules.test.mjs nativeExpenseReceipt.transaction.test.mjs nativeProjectDocument.rules.test.mjs nativeProjectDocument.transaction.test.mjs purchaseOrderSentStatus.rules.test.mjs nativeMaterial.rules.test.mjs nativeSupportTicketCreate.rules.test.mjs nativeSupportResolutionFence.rules.test.mjs nativePermissionFences.rules.test.mjs nativeProjectArchiveRestore.rules.test.mjs projectMembership.rules.test.mjs projectMemberNotifications.transaction.test.mjs",
     "test:support-resolution-fence": "node --test nativeSupportResolutionFence.rules.test.mjs",
     "test:permission-fences": "node --test nativePermissionFences.rules.test.mjs"
   },

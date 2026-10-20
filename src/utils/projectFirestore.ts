@@ -1,4 +1,4 @@
-import { db } from "@/firebase";
+import { db, auth } from "@/firebase";
 import {
   collection,
   addDoc,
@@ -12,7 +12,8 @@ import {
   where,
   DocumentData,
   Unsubscribe,
-  getDoc
+  getDoc,
+  getDocFromServer
 } from "firebase/firestore";
 import type { BOMItem, BOMCategory, BOMStatus } from "@/types/bom";
 import { sanitizeBOMItemForFirestore } from "@/types/bom";
@@ -204,9 +205,17 @@ export const lockProjectBaseline = async (projectId: string, userId: string): Pr
 };
 
 // Get a single project by ID
-export const getProject = async (projectId: string): Promise<Project | null> => {
+export const getProject = async (projectId: string, expectedUid?: string, assertContext?: () => void): Promise<Project | null> => {
+  const check = () => {
+    if (expectedUid !== undefined && auth.currentUser?.uid !== expectedUid) throw new Error('The signed-in account changed. Reopen the project before continuing.');
+    assertContext?.();
+  };
+  check();
   const projectRef = doc(projectsCol, projectId);
-  const projectSnap = await getDoc(projectRef);
+  // After a preference mutation, legacy member management must receive fresh
+  // server state; an offline cache could silently restore the old preference.
+  const projectSnap = expectedUid === undefined ? await getDoc(projectRef) : await getDocFromServer(projectRef);
+  check();
   if (projectSnap.exists()) {
     return projectSnap.data() as Project;
   }
@@ -254,18 +263,6 @@ export const updateProjectMemberScope = async (
   // Spread existing member fields (including notificationsEnabled) before overwriting scope
   const updatedMembers = (project.members || []).map(m =>
     m.userId === userId ? { ...m, categoryScope } : m
-  );
-  await updateDoc(doc(projectsCol, projectId), { members: updatedMembers });
-};
-
-export const toggleMemberNotifications = async (
-  projectId: string,
-  project: Project,
-  userId: string,
-  enabled: boolean
-): Promise<void> => {
-  const updatedMembers = (project.members || []).map(m =>
-    m.userId === userId ? { ...m, notificationsEnabled: enabled } : m
   );
   await updateDoc(doc(projectsCol, projectId), { members: updatedMembers });
 };
