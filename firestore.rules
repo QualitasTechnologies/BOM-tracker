@@ -12,6 +12,13 @@ service cloud.firestore {
             || request.auth.uid in get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds);
     }
 
+    // Existing clients retain lifecycle writes until this exact boolean fence
+    // is enabled after the native lifecycle client and these rules are ready.
+    function projectStatusClientWritesFenced() {
+      return exists(/databases/$(database)/documents/pulseRuntimeControl/cutover)
+        && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.get('projectStatusClientWritesFenced', false) == true;
+    }
+
     // Pulse creates no cutover record by default. Only the exact versioned
     // per-project contract fences browser writes to the legacy BOM data doc.
     function legacyMaterialDataWriteFenceEnabled(projectId) {
@@ -136,6 +143,8 @@ service cloud.firestore {
 
       allow update: if request.auth != null
         && request.auth.token.status == 'approved'
+        && (!projectStatusClientWritesFenced()
+          || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'archivedAt']))
         && (request.auth.token.role == 'admin'
             || (resource.data.memberIds == null)
             || request.auth.uid in resource.data.memberIds);

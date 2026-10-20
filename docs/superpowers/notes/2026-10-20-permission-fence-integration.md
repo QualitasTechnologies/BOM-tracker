@@ -75,3 +75,35 @@ and other BOM writer surfaces also retain their independently inventoried gaps.
 Local emulator identities and fixture data do not establish deployed-rule parity,
 current-user sign-in, live category scopes, historical-data reconciliation,
 side-by-side acceptance or rollback. These remain retirement requirements.
+
+## Lifecycle follow-on — 20 October 2026
+
+Branch `codex/bom-lifecycle-fence-integration` builds on the verified `0edc1c7`
+stage. It ports the native restore handler/test contract from `7d3a535` and adds
+the default-false root lifecycle fence to the existing combined rules. Exact
+`pulseRuntimeControl/cutover.projectStatusClientWritesFenced: true` blocks direct
+changes to `status` or `archivedAt`; absent, false, malformed or missing-field
+values preserve existing coexistence writes. The native restore command still
+requires the mutation gates, writable cutover mode, that exact fence and the
+displayed project version. Saved receipts resolve before new-write gates.
+
+The earlier archive branch's `.get('memberIds', null)` rule change is excluded:
+it would give any approved user access to projects missing membership data.
+Existing rules remain unchanged on this point: non-admin missing-field access
+is denied, while explicit null retains its legacy fallback. The native project
+handler previously allowed missing data and is corrected to follow the same
+rule, including current access on receipt replay; the Pulse mirror has the same
+correction. Admin access and member-list discovery remain unchanged.
+
+Settled follow-on checks: 642/642 Functions tests, 79/79 full isolated demo
+Firestore/Storage checks, Functions ESLint, scanner 4/4 and unchanged manifest
+(92 Firestore / 11 Storage call sites), and diff whitespace checks. New handler
+denial/replay tests failed before correction; the lifecycle suite failed 3/5
+before the guard. The combined test now also activates lifecycle, material and
+Support fences together and verifies PO forgery remains denied. The full runner
+exited successfully and stopped its owned emulators.
+
+Paired Pulse integration checks passed 659 root tests with 6 skipped, 1,482
+reused-BOM UI tests, 456 integration tests, and both production builds. These are
+local checks, not deployed-user or data-parity evidence. No live rules, runtime
+control, project marker, service or business record changed in this follow-on.

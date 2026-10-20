@@ -18,7 +18,9 @@ const text = (value, max, nonempty = false) => typeof value === 'string' && valu
 const normalizeEmail = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
 const projectMutationsEnabled = env => ['BOM_NATIVE_PROJECT_MUTATIONS_ENABLED', 'BOM_MATERIAL_MUTATIONS_ENABLED', 'BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED'].every(key => env[key] === 'true');
 const assertAccess = (project, actor) => {
-  if (actor.customClaims.role !== 'admin' && project.memberIds != null && (!Array.isArray(project.memberIds) || !project.memberIds.includes(actor.uid))) throw fault('project_forbidden', 403);
+  if (actor.customClaims.role === 'admin') return;
+  if (!Object.hasOwn(project, 'memberIds') || (project.memberIds !== null
+    && (!Array.isArray(project.memberIds) || !project.memberIds.includes(actor.uid)))) throw fault('project_forbidden', 403);
 };
 
 function createNativeProjectOperations({ db, auth, enabled = false, getServerTimestamp, getDeleteField, now = () => new Date() }) {
@@ -35,7 +37,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
         if (!snapshot.exists) throw fault('project_not_found', 404);
         const project = snapshot.data();
         if (project.projectId && project.projectId !== data.project_id) throw fault('project_identity_conflict', 409);
-        // Preserve the existing project-rule migration fallback for absent memberIds.
+        // Only an explicit null retains the legacy rule's migration fallback.
         assertAccess(project, actor);
         return { snapshot, project };
       };
@@ -44,18 +46,19 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
         exact(data, ['operation', 'project_id', 'expected_actor_uid']);
         return await db.runTransaction(async transaction => {
           const { snapshot, project } = await read(transaction);
-          const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),mode=control.exists?control.data()?.mode:'coexist',enabledHere=writesOn()&&['coexist','pulse_only'].includes(mode);
+          const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),controlData=control.exists?control.data():{},mode=controlData.mode??'coexist',enabledHere=writesOn()&&['coexist','pulse_only'].includes(mode);
           return { ok: true, project_id: data.project_id, project: { ...freeze(project), projectId: data.project_id }, version: revision(snapshot),
-            permissions: { edit: enabledHere && canEdit, manage_members: enabledHere && actor.customClaims.role === 'admin', notifications: enabledHere && canEdit } };
+            permissions: { edit: enabledHere && canEdit, manage_members: enabledHere && actor.customClaims.role === 'admin', notifications: enabledHere && canEdit,
+              restore: enabledHere && canEdit && controlData.projectStatusClientWritesFenced === true, restore_resolve: canEdit } };
         });
       }
       if (!validVersion(data.expected_version) || !/^[a-zA-Z0-9_-]{1,128}$/.test(data.operation_id || '') || !plain(data.command)
         || Buffer.byteLength(JSON.stringify(data)) > MAX_INPUT_BYTES) throw fault('invalid_project_command');
       const command = data.command;
       const resolving=data.resolve_only===true;
-      if(Object.hasOwn(data,'resolve_only')&&(!resolving||command.kind!=='metadata'))throw fault('invalid_project_command');
+      if(Object.hasOwn(data,'resolve_only')&&(!resolving||!['metadata','restore'].includes(command.kind)))throw fault('invalid_project_command');
       const shapes = { metadata: ['kind', 'patch','delay'], archive: ['kind'], member_add: ['kind', 'user_id', 'category_scope'], member_remove: ['kind', 'user_id'], member_scope: ['kind', 'user_id', 'category_scope'],
-        member_notifications: ['kind', 'user_id', 'enabled'], recipient_add: ['kind', 'email', 'name'], recipient_remove: ['kind', 'email'], recipient_notifications: ['kind', 'email', 'enabled'] };
+        member_notifications: ['kind', 'user_id', 'enabled'], recipient_add: ['kind', 'email', 'name'], recipient_remove: ['kind', 'email'], recipient_notifications: ['kind', 'email', 'enabled'], restore: ['kind'] };
       if (!shapes[command.kind]) throw fault('invalid_project_command');
       exact(command, shapes[command.kind]);
       const manage = ['member_add', 'member_remove', 'member_scope', 'recipient_add', 'recipient_remove'].includes(command.kind);
@@ -93,12 +96,16 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
         if(resolving){
           const current=await verifiedActor(auth,request);assertAccess(project,current);if(current.customClaims.role!=='admin'&&!internal(current))throw fault('project_edit_forbidden',403);
           const result={ok:true,project_id:data.project_id,operation_id:data.operation_id},record={actor_uid:actor.uid,actor_email:normalizeEmail(actor.email),payload_hash:payloadHash,result,cancelled:true,created_at:getServerTimestamp()};
-          const audit={actor_uid:current.uid,project_id:data.project_id,operation_id:data.operation_id,operation:'metadata_cancelled',payload_hash:payloadHash,created_at:getServerTimestamp()};
+          const audit={actor_uid:current.uid,project_id:data.project_id,operation_id:data.operation_id,operation:`${command.kind}_cancelled`,payload_hash:payloadHash,created_at:getServerTimestamp()};
           assertDocumentBudget([{path:receiptRef.path,data:record},{path:auditRef.path,data:audit}]);transaction.create(receiptRef,record);transaction.create(auditRef,audit);return{...result,resolution:'cancelled'};
         }
-        const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),mode=control.exists?control.data()?.mode:'coexist';
+        const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),mode=control.exists?control.data()?.mode??'coexist':'coexist';
         if(!writesOn())throw fault('project_mutations_disabled',503);
         if(!['coexist','pulse_only'].includes(mode))throw fault('project_read_only',503);
+        if(command.kind==='restore'){
+          const fenced=control.exists&&control.data()?.projectStatusClientWritesFenced===true;
+          if(!fenced)throw fault('project_status_writers_not_fenced',503);
+        }
         if (revision(snapshot) !== data.expected_version) throw fault('project_version_conflict', 409);
         let patch = {}, removeFields = [], delayLog;
         if (command.kind === 'metadata') {
@@ -111,6 +118,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
             if (['clientId', 'billingEntityId'].includes(key) && !validId(field)) throw fault('invalid_project_command');
             if (key === 'deadline' && (!/^\d{4}-\d{2}-\d{2}$/.test(field) || !Number.isFinite(Date.parse(field)) || new Date(field).toISOString().slice(0, 10) !== field)) throw fault('invalid_project_command');
             if (key === 'status' && !['Planning', 'Ongoing', 'Delayed', 'Completed', 'Archived'].includes(field)) throw fault('invalid_project_command');
+            if (key === 'status' && (field === 'Archived' || project.status === 'Archived' && field !== project.status)) throw fault('project_status_transition_invalid', 409);
             if (key === 'pulseProjectId' && field !== null && (!Number.isSafeInteger(field) || field <= 0)) throw fault('invalid_project_command');
           }
           patch = { ...value };
@@ -144,7 +152,11 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
             patch.bomSnapshotDate = now().toISOString();
           }
         } else if (command.kind === 'archive') {
+          if(project.status==='Archived')throw fault('project_already_archived',409);
           patch = { status: 'Archived', archivedAt: now().toISOString() };
+        } else if (command.kind === 'restore') {
+          if(project.status!=='Archived')throw fault('project_not_archived',409);
+          patch = { status: 'Planning', archivedAt: null };
         } else if (command.kind.startsWith('member_')) {
           const members = project.members ?? [], ids = project.memberIds ?? [];
           if (['member_add', 'member_remove'].includes(command.kind) && project.memberIds == null) throw fault('legacy_membership_migration_required', 409);
