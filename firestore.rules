@@ -3,8 +3,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // Keep the project member/admin predicate identical for every project
-    // subcollection. PO records have a more specific rule below so client
-    // writes cannot forge their sent state.
+    // subcollection. PO and Support records use explicit protected rules below.
     function projectSubcollectionAccess(projectId) {
       return request.auth != null
         && request.auth.token.status == 'approved'
@@ -93,6 +92,34 @@ service cloud.firestore {
         ]);
     }
 
+    // This marker is created per project only after the Pulse Support editor
+    // uses the native resolution callable. Unrecognized markers preserve the
+    // legacy direct-write behavior during the coexistence period.
+    function supportResolutionFenceEnabled(projectId) {
+      let cutoverPath = /databases/$(database)/documents/pulseSupportCutovers/$(projectId);
+      return exists(cutoverPath)
+        && ('fence' in get(cutoverPath).data)
+        && ('version' in get(cutoverPath).data)
+        && get(cutoverPath).data.fence == 'legacy_support_resolution_writes'
+        && get(cutoverPath).data.version == 1;
+    }
+
+    function supportResolutionFieldNames() {
+      return ['rootCause', 'correctiveAction', 'preventiveAction', 'resolutionSummary'];
+    }
+
+    function supportActivityIsCustomerConfirmation(activity) {
+      return activity.get('type', null) == 'resolution'
+        && activity.get('message', null) is string
+        && activity.get('message', '').matches('Customer confirmation set to (pending|confirmed|not required)');
+    }
+
+    function supportActivityLooksCanonicalRca(activity) {
+      return activity.get('message', null) == 'RCA and solution record updated'
+        || (activity.get('type', null) == 'resolution'
+          && !supportActivityIsCustomerConfirmation(activity));
+    }
+
     // Projects: admins see all; non-admins see only projects where their UID is in memberIds.
     // During migration window, projects without memberIds fall back to any authenticated user.
     match /projects/{projectId} {
@@ -116,14 +143,15 @@ service cloud.firestore {
       allow delete: if request.auth != null
         && request.auth.token.role == 'admin';
 
-      // All project subcollections except purchaseOrders preserve the former
-      // recursive wildcard's exact project-access predicate. The material
-      // fence is part of this grant because Firestore combines overlapping
-      // matching allows; a separate deny could not revoke this permission.
+      // Keep one recursive grant, excluding both protected collections.
+      // Firestore ORs overlapping grants; a second broad wildcard would bypass
+      // the PO, material and Support protections below.
       match /{projectCollection}/{document=**} {
         allow read: if projectCollection != 'purchaseOrders'
+          && projectCollection != 'supportTickets'
           && projectSubcollectionAccess(projectId);
         allow write: if projectCollection != 'purchaseOrders'
+          && projectCollection != 'supportTickets'
           && projectSubcollectionAccess(projectId)
           && (projectCollection != 'bom' || document != /data
             || !legacyMaterialDataWriteFenceEnabled(projectId));
@@ -146,6 +174,48 @@ service cloud.firestore {
       // Preserve the old wildcard grant for records nested beneath a PO.
       match /purchaseOrders/{poId}/{nestedCollection}/{document=**} {
         allow read, write: if projectSubcollectionAccess(projectId);
+      }
+
+      match /supportTickets/{ticketId} {
+        allow read: if projectSubcollectionAccess(projectId);
+        allow create: if projectSubcollectionAccess(projectId)
+          && (!supportResolutionFenceEnabled(projectId)
+            || !request.resource.data.keys().hasAny(supportResolutionFieldNames()));
+        allow update: if projectSubcollectionAccess(projectId)
+          && (!supportResolutionFenceEnabled(projectId)
+            || !request.resource.data.diff(resource.data).affectedKeys().hasAny(supportResolutionFieldNames()));
+        allow delete: if projectSubcollectionAccess(projectId)
+          && (!supportResolutionFenceEnabled(projectId)
+            || !resource.data.keys().hasAny(supportResolutionFieldNames()));
+      }
+
+      match /supportTickets/{ticketId}/activities/{activityId} {
+        allow read: if projectSubcollectionAccess(projectId);
+        allow create: if projectSubcollectionAccess(projectId)
+          && (!supportResolutionFenceEnabled(projectId)
+            || (!activityId.matches('resolution-.*')
+              && !supportActivityLooksCanonicalRca(request.resource.data)));
+        allow update: if projectSubcollectionAccess(projectId)
+          && (!supportResolutionFenceEnabled(projectId)
+            || (!activityId.matches('resolution-.*')
+              && !supportActivityLooksCanonicalRca(resource.data)
+              && !supportActivityLooksCanonicalRca(request.resource.data)));
+        allow delete: if projectSubcollectionAccess(projectId)
+          && (!supportResolutionFenceEnabled(projectId)
+            || (!activityId.matches('resolution-.*')
+              && !supportActivityLooksCanonicalRca(resource.data)));
+      }
+
+      // Preserve deeper legacy metadata under activities without allowing the
+      // recursive wildcard to match the activity document itself.
+      match /supportTickets/{ticketId}/activities/{activityId}/{nestedCollection}/{document=**} {
+        allow read, write: if projectSubcollectionAccess(projectId);
+      }
+
+      match /supportTickets/{ticketId}/{nestedCollection}/{document=**} {
+        allow read: if projectSubcollectionAccess(projectId);
+        allow write: if nestedCollection != 'activities'
+          && projectSubcollectionAccess(projectId);
       }
     }
 

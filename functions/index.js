@@ -7339,6 +7339,54 @@ exports.projectReview = onRequest(
   })
 );
 
+// Native Support ticket creation is independently gated and defaults off.
+const { createNativeSupportTicketCreate, supportTicketCreateEnabled } = require('./nativeSupportTicketCreate.cjs');
+exports.nativeSupportTicketCreate = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeSupportTicketCreate({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    enabled: () => supportTicketCreateEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
+// Native Support ticket status changes are separately gated and default off.
+const { createNativeSupportTicketStatus, supportTicketStatusEnabled } = require('./nativeSupportTicketStatus.cjs');
+exports.nativeSupportTicketStatus = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeSupportTicketStatus({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    enabled: () => supportTicketStatusEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
+// Native Support ticket assignment is separately gated and default off.
+const { createNativeSupportTicketAssignment, supportTicketAssignmentEnabled } = require('./nativeSupportTicketAssignment.cjs');
+exports.nativeSupportTicketAssignment = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeSupportTicketAssignment({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    enabled: () => supportTicketAssignmentEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
+// Native Support ticket resolution fields are separately gated and default off.
+const { createNativeSupportTicketResolution, supportTicketResolutionEnabled } = require('./nativeSupportTicketResolution.cjs');
+exports.nativeSupportTicketResolution = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeSupportTicketResolution({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    enabled: () => supportTicketResolutionEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
 // Native materials stage. Writes require explicit server configuration.
 const { createProjectOperationsHandler } = require('./projectOperations.cjs');
 const bomProjectOperationsKey = defineSecret('BOM_PROJECT_OPERATIONS_KEY');
