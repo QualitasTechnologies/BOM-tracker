@@ -58,4 +58,4 @@ function materialReadView(categories) {
   });
 }
 
-module.exports = { materialReadView };
+module.exports = { materialReadView, materialValueView: safeJson };

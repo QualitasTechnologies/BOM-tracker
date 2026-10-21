@@ -1,7 +1,7 @@
 const { createHash } = require('node:crypto');
 const { createProjectActorFactory } = require('./projectReviewActor.cjs');
 const { validateCommand, canonicalCategories, referencedDocuments, applyCommand, assertDocumentBudget, MAX_INPUT_BYTES } = require('./materialCommands.cjs');
-const { materialReadView } = require('./materialReadView.cjs');
+const { materialReadView, materialValueView } = require('./materialReadView.cjs');
 
 const fault = (code, status) => Object.assign(new Error(code), { code, status });
 const digest = text => createHash('sha256').update(text).digest('hex');
@@ -204,7 +204,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
             if (recorded.operation !== 'create_project' || recorded.actor_uid !== actor.uid || recorded.actor_email !== actorEmail || recorded.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
             if (!project.exists) throw fault('project_not_found', 404);
             scopeFor(project.data(), actor);
-            return recorded.result;
+            return materialValueView(recorded.result);
           }
           if (project.exists) throw fault('project_id_conflict', 409);
           const createdAt = getServerTimestamp();
@@ -290,7 +290,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
               if (!document.exists || document.data().projectId !== id || document.data().type !== recorded.document_types?.[documentId]
                 || document.data().type === 'customer-po' && actor.customClaims.role !== 'admin') throw fault('document_forbidden', 403);
             }
-            return recorded.result;
+            return materialValueView(recorded.result);
           }
           const bom = await transaction.get(bomRef);
           if (versionOf(bom) !== body.expected_version) throw fault('material_version_conflict', 409);
@@ -343,12 +343,13 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           // Include legacy unknown fields and every touched document in size checks.
           assertDocumentBudget([{ path: bomRef.path, data: mergedBom }, { path: auditRef.path, data: audit }, { path: receiptRef.path, data: operationReceipt },
             ...[...changes.documentUpdates].map(([documentId, fields]) => ({ path: `projectDocuments/${documentId}`, data: { ...documents.get(documentId), ...fields } }))]);
+          materialReadView(scope === null ? changes.categories : changes.categories.filter(category => plain(category) && scope.includes(category.name)));
           // All reads and budget checks above precede the first staged write.
           if (bom.exists) transaction.update(bomRef, { categories: changes.categories }); else transaction.create(bomRef, mergedBom);
           for (const [documentId, fields] of changes.documentUpdates) transaction.update(db.collection('projectDocuments').doc(documentId), fields);
           transaction.create(auditRef, audit);
           transaction.create(receiptRef, operationReceipt);
-          return result;
+          return materialValueView(result);
         });
         return res.json(response);
       }
@@ -406,7 +407,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         if (receipt.exists) {
           const recorded = receipt.data();
           if (recorded.actor_uid !== actor.uid || recorded.actor_email !== actor.email.trim().toLowerCase() || recorded.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
-          return recorded.result;
+          return materialValueView(recorded.result);
         }
         if (versionOf(bom) !== expectedVersion) throw fault('material_version_conflict', 409);
         const updated = fulfilling ? appendFulfillment(match.item, fulfillment, operationId) : { ...match.item, ...patch };
@@ -441,12 +442,13 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         } else {
           nextCategories = categories.map((category, index) => index !== match.categoryIndex ? category : { ...category, items: category.items.map((item, index) => index === match.itemIndex ? updated : item) });
         }
+        materialReadView(scope === null ? nextCategories : nextCategories.filter(category => plain(category) && scope.includes(category.name)));
         const before = {}, after = {};
         for (const key of Object.keys(patch)) { before[key] = Object.hasOwn(match.item, key) ? match.item[key] : null; after[key] = patch[key]; }
         if (fulfilling) for (const key of ['fulfillmentTranches', 'status', ...(fulfillment.kind === 'receipt' ? ['actualArrival', 'linkedInvoiceDocumentId', 'receivedPhotoUrl'] : [])]) {
           before[key] = match.item[key] ?? null; after[key] = updated[key] ?? null;
         }
-        const result = { ok: true, project_id: id, item_id: itemId, operation_id: operationId, item: updated };
+        const result = materialValueView({ ok: true, project_id: id, item_id: itemId, operation_id: operationId, item: updated });
         const actorEmail = actor.email.trim().toLowerCase();
         const createdAt = getServerTimestamp();
         transaction.update(bomRef, { categories: nextCategories });

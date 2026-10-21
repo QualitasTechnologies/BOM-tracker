@@ -3,6 +3,12 @@ const assert = require('node:assert/strict');
 const { createProjectOperationsHandler } = require('./projectOperations.cjs');
 
 function fixture(options = {}) {
+  const cloneRecord = value => {
+    if (Array.isArray(value)) return value.map(cloneRecord);
+    if (value && Object.getPrototypeOf(value) === Object.prototype) return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, cloneRecord(child)]));
+    if (value && Object.getPrototypeOf(value) === null) return Object.assign(Object.create(null), ...Object.entries(value).map(([key, child]) => ({ [key]: cloneRecord(child) })));
+    return value instanceof Date ? new Date(value) : value;
+  };
   const actor = { uid: 'alice', email: 'alice@example.com', emailVerified: true, customClaims: { role: 'viewer', status: 'approved' }, ...options.actor };
   const docs = new Map(Object.entries({
     'projects/A': { memberIds: ['alice'], members: [{ userId: 'alice', categoryScope: ['Mech'] }] },
@@ -10,7 +16,7 @@ function fixture(options = {}) {
   }).map(([path, data]) => [path, { data, tick: 1 }]));
   let clock = 1;
   const linkedItemQuerySizes = [];
-  const snap = path => { const row = docs.get(path); return { exists: !!row, data: () => structuredClone(row?.data), updateTime: row ? { seconds: 10, nanoseconds: row.tick } : undefined }; };
+  const snap = path => { const row = docs.get(path); return { exists: !!row, data: () => cloneRecord(row?.data), updateTime: row ? { seconds: 10, nanoseconds: row.tick } : undefined }; };
   const query = (collection, filters = [], max = Infinity) => ({ collection, filters, max,
     where(field, op, value) { return query(collection, [...filters, [field, op, value]], max); },
     limit(value) { return query(collection, filters, value); } });
@@ -29,14 +35,14 @@ function fixture(options = {}) {
           }
           const rows = [...docs].filter(([path, row]) => path.startsWith(`${r.collection}/`) && r.filters.every(([field, op, value]) => op === '==' ? row.data[field] === value : op === 'array-contains-any' ? Array.isArray(row.data[field]) && value.some(item => row.data[field].includes(item)) : false)).slice(0, r.max);
           for (const [path, row] of rows) reads.set(path, row.tick);
-          return { docs: rows.map(([path, row]) => ({ id: path.slice(r.collection.length + 1), data: () => structuredClone(row.data) })) };
+          return { docs: rows.map(([path, row]) => ({ id: path.slice(r.collection.length + 1), data: () => cloneRecord(row.data) })) };
         }
         const row = snap(r.path); reads.set(r.path, docs.get(r.path)?.tick); return row;
       }, update: (r, data) => staged.push(['update', r.path, data]), create: (r, data) => { if (options.failAudit && r.path.includes('materialAudit')) throw Error('audit failure'); staged.push(['create', r.path, data]); } });
       if (options.beforeCommit) { const hook = options.beforeCommit; options.beforeCommit = null; hook(docs); }
       if ([...reads].some(([path, tick]) => docs.get(path)?.tick !== tick)) continue;
       for (const [kind, path] of staged) if (kind === 'create' && docs.has(path)) throw Error('already exists');
-      for (const [kind, path, data] of staged) docs.set(path, { data: kind === 'update' ? { ...docs.get(path).data, ...structuredClone(data) } : structuredClone(data), tick: ++clock });
+      for (const [kind, path, data] of staged) docs.set(path, { data: kind === 'update' ? { ...docs.get(path).data, ...cloneRecord(data) } : cloneRecord(data), tick: ++clock });
       return result;
     }
     throw Error('transaction contention');
@@ -91,6 +97,37 @@ test('legacy writes change snapshot version and reject stale writes without audi
 test('same actor and payload replay is stable while changed body and actor collide', async () => {
   const f = fixture(); const first = await f.patch(); assert.deepEqual(await f.patch(), first); assert.equal(f.docs.size, 4); assert.equal((await f.patch({ name: 'Another' })).status, 409);
   f.actor.uid = 'bob'; f.change('projects/A', { memberIds: ['bob'], members: [{ userId: 'bob', categoryScope: ['Mech'] }] }); assert.equal((await f.patch()).status, 409);
+});
+test('material patch serializes supported SDK timestamps in the successful item response', async () => {
+  class Timestamp { toDate() { return new Date('2026-02-03T04:05:06.000Z'); } }
+  const f = fixture();
+  f.docs.get('projects/A/bom/data').data.categories[0].items[0].addedAt = new Timestamp();
+  const result = await f.patch();
+  assert.equal(result.status, 200);
+  assert.equal(result.body.item.addedAt, '2026-02-03T04:05:06.000Z');
+  assert.equal(f.docs.get('projects/A/bom/data').data.categories[0].items[0].addedAt instanceof Timestamp, true);
+  assert.deepEqual(await f.patch(), result);
+});
+test('unsupported visible material state is rejected before patch writes', async () => {
+  class DocumentReference { constructor() { this.path = 'legacy/kept'; } isEqual() { return false; } }
+  const f = fixture();
+  f.docs.get('projects/A/bom/data').data.categories[0].items[0].privateRef = new DocumentReference();
+  const result = await f.patch();
+  assert.equal(result.status, 409);
+  assert.equal(result.body.error, 'materials_data_integrity');
+  assert.equal(f.docs.get('projects/A/bom/data').data.categories[0].items[0].name, 'Motor');
+  assert.equal(f.docs.size, 2);
+});
+test('legacy raw receipt result is sanitized on replay without changing receipt history', async () => {
+  class DocumentReference { constructor() { this.path = 'legacy/kept'; } isEqual() { return false; } }
+  const f = fixture();
+  await f.patch();
+  const receipt = f.docs.get('pulseProjectMaterialOperations/A/materialOperations/op-1');
+  receipt.data.result.item.privateRef = new DocumentReference();
+  const result = await f.patch();
+  assert.equal(result.status, 409);
+  assert.equal(result.body.error, 'materials_data_integrity');
+  assert.equal(receipt.data.result.item.privateRef instanceof DocumentReference, true);
 });
 test('audit failure rolls back item and receipt', async () => { const f = fixture({ failAudit: true }); assert.equal((await f.patch()).status, 503); assert.equal(f.docs.size, 2); assert.equal(f.docs.get('projects/A/bom/data').data.categories[0].items[0].name, 'Motor'); });
 test('concurrent same-version edits allow one commit and one stale conflict', async () => { const f = fixture(); const r = await Promise.all([f.patch(), f.patch({ name: 'Other' }, { operation_id: 'op-2' })]); assert.deepEqual(r.map(x => x.status).sort(), [200, 409]); assert.equal(f.docs.size, 4); });
@@ -641,4 +678,34 @@ test('creation strictly validates original metadata, IDs, body keys and actor sp
 test('project creation audit failure rolls back the project and receipt and default-off flag gates all writes', async () => {
   const f = creationFixture({ failAudit: true }); assert.equal((await f.create()).status, 503); assert.equal(f.docs.has('projects/NEW'), false); assert.equal(f.docs.has('pulseProjectMaterialOperations/NEW/materialOperations/create-1'), false);
   const g = creationFixture({ defaultWrites: true }); assert.equal((await g.create()).body.error, 'material_mutations_disabled'); assert.equal(g.docs.has('projects/NEW'), false);
+});
+
+test('fulfillment rejects unsupported visible values before changing receipt history', async () => {
+  class DocumentReference { constructor() { this.path = 'legacy/kept'; } isEqual() { return false; } }
+  const f = receiptFixture();
+  f.item().unknownReference = new DocumentReference();
+  const result = await f.fulfill();
+  assert.equal(result.body.error, 'materials_data_integrity');
+  assert.equal(f.item().fulfillmentTranches, undefined);
+  assert.equal(f.docs.size, 3);
+});
+
+test('command rejects unsupported visible categories before staging an add', async () => {
+  class DocumentReference { constructor() { this.path = 'legacy/kept'; } isEqual() { return false; } }
+  const f = commandFixture();
+  f.categories()[0].unknownReference = new DocumentReference();
+  const result = await f.command({ kind: 'add_items', items: [newMaterial()] });
+  assert.equal(result.body.error, 'materials_data_integrity');
+  assert.equal(f.categories()[0].items.length, 2);
+  assert.equal(f.docs.size, 3);
+});
+
+test('scoped material edits retain unsupported hidden values without returning or validating them', async () => {
+  class DocumentReference { constructor() { this.path = 'legacy/kept'; } isEqual() { return false; } }
+  const f = fixture();
+  f.docs.get('projects/A/bom/data').data.categories[1].privateRef = new DocumentReference();
+  const result = await f.patch();
+  assert.equal(result.status, 200);
+  assert.equal(f.docs.get('projects/A/bom/data').data.categories[1].privateRef instanceof DocumentReference, true);
+  assert.equal(JSON.stringify(result.body).includes('privateRef'), false);
 });
