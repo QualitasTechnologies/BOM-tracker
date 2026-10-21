@@ -17,7 +17,9 @@ import {
 } from "firebase/firestore";
 import type { BOMItem, BOMCategory, BOMStatus } from "@/types/bom";
 import { sanitizeBOMItemForFirestore } from "@/types/bom";
-import { isNativeMaterialCommandEnabled, submitNativeMaterialCommand } from '@/utils/nativeMaterialCommands';
+import { isNativeMaterialCommandEnabled, submitNativeMaterialCommand, loadNativeMaterialSnapshot } from '@/utils/nativeMaterialCommands';
+import { nativeProjectReads } from './nativeProjectReads';
+import { subscribeProjectRead } from './projectReadSubscriptions';
 import { isScopedProjectReadEnabled } from './projectReadMode';
 import { isNativeSupportProfileEnabled } from './nativeSupportProfile';
 import type { SupportProjectProfile } from "@/types/support";
@@ -99,11 +101,50 @@ export interface Project {
 
 const projectsCol = collection(db, "projects");
 
+const scopedReadContext = (expectedUid?: string, assertContext?: () => void) => {
+  const uid = expectedUid ?? auth.currentUser?.uid;
+  if (!uid) throw Object.assign(new Error('Sign in again to read project data.'), { code: 'sign_in_required' });
+  const check = () => {
+    if (auth.currentUser?.uid !== uid) throw Object.assign(new Error('The signed-in account changed. Reopen the project.'), { code: 'identity_changed' });
+    assertContext?.();
+  };
+  check();
+  return { uid, check };
+};
+
+const readScopedProjects = async (expectedUid?: string, assertContext?: () => void): Promise<(Project & { id: string })[]> => {
+  const { uid, check } = scopedReadContext(expectedUid, assertContext);
+  const rows: (Project & { id: string })[] = [];
+  const ids = new Set<string>(), cursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const page = await nativeProjectReads.list({ limit: 100, cursor }, uid, check);
+    check();
+    for (const row of page.projects) {
+      if (ids.has(row.project_id)) throw new Error('Project data changed unexpectedly. Refresh the project list.');
+      ids.add(row.project_id);
+      rows.push({ ...row.project, id: row.project_id, projectId: row.project_id } as unknown as Project & { id: string });
+    }
+    cursor = page.next_cursor;
+    if (cursor !== null) {
+      if (cursors.has(cursor)) throw new Error('The project list could not be refreshed completely. Please retry.');
+      cursors.add(cursor);
+    }
+  } while (cursor !== null);
+  return rows;
+};
+// A projected root/roster must never become a legacy write. Original screens
+// use their versioned commands before scoped reads can be enabled.
+const assertLegacyProjectWriteAvailable = () => {
+  if (isScopedProjectReadEnabled()) throw new Error('Project editing is temporarily unavailable here. Reopen the project to use its safe editing actions.');
+};
+
 // Add a new project (projectId as document ID)
 export const addProject = async (
   project: Project,
   creator?: { uid: string; email: string; displayName: string }
 ) => {
+  assertLegacyProjectWriteAvailable();
   const today = new Date().toISOString().split('T')[0];
   const projectWithMembership: Project = creator
     ? {
@@ -129,8 +170,21 @@ export const addProject = async (
 // Get all projects (real-time listener)
 export const subscribeToProjects = (
   callback: (projects: Project[]) => void,
-  userInfo?: { uid: string; isAdmin: boolean }
+  userInfo?: { uid: string; isAdmin: boolean },
+  onError?: (error: Error) => void
 ): Unsubscribe => {
+  if (isScopedProjectReadEnabled()) {
+    const uid = userInfo?.uid ?? auth.currentUser?.uid;
+    if (!uid) {
+      callback([]); onError?.(new Error('Sign in again to read project data.'));
+      return () => {};
+    }
+    return subscribeProjectRead({
+      uid, isAdmin: userInfo?.isAdmin === true,
+      read: guard => readScopedProjects(uid, guard), onValue: callback,
+      onError: error => { callback([]); onError?.(error); },
+    });
+  }
   const q =
     userInfo && !userInfo.isAdmin
       ? query(projectsCol, where('memberIds', 'array-contains', userInfo.uid))
@@ -143,8 +197,10 @@ export const subscribeToProjects = (
 
 // Get all projects (one-time fetch)
 export const getProjects = async (
-  userInfo?: { uid: string; isAdmin: boolean }
+  userInfo?: { uid: string; isAdmin: boolean },
+  assertContext?: () => void
 ): Promise<(Project & { id: string })[]> => {
+  if (isScopedProjectReadEnabled()) return readScopedProjects(userInfo?.uid, assertContext);
   const q =
     userInfo && !userInfo.isAdmin
       ? query(projectsCol, where('memberIds', 'array-contains', userInfo.uid))
@@ -159,6 +215,7 @@ export const getProjects = async (
 // Update a project
 export const updateProject = async (projectId: string, updates: Partial<Project>) => {
   if (Object.hasOwn(updates, 'supportProfile') && (isNativeSupportProfileEnabled() || isScopedProjectReadEnabled())) throw new Error('Reopen Support to save these changes safely.');
+  assertLegacyProjectWriteAvailable();
   // Filter out undefined values to prevent Firestore errors
   const cleanUpdates = Object.fromEntries(
     Object.entries(updates).filter(([_, value]) => value !== undefined)
@@ -168,6 +225,7 @@ export const updateProject = async (projectId: string, updates: Partial<Project>
 
 // Archive a project (soft delete - sets status to Archived)
 export const archiveProject = async (projectId: string) => {
+  assertLegacyProjectWriteAvailable();
   await updateDoc(doc(projectsCol, projectId), {
     status: "Archived",
     archivedAt: new Date().toISOString()
@@ -176,6 +234,7 @@ export const archiveProject = async (projectId: string) => {
 
 // Restore an archived project
 export const restoreProject = async (projectId: string, previousStatus: Project["status"] = "Planning") => {
+  assertLegacyProjectWriteAvailable();
   const cleanUpdates = {
     status: previousStatus === "Archived" ? "Planning" : previousStatus,
     archivedAt: null // Remove the archived timestamp
@@ -186,6 +245,7 @@ export const restoreProject = async (projectId: string, previousStatus: Project[
 // Lock baseline for a project (CEO Dashboard Phase 2)
 // Once locked, originalDeadline becomes immutable and delay tracking is active
 export const lockProjectBaseline = async (projectId: string, userId: string): Promise<void> => {
+  assertLegacyProjectWriteAvailable();
   const projectRef = doc(projectsCol, projectId);
   const projectSnap = await getDoc(projectRef);
 
@@ -209,6 +269,18 @@ export const lockProjectBaseline = async (projectId: string, userId: string): Pr
 
 // Get a single project by ID
 export const getProject = async (projectId: string, expectedUid?: string, assertContext?: () => void): Promise<Project | null> => {
+  if (isScopedProjectReadEnabled()) {
+    const { uid, check } = scopedReadContext(expectedUid, assertContext);
+    try {
+      const result = await nativeProjectReads.get(projectId, uid, check);
+      check();
+      return result.project as unknown as Project;
+    } catch (error) {
+      check();
+      if ((error as { code?: string })?.code === 'not_found') return null;
+      throw error;
+    }
+  }
   const check = () => {
     if (expectedUid !== undefined && auth.currentUser?.uid !== expectedUid) throw new Error('The signed-in account changed. Reopen the project before continuing.');
     assertContext?.();
@@ -227,6 +299,7 @@ export const getProject = async (projectId: string, expectedUid?: string, assert
 
 // Permanently delete a project (use with caution - data cannot be recovered)
 export const deleteProject = async (projectId: string) => {
+  assertLegacyProjectWriteAvailable();
   await deleteDoc(doc(projectsCol, projectId));
 };
 
@@ -236,6 +309,7 @@ export const addProjectMember = async (
   project: Project,
   newMember: ProjectMember
 ): Promise<void> => {
+  assertLegacyProjectWriteAvailable();
   const updatedMemberIds = [...(project.memberIds || []), newMember.userId];
   const updatedMembers = [...(project.members || []), newMember];
   await updateDoc(doc(projectsCol, projectId), {
@@ -249,6 +323,7 @@ export const removeProjectMember = async (
   project: Project,
   userId: string
 ): Promise<void> => {
+  assertLegacyProjectWriteAvailable();
   const updatedMemberIds = (project.memberIds || []).filter(id => id !== userId);
   const updatedMembers = (project.members || []).filter(m => m.userId !== userId);
   await updateDoc(doc(projectsCol, projectId), {
@@ -263,6 +338,7 @@ export const updateProjectMemberScope = async (
   userId: string,
   categoryScope: string[]
 ): Promise<void> => {
+  assertLegacyProjectWriteAvailable();
   // Spread existing member fields (including notificationsEnabled) before overwriting scope
   const updatedMembers = (project.members || []).map(m =>
     m.userId === userId ? { ...m, categoryScope } : m
@@ -275,6 +351,7 @@ export const addExternalRecipient = async (
   project: Project,
   recipient: Omit<ExternalRecipient, 'notificationsEnabled'>
 ): Promise<void> => {
+  assertLegacyProjectWriteAvailable();
   const existing = project.externalRecipients || [];
   const normalizedEmail = recipient.email.toLowerCase();
   const already = existing.some(r => r.email.toLowerCase() === normalizedEmail);
@@ -288,6 +365,7 @@ export const removeExternalRecipient = async (
   project: Project,
   email: string
 ): Promise<void> => {
+  assertLegacyProjectWriteAvailable();
   const updated = (project.externalRecipients || []).filter(
     r => r.email.toLowerCase() !== email.toLowerCase()
   );
@@ -300,6 +378,7 @@ export const toggleExternalRecipientNotifications = async (
   email: string,
   enabled: boolean
 ): Promise<void> => {
+  assertLegacyProjectWriteAvailable();
   const updated = (project.externalRecipients || []).map(r =>
     r.email.toLowerCase() === email.toLowerCase() ? { ...r, notificationsEnabled: enabled } : r
   );
@@ -329,7 +408,16 @@ export const getNotificationRecipients = (project: Project): NotificationRecipie
 };
 
 // BOM Functions
-export const getBOMData = async (projectId: string): Promise<BOMCategory[]> => {
+export const getBOMData = async (projectId: string, expectedUid?: string, assertContext?: () => void): Promise<BOMCategory[]> => {
+  if (isScopedProjectReadEnabled()) {
+    const { uid, check } = scopedReadContext(expectedUid, assertContext);
+    try {
+      const result = await loadNativeMaterialSnapshot(projectId);
+      check();
+      if (result.actorUid !== uid) throw new Error('The signed-in account changed. Reopen the BOM.');
+      return result.categories as BOMCategory[];
+    } catch (error) { check(); throw error; }
+  }
   const bomRef = doc(db, 'projects', projectId, 'bom', 'data');
   const bomSnap = await getDoc(bomRef);
   if (bomSnap.exists()) {
@@ -338,7 +426,15 @@ export const getBOMData = async (projectId: string): Promise<BOMCategory[]> => {
   return [];
 };
 
-export const subscribeToBOM = (projectId: string, callback: (categories: BOMCategory[]) => void) => {
+export const subscribeToBOM = (projectId: string, callback: (categories: BOMCategory[]) => void, onError?: (error: Error) => void) => {
+  if (isScopedProjectReadEnabled()) {
+    const uid = auth.currentUser?.uid;
+    if (!uid) { callback([]); onError?.(new Error('Sign in again to read project data.')); return () => {}; }
+    return subscribeProjectRead({
+      projectId, uid, read: guard => getBOMData(projectId, uid, guard), onValue: callback,
+      onError: error => { callback([]); onError?.(error); },
+    });
+  }
   const bomRef = doc(db, 'projects', projectId, 'bom', 'data');
   return onSnapshot(bomRef, (doc) => {
     if (doc.exists()) {
