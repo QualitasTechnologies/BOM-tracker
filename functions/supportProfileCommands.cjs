@@ -158,7 +158,8 @@ function hasLegacyMachineFallback(values) {
 
 function applySupportProfileCommand(rawProfile, command) {
   const raw = rawProfile === undefined || rawProfile === null ? {} : rawProfile;
-  const { values: rawValues, machines: originalMachines } = inspectProfile(raw);
+  const inspected = inspectProfile(raw), rawValues = inspected.values;
+  let originalMachines = inspected.machines;
   const commandFields = strictObject(command, 'command', new Set(['kind', 'patch', 'machines']), commandError);
   if (commandFields.get('kind') !== 'support_profile') throw commandError('command.kind', 'expected support_profile');
   if (!commandFields.has('patch') && !commandFields.has('machines')) throw commandError('command', 'empty command');
@@ -172,7 +173,17 @@ function applySupportProfileCommand(rawProfile, command) {
   const operations = commandFields.has('machines')
     ? plainArray(commandFields.get('machines'), 'command.machines', commandError)
     : [];
-  if (operations.length > 0 && (!rawValues.has('machines') || rawValues.get('machines') === null) && hasLegacyMachineFallback(rawValues)) {
+  const legacy = (!rawValues.has('machines') || rawValues.get('machines') === null) && hasLegacyMachineFallback(rawValues);
+  const migration = isPlainObject(operations[0]) && operations[0].kind === 'migrate_legacy';
+  if (migration) {
+    if (!legacy) throw commandError('command.machines', 'no legacy fallback to migrate');
+    const machine = { id: 'legacy-primary-machine', name: rawValues.get('machineModel') || 'Primary machine', serialNumber: rawValues.get('machineSerialNumber') || 'Not recorded', status: 'active' };
+    for (const [from, to] of [['machineModel', 'model'], ...['siteLocation', 'commissioningDate', 'warrantyStartDate', 'warrantyEndDate', 'amcStatus', 'amcStartDate', 'amcEndDate', 'amcContractNumber'].map(field => [field, field])]) {
+      if (rawValues.has(from)) machine[to] = rawValues.get(from);
+    }
+    originalMachines = [machine];
+  }
+  if (operations.length > 0 && legacy && !migration) {
     throw commandError('command.machines', 'legacy machine fallback requires explicit migration');
   }
   const existingById = new Map(originalMachines.map(machine => [new Map(ownDataEntries(machine, 'machine', stateError)).get('id'), machine]));
@@ -180,13 +191,15 @@ function applySupportProfileCommand(rawProfile, command) {
   const machinePatches = new Map();
   const removals = new Set();
   const additions = [];
-  const changes = [];
+  const changes = migration ? [['supportProfile.machines', originalMachines]] : [];
 
   for (let index = 0; index < operations.length; index += 1) {
     const path = `command.machines[${index}]`;
     const operation = strictObject(operations[index], path, new Set(['kind', 'id', 'patch', 'machine']), commandError);
     const kind = operation.get('kind');
-    if (kind === 'patch') {
+    if (kind === 'migrate_legacy') {
+      if (!migration || index !== 0 || operation.size !== 1) throw commandError(path, 'invalid legacy migration');
+    } else if (kind === 'patch') {
       if (!operation.has('id') || !operation.has('patch') || operation.has('machine')) throw commandError(path, 'invalid patch operation');
       const id = operation.get('id');
       if (typeof id !== 'string' || !existingById.has(id)) throw commandError(`${path}.id`, 'unknown machine ID');

@@ -203,7 +203,7 @@ test('restore writes are blocked without the explicit legacy status-writer fence
     { mode: 'read_only', projectStatusClientWritesFenced: true },
     { mode: 'coexist', projectStatusClientWritesFenced: false },
   ]) {
-    const f = fixture(); f.change({ status: 'Archived', archivedAt: 'old' }); f.docs.set('pulseRuntimeControl/cutover', control);
+    const f = fixture(); f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' }); f.docs.set('pulseRuntimeControl/cutover', control);
     const result = await f.command({ kind: 'restore' });
     assert.equal(result.error, control.mode === 'read_only' ? 'project_read_only' : 'project_status_writers_not_fenced');
     assert.equal(f.docs.get('projects/P').status, 'Archived');
@@ -214,7 +214,7 @@ test('restore writes are blocked without the explicit legacy status-writer fence
 test('only an archived project at the exact version can be restored', async () => {
   const f = fixture(); f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', projectStatusClientWritesFenced: true });
   assert.equal((await f.command({ kind: 'restore' })).error, 'project_not_archived');
-  f.change({ status: 'Archived', archivedAt: 'old' });
+  f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' });
   const stale = await f.call({ operation: 'get' }); f.change({ description: 'concurrent update' });
   assert.equal((await f.call({ operation: 'command', expected_version: stale.version, operation_id: 'stale-restore', command: { kind: 'restore' } })).error, 'project_version_conflict');
   assert.equal(f.docs.get('projects/P').status, 'Archived');
@@ -223,15 +223,15 @@ test('only an archived project at the exact version can be restored', async () =
 test('metadata cannot archive or unarchive and repeat archive is rejected', async () => {
   const f = fixture();
   assert.equal((await f.command({ kind: 'metadata', patch: { status: 'Archived' } })).error, 'project_status_transition_invalid');
-  f.change({ status: 'Archived', archivedAt: 'old' });
+  f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' });
   assert.equal((await f.command({ kind: 'metadata', patch: { status: 'Ongoing' } })).error, 'project_status_transition_invalid');
   assert.equal((await f.command({ kind: 'archive' })).error, 'project_already_archived');
   assert.equal(f.docs.get('projects/P').status, 'Archived');
-  assert.equal(f.docs.get('projects/P').archivedAt, 'old');
+  assert.equal(f.docs.get('projects/P').archivedAt, '2026-10-14T00:00:00.000Z');
 });
 
 test('an uncertain restore can be resolved as cancelled without restoring or requiring write gates', async () => {
-  const f = fixture({ enabled: false }); f.change({ status: 'Archived', archivedAt: 'old' });
+  const f = fixture({ enabled: false }); f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' });
   const opening = await f.call({ operation: 'get' });
   assert.equal(opening.permissions.restore, false);
   assert.equal(opening.permissions.restore_resolve, true);
@@ -245,7 +245,7 @@ test('an uncertain restore can be resolved as cancelled without restoring or req
 });
 
 test('restore audit failure leaves project, receipt and audit unchanged', async () => {
-  const f = fixture({ failAudit: true }); f.change({ status: 'Archived', archivedAt: 'old' });
+  const f = fixture({ failAudit: true }); f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' });
   f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', projectStatusClientWritesFenced: true });
   const before = structuredClone([...f.docs]);
   assert.equal((await f.command({ kind: 'restore' })).ok, false);
@@ -259,7 +259,7 @@ test('restore receipt replay requires current project access and base edit permi
   ]) {
     const f = fixture({ uid: revoke.uid });
     if (revoke.role) f.users.get(revoke.uid).customClaims.role = revoke.role;
-    f.change({ status: 'Archived', archivedAt: 'old' });
+    f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' });
     f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', projectStatusClientWritesFenced: true });
     const opening = await f.call({ operation: 'get' });
     const request = { operation: 'command', expected_version: opening.version, operation_id: 'restore-replay', command: { kind: 'restore' } };
@@ -275,6 +275,8 @@ test('restore receipt replay requires current project access and base edit permi
 test('revoked admin cannot use a malformed access list as a membership substring', async () => {
   const f = fixture({ onRead: (path, users) => { if (path.includes('/receipts/')) users.get('admin').customClaims.role = 'viewer'; } });
   f.docs.get('projects/P').memberIds = 'admin';
-  assert.equal((await f.command({ kind: 'metadata', patch: { description: 'No' } })).error, 'project_forbidden');
+  // Send the known fixture revision directly: the safe opening now rejects
+  // malformed membership before this test's later in-transaction revocation.
+  assert.equal((await f.call({operation:'command',expected_version:'10:1',operation_id:'revoked-admin',command:{ kind: 'metadata', patch: { description: 'No' } }})).error, 'project_forbidden');
   assert.equal(f.docs.get('projects/P').description, undefined);
 });

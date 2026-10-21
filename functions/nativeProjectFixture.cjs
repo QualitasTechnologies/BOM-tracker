@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict');
 const { createNativeProjectOperations }=require('./nativeProjectOperations.cjs');
-function fixture({ uid = 'admin', enabled = true, failAudit = false, onTargetLookup, onRead } = {}) {
+function fixture({ uid = 'admin', enabled = true, supportProfileEnabled = false, failAudit = false, onTargetLookup, onRead } = {}) {
   let revision = 1;
   const users = new Map(['admin', 'alice', 'partner', 'bob'].map(id => [id, { uid: id, email: `${id}@${['partner', 'bob'].includes(id) ? 'external.example' : 'qualitastech.com'}`, displayName: id, emailVerified: true,
     customClaims: { role: id === 'admin' ? 'admin' : id === 'alice' ? 'viewer' : 'user', status: 'approved' } }]));
@@ -23,7 +23,7 @@ function fixture({ uid = 'admin', enabled = true, failAudit = false, onTargetLoo
     if (writes.length) revision++; for (const [path, data] of writes) { docs.set(path, data); versions.set(path, revision); } return result;
   } };
   const auth = { verifyIdToken: async () => ({ uid, email: users.get(uid).email }), getUser: async id => { if (id !== uid) await onTargetLookup?.(users); if (!users.has(id)) throw Object.assign(Error('missing'), { code: 'auth/user-not-found' }); return structuredClone(users.get(id)); } };
-  const native = createNativeProjectOperations({ db, auth, enabled, getServerTimestamp: () => 'server-time', getDeleteField: () => ({ __delete: true }), now: () => new Date('2026-10-14T00:00:00Z') });
+  const native = createNativeProjectOperations({ db, auth, enabled, supportProfileEnabled, getServerTimestamp: () => 'server-time', getDeleteField: () => ({ __delete: true }), now: () => new Date('2026-10-14T00:00:00Z') });
   const call = data => native({ auth: { uid }, rawRequest: { get: () => 'Bearer fixture' }, data: { project_id: 'P', expected_actor_uid: uid, ...data } });
   const command = async (command, extra = {}) => { const opening = await call({ operation: 'get' }); return call({ operation: 'command', expected_version: opening.version, operation_id: 'one', command, ...extra }); };
   return { docs, users, call, command, change: (patch) => { docs.set('projects/P', { ...docs.get('projects/P'), ...patch }); versions.set('projects/P', ++revision); } };

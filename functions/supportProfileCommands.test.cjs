@@ -101,6 +101,23 @@ test('legacy machine fallback requires explicit migration before any machine com
   assert.equal(result.profile.machineSerialNumber, 'OLD');
 });
 
+test('explicit legacy migration materializes the displayed machine before applying deltas without erasing raw history', () => {
+  const raw = { machineSerialNumber: 'OLD', machineModel: 'Legacy', warrantyEndDate: '2027-01-01', retained: { history: true }, supportContacts: [{ name: 'Old' }] };
+  const result = applySupportProfileCommand(raw, { kind: 'support_profile', machines: [
+    { kind: 'migrate_legacy' }, { kind: 'patch', id: 'legacy-primary-machine', patch: { notes: 'Inspected', serialNumber: 'NEW' } },
+  ] });
+  assert.equal(result.profile.machines[0].name, 'Legacy'); assert.equal(result.profile.machines[0].serialNumber, 'NEW');
+  assert.equal(result.profile.machines[0].warrantyEndDate, '2027-01-01'); assert.equal(result.profile.machineSerialNumber, 'OLD');
+  assert.equal(result.profile.retained, raw.retained); assert.equal(result.profile.supportContacts, raw.supportContacts);
+  assert.equal(raw.machines, undefined);
+  assert.ok(result.changedPaths.includes('supportProfile.machines'));
+  for (const profile of [{}, { machines: [] }, { machines: [{ id: 'm', name: 'N', serialNumber: 'S' }], machineModel: 'Old' }]) {
+    failCommand(() => applySupportProfileCommand(profile, { kind: 'support_profile', machines: [{ kind: 'migrate_legacy' }] }));
+  }
+  failCommand(() => applySupportProfileCommand(raw, { kind: 'support_profile', machines: [{ kind: 'migrate_legacy', id: 'invented' }] }));
+  failCommand(() => applySupportProfileCommand(raw, { kind: 'support_profile', machines: [{ kind: 'migrate_legacy' }, { kind: 'migrate_legacy' }] }));
+});
+
 test('rejects malformed state and does not invoke toJSON or mutate the input', () => {
   let called = false;
   const profile = { machines: [{ id: 'm', name: 'M', serialNumber: 'S', toJSON() { called = true; } }] };

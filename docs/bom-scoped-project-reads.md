@@ -23,14 +23,37 @@ project access. Documents retain the any-visible-link rule; both Documents and
 Gallery invoice metadata trim hidden item IDs. Customer POs remain admin-only.
 Native download URLs are hydrated from private proofs after authorization.
 
-`supportProfileCommands.cjs` is a separate pure merge helper, not an enabled
-writer. It retains unknown raw values, uses explicit scalar/machine changes and
-preserves deprecated contacts. Transactional authorization/revisions/audit,
-receipt recovery, legacy-machine migration and the original form pairing still
-need integration before projected Support reads can replace existing reads.
+`supportProfileCommands.cjs` now backs the versioned `support_profile` command in
+`nativeProjectOperations`. Its `support_get` opening returns only the safe
+profile, actor binding, revision and permissions. The original Support form in
+both clients submits explicit scalar/machine deltas. Unknown raw values,
+deprecated contacts and historical snapshots remain stored unchanged. Legacy
+machine fallback is materialized only by an explicit migration operation.
 
-Remaining gates include safe material/category serialization, real raw-type and
-index checks, all original reader migrations, content-free change notices,
+The paired writer additionally requires `BOM_NATIVE_SUPPORT_PROFILE_ENABLED=true`
+plus all three existing project/material write gates. The form uses exact-true
+`VITE_BOM_NATIVE_SUPPORT_PROFILE_ENABLED`, independently of scoped reads. All
+defaults remain off. Read-on/edit-off and denied openings cannot reach the legacy
+profile replacement helper. That helper also refuses profile replacements when
+the paired Support flag is active. Broader root/member/recipient legacy fences
+remain a separate migration task.
+
+Failed requests retain their opening revision, nonce and original payload in
+UID/project-scoped session storage. Reopening previews those frozen changes;
+retry sends that exact command. The confirm-or-cancel action returns an existing
+receipt or atomically fences an unsaved nonce. It remains available after write
+flags close, without silently rebasing a stale draft. Blocked/corrupt storage and
+account/project changes fail visibly, and failed drafts remain available.
+
+`materialReadView` now safely serializes scoped material GET data after scope
+selection. It retains safe unknown JSON and converts Date/Timestamp values;
+unsupported SDK objects fail with a sanitized integrity error. The older native
+project opening also uses the approved safe project view and rechecks identity.
+Actual raw-type census and compatible handling of any in-use unsupported values
+remain deployment gates; source rejection is not live compatibility acceptance.
+
+Remaining gates include real raw-type and index checks, a review of material
+mutation/old-receipt response serialization, all original reader migrations, content-free change notices,
 rules and competing-writer fences, real-user/data/history acceptance,
 backup/restore and rollback. No runtime switch, deployment, production data or
 Firebase policy was changed for this checkpoint.

@@ -2,6 +2,8 @@ const { createHash } = require('node:crypto');
 const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
 const { assertDocumentBudget, MAX_INPUT_BYTES } = require('./materialCommands.cjs');
 const {milestoneDelayRecord,isMilestoneFault}=require('./milestoneCommands.cjs');
+const {projectReadView,supportProfileView,isProjectReadStateError}=require('./projectReadView.cjs');
+const {applySupportProfileCommand,isSupportProfileCommandError,isSupportProfileStateError}=require('./supportProfileCommands.cjs');
 const PUBLIC=Symbol('project-operation');
 const fault = (code, status = 400) => Object.assign(new Error(code), { code, status,[PUBLIC]:true });
 const verifiedActor=async(auth,request)=>{try{return await currentNativeActor(auth,request);}catch(error){const known={actor_authentication_required:401,actor_forbidden:403,identity_provider_unavailable:503};if(Object.hasOwn(known,error?.code)&&known[error.code]===error.status)throw fault(error.code,error.status);throw error;}};
@@ -17,19 +19,21 @@ const exact = (data, keys) => { if (!plain(data) || Object.keys(data).some(key =
 const text = (value, max, nonempty = false) => typeof value === 'string' && value.length <= max && (!nonempty || value.trim());
 const normalizeEmail = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
 const projectMutationsEnabled = env => ['BOM_NATIVE_PROJECT_MUTATIONS_ENABLED', 'BOM_MATERIAL_MUTATIONS_ENABLED', 'BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED'].every(key => env[key] === 'true');
+const supportProfileMutationsEnabled = env => projectMutationsEnabled(env) && env.BOM_NATIVE_SUPPORT_PROFILE_ENABLED === 'true';
 const assertAccess = (project, actor) => {
   if (actor.customClaims.role === 'admin') return;
   if (!Object.hasOwn(project, 'memberIds') || (project.memberIds !== null
     && (!Array.isArray(project.memberIds) || !project.memberIds.includes(actor.uid)))) throw fault('project_forbidden', 403);
 };
 
-function createNativeProjectOperations({ db, auth, enabled = false, getServerTimestamp, getDeleteField, now = () => new Date() }) {
+function createNativeProjectOperations({ db, auth, enabled = false, supportProfileEnabled = false, getServerTimestamp, getDeleteField, now = () => new Date() }) {
   const writesOn = () => (typeof enabled === 'function' ? enabled() : enabled) === true;
+  const supportWritesOn = () => writesOn() && (typeof supportProfileEnabled === 'function' ? supportProfileEnabled() : supportProfileEnabled) === true;
   return async request => {
     try {
       const actor = await verifiedActor(auth, request), data = request.data;
       exact(data, ['operation', 'project_id', 'expected_actor_uid', 'expected_version', 'operation_id', 'command','resolve_only']);
-      if (!['get', 'command'].includes(data.operation) || !validId(data.project_id)) throw fault('invalid_project_request');
+      if (!['get', 'support_get', 'command'].includes(data.operation) || !validId(data.project_id)) throw fault('invalid_project_request');
       if (data.expected_actor_uid !== actor.uid) throw fault('actor_session_changed', 403);
       const projectRef = db.collection('projects').doc(data.project_id);
       const read = async transaction => {
@@ -42,13 +46,30 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
         return { snapshot, project };
       };
       const canEdit = actor.customClaims.role === 'admin' || internal(actor);
+      if (data.operation === 'support_get') {
+        exact(data, ['operation', 'project_id', 'expected_actor_uid']);
+        return await db.runTransaction(async transaction => {
+          const {snapshot,project}=await read(transaction);
+          const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover'));
+          const mode=control.exists?control.data()?.mode??'coexist':'coexist';
+          const profile=supportProfileView(project.supportProfile)??null;
+          const current=await verifiedActor(auth,request);
+          if(current.uid!==actor.uid||normalizeEmail(current.email)!==normalizeEmail(actor.email))throw fault('actor_session_changed',403);
+          assertAccess(project,current);
+          return {ok:true,project_id:data.project_id,actor_uid:actor.uid,version:revision(snapshot),support_profile:profile,
+            permissions:{edit:supportWritesOn()&&['coexist','pulse_only'].includes(mode),resolve:true}};
+        });
+      }
       if (data.operation === 'get') {
         exact(data, ['operation', 'project_id', 'expected_actor_uid']);
         return await db.runTransaction(async transaction => {
           const { snapshot, project } = await read(transaction);
           const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),controlData=control.exists?control.data():{},mode=controlData.mode??'coexist',enabledHere=writesOn()&&['coexist','pulse_only'].includes(mode);
-          return { ok: true, project_id: data.project_id, project: { ...freeze(project), projectId: data.project_id }, version: revision(snapshot),
-            permissions: { edit: enabledHere && canEdit, manage_members: enabledHere && actor.customClaims.role === 'admin', notifications: enabledHere && canEdit,
+          const current=await verifiedActor(auth,request);
+          if(current.uid!==actor.uid||normalizeEmail(current.email)!==normalizeEmail(actor.email)||current.customClaims.role!==actor.customClaims.role)throw fault('actor_session_changed',403);
+          assertAccess(project,current);
+          return { ok: true, project_id: data.project_id, project: projectReadView(data.project_id,project,current), version: revision(snapshot),
+            permissions: { edit: enabledHere && canEdit, manage_members: enabledHere && current.customClaims.role === 'admin', notifications: enabledHere && canEdit,
               restore: enabledHere && canEdit && controlData.projectStatusClientWritesFenced === true, restore_resolve: canEdit } };
         });
       }
@@ -56,14 +77,15 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
         || Buffer.byteLength(JSON.stringify(data)) > MAX_INPUT_BYTES) throw fault('invalid_project_command');
       const command = data.command;
       const resolving=data.resolve_only===true;
-      if(Object.hasOwn(data,'resolve_only')&&(!resolving||!['metadata','restore'].includes(command.kind)))throw fault('invalid_project_command');
+      if(Object.hasOwn(data,'resolve_only')&&(!resolving||!['metadata','restore','support_profile'].includes(command.kind)))throw fault('invalid_project_command');
       const shapes = { metadata: ['kind', 'patch','delay'], archive: ['kind'], member_add: ['kind', 'user_id', 'category_scope'], member_remove: ['kind', 'user_id'], member_scope: ['kind', 'user_id', 'category_scope'],
-        member_notifications: ['kind', 'user_id', 'enabled'], recipient_add: ['kind', 'email', 'name'], recipient_remove: ['kind', 'email'], recipient_notifications: ['kind', 'email', 'enabled'], restore: ['kind'] };
+        member_notifications: ['kind', 'user_id', 'enabled'], recipient_add: ['kind', 'email', 'name'], recipient_remove: ['kind', 'email'], recipient_notifications: ['kind', 'email', 'enabled'], restore: ['kind'], support_profile:['kind','patch','machines'] };
       if (!shapes[command.kind]) throw fault('invalid_project_command');
       exact(command, shapes[command.kind]);
       const manage = ['member_add', 'member_remove', 'member_scope', 'recipient_add', 'recipient_remove'].includes(command.kind);
+      const support = command.kind === 'support_profile';
       if (manage && actor.customClaims.role !== 'admin') throw fault('project_management_forbidden', 403);
-      if (!manage && !canEdit) throw fault('project_edit_forbidden', 403);
+      if (!manage && !canEdit && !support) throw fault('project_edit_forbidden', 403);
       if (command.kind === 'member_notifications' && actor.customClaims.role !== 'admin' && command.user_id !== actor.uid) throw fault('member_notification_forbidden', 403);
       if (command.kind.startsWith('member_') && (!validId(command.user_id) || command.user_id.length > 128)) throw fault('invalid_project_command');
       if (command.kind.endsWith('_notifications') && typeof command.enabled !== 'boolean') throw fault('invalid_project_command');
@@ -82,35 +104,42 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
       const receiptRef = db.collection('pulseProjectOperations').doc(data.project_id).collection('receipts').doc(data.operation_id);
       const auditRef = db.collection('pulseProjectOperations').doc(data.project_id).collection('audit').doc(data.operation_id);
       const payloadHash = createHash('sha256').update(JSON.stringify(freeze({ command, expected_version: data.expected_version }))).digest('hex');
+      const authorizeCommand = (project,current) => {
+        if(current.uid!==actor.uid||normalizeEmail(current.email)!==normalizeEmail(actor.email))throw fault('actor_session_changed',403);
+        assertAccess(project,current);
+        if(manage&&current.customClaims.role!=='admin')throw fault('project_management_forbidden',403);
+        if(!manage&&!support&&current.customClaims.role!=='admin'&&!internal(current))throw fault('project_edit_forbidden',403);
+        if(command.kind==='member_notifications'&&current.customClaims.role!=='admin'&&command.user_id!==current.uid)throw fault('member_notification_forbidden',403);
+      };
       return await db.runTransaction(async transaction => {
         const { snapshot, project } = await read(transaction), receipt = await transaction.get(receiptRef);
         if (receipt.exists) {
           const current = await verifiedActor(auth, request);
-          assertAccess(project, current);
-          if (manage && current.customClaims.role !== 'admin') throw fault('project_management_forbidden', 403);
-          if (!manage && current.customClaims.role !== 'admin' && !internal(current)) throw fault('project_edit_forbidden', 403);
-          if (command.kind === 'member_notifications' && current.customClaims.role !== 'admin' && command.user_id !== current.uid) throw fault('member_notification_forbidden', 403);
+          authorizeCommand(project,current);
           const old = receipt.data();
           if (old.actor_uid !== actor.uid || old.actor_email !== normalizeEmail(actor.email) || old.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
           if(resolving)return{...old.result,resolution:old.cancelled?'cancelled':'committed'};
           if(old.cancelled)throw fault('project_request_cancelled',409);return old.result;
         }
         if(resolving){
-          const current=await verifiedActor(auth,request);assertAccess(project,current);if(current.customClaims.role!=='admin'&&!internal(current))throw fault('project_edit_forbidden',403);
+          const current=await verifiedActor(auth,request);authorizeCommand(project,current);
           const result={ok:true,project_id:data.project_id,operation_id:data.operation_id},record={actor_uid:actor.uid,actor_email:normalizeEmail(actor.email),payload_hash:payloadHash,result,cancelled:true,created_at:getServerTimestamp()};
-          const audit={actor_uid:current.uid,project_id:data.project_id,operation_id:data.operation_id,operation:`${command.kind}_cancelled`,payload_hash:payloadHash,created_at:getServerTimestamp()};
+          const audit={actor_uid:current.uid,project_id:data.project_id,operation_id:data.operation_id,operation:`${command.kind}_cancelled`,expected_version:data.expected_version,payload_hash:payloadHash,created_at:getServerTimestamp()};
           assertDocumentBudget([{path:receiptRef.path,data:record},{path:auditRef.path,data:audit}]);transaction.create(receiptRef,record);transaction.create(auditRef,audit);return{...result,resolution:'cancelled'};
         }
-        const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),mode=control.exists?control.data()?.mode??'coexist':'coexist';
+        const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),controlData=control.exists?control.data():{},mode=controlData.mode??'coexist';
+        if(support&&!supportWritesOn())throw fault('support_profile_mutations_disabled',503);
         if(!writesOn())throw fault('project_mutations_disabled',503);
         if(!['coexist','pulse_only'].includes(mode))throw fault('project_read_only',503);
         if(command.kind==='restore'){
-          const fenced=control.exists&&control.data()?.projectStatusClientWritesFenced===true;
-          if(!fenced)throw fault('project_status_writers_not_fenced',503);
+          if(!control.exists||controlData.projectStatusClientWritesFenced!==true)throw fault('project_status_writers_not_fenced',503);
         }
         if (revision(snapshot) !== data.expected_version) throw fault('project_version_conflict', 409);
         let patch = {}, removeFields = [], delayLog;
-        if (command.kind === 'metadata') {
+        if (support) {
+          const merged=applySupportProfileCommand(project.supportProfile,command);
+          patch={supportProfile:merged.profile};
+        } else if (command.kind === 'metadata') {
           const value = command.patch;
           exact(value, ['projectName', 'clientName', 'clientId', 'billingEntityId', 'description', 'status', 'deadline', 'pulseProjectId']);
           if (!Object.keys(value).length) throw fault('invalid_project_command');
@@ -210,20 +239,17 @@ function createNativeProjectOperations({ db, auth, enabled = false, getServerTim
         const changes = Object.fromEntries(fields.map(key => [key, { before: Object.hasOwn(project, key) ? { present: true, value: project[key] } : { present: false },
           after: Object.hasOwn(after, key) ? { present: true, value: after[key] } : { present: false } }]));
         const result = { ok: true, project_id: data.project_id, operation_id: data.operation_id };
-        const audit = { actor_uid: actor.uid, actor_email: normalizeEmail(actor.email), project_id: data.project_id, operation_id: data.operation_id, operation: command.kind, changes,...(delayLog?{delay_log_id:delayLog.ref.path.split('/').at(-1)}:{}),created_at: getServerTimestamp() };
+        const audit = { actor_uid: actor.uid, actor_email: normalizeEmail(actor.email), project_id: data.project_id, operation_id: data.operation_id, operation: command.kind, expected_version:data.expected_version, changes,...(delayLog?{delay_log_id:delayLog.ref.path.split('/').at(-1)}:{}),created_at: getServerTimestamp() };
         const recorded = { actor_uid: actor.uid, actor_email: normalizeEmail(actor.email), payload_hash: payloadHash, result, created_at: getServerTimestamp() };
         assertDocumentBudget([{ path: projectRef.path, data: after }, { path: auditRef.path, data: audit }, { path: receiptRef.path, data: recorded },...(delayLog?[{path:delayLog.ref.path,data:delayLog.data}]:[])]);
         const current = await verifiedActor(auth, request);
-        assertAccess(project, current);
-        if (manage && current.customClaims.role !== 'admin') throw fault('project_management_forbidden', 403);
-        if (!manage && current.customClaims.role !== 'admin' && !internal(current)) throw fault('project_edit_forbidden', 403);
-        if (command.kind === 'member_notifications' && current.customClaims.role !== 'admin' && command.user_id !== current.uid) throw fault('member_notification_forbidden', 403);
+        authorizeCommand(project,current);
         transaction.update(projectRef, { ...patch, ...Object.fromEntries(removeFields.map(key => [key, getDeleteField()])) });
         if(delayLog)transaction.create(delayLog.ref,delayLog.data);
         transaction.create(auditRef, audit); transaction.create(receiptRef, recorded);
         return result;
       });
-    } catch (error) { return { ok: false, error: error?.[PUBLIC]||isMilestoneFault(error) ? error.code : 'project_operations_unavailable' }; }
+    } catch (error) { return { ok: false, error: error?.[PUBLIC]||isMilestoneFault(error)||isProjectReadStateError(error)||isSupportProfileCommandError(error)||isSupportProfileStateError(error) ? error.code : 'project_operations_unavailable' }; }
   };
 }
-module.exports = { createNativeProjectOperations, projectMutationsEnabled };
+module.exports = { createNativeProjectOperations, projectMutationsEnabled, supportProfileMutationsEnabled };

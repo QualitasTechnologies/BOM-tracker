@@ -19,6 +19,7 @@ import type { BOMItem, BOMCategory, BOMStatus } from "@/types/bom";
 import { sanitizeBOMItemForFirestore } from "@/types/bom";
 import { isNativeMaterialCommandEnabled, submitNativeMaterialCommand } from '@/utils/nativeMaterialCommands';
 import { isScopedProjectReadEnabled } from './projectReadMode';
+import { isNativeSupportProfileEnabled } from './nativeSupportProfile';
 import type { SupportProjectProfile } from "@/types/support";
 
 export type { BOMItem, BOMCategory, BOMStatus };
@@ -157,6 +158,7 @@ export const getProjects = async (
 
 // Update a project
 export const updateProject = async (projectId: string, updates: Partial<Project>) => {
+  if (Object.hasOwn(updates, 'supportProfile') && (isNativeSupportProfileEnabled() || isScopedProjectReadEnabled())) throw new Error('Reopen Support to save these changes safely.');
   // Filter out undefined values to prevent Firestore errors
   const cleanUpdates = Object.fromEntries(
     Object.entries(updates).filter(([_, value]) => value !== undefined)

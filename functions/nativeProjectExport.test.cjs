@@ -24,6 +24,9 @@ test('actual project callable keeps all three gates off by default and uses nati
     vm.runInNewContext(source.slice(start, end < 0 ? undefined : end), context);
     assert.equal(context.exports.nativeProjectOperations, 'project-callable'); assert.equal(engine.auth, 'auth');
     assert.equal(engine.enabled(), expected); assert.equal(engine.getDeleteField(), 'delete'); assert.equal(config.secrets, undefined);
+    assert.equal(engine.supportProfileEnabled(), false);
+    env.BOM_NATIVE_SUPPORT_PROFILE_ENABLED='true';assert.equal(engine.supportProfileEnabled(),expected);
+    env.BOM_NATIVE_SUPPORT_PROFILE_ENABLED='false';assert.equal(engine.supportProfileEnabled(),false);
     assert.equal(context.exports.updateProjectMemberNotifications, 'notification-callable');
     assert.equal(notificationEngine.auth, 'auth'); assert.equal(notificationConfig.secrets, undefined);
   }
