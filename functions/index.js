@@ -7606,3 +7606,15 @@ exports.nativeProjectReads=onCall(
   {region:'us-central1',timeoutSeconds:60,maxInstances:5,secrets:[bomProjectReadCursorKey]},
   createNativeProjectReads({db:admin.firestore(),auth:admin.auth(),bucket:admin.storage().bucket(),enabled:()=>projectReadsEnabled(process.env),getCursorKey:()=>bomProjectReadCursorKey.value()}),
 );
+
+// Content-free read notices: server-only { version, nonce } bumps that tell
+// scoped clients to re-read. Default-off under BOM_SCOPED_READS_ENABLED (exact
+// 'true'). Keep the bindings self-contained and limited to source paths.
+// Signal collections are server-written only and match no trigger.
+const {onDocumentWritten: onReadSignalWritten}=require('firebase-functions/v2/firestore');
+const {createProjectReadSignals,projectReadSignalsEnabled}=require('./projectReadSignals.cjs');
+const readSignals=createProjectReadSignals({db:admin.firestore(),enabled:()=>projectReadSignalsEnabled(process.env),logger:require('firebase-functions/logger')});
+const readSignalOptions=document=>({document,region:'us-central1',timeoutSeconds:60,maxInstances:5,retry:true});
+exports.pulseReadSignalProject=onReadSignalWritten(readSignalOptions('projects/{projectId}'),event=>readSignals.onProject(event));
+exports.pulseReadSignalBom=onReadSignalWritten(readSignalOptions('projects/{projectId}/bom/data'),event=>readSignals.onBom(event));
+exports.pulseReadSignalDocument=onReadSignalWritten(readSignalOptions('projectDocuments/{documentId}'),event=>readSignals.onDocument(event));

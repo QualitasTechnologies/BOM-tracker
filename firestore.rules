@@ -233,6 +233,31 @@ service cloud.firestore {
       }
     }
 
+    // Content-free refresh notices ({version, nonce}); IDs live only in the path.
+    // Written exclusively by Cloud Functions (Admin SDK bypasses rules). Clients
+    // may fetch one known notice but never list or write. These are top-level
+    // collections with exact document matches, so no wildcard grant overlaps them.
+    match /pulseReadSignals/{projectId} {
+      // Same predicate as every project subcollection, including the explicit-null
+      // legacy fallback; an absent memberIds field still errors and denies.
+      allow get: if projectSubcollectionAccess(projectId);
+      allow list, write: if false;
+    }
+
+    match /pulseUserReadSignals/{uid} {
+      allow get: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && request.auth.uid == uid;
+      allow list, write: if false;
+    }
+
+    match /pulseReadCatalog/admin {
+      allow get: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && request.auth.token.role == 'admin';
+      allow list, write: if false;
+    }
+
     match /clients/{document=**} {
       allow read: if request.auth != null
         && request.auth.token.status == 'approved';
