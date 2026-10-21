@@ -2,6 +2,8 @@ import { collection, addDoc, query, where, getDocs, deleteDoc, doc, updateDoc, T
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { db, storage } from '@/firebase';
 import { ProjectDocument, DocumentType } from '@/types/projectDocument';
+import { isNativeMaterialCommandEnabled } from './nativeMaterialCommands';
+import { isScopedProjectReadEnabled } from './projectReadMode';
 
 /**
  * Upload a project document to Firebase Storage and create Firestore record
@@ -88,6 +90,7 @@ export async function linkDocumentToBOMItems(
   documentId: string,
   bomItemIds: string[]
 ): Promise<void> {
+  if (isNativeMaterialCommandEnabled() || isScopedProjectReadEnabled()) throw new Error('Use the versioned BOM action to update document links in native mode.');
   const docRef = doc(db, 'projectDocuments', documentId);
   await updateDoc(docRef, {
     linkedBOMItems: bomItemIds

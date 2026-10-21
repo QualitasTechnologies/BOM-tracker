@@ -50,3 +50,27 @@ do not silently migrate it or claim complete all-user acceptance.
 
 Production deployment, full user/data/history acceptance, remaining reader and
 writer migration, backups/restore, side-by-side and retirement remain open.
+
+## 2026-10-21 approved read foundation and legacy-save guard
+
+The user approved the written scoped-read design in the companion Pulse PR49.
+Pure project/Support read serializers now have 13 focused regressions; they
+require a freshly verified UserRecord and separate caller authorization. They
+are not bound to a callable/client. External unknown profile fields remain
+raw server-side for the paired versioned merge; historical safe JSON remains
+available for full-access actors. Live raw-type census/compatible encoding,
+Support merge, read handlers/notices, paired readers and fences remain stages.
+
+The existing native material whole-array guard is retained. Legacy document
+link replacement is also refused in native material mode. Both replacement
+paths now refuse writes under the independent default-off scoped-read switch,
+including read-on/edit-off. Read enablement never grants writes, and projected
+data must never overwrite hidden categories/links. Original flag-off saves
+and versioned client flows remain available under their existing switches.
+
+Local verification: original UI 475/475, Functions 679/679, focused read views
+13/13, writer scanner 4/4 and manifest 91 Firestore/11 Storage, Functions lint
+and standalone build passed. Companion Pulse passed UI 1530/1530 in isolation,
+contract 484/484, root 659/6 skipped and both builds. Earlier local emulator
+transaction failures remain open despite a prior hosted pass. No production
+marker/configuration/data or deployed read behavior changed.

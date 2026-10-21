@@ -18,6 +18,7 @@ import {
 import type { BOMItem, BOMCategory, BOMStatus } from "@/types/bom";
 import { sanitizeBOMItemForFirestore } from "@/types/bom";
 import { isNativeMaterialCommandEnabled, submitNativeMaterialCommand } from '@/utils/nativeMaterialCommands';
+import { isScopedProjectReadEnabled } from './projectReadMode';
 import type { SupportProjectProfile } from "@/types/support";
 
 export type { BOMItem, BOMCategory, BOMStatus };
@@ -364,7 +365,7 @@ const deepCleanUndefined = <T>(obj: T): T => {
 };
 
 export const updateBOMData = async (projectId: string, categories: BOMCategory[]) => {
-  if (isNativeMaterialCommandEnabled()) {
+  if (isNativeMaterialCommandEnabled() || isScopedProjectReadEnabled()) {
     throw new Error('Whole-BOM replacement is disabled for native material editing. Use a versioned material command.');
   }
   const bomRef = doc(db, 'projects', projectId, 'bom', 'data');
