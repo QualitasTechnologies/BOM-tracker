@@ -7596,3 +7596,12 @@ exports.nativeProjectDocumentOperations=onCall(
   {region:'us-central1',timeoutSeconds:60,maxInstances:5},
   createNativeProjectDocumentOperations({db:admin.firestore(),auth:admin.auth(),bucket:admin.storage().bucket(),enabled:()=>projectDocumentsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
 );
+
+// Authorized original-screen reads. Provision a base64url 32-byte key before
+// deploying this export; enabling reads remains independent of every write gate.
+const bomProjectReadCursorKey = defineSecret('BOM_PROJECT_READ_CURSOR_KEY');
+const {createNativeProjectReads,projectReadsEnabled}=require('./nativeProjectReads.cjs');
+exports.nativeProjectReads=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:5,secrets:[bomProjectReadCursorKey]},
+  createNativeProjectReads({db:admin.firestore(),auth:admin.auth(),bucket:admin.storage().bucket(),enabled:()=>projectReadsEnabled(process.env),getCursorKey:()=>bomProjectReadCursorKey.value()}),
+);

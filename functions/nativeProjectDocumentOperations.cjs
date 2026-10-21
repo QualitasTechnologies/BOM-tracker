@@ -1,5 +1,6 @@
 const {randomBytes,randomUUID}=require('node:crypto');
 const {currentNativeActor}=require('./nativeMaterialOperations.cjs');
+const {readProjectDocumentView}=require('./projectDocumentRead.cjs');
 const {fault,isFault,plain,validId,version,validVersion,TYPES,MAX_BYTES,hash,typeAccess,projectAccess,assertDeletion,view,projectDocumentsEnabled,budget:assertDocumentBudget}=require('./projectDocumentState.cjs');
 const TTL=15*60*1000;
 function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,getServerTimestamp,now=()=>new Date()}){
@@ -37,15 +38,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
     const documents=[];
     for(const row of page){
      const raw=row.data();if(current.customClaims.role!=='admin'&&raw.type==='customer-po')continue;
-     const projected=view(row.id,raw),marker=raw.pulseNativeDocument;
-     if(marker){
-      if(!plain(marker)||typeof marker.operation_id!=='string'||!/^[-\w]{1,128}$/.test(marker.operation_id)||typeof marker.path!=='string'||typeof marker.generation!=='string')throw fault('invalid_project_document_state',409);
-      const proofSnapshot=await tx.get(db.collection('pulseProjectDocumentUploads').doc(data.project_id).collection('receipts').doc(marker.operation_id)),proof=proofSnapshot.data();
-      if(!proofSnapshot.exists||proof.project_id!==data.project_id||proof.document_id!==row.id||proof.final_path!==marker.path||proof.finalized?.generation!==marker.generation||proof.finalized?.document?.id!==row.id||typeof proof.download_token!=='string'||!proof.download_token)throw fault('invalid_project_document_state',409);
-      const url=`https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}/o/${encodeURIComponent(marker.path)}?alt=media&token=${encodeURIComponent(proof.download_token)}&generation=${marker.generation}`;
-      if(proof.finalized.document.url!==url)throw fault('invalid_project_document_state',409);
-      projected.url=url;
-     }
+     const projected=await readProjectDocumentView({transaction:tx,db,bucket,projectId:data.project_id,id:row.id,raw});
      documents.push({...projected,nativeOpening:{project_id:data.project_id,actor_uid:actor.uid,project_version:version(project.snapshot),bom_version:version(bom),document_version:version(row)}});
     }
     await actorNow(project.snapshot.data());
