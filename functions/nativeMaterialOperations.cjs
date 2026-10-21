@@ -29,6 +29,7 @@ function createNativeMaterialOperations({ db, auth, mutationsEnabled = false, ge
   return async request => {
     try {
       const actor = await currentNativeActor(auth, request);
+      const openingIdentity = JSON.stringify([actor.uid, emailOf(actor.email), actor.customClaims.role]);
       const data = request.data;
       if (!plain(data) || !['get', 'patch', 'fulfill', 'command', 'create_project'].includes(data.operation)) throw fault('invalid_material_request', 400);
       const allowed = data.operation === 'get' ? ['operation', 'project_id']
@@ -46,6 +47,10 @@ function createNativeMaterialOperations({ db, auth, mutationsEnabled = false, ge
       let result;
       const res = { set() {}, status() { return this; }, json(value) { result = value; return this; } };
       await handler({ method: operation === 'get' ? 'GET' : ['fulfill', 'command', 'create_project'].includes(operation) ? 'POST' : 'PATCH', query: { project_id: projectId, ...(operation === 'create_project' ? { resource: 'project_create' } : operation === 'fulfill' ? { resource: 'fulfillment' } : operation === 'command' ? { resource: 'commands' } : {}) }, body }, res);
+      if (operation === 'get' && result?.ok === true) {
+        const current = await currentNativeActor(auth, request);
+        if (JSON.stringify([current.uid, emailOf(current.email), current.customClaims.role]) !== openingIdentity) throw fault('actor_session_changed', 403);
+      }
       return result;
     } catch (error) {
       return { ok: false, error: error.status ? error.code : 'project_operations_unavailable' };

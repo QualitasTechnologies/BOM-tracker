@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 let createNativeMaterialOperations;
 try { ({ createNativeMaterialOperations } = require('./nativeMaterialOperations.cjs')); } catch {}
 
-function fixture({ enabled, tokenError = false } = {}) {
+function fixture({ enabled, tokenError = false, onRead } = {}) {
   const actor = { uid: 'native-uid', email: 'partner@example.com', emailVerified: true, disabled: false, customClaims: { role: 'viewer', status: 'approved' } };
   const token = { uid: actor.uid, email: actor.email, auth_time: 1800000000 };
   const docs = new Map([
@@ -19,9 +19,9 @@ function fixture({ enabled, tokenError = false } = {}) {
   const db = { collection: name => ref(name), runTransaction: async fn => {
     const writes = [];
     const result = await fn({
-      get: async row => row.collection && row.filters
+      get: async row => { onRead?.(row, actor, token); return row.collection && row.filters
         ? { docs: [...docs].filter(([path, data]) => path.startsWith(`${row.collection}/`) && row.filters.every(([field, op, value]) => op === '==' ? data[field] === value : op === 'array-contains-any' ? Array.isArray(data[field]) && value.some(item => data[field].includes(item)) : false)).slice(0, row.max).map(([path, data]) => ({ id: path.slice(row.collection.length + 1), data: () => structuredClone(data) })) }
-        : { exists: docs.has(row.path), data: () => structuredClone(docs.get(row.path)), updateTime: { seconds: 10, nanoseconds: tick } },
+        : { exists: docs.has(row.path), data: () => structuredClone(docs.get(row.path)), updateTime: { seconds: 10, nanoseconds: tick } }; },
       update: (row, fields) => writes.push(() => docs.set(row.path, { ...docs.get(row.path), ...fields })),
       create: (row, data) => writes.push(() => docs.set(row.path, data))
     });
@@ -41,7 +41,15 @@ test('native material transport reuses Firebase identity, scoped engine and disp
   assert.equal(result.ok, true); assert.equal(result.version, '10:1');
   assert.deepEqual(result.categories.map(row => row.name), ['Mech']);
   assert.equal(result.permissions.edit, false);
-  assert.deepEqual(f.checks, [{ value: 'actual-token', revoked: true }]);
+  assert.deepEqual(f.checks, [{ value: 'actual-token', revoked: true }, { value: 'actual-token', revoked: true }]);
+});
+
+test('material reads cannot publish an opening after actor approval or scope authority changes', async () => {
+  const f = fixture({ onRead: (row, actor) => { if (row.path.endsWith('/bom/data')) actor.disabled = true; } });
+  assert.deepEqual(await f.invoke(), { ok: false, error: 'actor_forbidden' });
+  const g = fixture({ onRead: (row, actor) => { if (row.path.endsWith('/bom/data')) actor.customClaims.role = 'viewer'; } });
+  g.actor.customClaims.role = 'admin';
+  assert.deepEqual(await g.invoke(), { ok: false, error: 'actor_session_changed' });
 });
 
 test('explicit-null project membership preserves legacy material access with unchanged category scope and audited replay', async () => {
@@ -74,6 +82,35 @@ test('explicit-null project access does not invent an external category grant', 
   const before = structuredClone(f.docs);
   assert.deepEqual(await f.invoke(f.patch), { ok: false, error: 'material_forbidden' });
   assert.deepEqual(f.docs, before);
+});
+
+test('material GET scopes categories before safe serialization and rejects malformed visible state', async () => {
+  const f = fixture();
+  f.docs.get('projects/A/bom/data').categories = [
+    f.docs.get('projects/A/bom/data').categories[0], null,
+    { name: 1, items: [{ id: 'hidden' }] },
+    { name: 'Other', items: [{ id: 'hidden' }], unsupported: Buffer.from([9]) }
+  ];
+  const scoped = await f.invoke();
+  assert.equal(scoped.ok, true);
+  assert.deepEqual(scoped.categories.map(category => category.name), ['Mech']);
+  assert.equal(Object.hasOwn(scoped.categories[0], 'unsupported'), false);
+
+  f.docs.get('projects/A/bom/data').categories[0].items[0].id = null;
+  assert.deepEqual(await f.invoke(), { ok: false, error: 'materials_data_integrity' });
+  f.docs.get('projects/A/bom/data').categories = null;
+  assert.deepEqual(await f.invoke(), { ok: false, error: 'materials_data_integrity' });
+  f.docs.get('projects/A/bom/data').categories = undefined;
+  assert.deepEqual((await f.invoke()).categories, []);
+  f.docs.delete('projects/A/bom/data');
+  const absent = await f.invoke();
+  assert.deepEqual(absent.categories, []);
+  assert.equal(absent.version, 'missing');
+
+  const admin = fixture();
+  admin.actor.customClaims.role = 'admin';
+  admin.docs.get('projects/A/bom/data').categories[1] = null;
+  assert.deepEqual(await admin.invoke(), { ok: false, error: 'materials_data_integrity' });
 });
 
 test('native writes default off even with an approved Firebase viewer', async () => {

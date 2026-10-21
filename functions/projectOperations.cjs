@@ -1,6 +1,7 @@
 const { createHash } = require('node:crypto');
 const { createProjectActorFactory } = require('./projectReviewActor.cjs');
 const { validateCommand, canonicalCategories, referencedDocuments, applyCommand, assertDocumentBudget, MAX_INPUT_BYTES } = require('./materialCommands.cjs');
+const { materialReadView } = require('./materialReadView.cjs');
 
 const fault = (code, status) => Object.assign(new Error(code), { code, status });
 const digest = text => createHash('sha256').update(text).digest('hex');
@@ -252,7 +253,11 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           if (!project.exists) throw fault('project_not_found', 404);
           const scope = scopeFor(project.data(), actor);
           const bom = await transaction.get(bomRef);
-          const categories = (Array.isArray(bom.data()?.categories) ? bom.data().categories : []).filter(category => scope === null || scope.includes(category.name));
+          const rawCategories = bom.exists ? bom.data()?.categories : undefined;
+          if (rawCategories !== undefined && !Array.isArray(rawCategories)) throw fault('materials_data_integrity', 409);
+          const scopedCategories = scope === null ? rawCategories || []
+            : (rawCategories || []).filter(category => plain(category) && typeof category.name === 'string' && scope.includes(category.name));
+          const categories = materialReadView(scopedCategories);
           return { ok: true, project_id: id, categories, version: versionOf(bom), permissions: { review: true, edit: writesOn() && (scope === null || categories.length > 0), command: writesOn() && (scope === null || scope.length > 0) } };
         });
         return res.json(response);
