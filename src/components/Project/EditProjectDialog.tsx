@@ -15,6 +15,7 @@ import { getProjectDocuments } from "@/utils/projectDocumentFirestore";
 import { listPulseProjects, type PulseProjectOption } from "@/utils/pulseProxyFirestore";
 import type { EditableProjectInput, FirestoreProject } from "@/types/project";
 import { useAuth } from "@/hooks/useAuth";
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
 
 interface EditProjectDialogProps {
   open: boolean;
@@ -25,6 +26,7 @@ interface EditProjectDialogProps {
 
 const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: EditProjectDialogProps) => {
   const { user, isAdmin } = useAuth();
+  const legacyEditingUnavailable = isScopedProjectReadEnabled();
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState("");
   const [clientName, setClientName] = useState("");
@@ -127,6 +129,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    if (legacyEditingUnavailable) return;
 
     if (!project) {
       setError("Select a project to edit.");
@@ -221,11 +224,13 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
           <DialogTitle>Edit Project</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto space-y-3 pr-2 -mr-2">
+          {legacyEditingUnavailable && <Alert><AlertDescription>Project editing is temporarily unavailable here. Reopen the project to use its safe editing actions.</AlertDescription></Alert>}
           {error && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
+          <fieldset disabled={legacyEditingUnavailable} className="contents">
           <div className="space-y-1">
             <Label htmlFor="projectId">Project ID</Label>
             <Input
@@ -359,11 +364,12 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
               className="h-8"
             />
           </div>
+          </fieldset>
           <div className="flex justify-end gap-2 pt-4 mt-4 border-t bg-background">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} className="h-8">
               Cancel
             </Button>
-            <Button type="submit" className="h-8">Update Project</Button>
+            <Button type="submit" disabled={legacyEditingUnavailable} className="h-8">Update Project</Button>
           </div>
         </form>
       </DialogContent>
