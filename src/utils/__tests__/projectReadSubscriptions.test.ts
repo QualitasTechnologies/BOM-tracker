@@ -258,10 +258,11 @@ describe('project read subscription coordinator', () => {
     expect(doc).not.toHaveBeenCalled();
 
     const onSnapshotMock = vi.mocked(onSnapshot);
-    onSnapshotMock.mockImplementation((_ref, _next, fail) => {
+    onSnapshotMock.mockImplementation(((...args: unknown[]) => {
+      const fail = args[2] as ((error: Error) => void) | undefined;
       fail?.(new Error('sensitive SDK details'));
       return vi.fn();
-    });
+    }) as unknown as typeof onSnapshot);
     const sdkErrors: Error[] = [];
     const stop = subscribeProjectRead({
       projectId: 'valid-project', uid: 'u1', read: async () => 'fresh', onValue: () => {}, onError: e => sdkErrors.push(e),
@@ -278,10 +279,11 @@ describe('project read subscription coordinator', () => {
     expect(registrationErrors.every(error => !error.message.includes('sensitive SDK registration details'))).toBe(true);
     stopFailedRegistration();
 
-    vi.mocked(onIdTokenChanged).mockImplementation((_auth, _next, fail) => {
+    vi.mocked(onIdTokenChanged).mockImplementation(((...args: unknown[]) => {
+      const fail = args[2] as ((error: Error) => void) | undefined;
       fail?.(new Error('sensitive auth SDK details'));
       return vi.fn();
-    });
+    }) as unknown as typeof onIdTokenChanged);
     const authErrors: Error[] = [];
     const stopFailedAuth = subscribeProjectRead({
       projectId: 'valid-project', uid: 'u1', read: async () => 'fresh', onValue: () => {}, onError: error => authErrors.push(error),
@@ -289,7 +291,11 @@ describe('project read subscription coordinator', () => {
     await vi.waitFor(() => expect(authErrors.length).toBeGreaterThan(0));
     expect(authErrors.every(error => !error.message.includes('sensitive auth SDK details'))).toBe(true);
     stopFailedAuth();
-    vi.mocked(onIdTokenChanged).mockImplementation((_auth, callback) => { callback({ uid: 'u1' }); return () => {}; });
+    vi.mocked(onIdTokenChanged).mockImplementation(((...args: unknown[]) => {
+      const callback = args[1] as (user: { uid: string } | null) => void;
+      callback({ uid: 'u1' });
+      return () => {};
+    }) as unknown as typeof onIdTokenChanged);
     onSnapshotMock.mockReset();
     onSnapshotMock.mockImplementation(() => vi.fn());
   });
@@ -304,7 +310,11 @@ describe('project read subscription coordinator', () => {
     await Promise.resolve();
     expect(read).not.toHaveBeenCalled();
     expect(values).toEqual([]);
-    vi.mocked(onIdTokenChanged).mockImplementation((_auth, callback) => { callback({ uid: 'u1' }); return () => {}; });
+    vi.mocked(onIdTokenChanged).mockImplementation(((...args: unknown[]) => {
+      const callback = args[1] as (user: { uid: string } | null) => void;
+      callback({ uid: 'u1' });
+      return () => {};
+    }) as unknown as typeof onIdTokenChanged);
   });
 
   it('subscribes to the catalog notice only for an admin catalog read', async () => {

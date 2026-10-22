@@ -20,13 +20,14 @@ import type { BOMCategory, BOMItem } from "@/types/bom";
 import { TranscriptPasteDialog } from "@/components/Transcripts";
 import { useAuth } from "@/hooks/useAuth";
 import { isInternalUser } from "@/utils/accessControl";
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
 
 /** An Archived project stays hidden from the list unless it has an active support profile (still reachable via Support). */
 export const isProjectVisibleInList = (project: Pick<FirestoreProject, 'status' | 'supportProfile'>): boolean => {
   return project.status !== 'Archived' || !!project.supportProfile;
 };
 
-const Projects = () => {
+const ProjectsContent = () => {
   const { user, isAdmin } = useAuth();
   const isPartner = !!user && !isAdmin && !isInternalUser(user.email ?? '');
   const [viewMode, setViewMode] = useState<ProjectViewMode>("cards");
@@ -42,19 +43,25 @@ const Projects = () => {
   const [projects, setProjects] = useState<FirestoreProject[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [projectTemplateError, setProjectTemplateError] = useState<string | null>(null);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
+  const readOnlyProjects = isScopedProjectReadEnabled();
 
   useEffect(() => {
+    let active = true;
+    setProjects([]); setProjectsError(null); setSelectedProject(null);
     // Subscribe to Firestore projects (filtered by membership for non-admins).
     // Re-run when auth state changes so the query gets the correct membership filter.
     const unsubscribeProjects = subscribeToProjects(
-      (fetchedProjects) => { setProjects(fetchedProjects); },
-      user ? { uid: user.uid, isAdmin } : undefined
+      (fetchedProjects) => { if (active) { setProjects(fetchedProjects); setProjectsError(null); } },
+      user ? { uid: user.uid, isAdmin } : undefined,
+      (error) => { if (active) { setProjects([]); setSelectedProject(null); setProjectsError(error.message || 'Could not load projects. Please retry.'); } }
     );
     // Subscribe to clients to get logos
     const unsubscribeClients = subscribeToClients((fetchedClients) => {
       setClients(fetchedClients);
     });
     return () => {
+      active = false;
       unsubscribeProjects();
       unsubscribeClients();
     };
@@ -237,7 +244,7 @@ const Projects = () => {
               </p>
             )}
           </div>
-          {!isPartner && (
+          {!isPartner && !readOnlyProjects && (
             <div className="flex items-center gap-1.5 flex-shrink-0">
               <Button
                 variant="ghost"
@@ -338,6 +345,8 @@ const Projects = () => {
     <div className="flex min-h-screen bg-background">
       <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
       <div className={`flex-1 transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
+        {projectsError && <div role="alert" className="mx-6 mt-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900">{projectsError}</div>}
+        {readOnlyProjects && <div role="status" className="mx-6 mt-4 rounded-md border bg-muted px-4 py-3 text-sm">Project details are currently read only.</div>}
         {/* Header */}
         <div className="bg-card border-b">
           <div className="container mx-auto px-6 py-6">
@@ -363,7 +372,7 @@ const Projects = () => {
               </div>
 
               <div className="flex items-center gap-3">
-                {(isAdmin || isInternalUser(user?.email ?? '')) && (
+                {(isAdmin || isInternalUser(user?.email ?? '')) && !readOnlyProjects && (
                   <Button onClick={() => setIsAddProjectDialogOpen(true)}>
                     <Plus className="h-4 w-4 mr-2" />
                     Add New Project
@@ -497,7 +506,7 @@ const Projects = () => {
                               </Link>
                             </Button>
                           )}
-                          {!isPartner && (
+                          {!isPartner && !readOnlyProjects && (
                             <>
                               <Button
                                 variant="outline"
@@ -531,7 +540,7 @@ const Projects = () => {
           {filteredProjects.length === 0 && (
             <div className="text-center py-12">
               <div className="text-muted-foreground text-lg">No projects found matching your criteria.</div>
-              <Button className="mt-4">
+              <Button className="mt-4" disabled={readOnlyProjects} title={readOnlyProjects ? 'Project details are currently read only.' : undefined}>
                 <Plus className="h-4 w-4 mr-2" />
                 Create New Project
               </Button>
@@ -565,6 +574,11 @@ const Projects = () => {
       />
     </div>
   );
+};
+
+const Projects = () => {
+  const { user, isAdmin } = useAuth();
+  return <ProjectsContent key={JSON.stringify([user?.uid ?? null, isAdmin])} />;
 };
 
 export default Projects;

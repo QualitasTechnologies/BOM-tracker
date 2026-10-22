@@ -89,7 +89,7 @@ describe('native project read client', () => {
     const own = Object.defineProperty({}, '__proto__', { value: { safe: true }, enumerable: true });
     const reply = { ok: true, project_id: 'p1', actor_uid: 'u1', version: '1:2', project: { projectId: 'p1', ...own, constructor: 'safe', prototype: ['safe'] } };
     const returnedProject = (await setup(reply).client.get('p1', 'u1')).project;
-    expect(Object.hasOwn(returnedProject, '__proto__')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(returnedProject, '__proto__')).toBe(true);
     expect((Object.getOwnPropertyDescriptor(returnedProject, '__proto__')?.value as { safe: boolean }).safe).toBe(true);
     const accessor = { projectId: 'p1' };
     Object.defineProperty(accessor, 'private', { enumerable: true, get: () => { throw new Error('getter invoked'); } });
@@ -174,8 +174,10 @@ describe('native project read client', () => {
     await expect(client.get('p1', 'u2')).rejects.toThrow(/changed/i);
     expect(callable).not.toHaveBeenCalled();
     callable.mockRejectedValueOnce(new Error('private backend text'));
-    const error = await client.get('p1', 'u1').catch(value => value as Error);
-    expect(error.message).toMatch(/unavailable|try again/i);
-    expect(error.message).not.toContain('private backend text');
+    const failure = await client.get('p1', 'u1').then(() => null, error => error);
+    expect(failure).toBeInstanceOf(Error);
+    if (!(failure instanceof Error)) throw new Error('Expected the read to fail.');
+    expect(failure.message).toMatch(/unavailable|try again/i);
+    expect(failure.message).not.toContain('private backend text');
   });
 });

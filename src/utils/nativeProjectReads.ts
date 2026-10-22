@@ -57,7 +57,7 @@ function safeJson(value: unknown, seen = new Set<object>()): boolean {
       if (key === 'length') return true;
       if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length) return false;
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      return !!descriptor?.enumerable && Object.hasOwn(descriptor, 'value') && safeJson(descriptor.value, seen);
+      return !!descriptor?.enumerable && Object.prototype.hasOwnProperty.call(descriptor, 'value') && safeJson(descriptor.value, seen);
     }) && keys.filter(key => key !== 'length').length === value.length;
     seen.delete(value); return ok;
   }
@@ -67,7 +67,7 @@ function safeJson(value: unknown, seen = new Set<object>()): boolean {
   const ok = keys.every(key => {
     if (typeof key !== 'string') return false;
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    return !!descriptor?.enumerable && Object.hasOwn(descriptor, 'value') && safeJson(descriptor.value, seen);
+    return !!descriptor?.enumerable && Object.prototype.hasOwnProperty.call(descriptor, 'value') && safeJson(descriptor.value, seen);
   });
   seen.delete(value); return ok;
 }
@@ -138,7 +138,7 @@ export function createNativeProjectReadClient(deps: NativeProjectReadDependencie
     if (!current) throw signedOut();
     if (current !== uid) throw changed();
     const dataDescriptor = response && Object.getOwnPropertyDescriptor(response, 'data');
-    if (!record(response) || !dataDescriptor?.enumerable || !Object.hasOwn(dataDescriptor, 'value')) throw integrity();
+    if (!record(response) || !dataDescriptor?.enumerable || !Object.prototype.hasOwnProperty.call(dataDescriptor, 'value')) throw integrity();
     if (record(response.data) && response.data.ok === false) failure(response.data);
     return parse(response.data);
   }

@@ -60,6 +60,9 @@ export interface Project {
   deadline: string; // ISO string - treated as CURRENT deadline
   poValue?: number;          // Purchase Order value from customer
   internalBudget?: number;   // Internal cost budget for the project
+  costPerHour?: number;      // Existing Cost Analysis hourly rate
+  miscCost?: number;         // Existing Cost Analysis miscellaneous cost
+  estimatedBudget?: number; // Existing Cost Analysis budget
   bomSnapshot?: any[]; // Snapshot of BOM when status changed to 'Ongoing' (order won)
   bomSnapshotDate?: string; // ISO string - when snapshot was taken
   archivedAt?: string; // ISO string - when project was archived

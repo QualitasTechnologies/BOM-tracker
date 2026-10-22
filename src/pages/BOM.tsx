@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { Search, Plus, Download, Filter, X, Upload, Package, FileText, ChevronDown, ChevronUp, Milestone, Brain, UserCheck, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -29,6 +29,7 @@ import ProjectContextEditor from '@/components/Project/ProjectContextEditor';
 import { saveAs } from 'file-saver';
 import {
   getBOMData,
+  getProject,
   subscribeToBOM,
   updateBOMData,
   updateBOMItem,
@@ -41,6 +42,7 @@ import { getVisibleCategories } from '@/utils/accessControl';
 import ProjectMembersTab from '@/components/Project/ProjectMembersTab';
 import { ProjectCommunicationsTab } from '@/components/Project/ProjectCommunicationsTab';
 import { isNativeMaterialCommandEnabled, loadNativeMaterialSnapshot, submitNativeMaterialCommand, submitNativeMaterialFulfillment } from '@/utils/nativeMaterialCommands';
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
 import OverheadsTab from '@/components/BOM/OverheadsTab';
 import ProjectCostBar from '@/components/BOM/ProjectCostBar';
 import { fetchAllUsers } from '@/utils/userService';
@@ -48,8 +50,6 @@ import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
 import { getBrands } from '@/utils/brandFirestore';
 import type { Vendor, BOMCategory as SettingsCategory } from '@/utils/settingsFirestore';
 import { BOMItem, BOMCategory, BOMStatus, FulfillmentTranche } from '@/types/bom';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '@/firebase';
 import { getProjectDocuments, linkDocumentToBOMItems } from '@/utils/projectDocumentFirestore';
 import { ProjectDocument } from '@/types/projectDocument';
 import { syncPODocumentLinks, getOutgoingPODocuments } from '@/utils/bomDocumentLinking';
@@ -76,7 +76,7 @@ interface OrderDialogData {
   };
 }
 
-const BOM = () => {
+const BOMContent = () => {
   const [searchParams] = useSearchParams();
   const initialTab = searchParams.get('tab') || 'costs';
 
@@ -140,7 +140,11 @@ const BOM = () => {
   const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([]);
   const [overheadTotal, setOverheadTotal] = useState(0);
   const { user, isAdmin } = useAuth();
+  const legacyWritesDisabled = isScopedProjectReadEnabled() && !isNativeMaterialCommandEnabled();
   const [fullProject, setFullProject] = useState<Project | null>(null);
+  const [projectRefreshVersion, setProjectRefreshVersion] = useState(0);
+  const projectReadGeneration = useRef(0);
+  const materialReadGeneration = useRef(0);
   const [approvedUsers, setApprovedUsers] = useState<Array<{ uid: string; email: string; displayName: string }>>([]);
   const canonicalCategoryNames = useMemo(
     () =>
@@ -161,68 +165,88 @@ const BOM = () => {
 
   // Load BOM data when project ID changes
   useEffect(() => {
-    if (!projectId) return;
+    let active = true;
+    const uid = user?.uid;
+    const isCurrent = () => active && !!uid && user?.uid === uid;
+    if (!projectId || !uid) { setCategories([]); setNativeMaterialVersion(null); setFullProject(null); setProjectDetails(null); setProjectDocuments([]); return () => { active = false; }; }
     const nativeMode = isNativeMaterialCommandEnabled();
 
     const refreshBOM = async () => {
+      const request = ++materialReadGeneration.current;
+      const generation = projectReadGeneration.current;
+      const currentRead = () => isCurrent() && request === materialReadGeneration.current && generation === projectReadGeneration.current;
       if (nativeMode) {
         try {
           const snapshot = await loadNativeMaterialSnapshot(projectId);
+          if (!currentRead()) return;
           setCategories(snapshot.categories as BOMCategory[]);
           setNativeMaterialVersion(snapshot.version);
           setMaterialActionError(null);
         } catch (error) {
-          setMaterialActionError(error instanceof Error ? error.message : 'Could not load the current BOM revision.');
+          if (currentRead()) { setCategories([]); setNativeMaterialVersion(null); setMaterialActionError(error instanceof Error ? error.message : 'Could not load the current BOM revision.'); }
         }
       } else {
-        const data = await getBOMData(projectId);
+        try {
+        const data = await getBOMData(projectId, uid, () => { if (!currentRead()) throw new Error('Account or project changed. Reopen the project.'); });
+        if (!currentRead()) return;
         setCategories(data);
         setNativeMaterialVersion(null);
+        setMaterialActionError(null);
+        } catch (error) { if (currentRead()) { setCategories([]); setMaterialActionError(error instanceof Error ? error.message : 'Could not load materials. Retry the project.'); } }
       }
     };
     refreshBOM();
 
     // Subscribe to real-time updates
     const unsubscribe = subscribeToBOM(projectId, (updatedCategories) => {
-      if (nativeMode) {
+      if (!isCurrent()) return;
+      projectReadGeneration.current += 1;
+      setProjectRefreshVersion(version => version + 1);
+      if (nativeMode || isScopedProjectReadEnabled()) {
         // The version and categories must come from the same trusted server snapshot.
         refreshBOM();
       } else {
         setCategories(updatedCategories);
       }
-    });
+    }, (error) => { if (isCurrent()) { projectReadGeneration.current += 1; materialReadGeneration.current += 1; setCategories([]); setNativeMaterialVersion(null); setFullProject(null); setProjectDetails(null); setProjectDocuments([]); setMaterialActionError(error.message || 'Could not load materials. Please retry.'); } });
 
-    return () => unsubscribe();
-  }, [projectId]);
+    return () => { active = false; unsubscribe(); };
+  }, [projectId, user?.uid]);
 
   // Load project details and documents
   useEffect(() => {
+    let active = true;
+    const uid = user?.uid;
+    const generation = projectReadGeneration.current;
+    const isCurrent = () => active && generation === projectReadGeneration.current && !!uid && user?.uid === uid;
     const loadProjectDetails = async () => {
-      if (!projectId) return;
+      if (!projectId || !uid) { setFullProject(null); setProjectDetails(null); setProjectDocuments([]); return; }
 
       try {
-        const projectRef = doc(db, 'projects', projectId);
-        const projectSnap = await getDoc(projectRef);
-
-        if (projectSnap.exists()) {
-          const projectData = projectSnap.data() as Project & { projectName: string; clientName: string };
-          setFullProject(projectData);
+        const projectData = await getProject(projectId, uid, () => { if (!isCurrent()) throw new Error('Account or project changed. Reopen the project.'); });
+        if (!isCurrent()) return;
+        if (projectData) {
+          const detail = projectData as Project & { projectName: string; clientName: string };
+          setFullProject(detail);
           setProjectDetails({
-            projectName: projectData.projectName,
-            projectId: projectData.projectId,
-            clientName: projectData.clientName,
+            projectName: detail.projectName,
+            projectId: detail.projectId,
+            clientName: detail.clientName,
           });
         } else {
-          console.error('Project not found');
+          projectReadGeneration.current += 1; materialReadGeneration.current += 1;
+          setFullProject(null); setProjectDetails(null); setProjectDocuments([]); setCategories([]); setNativeMaterialVersion(null); setMaterialActionError('Project not found or you no longer have access.'); return;
         }
 
         // Load project documents
-        const docs = await getProjectDocuments(projectId);
+        const docs = await getProjectDocuments(projectId, { isCurrent });
+        if (!isCurrent()) return;
         setProjectDocuments(docs);
 
         // Load approved users for Members tab (admins only — non-admins get permission denied)
         try {
           const result = await fetchAllUsers() as { users: Array<{ uid: string; email?: string; displayName?: string; customClaims?: { status?: string } }> };
+          if (!isCurrent()) return;
           const approved = (result.users || [])
             .filter(u => u.customClaims?.status === 'approved')
             .map(u => ({ uid: u.uid, email: u.email || '', displayName: u.displayName || u.email || '' }));
@@ -231,12 +255,16 @@ const BOM = () => {
           // Non-admin users won't have access to fetchAllUsers — silently ignore
         }
       } catch (error) {
-        console.error('Error loading project details:', error);
+        if (isCurrent()) {
+          projectReadGeneration.current += 1; materialReadGeneration.current += 1;
+          setFullProject(null); setProjectDetails(null); setProjectDocuments([]); setCategories([]); setNativeMaterialVersion(null); setMaterialActionError(error instanceof Error ? error.message : 'Could not load project details. Please retry.');
+        }
       }
     };
 
     loadProjectDetails();
-  }, [projectId]);
+    return () => { active = false; };
+  }, [projectId, user?.uid, projectRefreshVersion]);
 
   // Load settings data (vendors, makes/brands, categories)
   useEffect(() => {
@@ -792,6 +820,7 @@ const BOM = () => {
   return (
     <div className="min-h-screen bg-background">
       {materialActionError && <div role="alert" className="mx-4 mt-4 rounded border border-destructive bg-destructive/10 p-3 text-sm text-destructive">{materialActionError}</div>}
+      {legacyWritesDisabled && <div role="status" className="mx-4 mt-2 rounded border bg-muted p-3 text-sm">Material changes are currently read only.</div>}
       <main className="p-4">
         <div className="max-w-full mx-auto px-2">
             {/* BOM Header */}
@@ -867,7 +896,7 @@ const BOM = () => {
                     budget={fullProject?.internalBudget}
                     bomCost={calculateBOMMetrics().totalCost}
                     overheadCost={overheadTotal}
-                    canEdit={isAdmin}
+                    canEdit={isAdmin && !legacyWritesDisabled}
                     onUpdateBudget={handleUpdateBudget}
                   />
                 )}
@@ -885,13 +914,13 @@ const BOM = () => {
                       />
                     </div>
                     {!isPartner && (
-                      <Button variant="outline" onClick={() => setAddPartOpen(true)}>
+                    <Button variant="outline" disabled={legacyWritesDisabled} onClick={() => setAddPartOpen(true)}>
                         <Plus className="mr-2 h-4 w-4" />
                         Add Part
                       </Button>
                     )}
                     {!isPartner && (
-                      <Button variant="outline" onClick={() => setImportBOMOpen(true)}>
+                    <Button variant="outline" disabled={legacyWritesDisabled} onClick={() => setImportBOMOpen(true)}>
                         <Upload className="mr-2 h-4 w-4" />
                         Import BOM
                       </Button>
@@ -909,11 +938,11 @@ const BOM = () => {
                         Export
                       </Button>
                     )}
-                    <Button variant="outline" onClick={handleCreatePurchaseOrder}>
+                    <Button variant="outline" disabled={legacyWritesDisabled} onClick={handleCreatePurchaseOrder}>
                       Create PR
                     </Button>
                     {!isPartner && (
-                      <Button variant="outline" onClick={() => setPODialogOpen(true)}>
+                      <Button variant="outline" disabled={legacyWritesDisabled} onClick={() => setPODialogOpen(true)}>
                         <FileText className="mr-2 h-4 w-4" />
                         Create PO
                       </Button>
@@ -974,9 +1003,9 @@ const BOM = () => {
                       category={category}
                       projectId={projectId}
                       onToggle={() => toggleCategory(category.name)}
-                      onQuantityChange={handleQuantityChange}
-                      onDeletePart={handleDeletePart}
-                      onDeleteCategory={(categoryName) => {
+                      onQuantityChange={legacyWritesDisabled ? undefined : handleQuantityChange}
+                      onDeletePart={legacyWritesDisabled ? undefined : handleDeletePart}
+                      onDeleteCategory={legacyWritesDisabled ? undefined : (categoryName) => {
                         // Handle category deletion - remove the entire category
                         if (projectId) {
                           if (isNativeMaterialCommandEnabled()) {
@@ -993,7 +1022,7 @@ const BOM = () => {
                           }
                         }
                       }}
-                      onStatusChange={(itemId, newStatus) => {
+                      onStatusChange={legacyWritesDisabled ? undefined : (itemId, newStatus) => {
                         if (!projectId) return;
 
                         // Find the item
@@ -1036,13 +1065,13 @@ const BOM = () => {
                         // For other status changes, update directly
                         updateItemSafely(itemId, { status: newStatus as BOMStatus });
                       }}
-                      onEditPart={handleEditPart}
-                      onPartCategoryChange={handlePartCategoryChange}
+                      onEditPart={legacyWritesDisabled ? undefined : handleEditPart}
+                      onPartCategoryChange={legacyWritesDisabled ? undefined : handlePartCategoryChange}
                       availableCategories={canonicalCategoryNames}
-                      onUpdatePart={handleUpdatePart}
+                      onUpdatePart={legacyWritesDisabled ? undefined : handleUpdatePart}
                       getDocumentCount={getDocumentCountForItem}
                       getDocumentsForItem={getDocumentsForItem}
-                      onUnlinkDocument={handleUnlinkDocument}
+                      onUnlinkDocument={legacyWritesDisabled ? undefined : handleUnlinkDocument}
                       vendors={vendors}
                       projectDocuments={projectDocuments}
                     />
@@ -1085,9 +1114,9 @@ const BOM = () => {
                                     part={item}
                                     projectId={projectId}
                                     onClick={() => {}}
-                                    onQuantityChange={handleQuantityChange}
-                                    onDelete={handleDeletePart}
-                                    onStatusChange={(itemId, newStatus) => {
+                                    onQuantityChange={legacyWritesDisabled ? undefined : handleQuantityChange}
+                                    onDelete={legacyWritesDisabled ? undefined : handleDeletePart}
+                                    onStatusChange={legacyWritesDisabled ? undefined : (itemId, newStatus) => {
                                       if (!projectId) return;
 
                                       // Find the item
@@ -1128,12 +1157,12 @@ const BOM = () => {
                                       // For other status changes, update directly
                                       updateItemSafely(itemId, { status: newStatus as BOMStatus });
                                     }}
-                                    onEdit={handleEditPart}
-                                    onCategoryChange={handlePartCategoryChange}
+                                    onEdit={legacyWritesDisabled ? undefined : handleEditPart}
+                                    onCategoryChange={legacyWritesDisabled ? undefined : handlePartCategoryChange}
                                     availableCategories={canonicalCategoryNames}
                                     linkedDocumentsCount={getDocumentCountForItem(item.id)}
                                     linkedDocuments={getDocumentsForItem(item.id)}
-                                    onUnlinkDocument={handleUnlinkDocument}
+                                    onUnlinkDocument={legacyWritesDisabled ? undefined : handleUnlinkDocument}
                                     globalVendors={vendors.map(v => ({
                                       id: v.id,
                                       company: v.company,
@@ -1711,5 +1740,11 @@ function mapStatusToFirestore(status: string): BOMStatus {
       return 'not-ordered';
   }
 }
+
+const BOM = () => {
+  const { projectId = '' } = useParams<{ projectId: string }>();
+  const { user, isAdmin } = useAuth();
+  return <BOMContent key={JSON.stringify([projectId, user?.uid ?? null, isAdmin])} />;
+};
 
 export default BOM;
