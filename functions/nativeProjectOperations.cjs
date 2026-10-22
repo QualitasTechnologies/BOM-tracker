@@ -18,6 +18,12 @@ const validVersion = value => typeof value === 'string' && /^(0|[1-9]\d*):(0|[1-
 const exact = (data, keys) => { if (!plain(data) || Object.keys(data).some(key => !keys.includes(key))) throw fault('invalid_project_command'); };
 const text = (value, max, nonempty = false) => typeof value === 'string' && value.length <= max && (!nonempty || value.trim());
 const normalizeEmail = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
+const resolvableKinds = new Set(['metadata', 'archive', 'restore', 'support_profile', 'member_add', 'member_remove', 'member_scope', 'member_notifications',
+  'recipient_add', 'recipient_remove', 'recipient_notifications']);
+const validReceipt = (receipt, projectId, operationId) => plain(receipt) && typeof receipt.actor_uid === 'string' &&
+  typeof receipt.actor_email === 'string' && /^[a-f0-9]{64}$/.test(receipt.payload_hash || '') && plain(receipt.result) &&
+  receipt.result.ok === true && receipt.result.project_id === projectId && receipt.result.operation_id === operationId &&
+  (receipt.cancelled === undefined || typeof receipt.cancelled === 'boolean');
 const projectMutationsEnabled = env => ['BOM_NATIVE_PROJECT_MUTATIONS_ENABLED', 'BOM_MATERIAL_MUTATIONS_ENABLED', 'BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED'].every(key => env[key] === 'true');
 const supportProfileMutationsEnabled = env => projectMutationsEnabled(env) && env.BOM_NATIVE_SUPPORT_PROFILE_ENABLED === 'true';
 const assertAccess = (project, actor) => {
@@ -77,7 +83,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
         || Buffer.byteLength(JSON.stringify(data)) > MAX_INPUT_BYTES) throw fault('invalid_project_command');
       const command = data.command;
       const resolving=data.resolve_only===true;
-      if(Object.hasOwn(data,'resolve_only')&&(!resolving||!['metadata','restore','support_profile'].includes(command.kind)))throw fault('invalid_project_command');
+      if(Object.hasOwn(data,'resolve_only')&&(!resolving||!resolvableKinds.has(command.kind)))throw fault('invalid_project_command');
       const shapes = { metadata: ['kind', 'patch','delay'], archive: ['kind'], member_add: ['kind', 'user_id', 'category_scope'], member_remove: ['kind', 'user_id'], member_scope: ['kind', 'user_id', 'category_scope'],
         member_notifications: ['kind', 'user_id', 'enabled'], recipient_add: ['kind', 'email', 'name'], recipient_remove: ['kind', 'email'], recipient_notifications: ['kind', 'email', 'enabled'], restore: ['kind'], support_profile:['kind','patch','machines'] };
       if (!shapes[command.kind]) throw fault('invalid_project_command');
@@ -90,17 +96,6 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
       if (command.kind.startsWith('member_') && (!validId(command.user_id) || command.user_id.length > 128)) throw fault('invalid_project_command');
       if (command.kind.endsWith('_notifications') && typeof command.enabled !== 'boolean') throw fault('invalid_project_command');
       if (command.kind.startsWith('recipient_') && !mail(normalizeEmail(command.email))) throw fault('invalid_project_command');
-      let target;
-      if (command.kind === 'member_add') {
-        try { target = await auth.getUser(command.user_id); } catch { throw fault('target_user_unavailable', 409); }
-        if (target.uid !== command.user_id || target.disabled || !target.emailVerified || target.customClaims?.status !== 'approved'
-          || !['admin', 'user', 'viewer'].includes(target.customClaims.role) || !mail(normalizeEmail(target.email))) throw fault('target_user_unavailable', 409);
-        // Looking up the target is an external await: don't grant access using an
-        // admin role that was revoked while that lookup was in flight.
-        const current = await verifiedActor(auth, request);
-        if (current.uid !== actor.uid || normalizeEmail(current.email) !== normalizeEmail(actor.email)) throw fault('actor_session_changed', 403);
-        if (current.customClaims.role !== 'admin') throw fault('project_management_forbidden', 403);
-      }
       const receiptRef = db.collection('pulseProjectOperations').doc(data.project_id).collection('receipts').doc(data.operation_id);
       const auditRef = db.collection('pulseProjectOperations').doc(data.project_id).collection('audit').doc(data.operation_id);
       const payloadHash = createHash('sha256').update(JSON.stringify(freeze({ command, expected_version: data.expected_version }))).digest('hex');
@@ -117,7 +112,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
           const current = await verifiedActor(auth, request);
           authorizeCommand(project,current);
           const old = receipt.data();
-          if (old.actor_uid !== actor.uid || old.actor_email !== normalizeEmail(actor.email) || old.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
+          if (!validReceipt(old, data.project_id, data.operation_id) || old.actor_uid !== actor.uid || old.actor_email !== normalizeEmail(actor.email) || old.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
           if(resolving)return{...old.result,resolution:old.cancelled?'cancelled':'committed'};
           if(old.cancelled)throw fault('project_request_cancelled',409);return old.result;
         }
@@ -126,6 +121,17 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
           const result={ok:true,project_id:data.project_id,operation_id:data.operation_id},record={actor_uid:actor.uid,actor_email:normalizeEmail(actor.email),payload_hash:payloadHash,result,cancelled:true,created_at:getServerTimestamp()};
           const audit={actor_uid:current.uid,project_id:data.project_id,operation_id:data.operation_id,operation:`${command.kind}_cancelled`,expected_version:data.expected_version,payload_hash:payloadHash,created_at:getServerTimestamp()};
           assertDocumentBudget([{path:receiptRef.path,data:record},{path:auditRef.path,data:audit}]);transaction.create(receiptRef,record);transaction.create(auditRef,audit);return{...result,resolution:'cancelled'};
+        }
+        let target;
+        if (command.kind === 'member_add') {
+          try { target = await auth.getUser(command.user_id); } catch { throw fault('target_user_unavailable', 409); }
+          if (target.uid !== command.user_id || target.disabled || !target.emailVerified || target.customClaims?.status !== 'approved'
+            || !['admin', 'user', 'viewer'].includes(target.customClaims.role) || !mail(normalizeEmail(target.email))) throw fault('target_user_unavailable', 409);
+          // Looking up the target is an external await: don't grant access using an
+          // admin role that was revoked while that lookup was in flight.
+          const current = await verifiedActor(auth, request);
+          if (current.uid !== actor.uid || normalizeEmail(current.email) !== normalizeEmail(actor.email)) throw fault('actor_session_changed', 403);
+          if (current.customClaims.role !== 'admin') throw fault('project_management_forbidden', 403);
         }
         const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),controlData=control.exists?control.data():{},mode=controlData.mode??'coexist';
         if(support&&!supportWritesOn())throw fault('support_profile_mutations_disabled',503);
