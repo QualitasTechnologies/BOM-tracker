@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pencil, Trash2, UserPlus, AlertCircle, Bell, BellOff, Mail, Send } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -41,11 +41,18 @@ import { isInternalUser } from '@/utils/accessControl';
 import { memberNotificationOperations } from '@/utils/memberNotificationOperations';
 import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
 import { createNativeProjectWorkspace } from '@/utils/nativeProjectOperations';
+import { hasPendingNativeProjectMembers } from '@/utils/nativeProjectJournal';
 
-interface NativeAction { submit: (command: Record<string, unknown>) => Promise<unknown> }
+interface NativeAction {
+  submit: (command: Record<string, unknown>) => Promise<unknown>;
+  resolve?: () => Promise<{ resolution: 'committed' | 'cancelled' }>;
+  acknowledge?: () => Promise<void>;
+  pendingCommand?: Record<string, unknown>;
+}
 interface NativeWorkspace {
   load: () => Promise<any>;
-  capture: () => NativeAction;
+  capture: (namespace?: 'members') => NativeAction;
+  recover?: (namespace: 'members') => NativeAction | null;
   invalidate: () => void;
 }
 interface NativePermissions { edit?: boolean; manage_members?: boolean; notifications?: boolean }
@@ -78,10 +85,13 @@ const ProjectMembersTab = ({
   onProjectUpdated,
 }: ProjectMembersTabProps) => {
   const { toast } = useToast();
+  const scopedReads = isScopedProjectReadEnabled();
+  const memberJournalProbe = useMemo(() => hasPendingNativeProjectMembers(projectId, currentUserId), [projectId, currentUserId, scopedReads]);
   // Scoped reads omit the raw management fields, so member and recipient edits
   // must use the versioned commands instead of legacy array replacement. The
-  // server's own gate still decides whether those commands may write.
-  const native = isScopedProjectReadEnabled();
+  // server's own gate still decides whether those commands may write. A saved
+  // request also forces native recovery when the local read switch has changed.
+  const native = scopedReads || memberJournalProbe.kind !== 'absent';
   const preferenceContext = useRef({ projectId, currentUserId, native, epoch: 0 });
   if (preferenceContext.current.projectId !== projectId || preferenceContext.current.currentUserId !== currentUserId
     || preferenceContext.current.native !== native) {
@@ -93,11 +103,13 @@ const ProjectMembersTab = ({
   // even after closing and reopening a dialog, reuses the frozen nonce/revision.
   const retainedRef = useRef<Map<string, NativeAction>>(new Map());
   const dialogActionRef = useRef<NativeAction | null>(null);
+  const recoveryActionRef = useRef<NativeAction | null>(null);
   const [nativeProject, setNativeProject] = useState<Project | null>(null);
   const [permissions, setPermissions] = useState<NativePermissions>({});
   const [nativeError, setNativeError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [pendingMemberCommand, setPendingMemberCommand] = useState<Record<string, unknown> | null>(null);
   const preferenceGeneration = useRef(0);
   const preferenceBusyRef = useRef(false);
   const preferenceLockRef = useRef(false);
@@ -124,13 +136,13 @@ const ProjectMembersTab = ({
     const assert = () => { if (!check()) throw new Error('The project context changed. Reopen it before continuing.'); };
     return Object.assign(assert, { isCurrent: check });
   };
-  const refreshPreferences = async (expected = preferenceContext.current) => {
+  const refreshPreferences = async (expected: PreferenceContext = preferenceContext.current) => {
     const generation = ++preferenceGeneration.current;
     const assertContext = assertPreferenceContext(expected);
     try {
       const snapshot = await memberNotificationOperations.load(expected.projectId, expected.currentUserId, assertContext);
       assertContext();
-      if (generation !== preferenceGeneration.current) return;
+      if (generation !== preferenceGeneration.current) return false;
       if (!snapshot || snapshot.project_id !== expected.projectId) throw new Error('The notification service returned an unexpected project.');
       setMemberPreferences(Object.fromEntries(snapshot.preferences.map(item => [item.member_uid, item.notifications_enabled])));
       setPreferenceVersion(snapshot.version);
@@ -140,12 +152,14 @@ const ProjectMembersTab = ({
       const hasPending = memberNotificationOperations.hasPending(expected.projectId, expected.currentUserId);
       preferenceLockRef.current = hasPending;
       setPreferencePending(hasPending);
+      return true;
     } catch (err: any) {
       if (generation === preferenceGeneration.current && preferenceContext.current.projectId === expected.projectId
         && preferenceContext.current.currentUserId === expected.currentUserId && preferenceContext.current.native === expected.native) {
         setPreferenceReady(false);
         setPreferenceError(err?.message || 'Failed to load notification preferences');
       }
+      return false;
     }
   };
   const refreshProjectAfterPreference = async (
@@ -207,9 +221,11 @@ const ProjectMembersTab = ({
     const generation = ++generationRef.current;
     retainedRef.current = new Map();
     dialogActionRef.current = null;
+    recoveryActionRef.current = null;
     setPending(false);
+    setPendingMemberCommand(null);
     setNativeProject(null);
-    setNativeError(null);
+    setNativeError(memberJournalProbe.kind === 'error' ? memberJournalProbe.message : null);
     setActionError(null);
     setAddOpen(false);
     setEditMember(null);
@@ -231,6 +247,13 @@ const ProjectMembersTab = ({
         }
         setNativeProject(res.project);
         setPermissions(res.permissions || {});
+        try {
+          const recovery = workspace.recover?.('members') || null;
+          recoveryActionRef.current = recovery;
+          setPendingMemberCommand(recovery?.pendingCommand || null);
+        } catch (err) {
+          setNativeError(nativeMessage(err, 'The saved access change could not be read. Restore browser session storage before editing.'));
+        }
       },
       err => {
         if (generation === generationRef.current) setNativeError(nativeMessage(err, 'Failed to load project members'));
@@ -292,7 +315,7 @@ const ProjectMembersTab = ({
   const captureAction = (): NativeAction | null => {
     const ws = workspaceRef.current;
     if (!ws || !nativeProject) return null;
-    return ws.capture();
+    return ws.capture('members');
   };
 
   // Runs one native command. The captured action (nonce, opening revision,
@@ -303,8 +326,16 @@ const ProjectMembersTab = ({
     if (!ws || preferenceBusyRef.current || preferenceLockRef.current || preferenceBusy || preferencePending) return false;
     const generation = generationRef.current;
     const key = JSON.stringify(command);
-    const action = retainedRef.current.get(key) || dialogAction || captureAction();
+    let action: NativeAction | null;
+    try { action = retainedRef.current.get(key) || dialogAction || captureAction(); }
+    catch (err) {
+      const message = nativeMessage(err, 'The saved access change could not be read. Restore browser session storage before editing.');
+      setActionError(message);
+      toast({ title: 'Error', description: message, variant: 'destructive' });
+      return false;
+    }
     if (!action) return false;
+    if (pendingMemberCommand && action !== recoveryActionRef.current) return false;
     retainedRef.current.set(key, action);
     preferenceBusyRef.current = true;
     setPending(true);
@@ -318,10 +349,19 @@ const ProjectMembersTab = ({
       setNativeProject(res.project);
       setPermissions(res.permissions || {});
       publishProject(res.project);
-      await refreshPreferences({ projectId, currentUserId, native });
+      if (!await refreshPreferences({ projectId, currentUserId, native })) throw new Error('Project refreshed, but notifications could not be refreshed. Retry the saved request to confirm it.');
+      await action.acknowledge?.();
+      recoveryActionRef.current = null;
+      setPendingMemberCommand(null);
       return true;
     } catch (err) {
       if (generation === generationRef.current) {
+        try {
+          if (action.pendingCommand) {
+            recoveryActionRef.current = action;
+            setPendingMemberCommand(action.pendingCommand);
+          }
+        } catch { /* The storage error below remains visible. */ }
         const message = nativeMessage(err, 'Request failed');
         setActionError(message);
         toast({ title: 'Error', description: message, variant: 'destructive' });
@@ -335,12 +375,64 @@ const ProjectMembersTab = ({
     }
   };
 
+  const resolveNativeMemberRequest = async () => {
+    const action = recoveryActionRef.current;
+    const ws = workspaceRef.current;
+    if (!action?.resolve || !ws || pending || preferenceBusyRef.current || preferenceLockRef.current) return;
+    const generation = generationRef.current;
+    setPending(true);
+    setActionError(null);
+    try {
+      const result = await action.resolve();
+      if (generation !== generationRef.current) return;
+      const res = await ws.load();
+      if (generation !== generationRef.current) return;
+      if (!res || res.ok === false || !res.project) throw new Error((res && res.error) || 'Failed to refresh project');
+      setNativeProject(res.project);
+      setPermissions(res.permissions || {});
+      publishProject(res.project);
+      if (!await refreshPreferences({ projectId, currentUserId, native })) throw new Error('Project refreshed, but notifications could not be refreshed.');
+      recoveryActionRef.current = null;
+      retainedRef.current.clear();
+      setPendingMemberCommand(null);
+      toast({ title: result.resolution === 'committed' ? 'Saved change confirmed' : 'Pending change cancelled' });
+    } catch (err) {
+      if (generation === generationRef.current) {
+        const message = nativeMessage(err, 'Could not check the pending change');
+        setActionError(message);
+        toast({ title: 'Error', description: message, variant: 'destructive' });
+      }
+    } finally {
+      if (generation === generationRef.current) setPending(false);
+    }
+  };
+
+  const pendingCommandLabel = (command: Record<string, unknown>) => {
+    const uid = typeof command.user_id === 'string' ? command.user_id : '';
+    const member = members.find(row => row.userId === uid);
+    const available = availableUsers.find(row => row.uid === uid);
+    const target = member?.displayName || available?.displayName || member?.email || available?.email || uid;
+    if (command.kind === 'member_add') return `Add project member ${target}`;
+    if (command.kind === 'member_remove') return `Remove project member ${target}`;
+    if (command.kind === 'member_scope') return `Change category access for ${target} to ${Array.isArray(command.category_scope) && command.category_scope.length ? command.category_scope.join(', ') : 'no categories'}`;
+    if (command.kind === 'member_notifications') return `Change notification preference for ${target}`;
+    if (command.kind === 'recipient_add') return `Add email recipient ${String(command.email || '')}`;
+    if (command.kind === 'recipient_remove') return `Remove email recipient ${String(command.email || '')}`;
+    if (command.kind === 'recipient_notifications') return `Change notifications for email recipient ${String(command.email || '')}`;
+    return 'A project access change';
+  };
+
   // Dialogs capture their action when opened; a previously retained action for
   // the same exact command still wins in runNative.
   const openNativeDialog = (): boolean => {
     setActionError(null);
-    dialogActionRef.current = captureAction();
-    return !!dialogActionRef.current;
+    try {
+      dialogActionRef.current = captureAction();
+      return !!dialogActionRef.current;
+    } catch (err) {
+      setActionError(nativeMessage(err, 'The saved access change could not be read. Restore browser session storage before editing.'));
+      return false;
+    }
   };
   const closeNativeDialog = () => { dialogActionRef.current = null; };
 
@@ -644,7 +736,7 @@ const ProjectMembersTab = ({
   };
 
   const selectedIsExternal = selectedUser ? isExternal(selectedUser.email) : false;
-  const canManageMembers = isAdmin && (native ? nativeReady && permissions.manage_members !== false : Boolean(authoritativeProject))
+  const canManageMembers = isAdmin && !pendingMemberCommand && (native ? nativeReady && permissions.manage_members !== false : Boolean(authoritativeProject))
     && !preferenceLockRef.current && !preferenceBusy && !preferencePending && !projectRefreshFailed;
   const canNotifyRecipient = !native || (nativeReady && permissions.notifications !== false);
 
@@ -682,6 +774,21 @@ const ProjectMembersTab = ({
       )}
       {native && !nativeError && !nativeProject && (
         <p className="text-sm text-muted-foreground">Loading project members…</p>
+      )}
+      {native && pendingMemberCommand && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-4 space-y-2" role="status">
+          <p className="font-medium">A project access change still needs confirmation.</p>
+          <p className="text-sm">{pendingCommandLabel(pendingMemberCommand)}</p>
+          {actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
+          <div className="flex gap-2">
+            <Button size="sm" disabled={pending} onClick={() => void runNative(pendingMemberCommand, recoveryActionRef.current)}>
+              {pending ? 'Checking…' : 'Retry saved change'}
+            </Button>
+            <Button size="sm" variant="outline" disabled={pending} onClick={() => void resolveNativeMemberRequest()}>
+              Check outcome or cancel
+            </Button>
+          </div>
+        </div>
       )}
       {preferenceError && <p role="alert" className="text-sm text-destructive">{preferenceError}</p>}
       {preferencePending && preferenceContextMatches && (
@@ -739,7 +846,7 @@ const ProjectMembersTab = ({
                     <Switch
                       checked={notifOn}
                       onCheckedChange={enabled => handleToggleMemberNotifications(member, enabled)}
-                      disabled={!preferenceReady || !preferenceContextMatches || !!preferenceError || preferenceBusy || preferencePending || pending || (!isAdmin && !isSelf)}
+                      disabled={!preferenceReady || !preferenceContextMatches || !!preferenceError || preferenceBusy || preferencePending || pending || !!pendingMemberCommand || (!isAdmin && !isSelf)}
                       aria-label={notifOn ? 'Disable notifications' : 'Enable notifications'}
                     />
                   </td>
@@ -784,7 +891,7 @@ const ProjectMembersTab = ({
                   <Switch
                     checked={r.notificationsEnabled !== false}
                     onCheckedChange={enabled => handleToggleExternalNotifications(r.email, enabled)}
-                    disabled={!canNotifyRecipient || pending || preferenceBusy || preferencePending}
+                    disabled={!canNotifyRecipient || pending || !!pendingMemberCommand || preferenceBusy || preferencePending}
                     aria-label="Toggle notifications"
                   />
                 </td>

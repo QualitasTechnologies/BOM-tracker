@@ -17,8 +17,8 @@ it is not evidence of real-user or production data acceptance.
 | `pages/SupportTicket.tsx` | Shared project get, with captured route/account and visible errors. | Ticket/activity/Support-document subcollections retain their separate current authorization. They are not root/projectDocuments reads. |
 | `utils/projectDocumentFirestore.ts` | Strict document pages, including empty pages with cursors; bounded retries for root/BOM revision changes, duplicate/loop rejection and UID/context checks. | `projectDocuments` SDK queries retained only in flag-off branches. Pulse's older native document read/recovery route stays available in its existing flag-off situations. |
 | `pages/ReceivedPhotosGallery.tsx` | Visible received physical/photo items; authorized reverse gallery_invoice lookup even with empty document forward links. Invoice lookups deduplicate and run at most four concurrently. Render output is keyed to the project/account before effects run. | Legacy single document-list read retained only with scoped reads off. No fallback after denial. |
-| `components/Project/EditProjectDialog.tsx` | No direct root read. Canonical legacy editor disabled; Pulse retains existing paired native metadata/status/snapshot/unlink command and request recovery. | Legacy status snapshot reads go through gated helpers; direct SDK unlink is unreachable under scoped reads, including forced form submissions. |
-| `components/Project/ProjectMembersTab.tsx` | Its refresh calls use the shared get with expected UID/context. Existing independent notification operations remain. | Legacy root/roster/recipient replacements are fenced in the shared helper; remaining UI/writer pairing is an activation prerequisite. |
+| `components/Project/EditProjectDialog.tsx` | No direct root read. Both original editors use paired metadata/status/snapshot/unlink commands with independent native edit gates and saved-request recovery. | Legacy status snapshot reads go through gated helpers; direct SDK unlink is unreachable under scoped reads, including forced form submissions. |
+| `components/Project/ProjectMembersTab.tsx` | Authorized server roster and explicit member/scope/recipient commands. Frozen pending commands survive reload within the same browser session. Existing independent self-notification operations remain. | Legacy root/roster/recipient replacements are fenced. Pending or unreadable journals force recovery mode even when local read/edit flags close. |
 | `components/BOM/POListSection.tsx` | Project refresh/status readers use shared get. Existing native PO requests and historical values retained. | No independent raw project-root read found in this consumer. |
 
 The coordinator subscribes only to known project, own-user and approved-admin
@@ -59,9 +59,37 @@ mutation route. Migrated unpaired editors are temporarily disabled; remaining
 consumer controls must be paired or disabled before activation.
 
 Before enabling reads, finish and verify every remaining paired consumer,
-including canonical project/member/recipient and document controls, and complete
+including the remaining document and other workflow controls, and complete
 the full UI/browser comparisons. Do not treat a safe temporary refusal as workflow
 parity or retire BOM while a current workflow is unavailable.
+
+The 2026-10-22 source batch pairs original project create/template, edit, archive
+and restore controls in both clients. New scoped-mode lifecycle entry points
+require scoped reads and both existing native edit switches; the edit dialog
+retains its existing safe-edit routing during coexistence. Server permissions
+still authorize every operation. Restore returns to Planning. Saved member/recipient and archive
+requests retain their original actor/project, revision, command and nonce in
+sessionStorage before sending, never a projected project or roster. Confirmed
+member/archive submissions are acknowledged only after reconciliation. Receipt
+resolution can return a committed result or atomically cancel an uncommitted
+nonce while new writes are closed; it cannot bypass current project access.
+Archive recovery remains available in the Archived view. Corrupt storage blocks
+new writes. Recovery across devices or ended browser sessions is not provided.
+
+Canonical backend 760/760 and Pulse mirrored contracts 561/561 passed for that
+batch. Final full UI runs passed 713/713 canonical and 1722/1722 embedded using
+the direct Vitest runner with one worker and unchanged assertions/timeouts.
+Independent source review found no remaining member/archive blocker after
+strict journal and receipt fixes, coexistence routing corrections and archive
+reconciliation of the actual current status (including a concurrent restore).
+These are source checks only; real role/browser and original-workflow acceptance
+remain prerequisites.
+
+Actual app-project TypeScript checks remain nonzero: 45 canonical diagnostics
+versus the prior 49, and 95 embedded versus the prior 116. Normalized diagnostic
+groups add none in either app. These results use `tsc --noEmit -p
+tsconfig.app.json`; a no-emit check of the root solution with `files: []` does
+not check app sources and is not accepted as verification.
 
 The following remain unverified/open: real raw-type and membership/user census;
 production indexes and required server cursor key; current-user sign-in parity;

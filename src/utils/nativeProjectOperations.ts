@@ -20,8 +20,26 @@ export interface NativeProjectSnapshot { ok: true; project_id: string; version: 
 export interface NativeProjectResult { ok: true; project_id: string; operation_id: string }
 interface Deps { currentUid: () => Promise<string>; callable: (payload: Record<string, unknown>, expectedUid?: string, assertContext?: () => void) => Promise<{ data: unknown }> }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
-const id = (value: unknown) => typeof value === 'string' && value.trim() && value.length <= 512 && !value.includes('/') && !Array.from(value).some(character => character.charCodeAt(0) < 32) && !['.', '..'].includes(value);
-const revision = (value: unknown) => typeof value === 'string' && /^(0|[1-9]\d*):(0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value.split(':')[0])) && Number(value.split(':')[1]) < 1e9;
+const id = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= 512 && !value.includes('/') && !Array.from(value).some(character => character.charCodeAt(0) < 32) && !['.', '..'].includes(value) && !/^__.*__$/.test(value);
+const memberCommand = (value: unknown): value is NativeProjectCommand => {
+  if (!object(value) || typeof value.kind !== 'string') return false;
+  const keys = Object.keys(value).sort().join(',');
+  const email = (candidate: unknown) => typeof candidate === 'string' && candidate.length <= 254 && /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(candidate);
+  const userId = (candidate: unknown) => id(candidate) && candidate.length <= 128;
+  const scope = (candidate: unknown) => Array.isArray(candidate) && candidate.length <= 200
+    && candidate.every(item => typeof item === 'string' && item.trim().length > 0 && item.length <= 500)
+    && new Set(candidate).size === candidate.length;
+  if (value.kind === 'member_add') return (keys === 'kind,user_id' || keys === 'category_scope,kind,user_id') && userId(value.user_id)
+    && (value.category_scope === undefined || scope(value.category_scope));
+  if (value.kind === 'member_remove') return keys === 'kind,user_id' && userId(value.user_id);
+  if (value.kind === 'member_scope') return keys === 'category_scope,kind,user_id' && userId(value.user_id) && scope(value.category_scope);
+  if (value.kind === 'member_notifications') return keys === 'enabled,kind,user_id' && userId(value.user_id) && typeof value.enabled === 'boolean';
+  if (value.kind === 'recipient_add') return keys === 'email,kind,name' && email(value.email) && typeof value.name === 'string' && value.name.trim().length > 0 && value.name.length <= 500;
+  if (value.kind === 'recipient_remove') return keys === 'email,kind' && email(value.email);
+  if (value.kind === 'recipient_notifications') return keys === 'email,enabled,kind' && email(value.email) && typeof value.enabled === 'boolean';
+  return false;
+};
+const revision = (value: unknown): value is string => typeof value === 'string' && /^(0|[1-9]\d*):(0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value.split(':')[0])) && Number(value.split(':')[1]) < 1e9;
 const error = (code: string, message: string) => new NativeProjectError(code, message);
 const changed = () => error('native-project/identity-changed', 'The signed-in account changed. Reopen the project before continuing.');
 const invalid = () => error('native-project/invalid-response', 'The project service returned an unexpected result.');
@@ -61,21 +79,36 @@ export const createNativeProjectClient = (deps: Deps) => {
     currentUid: deps.currentUid,
     async get(projectId: string, uid: string, assertContext?: () => void): Promise<NativeProjectSnapshot> {
       const result = await call({ operation: 'get', project_id: projectId }, uid, assertContext);
-      if (!revision(result.version) || !object(result.project) || result.project.projectId !== projectId || !object(result.permissions)
-        || ['edit', 'manage_members', 'notifications', 'restore', 'restore_resolve'].some(key => typeof result.permissions[key] !== 'boolean')) throw invalid();
-      return result as NativeProjectSnapshot;
+      if (!revision(result.version) || !object(result.project) || result.project.projectId !== projectId || !object(result.permissions)) throw invalid();
+      const permissions = result.permissions;
+      if (typeof permissions.edit !== 'boolean' || typeof permissions.manage_members !== 'boolean'
+        || typeof permissions.notifications !== 'boolean' || typeof permissions.restore !== 'boolean'
+        || typeof permissions.restore_resolve !== 'boolean') throw invalid();
+      return {
+        ok: true,
+        project_id: projectId,
+        version: result.version,
+        project: result.project,
+        permissions: {
+          edit: permissions.edit,
+          manage_members: permissions.manage_members,
+          notifications: permissions.notifications,
+          restore: permissions.restore,
+          restore_resolve: permissions.restore_resolve,
+        },
+      };
     },
     async command(projectId: string, input: { expected_version: string; operation_id: string; command: NativeProjectCommand }, uid: string, assertContext?: () => void): Promise<NativeProjectResult> {
       if (!revision(input.expected_version) || !/^[a-zA-Z0-9_-]{1,128}$/.test(input.operation_id)) throw invalid();
       const result = await call({ operation: 'command', project_id: projectId, ...input }, uid, assertContext);
-      if (result.operation_id !== input.operation_id) throw invalid();
-      return result as NativeProjectResult;
+      if (typeof result.operation_id !== 'string' || result.operation_id !== input.operation_id) throw invalid();
+      return { ok: true, project_id: projectId, operation_id: input.operation_id };
     },
     async resolve(projectId:string,input:{expected_version:string;operation_id:string;command:NativeProjectCommand},uid:string,assertContext?:()=>void):Promise<NativeProjectResult&{resolution:'committed'|'cancelled'}>{
-      if(!revision(input.expected_version)||!/^[-\w]{1,128}$/.test(input.operation_id)||!['metadata','restore'].includes(input.command.kind))throw invalid();
+      if(!revision(input.expected_version)||!/^[-\w]{1,128}$/.test(input.operation_id)||!['metadata','restore','archive'].includes(input.command.kind)&&!memberCommand(input.command))throw invalid();
       const result=await call({operation:'command',project_id:projectId,...input,resolve_only:true},uid,assertContext);
-      if(result.operation_id!==input.operation_id||!['committed','cancelled'].includes(result.resolution))throw invalid();
-      return result as NativeProjectResult&{resolution:'committed'|'cancelled'};
+      if(typeof result.operation_id!=='string'||result.operation_id!==input.operation_id||(result.resolution!=='committed'&&result.resolution!=='cancelled'))throw invalid();
+      return { ok: true, project_id: projectId, operation_id: input.operation_id, resolution: result.resolution };
     },
   };
 };
@@ -95,6 +128,7 @@ export const nativeProjectOperations = createNativeProjectClient({
 });
 
 export type PendingNativeProjectRestoreProbe = { kind: 'absent' | 'pending' } | { kind: 'error'; message: string };
+export type PendingNativeProjectArchiveProbe = PendingNativeProjectRestoreProbe;
 
 /** Local discovery hint only; the server still decides whether a saved restore may be resolved. */
 export const hasPendingNativeProjectRestore = (projectId: string, uid: string): PendingNativeProjectRestoreProbe => {
@@ -105,8 +139,41 @@ export const hasPendingNativeProjectRestore = (projectId: string, uid: string): 
     if (raw === null) return { kind: 'absent' };
     if (raw.length > 270000) return unreadable();
     const value: unknown = JSON.parse(raw);
+    if (object(value) && Object.keys(value).sort().join(',') === 'command,expected_version,operation_id' && revision(value.expected_version) && typeof value.operation_id === 'string'
+      && /^[-\w]{1,128}$/.test(value.operation_id) && object(value.command) && value.command.kind === 'restore' && Object.keys(value.command).length === 1) return { kind: 'pending' };
+    return unreadable();
+  } catch {
+    return unreadable();
+  }
+};
+
+export const hasPendingNativeProjectArchive = (projectId: string, uid: string): PendingNativeProjectArchiveProbe => {
+  const unreadable = (): PendingNativeProjectArchiveProbe => ({ kind: 'error', message: 'A saved archive request could not be read. Restore browser session storage before continuing.' });
+  if (!id(projectId) || typeof uid !== 'string' || !uid) return { kind: 'absent' };
+  try {
+    const raw = sessionStorage.getItem(`pulse.project-archive.v1:${JSON.stringify([uid, projectId])}`);
+    if (raw === null) return { kind: 'absent' };
+    if (raw.length > 270000) return unreadable();
+    const value: unknown = JSON.parse(raw);
     if (object(value) && revision(value.expected_version) && typeof value.operation_id === 'string'
-      && /^[-\w]{1,128}$/.test(value.operation_id) && object(value.command) && value.command.kind === 'restore') return { kind: 'pending' };
+      && /^[-\w]{1,128}$/.test(value.operation_id) && object(value.command) && value.command.kind === 'archive'
+      && Object.keys(value.command).length === 1) return { kind: 'pending' };
+    return unreadable();
+  } catch {
+    return unreadable();
+  }
+};
+
+export const hasPendingNativeProjectMembers = (projectId: string, uid: string): PendingNativeProjectArchiveProbe => {
+  const unreadable = (): PendingNativeProjectArchiveProbe => ({ kind: 'error', message: 'A saved access change could not be read. Restore browser session storage before editing.' });
+  if (!id(projectId) || typeof uid !== 'string' || !uid) return { kind: 'absent' };
+  try {
+    const raw = sessionStorage.getItem(`pulse.project-members.v1:${JSON.stringify([uid, projectId])}`);
+    if (raw === null) return { kind: 'absent' };
+    if (raw.length > 270000) return unreadable();
+    const value: unknown = JSON.parse(raw);
+    if (object(value) && Object.keys(value).sort().join(',') === 'command,expected_version,operation_id' && revision(value.expected_version)
+      && typeof value.operation_id === 'string' && /^[-\w]{1,128}$/.test(value.operation_id) && memberCommand(value.command)) return { kind: 'pending' };
     return unreadable();
   } catch {
     return unreadable();
@@ -137,14 +204,18 @@ export const createNativeProjectWorkspace = (projectId: string, client = nativeP
       const result = await run(() => client.get(projectId, uid!, assertContext));
       snapshot = structuredClone(result); return structuredClone(result);
     },
-    capture(namespace?:'metadata'|'restore') {
+    recover(namespace:'metadata'|'restore'|'archive'|'members') {
+      const action=this.capture(namespace);
+      return action.pendingCommand ? action : null;
+    },
+    capture(namespace?:'metadata'|'restore'|'archive'|'members') {
       if (invalidated || !snapshot || !uid) throw error('native-project/not-loaded', 'Load current project values before editing.');
       const key=`pulse.project-${namespace || 'metadata'}.v1:${JSON.stringify([uid,projectId])}`;
       const stored=()=>{
         if(!namespace)return undefined;
-        try{const raw=sessionStorage.getItem(key);if(!raw)return undefined;if(raw.length>270000)throw 0;const value=JSON.parse(raw);
-          const isMetadata=namespace==='metadata'&&value.command?.kind==='metadata'&&object(value.command.patch),isRestore=namespace==='restore'&&value.command?.kind==='restore';
-          if(!revision(value.expected_version)||!/^[-\w]{1,128}$/.test(value.operation_id)||!object(value.command)||!(isMetadata||isRestore))throw 0;return value as {expected_version:string;operation_id:string;command:NativeProjectCommand};
+        try{const raw=sessionStorage.getItem(key);if(raw===null)return undefined;if(raw.length>270000)throw 0;const value=JSON.parse(raw);
+          const isMetadata=namespace==='metadata'&&value.command?.kind==='metadata'&&object(value.command.patch),isRestore=namespace==='restore'&&value.command?.kind==='restore'&&Object.keys(value.command).length===1,isArchive=namespace==='archive'&&value.command?.kind==='archive'&&Object.keys(value.command).length===1,isMember=namespace==='members'&&memberCommand(value.command);
+          if(Object.keys(value).sort().join(',')!=='command,expected_version,operation_id'||!revision(value.expected_version)||!/^[-\w]{1,128}$/.test(value.operation_id)||!object(value.command)||!(isMetadata||isRestore||isArchive||isMember))throw 0;return value as {expected_version:string;operation_id:string;command:NativeProjectCommand};
         }catch{throw error('native-project/storage-unavailable','The saved project request cannot be read. Restore browser session storage before editing.');}
       };
       const saved=stored(),version = saved?.expected_version||snapshot.version, openingUid = uid, operationId = saved?.operation_id||crypto.randomUUID();
@@ -153,17 +224,18 @@ export const createNativeProjectWorkspace = (projectId: string, client = nativeP
       return { get pendingCommand(){return stored()?.command;}, async submit(command: NativeProjectCommand) {
         return run(async () => {
           if (frozen && JSON.stringify(frozen) !== JSON.stringify(command)) throw error('operation_conflict', 'The saved request has different values. Close and reopen before changing the draft.');
+          if (namespace === 'members' && !memberCommand(command) || (namespace === 'archive' || namespace === 'restore') && (!object(command) || Object.keys(command).length !== 1 || command.kind !== namespace)) throw invalid();
           frozen ??= structuredClone(command);
           if(namespace){
             const existing=stored();if(existing&&existing.operation_id!==operationId)throw error('operation_conflict','Another project request is still unconfirmed. Resolve it first.');
             try{const raw=JSON.stringify({expected_version:version,operation_id:operationId,command:frozen});sessionStorage.setItem(key,raw);if(sessionStorage.getItem(key)!==raw)throw 0;}catch{throw error('native-project/storage-unavailable','Unable to save this project request in browser session storage.');}
           }
-          const result=await client.command(projectId, { expected_version: version, operation_id: operationId, command: structuredClone(frozen) }, openingUid, assertContext);await guard();clear();return result;
+          const result=await client.command(projectId, { expected_version: version, operation_id: operationId, command: structuredClone(frozen) }, openingUid, assertContext);await guard();if(namespace!=='members'&&namespace!=='archive')clear();return result;
         });
       },async resolve(){return run(async()=>{
-        frozen??=stored()?.command;if(!frozen||namespace!=='restore'&&frozen.kind!=='metadata'||namespace==='restore'&&frozen.kind!=='restore')throw error('native-project/nothing-pending','There is no pending project request.');
+        frozen??=stored()?.command;if(!frozen||namespace==='restore'&&frozen.kind!=='restore'||namespace==='archive'&&frozen.kind!=='archive'||namespace==='metadata'&&frozen.kind!=='metadata'||namespace==='members'&&!memberCommand(frozen))throw error('native-project/nothing-pending','There is no pending project request.');
         const result=await client.resolve(projectId,{expected_version:version,operation_id:operationId,command:structuredClone(frozen)},openingUid,assertContext);await guard();clear();return result;
-      });} };
+      });},async acknowledge(){if(namespace!=='members'&&namespace!=='archive'||!stored())return;await run(async()=>{await guard();clear();});} };
     },
   };
 };

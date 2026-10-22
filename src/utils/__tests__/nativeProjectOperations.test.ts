@@ -1,9 +1,9 @@
 import { expect, it, vi } from 'vitest';
-import { createNativeProjectClient, createNativeProjectWorkspace, NativeProjectError } from '../nativeProjectOperations';
+import { createNativeProjectClient, createNativeProjectWorkspace, NativeProjectError, type NativeProjectCommand } from '../nativeProjectOperations';
 
 const opening = { ok: true, project_id: 'P', version: '10:1', project: { projectId: 'P', projectName: 'Project' }, permissions: { edit: true, manage_members: true, notifications: true, restore: true, restore_resolve: true } };
 type CallablePayload = { operation: string; operation_id: string; [key: string]: unknown };
-const memberCommands = [
+const memberCommands: NativeProjectCommand[] = [
   { kind: 'member_add' as const, user_id: 'u2' },
   { kind: 'member_add' as const, user_id: 'p2', category_scope: ['Mech'] },
   { kind: 'member_remove' as const, user_id: 'u2' },
@@ -12,12 +12,14 @@ const memberCommands = [
   { kind: 'recipient_remove' as const, email: 'z@z.com' },
   { kind: 'recipient_notifications' as const, email: 'z@z.com', enabled: false },
 ];
-const command = memberCommands[3];
+const command: Extract<NativeProjectCommand, { kind: 'member_scope' }> = {
+  kind: 'member_scope', user_id: 'p2', category_scope: ['Mech', 'Elec'],
+};
 
 function fixture() {
   let uid = 'alice';
   const calls: CallablePayload[] = [];
-  const transport = vi.fn(async (payload: CallablePayload) => { calls.push(structuredClone(payload)); return { data: payload.operation === 'get' ? structuredClone(opening) : { ok: true, project_id: 'P', operation_id: payload.operation_id } }; });
+  const transport = vi.fn(async (payload: CallablePayload): Promise<{ data: unknown }> => { calls.push(structuredClone(payload)); return { data: payload.operation === 'get' ? structuredClone(opening) : { ok: true, project_id: 'P', operation_id: payload.operation_id } }; });
   const client = createNativeProjectClient({ currentUid: async () => uid, callable: transport });
   return { client, transport, calls, switchAccount: () => { uid = 'bob'; } };
 }
@@ -62,10 +64,15 @@ it('a fresh capture after a refresh uses the newer revision with a new nonce, ne
   expect(a.operation_id).not.toBe(b.operation_id);
 });
 
-it('member commands have no resolve-only path; only the metadata and restore receipts can be resolved', async () => {
+it('resolves member and archive receipts while rejecting unsupported resolve commands', async () => {
   const f = fixture(), workspace = createNativeProjectWorkspace('P', f.client); await workspace.load();
-  await expect(f.client.resolve('P', { expected_version: '10:1', operation_id: 'op1', command }, 'alice')).rejects.toThrow(/unexpected/);
-  expect(f.calls.filter(call => call.operation === 'command')).toHaveLength(0);
+  f.transport.mockImplementationOnce(async payload => { f.calls.push(structuredClone(payload)); return { data: { ok: true, project_id: 'P', operation_id: 'op1', resolution: 'committed' } }; });
+  await expect(f.client.resolve('P', { expected_version: '10:1', operation_id: 'op1', command }, 'alice')).resolves.toMatchObject({ resolution: 'committed' });
+  expect(f.calls.at(-1)).toMatchObject({ operation: 'command', project_id: 'P', expected_version: '10:1', operation_id: 'op1', command, resolve_only: true, expected_actor_uid: 'alice' });
+  f.transport.mockImplementationOnce(async payload => { f.calls.push(structuredClone(payload)); return { data: { ok: true, project_id: 'P', operation_id: 'op2', resolution: 'cancelled' } }; });
+  await expect(f.client.resolve('P', { expected_version: '10:1', operation_id: 'op2', command: { kind: 'archive' } }, 'alice')).resolves.toMatchObject({ resolution: 'cancelled' });
+  await expect(f.client.resolve('P', { expected_version: '10:1', operation_id: 'op3', command: { kind: 'unknown' } as any }, 'alice')).rejects.toThrow(/unexpected/);
+  expect(f.calls.filter(call => call.operation === 'command' && call.resolve_only)).toHaveLength(2);
   await expect(workspace.capture().resolve()).rejects.toThrow(/nothing to resolve|no pending/i);
 });
 
@@ -113,7 +120,7 @@ it('rejects mismatched project identities, receipts and missing capability flags
 
 it('invalidating the workspace during the client UID await prevents command dispatch', async () => {
   const currentUid = vi.fn(async () => 'alice');
-  const callable = vi.fn(async (payload: CallablePayload) => ({ data: payload.operation === 'get' ? opening : { ok: true, project_id: 'P', operation_id: payload.operation_id } }));
+  const callable = vi.fn(async (payload: CallablePayload): Promise<{ data: unknown }> => ({ data: payload.operation === 'get' ? opening : { ok: true, project_id: 'P', operation_id: payload.operation_id } }));
   const client = createNativeProjectClient({ currentUid, callable });
   const workspace = createNativeProjectWorkspace('P', client);
   await workspace.load(); const action = workspace.capture();
