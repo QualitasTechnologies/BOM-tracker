@@ -39,6 +39,18 @@ import {
 } from '@/utils/projectFirestore';
 import { isInternalUser } from '@/utils/accessControl';
 import { memberNotificationOperations } from '@/utils/memberNotificationOperations';
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
+import { createNativeProjectWorkspace } from '@/utils/nativeProjectOperations';
+
+interface NativeAction { submit: (command: Record<string, unknown>) => Promise<unknown> }
+interface NativeWorkspace {
+  load: () => Promise<any>;
+  capture: () => NativeAction;
+  invalidate: () => void;
+}
+interface NativePermissions { edit?: boolean; manage_members?: boolean; notifications?: boolean }
+type PreferenceContext = { projectId: string; currentUserId: string; native: boolean };
+const nativeMessage = (err: any, fallback: string) => (err && err.message) || fallback;
 
 interface AppUserOption {
   uid: string;
@@ -66,16 +78,32 @@ const ProjectMembersTab = ({
   onProjectUpdated,
 }: ProjectMembersTabProps) => {
   const { toast } = useToast();
-  const preferenceContext = useRef({ projectId, currentUserId, epoch: 0 });
-  if (preferenceContext.current.projectId !== projectId || preferenceContext.current.currentUserId !== currentUserId) {
-    preferenceContext.current = { projectId, currentUserId, epoch: preferenceContext.current.epoch + 1 };
+  // Scoped reads omit the raw management fields, so member and recipient edits
+  // must use the versioned commands instead of legacy array replacement. The
+  // server's own gate still decides whether those commands may write.
+  const native = isScopedProjectReadEnabled();
+  const preferenceContext = useRef({ projectId, currentUserId, native, epoch: 0 });
+  if (preferenceContext.current.projectId !== projectId || preferenceContext.current.currentUserId !== currentUserId
+    || preferenceContext.current.native !== native) {
+    preferenceContext.current = { projectId, currentUserId, native, epoch: preferenceContext.current.epoch + 1 };
   }
+  const workspaceRef = useRef<NativeWorkspace | null>(null);
+  const generationRef = useRef(0);
+  // Uncertain native commands stay keyed by their exact command so a retry,
+  // even after closing and reopening a dialog, reuses the frozen nonce/revision.
+  const retainedRef = useRef<Map<string, NativeAction>>(new Map());
+  const dialogActionRef = useRef<NativeAction | null>(null);
+  const [nativeProject, setNativeProject] = useState<Project | null>(null);
+  const [permissions, setPermissions] = useState<NativePermissions>({});
+  const [nativeError, setNativeError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
   const preferenceGeneration = useRef(0);
   const preferenceBusyRef = useRef(false);
   const preferenceLockRef = useRef(false);
   const [memberPreferences, setMemberPreferences] = useState<Record<string, boolean>>({});
   const [preferenceVersion, setPreferenceVersion] = useState<string | null>(null);
-  const [preferenceLoadedContext, setPreferenceLoadedContext] = useState<{ projectId: string; currentUserId: string } | null>(null);
+  const [preferenceLoadedContext, setPreferenceLoadedContext] = useState<PreferenceContext | null>(null);
   const [preferenceReady, setPreferenceReady] = useState(false);
   const [preferencePending, setPreferencePending] = useState(false);
   const [preferenceBusy, setPreferenceBusy] = useState(false);
@@ -85,13 +113,14 @@ const ProjectMembersTab = ({
   const publicationEpoch = preferenceContext.current.epoch;
   const publishProject = (updated: Project) => {
     if (preferenceContext.current.epoch !== publicationEpoch) return;
-    setAuthoritativeProject(updated);
+    if (!native) setAuthoritativeProject(updated);
     onProjectUpdated(updated);
   };
-  const assertPreferenceContext = (expected: { projectId: string; currentUserId: string }) => {
+  const assertPreferenceContext = (expected: PreferenceContext) => {
     const epoch = preferenceContext.current.epoch;
     const check = () => preferenceContext.current.projectId === expected.projectId
-      && preferenceContext.current.currentUserId === expected.currentUserId && preferenceContext.current.epoch === epoch;
+      && preferenceContext.current.currentUserId === expected.currentUserId && preferenceContext.current.native === expected.native
+      && preferenceContext.current.epoch === epoch;
     const assert = () => { if (!check()) throw new Error('The project context changed. Reopen it before continuing.'); };
     return Object.assign(assert, { isCurrent: check });
   };
@@ -113,21 +142,31 @@ const ProjectMembersTab = ({
       setPreferencePending(hasPending);
     } catch (err: any) {
       if (generation === preferenceGeneration.current && preferenceContext.current.projectId === expected.projectId
-        && preferenceContext.current.currentUserId === expected.currentUserId) {
+        && preferenceContext.current.currentUserId === expected.currentUserId && preferenceContext.current.native === expected.native) {
         setPreferenceReady(false);
         setPreferenceError(err?.message || 'Failed to load notification preferences');
       }
     }
   };
   const refreshProjectAfterPreference = async (
-    expected: { projectId: string; currentUserId: string },
+    expected: PreferenceContext,
     assertContext: (() => void) & { isCurrent: () => boolean }
   ) => {
     try {
-      const updated = await getProject(expected.projectId, expected.currentUserId, assertContext);
-      assertContext();
-      if (!updated) throw new Error('Failed to reload the saved project. Retry before editing members.');
-      setAuthoritativeProject(updated);
+      let updated: Project | null;
+      if (expected.native) {
+        const res = await workspaceRef.current?.load();
+        assertContext();
+        if (!res || res.ok === false || !res.project) throw new Error((res && res.error) || 'Failed to refresh project');
+        updated = res.project;
+        setNativeProject(res.project);
+        setPermissions(res.permissions || {});
+      } else {
+        updated = await getProject(expected.projectId, expected.currentUserId, assertContext);
+        assertContext();
+        if (!updated) throw new Error('Failed to reload the saved project. Retry before editing members.');
+        setAuthoritativeProject(updated);
+      }
       publishProject(updated);
       setProjectRefreshFailed(false);
     } catch (err) {
@@ -136,7 +175,7 @@ const ProjectMembersTab = ({
     }
   };
   useEffect(() => {
-    const expected = { projectId, currentUserId };
+    const expected = { projectId, currentUserId, native };
     preferenceBusyRef.current = false;
     preferenceLockRef.current = false;
     setPreferenceBusy(false);
@@ -150,17 +189,71 @@ const ProjectMembersTab = ({
     setPreferencePending(false);
     setPreferenceError(null);
     void refreshPreferences(expected);
-    void refreshProjectAfterPreference(expected, assertPreferenceContext(expected)).catch(err => {
-      if (preferenceContext.current.projectId === expected.projectId && preferenceContext.current.currentUserId === expected.currentUserId) {
-        setPreferenceError(err?.message || 'Failed to load the saved project. Retry before editing members.');
-      }
-    });
+    // Native mode loads its authoritative project through the pinned workspace below.
+    if (!native) {
+      void refreshProjectAfterPreference(expected, assertPreferenceContext(expected)).catch(err => {
+        if (preferenceContext.current.projectId === expected.projectId && preferenceContext.current.currentUserId === expected.currentUserId
+          && preferenceContext.current.native === expected.native) {
+          setPreferenceError(err?.message || 'Failed to load the saved project. Retry before editing members.');
+        }
+      });
+    }
     return () => { preferenceGeneration.current++; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, currentUserId]);
-  const project = authoritativeProject || inputProject;
+  }, [native, projectId, currentUserId]);
+
+  useEffect(() => {
+    if (!native) return;
+    const generation = ++generationRef.current;
+    retainedRef.current = new Map();
+    dialogActionRef.current = null;
+    setPending(false);
+    setNativeProject(null);
+    setNativeError(null);
+    setActionError(null);
+    setAddOpen(false);
+    setEditMember(null);
+    setExtOpen(false);
+    let workspace: NativeWorkspace;
+    try {
+      workspace = createNativeProjectWorkspace(projectId, undefined, currentUserId) as NativeWorkspace;
+    } catch (err) {
+      setNativeError(nativeMessage(err, 'Native project controls are unavailable'));
+      return;
+    }
+    workspaceRef.current = workspace;
+    workspace.load().then(
+      res => {
+        if (generation !== generationRef.current) return;
+        if (!res || res.ok === false || !res.project) {
+          setNativeError((res && res.error) || 'Failed to load project members');
+          return;
+        }
+        setNativeProject(res.project);
+        setPermissions(res.permissions || {});
+      },
+      err => {
+        if (generation === generationRef.current) setNativeError(nativeMessage(err, 'Failed to load project members'));
+      }
+    );
+    return () => {
+      generationRef.current++;
+      workspace.invalidate();
+      if (workspaceRef.current === workspace) workspaceRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [native, projectId, currentUserId]);
+
+  // Native mode never falls back to the scoped prop's roster: a projected roster
+  // must not be mistaken for the authoritative management view.
+  const project: Project = native
+    ? (nativeProject || ({ ...inputProject, members: [], memberIds: [], externalRecipients: [] } as Project))
+    : (authoritativeProject || inputProject);
+  const nativeReady = !native || (!!nativeProject && !nativeError);
+  const nativeManageDenied = native && nativeReady && permissions.manage_members === false;
   const members: ProjectMember[] = project.members || [];
-  const preferenceContextMatches = preferenceLoadedContext?.projectId === projectId && preferenceLoadedContext.currentUserId === currentUserId;
+  const preferenceContextMatches = preferenceLoadedContext?.projectId === projectId && preferenceLoadedContext.currentUserId === currentUserId
+    && preferenceLoadedContext.native === native;
   const externalRecipients: ExternalRecipient[] = project.externalRecipients || [];
 
   // Add member dialog
@@ -196,11 +289,67 @@ const ProjectMembersTab = ({
     setList: (v: string[]) => void
   ) => setList(checked ? [...list, cat] : list.filter(c => c !== cat));
 
+  const captureAction = (): NativeAction | null => {
+    const ws = workspaceRef.current;
+    if (!ws || !nativeProject) return null;
+    return ws.capture();
+  };
+
+  // Runs one native command. The captured action (nonce, opening revision,
+  // frozen command) is retained on any failure, including a failed post-save
+  // refresh, so a retry replays the same request instead of rebasing it.
+  const runNative = async (command: Record<string, unknown>, dialogAction?: NativeAction | null): Promise<boolean> => {
+    const ws = workspaceRef.current;
+    if (!ws || preferenceBusyRef.current || preferenceLockRef.current || preferenceBusy || preferencePending) return false;
+    const generation = generationRef.current;
+    const key = JSON.stringify(command);
+    const action = retainedRef.current.get(key) || dialogAction || captureAction();
+    if (!action) return false;
+    retainedRef.current.set(key, action);
+    preferenceBusyRef.current = true;
+    setPending(true);
+    setActionError(null);
+    try {
+      await action.submit(command);
+      const res = await ws.load();
+      if (generation !== generationRef.current) return false;
+      if (!res || res.ok === false || !res.project) throw new Error((res && res.error) || 'Failed to refresh project');
+      retainedRef.current.delete(key);
+      setNativeProject(res.project);
+      setPermissions(res.permissions || {});
+      publishProject(res.project);
+      await refreshPreferences({ projectId, currentUserId, native });
+      return true;
+    } catch (err) {
+      if (generation === generationRef.current) {
+        const message = nativeMessage(err, 'Request failed');
+        setActionError(message);
+        toast({ title: 'Error', description: message, variant: 'destructive' });
+      }
+      return false;
+    } finally {
+      if (generation === generationRef.current) {
+        preferenceBusyRef.current = false;
+        setPending(false);
+      }
+    }
+  };
+
+  // Dialogs capture their action when opened; a previously retained action for
+  // the same exact command still wins in runNative.
+  const openNativeDialog = (): boolean => {
+    setActionError(null);
+    dialogActionRef.current = captureAction();
+    return !!dialogActionRef.current;
+  };
+  const closeNativeDialog = () => { dialogActionRef.current = null; };
+
   // --- Member handlers ---
 
   const handleAddOpen = () => {
     setSelectedUser(null);
     setSelectedCategories([]);
+    if (native && !openNativeDialog()) return;
     setAddOpen(true);
   };
 
@@ -212,6 +361,19 @@ const ProjectMembersTab = ({
 
   const handleAdd = async () => {
     if (!selectedUser) return;
+    if (native) {
+      const command: Record<string, unknown> = {
+        kind: 'member_add',
+        user_id: selectedUser.uid,
+        ...(isExternal(selectedUser.email) ? { category_scope: selectedCategories } : {}),
+      };
+      if (await runNative(command, dialogActionRef.current)) {
+        toast({ title: 'Member added', description: selectedUser.email });
+        closeNativeDialog();
+        setAddOpen(false);
+      }
+      return;
+    }
     setAdding(true);
     try {
       const today = new Date().toISOString().split('T')[0];
@@ -240,12 +402,22 @@ const ProjectMembersTab = ({
   };
 
   const handleEditOpen = (member: ProjectMember) => {
+    if (native && !openNativeDialog()) return;
     setEditMember(member);
     setEditCategories(member.categoryScope || []);
   };
 
   const handleSaveScope = async () => {
     if (!editMember) return;
+    if (native) {
+      const command = { kind: 'member_scope', user_id: editMember.userId, category_scope: editCategories };
+      if (await runNative(command, dialogActionRef.current)) {
+        toast({ title: 'Scope updated' });
+        closeNativeDialog();
+        setEditMember(null);
+      }
+      return;
+    }
     setSaving(true);
     try {
       await updateProjectMemberScope(projectId, project, editMember.userId, editCategories);
@@ -269,6 +441,12 @@ const ProjectMembersTab = ({
       toast({ title: 'Cannot remove', description: 'Project must have at least one member.', variant: 'destructive' });
       return;
     }
+    if (native) {
+      if (await runNative({ kind: 'member_remove', user_id: member.userId })) {
+        toast({ title: 'Member removed', description: member.email });
+      }
+      return;
+    }
     try {
       await removeProjectMember(projectId, project, member.userId);
       publishProject({
@@ -285,7 +463,7 @@ const ProjectMembersTab = ({
   const handleToggleMemberNotifications = async (member: ProjectMember, enabled: boolean) => {
     if (preferenceLockRef.current || preferenceBusyRef.current || !preferenceReady || !preferenceContextMatches || !preferenceVersion || preferencePending || projectRefreshFailed) return;
     if (!isAdmin && member.userId !== currentUserId) return;
-    const expected = { projectId, currentUserId };
+    const expected = { projectId, currentUserId, native };
     const assertContext = assertPreferenceContext(expected);
     preferenceLockRef.current = true;
     preferenceBusyRef.current = true;
@@ -317,7 +495,7 @@ const ProjectMembersTab = ({
   };
 
   const handleResolveNotification = async () => {
-    const expected = { projectId, currentUserId };
+    const expected = { projectId, currentUserId, native };
     const assertContext = assertPreferenceContext(expected);
     if (preferenceBusyRef.current) return;
     preferenceBusyRef.current = true;
@@ -342,7 +520,7 @@ const ProjectMembersTab = ({
   };
 
   const handleRetryPreferenceRefresh = async () => {
-    const expected = { projectId, currentUserId };
+    const expected = { projectId, currentUserId, native };
     const assertContext = assertPreferenceContext(expected);
     if (preferenceBusyRef.current) return;
     preferenceBusyRef.current = true;
@@ -370,6 +548,7 @@ const ProjectMembersTab = ({
     setExtName('');
     setExtEmail('');
     setExtError(null);
+    if (native && !openNativeDialog()) return;
     setExtOpen(true);
   };
 
@@ -378,6 +557,16 @@ const ProjectMembersTab = ({
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(extEmail.trim())) { setExtError('Enter a valid email'); return; }
 
+    if (native) {
+      setExtError(null);
+      const command = { kind: 'recipient_add', email: extEmail.trim(), name: extName.trim() };
+      if (await runNative(command, dialogActionRef.current)) {
+        toast({ title: 'Recipient added', description: extEmail.trim() });
+        closeNativeDialog();
+        setExtOpen(false);
+      }
+      return;
+    }
     setExtAdding(true);
     setExtError(null);
     try {
@@ -397,6 +586,10 @@ const ProjectMembersTab = ({
   };
 
   const handleRemoveExternal = async (email: string) => {
+    if (native) {
+      if (await runNative({ kind: 'recipient_remove', email })) toast({ title: 'Recipient removed' });
+      return;
+    }
     try {
       await removeExternalRecipient(projectId, project, email);
       publishProject({
@@ -410,6 +603,10 @@ const ProjectMembersTab = ({
   };
 
   const handleToggleExternalNotifications = async (email: string, enabled: boolean) => {
+    if (native) {
+      await runNative({ kind: 'recipient_notifications', email, enabled });
+      return;
+    }
     try {
       await toggleExternalRecipientNotifications(projectId, project, email, enabled);
       publishProject({
@@ -447,7 +644,9 @@ const ProjectMembersTab = ({
   };
 
   const selectedIsExternal = selectedUser ? isExternal(selectedUser.email) : false;
-  const canManageMembers = isAdmin && Boolean(authoritativeProject) && !preferenceLockRef.current && !preferenceBusy && !preferencePending && !projectRefreshFailed;
+  const canManageMembers = isAdmin && (native ? nativeReady && permissions.manage_members !== false : Boolean(authoritativeProject))
+    && !preferenceLockRef.current && !preferenceBusy && !preferencePending && !projectRefreshFailed;
+  const canNotifyRecipient = !native || (nativeReady && permissions.notifications !== false);
 
   return (
     <div className="space-y-6">
@@ -463,7 +662,7 @@ const ProjectMembersTab = ({
             </Button>
           )}
           {canManageMembers && (
-            <Button size="sm" onClick={handleAddOpen}>
+            <Button size="sm" onClick={handleAddOpen} disabled={pending}>
               <UserPlus className="h-4 w-4 mr-1.5" />
               Add Member
             </Button>
@@ -472,6 +671,18 @@ const ProjectMembersTab = ({
       </div>
 
       {/* Unified table */}
+      {native && nativeError && <p role="alert" className="text-sm text-destructive">{nativeError}</p>}
+      {native && actionError && !addOpen && !editMember && !extOpen && (
+        <p role="alert" className="text-sm text-destructive">{actionError}</p>
+      )}
+      {native && isAdmin && nativeManageDenied && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Member and recipient editing is currently unavailable for this project. Existing access is unchanged.
+        </p>
+      )}
+      {native && !nativeError && !nativeProject && (
+        <p className="text-sm text-muted-foreground">Loading project members…</p>
+      )}
       {preferenceError && <p role="alert" className="text-sm text-destructive">{preferenceError}</p>}
       {preferencePending && preferenceContextMatches && (
         <div className="flex items-center gap-2 text-sm" role="status">
@@ -528,7 +739,7 @@ const ProjectMembersTab = ({
                     <Switch
                       checked={notifOn}
                       onCheckedChange={enabled => handleToggleMemberNotifications(member, enabled)}
-                      disabled={!preferenceReady || !preferenceContextMatches || !!preferenceError || preferenceBusy || preferencePending || (!isAdmin && !isSelf)}
+                      disabled={!preferenceReady || !preferenceContextMatches || !!preferenceError || preferenceBusy || preferencePending || pending || (!isAdmin && !isSelf)}
                       aria-label={notifOn ? 'Disable notifications' : 'Enable notifications'}
                     />
                   </td>
@@ -536,7 +747,7 @@ const ProjectMembersTab = ({
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1 justify-end">
                         {external && (
-                          <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit category scope" onClick={() => handleEditOpen(member)}>
+                          <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit category scope" onClick={() => handleEditOpen(member)} disabled={pending}>
                             <Pencil className="h-3.5 w-3.5" />
                           </Button>
                         )}
@@ -546,7 +757,7 @@ const ProjectMembersTab = ({
                           className="h-7 w-7 text-destructive hover:text-destructive"
                           title="Remove member"
                           onClick={() => handleRemove(member)}
-                          disabled={isSelf && members.length === 1}
+                          disabled={pending || (isSelf && members.length === 1)}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
@@ -573,7 +784,7 @@ const ProjectMembersTab = ({
                   <Switch
                     checked={r.notificationsEnabled !== false}
                     onCheckedChange={enabled => handleToggleExternalNotifications(r.email, enabled)}
-                    disabled={preferenceBusy || preferencePending}
+                    disabled={!canNotifyRecipient || pending || preferenceBusy || preferencePending}
                     aria-label="Toggle notifications"
                   />
                 </td>
@@ -586,7 +797,7 @@ const ProjectMembersTab = ({
                         className="h-7 w-7 text-destructive hover:text-destructive"
                         title="Remove recipient"
                         onClick={() => handleRemoveExternal(r.email)}
-                        disabled={preferenceBusy || preferencePending || preferenceLockRef.current}
+                        disabled={pending || preferenceBusy || preferencePending || preferenceLockRef.current}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
@@ -608,7 +819,7 @@ const ProjectMembersTab = ({
 
         {canManageMembers && (
           <div className="px-4 py-2 border-t bg-muted/20 flex justify-end">
-            <Button variant="ghost" size="sm" onClick={handleExtOpen} className="text-xs text-muted-foreground">
+            <Button variant="ghost" size="sm" onClick={handleExtOpen} disabled={pending} className="text-xs text-muted-foreground">
               <Mail className="h-3.5 w-3.5 mr-1.5" />
               Add email-only recipient
             </Button>
@@ -617,10 +828,11 @@ const ProjectMembersTab = ({
       </div>
 
       {/* Add Member Dialog */}
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+      <Dialog open={addOpen} onOpenChange={o => { if (!pending) setAddOpen(o); }}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Add Member</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
+            {native && actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
             <div className="space-y-1.5">
               <Label className="text-sm font-medium">User</Label>
               <Popover open={userPickerOpen} onOpenChange={setUserPickerOpen}>
@@ -678,21 +890,22 @@ const ProjectMembersTab = ({
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button onClick={handleAdd} disabled={!selectedUser || adding}>
-              {adding ? 'Adding…' : 'Add Member'}
+            <Button variant="outline" disabled={pending} onClick={() => { closeNativeDialog(); setAddOpen(false); }}>Cancel</Button>
+            <Button onClick={handleAdd} disabled={!selectedUser || adding || pending}>
+              {adding || pending ? 'Adding…' : 'Add Member'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Edit Scope Dialog */}
-      <Dialog open={!!editMember} onOpenChange={o => { if (!o) setEditMember(null); }}>
+      <Dialog open={!!editMember} onOpenChange={o => { if (!o && !pending) { closeNativeDialog(); setEditMember(null); } }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Edit Category Scope — {editMember?.displayName || editMember?.email}</DialogTitle>
           </DialogHeader>
           <div className="space-y-2 py-2">
+            {native && actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
             <Label className="text-sm font-medium">Categories this partner can access</Label>
             <div className="space-y-1.5 max-h-60 overflow-y-auto border rounded-md p-2">
               {categoryNames.map(cat => (
@@ -713,14 +926,14 @@ const ProjectMembersTab = ({
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditMember(null)}>Cancel</Button>
-            <Button onClick={handleSaveScope} disabled={saving}>{saving ? 'Saving…' : 'Save Scope'}</Button>
+            <Button variant="outline" disabled={pending} onClick={() => { closeNativeDialog(); setEditMember(null); }}>Cancel</Button>
+            <Button onClick={handleSaveScope} disabled={saving || pending}>{saving || pending ? 'Saving…' : 'Save Scope'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Add External Recipient Dialog */}
-      <Dialog open={extOpen} onOpenChange={setExtOpen}>
+      <Dialog open={extOpen} onOpenChange={o => { if (!pending) { if (!o) closeNativeDialog(); setExtOpen(o); } }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Add Email-Only Recipient</DialogTitle>
@@ -730,6 +943,7 @@ const ProjectMembersTab = ({
               This person has no BOM Tracker account. They will receive BOM notification emails only.
             </p>
             {extError && <p className="text-sm text-destructive">{extError}</p>}
+            {native && actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
             <div className="space-y-1.5">
               <Label htmlFor="ext-name">Name</Label>
               <Input id="ext-name" value={extName} onChange={e => setExtName(e.target.value)} placeholder="Full name" />
@@ -740,9 +954,9 @@ const ProjectMembersTab = ({
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setExtOpen(false)}>Cancel</Button>
-            <Button onClick={handleAddExternal} disabled={extAdding || !extName.trim() || !extEmail.trim()}>
-              {extAdding ? 'Adding…' : 'Add Recipient'}
+            <Button variant="outline" disabled={pending} onClick={() => { closeNativeDialog(); setExtOpen(false); }}>Cancel</Button>
+            <Button onClick={handleAddExternal} disabled={extAdding || pending || !extName.trim() || !extEmail.trim()}>
+              {extAdding || pending ? 'Adding…' : 'Add Recipient'}
             </Button>
           </DialogFooter>
         </DialogContent>
