@@ -7538,7 +7538,7 @@ exports.nativePOApprovalNotificationReconciliation=onCall(
 const {createNativeMilestoneOperations,milestoneMutationsEnabled}=require('./nativeMilestoneOperations.cjs');
 exports.nativeMilestoneOperations=onCall(
   {region:'us-central1',timeoutSeconds:60,maxInstances:5},
-  createNativeMilestoneOperations({db:admin.firestore(),auth:admin.auth(),enabled:()=>milestoneMutationsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
+  createNativeMilestoneOperations({db:admin.firestore(),auth:admin.auth(),enabled:()=>milestoneMutationsEnabled(process.env),scopedReadsEnabled:()=>process.env.BOM_SCOPED_READS_ENABLED==='true',getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
 );
 
 // Native project overheads: original cost entries and reimbursement transitions, default off.

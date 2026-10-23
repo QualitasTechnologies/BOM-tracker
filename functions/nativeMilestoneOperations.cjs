@@ -11,11 +11,16 @@ const hash=value=>createHash('sha256').update(JSON.stringify(sort(value))).diges
 const version=snapshot=>snapshot.exists?`${snapshot.updateTime.seconds}:${snapshot.updateTime.nanoseconds}`:'missing';
 const validVersion=value=>typeof value==='string'&&/^(0|[1-9]\d*):(0|[1-9]\d*)$/.test(value)&&Number.isSafeInteger(Number(value.split(':')[0]))&&Number(value.split(':')[1])<1e9;
 const freeze=value=>value instanceof Date?value.toISOString():value&&typeof value.toDate==='function'?value.toDate().toISOString():Array.isArray(value)?value.map(freeze):plain(value)?Object.fromEntries(Object.entries(value).map(([key,row])=>[key,freeze(row)])):value;
-const access=(project,actor)=>{if(actor.customClaims.role!=='admin'&&project.memberIds!=null&&(!Array.isArray(project.memberIds)||!project.memberIds.includes(actor.uid)))throw fault('milestone_forbidden',403);};
+const access=(project,actor,scoped)=>{
+  if(actor.customClaims.role==='admin')return;
+  if(scoped ? !Object.hasOwn(project,'memberIds') || project.memberIds!==null&&(!Array.isArray(project.memberIds)||!project.memberIds.includes(actor.uid))
+    : project.memberIds!=null&&(!Array.isArray(project.memberIds)||!project.memberIds.includes(actor.uid)))throw fault('milestone_forbidden',403);
+};
 const milestoneMutationsEnabled=env=>['BOM_MATERIAL_MUTATIONS_ENABLED','BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED','BOM_NATIVE_MILESTONE_MUTATIONS_ENABLED'].every(key=>env[key]==='true');
 const fieldsFor=command=>command.kind==='baseline_lock'?['originalPlannedEndDate','updatedAt']:command.kind==='reorder'?['order','updatedAt']:command.kind==='date'?['currentPlannedEndDate','updatedAt']:command.kind==='edit'?[...Object.keys(command.patch),'updatedAt']:command.kind==='status'?['status',...(command.status==='completed'?['actualEndDate']:[]),...(Object.hasOwn(command,'progress_note')?['lastProgressNote','lastProgressDate']:[]),'updatedAt']:[];
-function createNativeMilestoneOperations({db,auth,enabled=false,getServerTimestamp,now=()=>new Date()}){
+function createNativeMilestoneOperations({db,auth,enabled=false,scopedReadsEnabled=false,getServerTimestamp,now=()=>new Date()}){
   const on=()=>(typeof enabled==='function'?enabled():enabled)===true;
+  const scopedOn=()=>(typeof scopedReadsEnabled==='function'?scopedReadsEnabled():scopedReadsEnabled)===true;
   async function actorOf(request){try{return await currentNativeActor(auth,request);}catch(error){const codes={actor_authentication_required:401,actor_forbidden:403,identity_provider_unavailable:503};if(Object.hasOwn(codes,error?.code)&&codes[error.code]===error.status)throw fault(error.code,error.status);throw error;}}
   return async request=>{
     try{
@@ -34,9 +39,9 @@ function createNativeMilestoneOperations({db,auth,enabled=false,getServerTimesta
       return await db.runTransaction(async tx=>{
         const project=await tx.get(projectRef);if(!project.exists)throw fault('milestone_project_not_found',404);
         if(project.data().projectId&&project.data().projectId!==data.project_id)throw fault('milestone_project_identity_conflict',409);
-        access(project.data(),actor);
+        access(project.data(),actor,scopedOn());
         const receipt=receiptRef?await tx.get(receiptRef):null;
-        const verified=async()=>{const current=await actorOf(request);if(current.uid!==actor.uid||current.email!==actor.email)throw fault('actor_session_changed',403);access(project.data(),current);return current;};
+        const verified=async()=>{const current=await actorOf(request);if(current.uid!==actor.uid||current.email!==actor.email)throw fault('actor_session_changed',403);access(project.data(),current,scopedOn());return current;};
         if(receipt?.exists){
           await verified();const old=receipt.data();if(old.actor_uid!==actor.uid||old.payload_hash!==payloadHash)throw fault('operation_conflict',409);
           if(resolving)return{...old.result,resolution:old.cancelled?'cancelled':'committed'};
