@@ -18,6 +18,12 @@ import type {
 } from "@/types/milestone";
 import { calculateDelayDays, calculateCumulativeDelay } from "@/types/milestone";
 import { getProject } from "./projectFirestore";
+import { isScopedProjectReadEnabled } from './projectReadMode';
+
+// Scoped reads never enable legacy schedule writes; the paired native commands own those mutations.
+const assertLegacyScheduleWriteAvailable = () => {
+  if (isScopedProjectReadEnabled()) throw new Error('Schedule editing is temporarily unavailable here. Reopen the project to use its safe schedule actions.');
+};
 
 // Get delay logs collection reference for a project
 const getDelayLogsCol = (projectId: string) =>
@@ -103,6 +109,7 @@ export const addDelayLog = async (
   loggedByName: string,
   currentDeadline: string
 ): Promise<string> => {
+  assertLegacyScheduleWriteAvailable();
   const delayLogsCol = getDelayLogsCol(projectId);
   const newDocRef = doc(delayLogsCol);
   const now = new Date().toISOString();
