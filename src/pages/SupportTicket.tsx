@@ -92,7 +92,7 @@ const formatDateTimeInput = (date?: Date) => {
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 };
 
-export default function SupportTicket() {
+function SupportTicketContent() {
   const { projectId = '', ticketId = '' } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -103,6 +103,7 @@ export default function SupportTicket() {
   const [activities, setActivities] = useState<SupportActivity[]>([]);
   const [documents, setDocuments] = useState<SupportDocument[]>([]);
   const [loading, setLoading] = useState(true);
+  const [projectReadError, setProjectReadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState<string | null>(null);
   const [note, setNote] = useState('');
@@ -138,22 +139,30 @@ export default function SupportTicket() {
   );
 
   useEffect(() => {
-    if (!projectId || !ticketId) return;
+    let active = true;
+    const uid = user?.uid;
+    const isCurrent = () => active && !!uid && user?.uid === uid;
+    setProject(null); setTicket(null); setActivities([]); setDocuments([]); setProjectReadError(null); setLoading(true);
+    if (!projectId || !ticketId || !uid) { setLoading(false); return () => { active = false; }; }
     const unsubscribeTicket = subscribeToSupportTicket(projectId, ticketId, (value) => {
+      if (!isCurrent()) return;
       setTicket(value);
       setLoading(false);
     });
-    const unsubscribeActivities = subscribeToSupportActivities(projectId, ticketId, setActivities);
-    const unsubscribeDocuments = subscribeToSupportDocuments(projectId, setDocuments);
+    const unsubscribeActivities = subscribeToSupportActivities(projectId, ticketId, value => { if (isCurrent()) setActivities(value); });
+    const unsubscribeDocuments = subscribeToSupportDocuments(projectId, value => { if (isCurrent()) setDocuments(value); });
     const unsubscribeClients = subscribeToClients(setClients);
-    getProject(projectId).then(setProject);
+    getProject(projectId, uid, () => { if (!isCurrent()) throw new Error('Account or project changed. Reopen this ticket.'); })
+      .then(value => { if (!isCurrent()) return; setProject(value); if (!value) { setTicket(null); setActivities([]); setDocuments([]); setProjectReadError('Project not found or you no longer have access.'); setLoading(false); } })
+      .catch(error => { if (isCurrent()) { setProject(null); setTicket(null); setActivities([]); setDocuments([]); setProjectReadError(error instanceof Error ? error.message : 'Could not load project. Please retry.'); setLoading(false); } });
     return () => {
+      active = false;
       unsubscribeTicket();
       unsubscribeActivities();
       unsubscribeDocuments();
       unsubscribeClients();
     };
-  }, [projectId, ticketId]);
+  }, [projectId, ticketId, user?.uid]);
 
   useEffect(() => {
     if (!ticket) return;
@@ -250,6 +259,7 @@ export default function SupportTicket() {
       <div className="mx-auto max-w-xl py-16 text-center">
         <AlertTriangle className="mx-auto mb-3 h-10 w-10 text-amber-500" />
         <h1 className="text-xl font-semibold">Support ticket not found</h1>
+        {projectReadError && <p role="alert" className="mt-3 text-sm text-amber-800">{projectReadError}</p>}
         <Button className="mt-4" onClick={() => navigate('/support')}>Return to support</Button>
       </div>
     );
@@ -543,6 +553,7 @@ export default function SupportTicket() {
       <Button asChild variant="ghost" className="-ml-3">
         <Link to="/support"><ArrowLeft className="mr-2 h-4 w-4" />Back to support queue</Link>
       </Button>
+      {projectReadError && <p role="alert" className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">{projectReadError}</p>}
 
       <div className="rounded-2xl border bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
@@ -899,6 +910,12 @@ export default function SupportTicket() {
       />
     </div>
   );
+}
+
+export default function SupportTicket() {
+  const { projectId = '', ticketId = '' } = useParams();
+  const { user } = useAuth();
+  return <SupportTicketContent key={JSON.stringify([projectId, ticketId, user?.uid ?? null, user?.isAdmin ?? false])} />;
 }
 
 function Flag({ label, active }: { label: string; active: boolean }) {

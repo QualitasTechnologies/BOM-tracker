@@ -14,6 +14,12 @@ import {
   writeBatch
 } from "firebase/firestore";
 import type { Milestone, MilestoneInput, MilestoneStatus } from "@/types/milestone";
+import { isScopedProjectReadEnabled } from './projectReadMode';
+
+// Scoped reads never enable legacy schedule writes; the paired native commands own those mutations.
+const assertLegacyScheduleWriteAvailable = () => {
+  if (isScopedProjectReadEnabled()) throw new Error('Schedule editing is temporarily unavailable here. Reopen the project to use its safe schedule actions.');
+};
 
 // Get milestones collection reference for a project
 const getMilestonesCol = (projectId: string) =>
@@ -88,6 +94,7 @@ export const addMilestone = async (
   createdBy: string,
   isProjectBaselined: boolean = false
 ): Promise<string> => {
+  assertLegacyScheduleWriteAvailable();
   const milestonesCol = getMilestonesCol(projectId);
   const newDocRef = doc(milestonesCol);
   const now = new Date().toISOString();
@@ -123,6 +130,7 @@ export const updateMilestone = async (
   milestoneId: string,
   updates: Partial<Omit<Milestone, 'id' | 'createdAt' | 'createdBy'>>
 ): Promise<void> => {
+  assertLegacyScheduleWriteAvailable();
   const milestoneRef = doc(db, "projects", projectId, "milestones", milestoneId);
 
   // Build clean updates object (no undefined values)
@@ -150,6 +158,7 @@ export const updateMilestoneStatus = async (
   status: MilestoneStatus,
   progressNote?: string
 ): Promise<void> => {
+  assertLegacyScheduleWriteAvailable();
   const now = new Date().toISOString();
   const updates: Record<string, any> = {
     status,
@@ -178,6 +187,7 @@ export const updateMilestoneDate = async (
   milestoneId: string,
   newDate: string
 ): Promise<void> => {
+  assertLegacyScheduleWriteAvailable();
   const milestoneRef = doc(db, "projects", projectId, "milestones", milestoneId);
   await updateDoc(milestoneRef, {
     currentPlannedEndDate: newDate,
@@ -190,6 +200,7 @@ export const deleteMilestone = async (
   projectId: string,
   milestoneId: string
 ): Promise<void> => {
+  assertLegacyScheduleWriteAvailable();
   const milestoneRef = doc(db, "projects", projectId, "milestones", milestoneId);
   await deleteDoc(milestoneRef);
 };
@@ -199,6 +210,7 @@ export const reorderMilestones = async (
   projectId: string,
   milestoneIds: string[]
 ): Promise<void> => {
+  assertLegacyScheduleWriteAvailable();
   const batch = writeBatch(db);
 
   milestoneIds.forEach((milestoneId, index) => {
@@ -215,6 +227,7 @@ export const reorderMilestones = async (
 // Lock baseline for all milestones in a project
 // Called when project baseline is locked
 export const lockMilestonesBaseline = async (projectId: string): Promise<void> => {
+  assertLegacyScheduleWriteAvailable();
   const milestones = await getMilestones(projectId);
 
   if (milestones.length === 0) {
@@ -348,6 +361,7 @@ export const applyMilestoneTemplate = async (
   createdBy: string,
   template: MilestoneTemplate[] = DEFAULT_MILESTONE_TEMPLATE
 ): Promise<void> => {
+  assertLegacyScheduleWriteAvailable();
   // Check if project already has milestones
   const existingMilestones = await getMilestones(projectId);
   if (existingMilestones.length > 0) {

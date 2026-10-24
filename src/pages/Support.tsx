@@ -73,7 +73,7 @@ const formatDateTime = (date: Date) =>
     minute: '2-digit',
   }).format(date);
 
-export default function Support() {
+function SupportContent() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { user, isAdmin } = useAuth();
@@ -90,15 +90,18 @@ export default function Support() {
   const [priorityFilter, setPriorityFilter] = useState<'all' | SupportPriority>('all');
   const [coverageFilter, setCoverageFilter] = useState<'all' | CoverageType>('all');
   const [activeTab, setActiveTab] = useState('tickets');
+  const [projectsError, setProjectsError] = useState<string | null>(null);
 
-  useEffect(
-    () =>
-      subscribeToProjects(
-        setProjects,
-        user ? { uid: user.uid, isAdmin } : undefined,
-      ),
-    [isAdmin, user?.uid],
-  );
+  useEffect(() => {
+    let active = true;
+    setProjects([]); setSelectedProject(null); setProjectsError(null);
+    const unsubscribe = subscribeToProjects(
+      (value) => { if (active) { setProjects(value); setProjectsError(null); } },
+      user ? { uid: user.uid, isAdmin } : undefined,
+      (error) => { if (active) { setProjects([]); setSelectedProject(null); setProjectsError(error.message || 'Could not load projects. Please retry.'); } },
+    );
+    return () => { active = false; unsubscribe(); };
+  }, [isAdmin, user?.uid]);
 
   useEffect(() => subscribeToClients(setClients), []);
 
@@ -131,9 +134,11 @@ export default function Support() {
 
   useEffect(() => {
     const projectIds = serviceProjects.map((project) => project.projectId);
-    const unsubscribe = subscribeToSupportTickets(projectIds, setTickets);
-    getSupportDocumentCounts(projectIds).then(setDocumentCounts).catch(() => undefined);
-    return unsubscribe;
+    let active = true;
+    setTickets([]); setDocumentCounts({});
+    const unsubscribe = subscribeToSupportTickets(projectIds, value => { if (active) setTickets(value); });
+    getSupportDocumentCounts(projectIds).then(value => { if (active) setDocumentCounts(value); }).catch(() => undefined);
+    return () => { active = false; unsubscribe(); };
   }, [serviceProjects]);
 
   const filteredTickets = useMemo(() => {
@@ -209,6 +214,7 @@ export default function Support() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">
+      {projectsError && <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900">{projectsError}</div>}
       <div className="rounded-2xl bg-slate-950 px-6 py-7 text-white shadow-sm">
         <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
           <div>
@@ -445,6 +451,11 @@ export default function Support() {
       />
     </div>
   );
+}
+
+export default function Support() {
+  const { user } = useAuth();
+  return <SupportContent key={JSON.stringify([user?.uid ?? null, user?.isAdmin ?? false])} />;
 }
 
 function MetricCard({

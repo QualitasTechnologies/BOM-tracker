@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, Plus, Filter, Grid, List, Calendar, User, FileText, Edit, Archive, Wrench, ClipboardList, Target, Headphones } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,8 @@ import { Separator } from "@/components/ui/separator";
 import Sidebar from "@/components/Sidebar";
 import AddProjectDialog from "@/components/Project/AddProjectDialog";
 import EditProjectDialog from "@/components/Project/EditProjectDialog";
-import DeleteProjectDialog from "@/components/Project/DeleteProjectDialog";
+import DeleteProjectDialog, { ArchiveProjectRecoveryAction } from "@/components/Project/DeleteProjectDialog";
+import { RestoreProjectAction } from "@/components/Project/RestoreProjectDialog";
 import { addProject, subscribeToProjects, updateProject, archiveProject, updateBOMData } from "@/utils/projectFirestore";
 import { getTemplate, subscribeToClients, Client } from "@/utils/settingsFirestore";
 import type { EditableProjectInput, FirestoreProject, NewProjectFormData, ProjectViewMode } from "@/types/project";
@@ -19,19 +20,30 @@ import type { BOMCategory, BOMItem } from "@/types/bom";
 import { TranscriptPasteDialog } from "@/components/Transcripts";
 import { useAuth } from "@/hooks/useAuth";
 import { isInternalUser } from "@/utils/accessControl";
+import { nativeMaterialOperations } from '@/utils/nativeMaterialOperations';
+import { createProjectTemplateInitialization } from '@/utils/projectTemplateInitialization';
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
+import { isNativeProjectLifecycleEnabled } from '@/utils/projectLifecycleAccess';
 
 /** An Archived project stays hidden from the list unless it has an active support profile (still reachable via Support). */
 export const isProjectVisibleInList = (project: Pick<FirestoreProject, 'status' | 'supportProfile'>): boolean => {
   return project.status !== 'Archived' || !!project.supportProfile;
 };
 
-const Projects = () => {
+export const filterProjectsByArchiveView = <T extends Pick<FirestoreProject, 'status' | 'supportProfile'>>(
+  projects: T[], view: 'active' | 'archived'
+): T[] => view === 'archived'
+  ? projects.filter((project) => project.status === 'Archived')
+  : projects.filter(isProjectVisibleInList);
+
+const ProjectsContent = () => {
   const { user, isAdmin } = useAuth();
   const isPartner = !!user && !isAdmin && !isInternalUser(user.email ?? '');
   const [viewMode, setViewMode] = useState<ProjectViewMode>("cards");
   const [searchQuery, setSearchQuery] = useState("");
   const [clientFilter, setClientFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [archiveView, setArchiveView] = useState<'active' | 'archived'>('active');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isAddProjectDialogOpen, setIsAddProjectDialogOpen] = useState(false);
   const [isEditProjectDialogOpen, setIsEditProjectDialogOpen] = useState(false);
@@ -40,19 +52,30 @@ const Projects = () => {
   const [selectedProject, setSelectedProject] = useState<FirestoreProject | null>(null);
   const [projects, setProjects] = useState<FirestoreProject[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
+  const [templateRecovery, setTemplateRecovery] = useState<{ projectId: string; message: string; flow: ReturnType<typeof createProjectTemplateInitialization> } | null>(null);
+  const [retryingTemplate, setRetryingTemplate] = useState(false);
+  const projectCreationPending = useRef(false);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
+  const readOnlyProjects = isScopedProjectReadEnabled();
+  const nativeLifecycleEnabled = isNativeProjectLifecycleEnabled();
+  const lifecycleActionsEnabled = !readOnlyProjects || nativeLifecycleEnabled;
 
   useEffect(() => {
+    let active = true;
+    setProjects([]); setSelectedProject(null); setProjectsError(null);
     // Subscribe to Firestore projects (filtered by membership for non-admins).
     // Re-run when auth state changes so the query gets the correct membership filter.
     const unsubscribeProjects = subscribeToProjects(
-      (fetchedProjects) => { setProjects(fetchedProjects); },
-      user ? { uid: user.uid, isAdmin } : undefined
+      (fetchedProjects) => { if (active) { setProjects(fetchedProjects); setProjectsError(null); } },
+      user ? { uid: user.uid, isAdmin } : undefined,
+      (error) => { if (active) { setProjects([]); setSelectedProject(null); setProjectsError(error.message || 'Could not load projects. Please retry.'); } }
     );
     // Subscribe to clients to get logos
     const unsubscribeClients = subscribeToClients((fetchedClients) => {
       setClients(fetchedClients);
     });
     return () => {
+      active = false;
       unsubscribeProjects();
       unsubscribeClients();
     };
@@ -80,6 +103,8 @@ const Projects = () => {
   };
 
   const handleAddProject = async (newProject: NewProjectFormData, templateId?: string) => {
+    if (projectCreationPending.current) throw new Error('Project creation is already in progress');
+    if (templateRecovery) throw new Error('Resolve the created project template before creating another project');
     // Map dialog fields to Firestore schema
     const project: FirestoreProject = {
       projectId: newProject.id,
@@ -92,10 +117,39 @@ const Projects = () => {
       deadline: newProject.deadline,
       poValue: newProject.poValue,
     };
-    await addProject(
+    const createProject = () => addProject(
       project,
       user ? { uid: user.uid, email: user.email || '', displayName: user.displayName || '' } : undefined
     );
+
+    if (nativeLifecycleEnabled) {
+      const { projectId: _projectId, ...metadata } = project;
+      const flow = createProjectTemplateInitialization({
+        projectId: newProject.id, templateId, client: nativeMaterialOperations,
+        project: {
+          projectName: metadata.projectName,
+          clientName: metadata.clientName,
+          description: metadata.description,
+          status: metadata.status,
+          deadline: metadata.deadline,
+          poValue: metadata.poValue,
+          ...(metadata.clientId !== undefined ? { clientId: metadata.clientId } : {}),
+          ...(metadata.billingEntityId !== undefined ? { billingEntityId: metadata.billingEntityId } : {}),
+        },
+        cachedUid: user?.uid, getTemplate,
+      });
+      projectCreationPending.current = true;
+      try {
+        await flow.start();
+      } catch (error) {
+        if (!flow.creationAttempted) throw error;
+        setTemplateRecovery({ projectId: newProject.id, flow, message: error instanceof Error ? error.message : 'Template initialization failed' });
+        // The awaited dialog may reset its creation form: recovery is now a separate template-only action.
+        setIsAddProjectDialogOpen(false);
+      } finally { projectCreationPending.current = false; }
+      return;
+    }
+    await createProject();
 
     // If a template is selected, apply it to the BOM
     if (templateId) {
@@ -144,6 +198,17 @@ const Projects = () => {
     }
   };
 
+  const retryTemplateInitialization = async () => {
+    if (!templateRecovery || retryingTemplate) return;
+    setRetryingTemplate(true);
+    try {
+      await templateRecovery.flow.retry();
+      setTemplateRecovery(null);
+    } catch (error) {
+      setTemplateRecovery({ ...templateRecovery, message: error instanceof Error ? error.message : 'Template initialization failed' });
+    } finally { setRetryingTemplate(false); }
+  };
+
   const handleUpdateProject = async (updatedProject: EditableProjectInput) => {
     const { projectId, poValue, ...updates } = updatedProject;
     // Only include poValue if it's defined
@@ -159,6 +224,15 @@ const Projects = () => {
     }
   };
 
+  const handleNativeArchiveConfirmed = (currentProject: Record<string, unknown>) => {
+    const statuses: readonly FirestoreProject['status'][] = ['Planning', 'Procurement', 'Ongoing', 'Delayed', 'Completed', 'Archived'];
+    if (!selectedProject || typeof currentProject.projectId !== 'string' || typeof currentProject.status !== 'string' || !statuses.some(status => status === currentProject.status)) return;
+    const status = currentProject.status as FirestoreProject['status'];
+    setProjects(current => current.map(project => project.projectId === selectedProject.projectId
+      ? { ...project, status, ...(status === 'Archived' ? {} : { archivedAt: null }) }
+      : project));
+  };
+
   const handleEditClick = (project: FirestoreProject) => {
     setSelectedProject(project);
     setIsEditProjectDialogOpen(true);
@@ -167,6 +241,12 @@ const Projects = () => {
   const handleArchiveClick = (project: FirestoreProject) => {
     setSelectedProject(project);
     setIsDeleteDialogOpen(true);
+  };
+
+  const handleProjectRestored = (projectId: string) => {
+    setProjects((current) => current.map((project) => project.projectId === projectId
+      ? { ...project, status: 'Planning', archivedAt: null }
+      : project));
   };
 
   const formatDate = (dateString: string) => {
@@ -185,8 +265,7 @@ const Projects = () => {
   // Archived projects are hidden by default, unless they're now in Support.
   const filteredProjects = useMemo(() => {
     const normalizedQuery = searchQuery.toLowerCase().trim();
-    return projects.filter((project) => {
-      if (!isProjectVisibleInList(project)) return false;
+    return filterProjectsByArchiveView(projects, archiveView).filter((project) => {
 
       const projectName = project.projectName?.toLowerCase() ?? "";
       const clientName = project.clientName?.toLowerCase() ?? "";
@@ -201,7 +280,7 @@ const Projects = () => {
       const matchesStatus = statusFilter === "all" || project.status === statusFilter;
       return matchesSearch && matchesClient && matchesStatus;
     });
-  }, [clientFilter, projects, searchQuery, statusFilter]);
+  }, [archiveView, clientFilter, projects, searchQuery, statusFilter]);
 
   // Build a deduplicated, sanitized client list for the filter dropdown.
   const clientOptions = useMemo(
@@ -226,8 +305,9 @@ const Projects = () => {
               </p>
             )}
           </div>
-          {!isPartner && (
+          {!isPartner && lifecycleActionsEnabled && (
             <div className="flex items-center gap-1.5 flex-shrink-0">
+              <RestoreProjectAction projectId={project.projectId} projectName={project.projectName} projectStatus={project.status} onRestored={() => handleProjectRestored(project.projectId)} />
               <Button
                 variant="ghost"
                 size="sm"
@@ -236,7 +316,7 @@ const Projects = () => {
               >
                 <Edit className="h-4 w-4" />
               </Button>
-              <Button
+              {project.status !== 'Archived' && <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => handleArchiveClick(project)}
@@ -244,9 +324,10 @@ const Projects = () => {
                 title="Archive project"
               >
                 <Archive className="h-4 w-4" />
-              </Button>
+              </Button>}
             </div>
           )}
+          {!isPartner && <ArchiveProjectRecoveryAction projectId={project.projectId} projectName={project.projectName} />}
         </div>
         <div className="flex items-center">
           {getStatusBadge(project.status)}
@@ -327,11 +408,30 @@ const Projects = () => {
     <div className="flex min-h-screen bg-background">
       <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
       <div className={`flex-1 transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
+        {projectsError && <div role="alert" className="mx-6 mt-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900">{projectsError}</div>}
+        {readOnlyProjects && !nativeLifecycleEnabled && <div role="status" className="mx-6 mt-4 rounded-md border bg-muted px-4 py-3 text-sm">Project details are currently read only.</div>}
+        {readOnlyProjects && nativeLifecycleEnabled && <div role="status" className="mx-6 mt-4 rounded-md border bg-muted px-4 py-3 text-sm">Project details use the native edit flow. Archive is unavailable until its recovery action is paired.</div>}
         {/* Header */}
         <div className="bg-card border-b">
           <div className="container mx-auto px-6 py-6">
+            {templateRecovery && (
+              <div role="alert" className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-4 space-y-2">
+                <p className="font-medium">Project creation or template completion needs confirmation: {templateRecovery.projectId}</p>
+                <p className="text-sm">{templateRecovery.message}. If the request outcome is uncertain, retry checks the same operation before applying anything again.</p>
+                <p className="text-sm">Dismissing recovery does not undo creation. Check the project before creating another.</p>
+                <div className="flex gap-2">
+                  <Button disabled={retryingTemplate} onClick={retryTemplateInitialization}>Retry project completion</Button>
+                  <Button variant="outline" asChild><Link to={`/project/${templateRecovery.projectId}/bom`}>Review created project</Link></Button>
+                  <Button variant="outline" disabled={retryingTemplate} onClick={() => setTemplateRecovery(null)}>Dismiss recovery</Button>
+                </div>
+              </div>
+            )}
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div className="flex items-center gap-3">
+                <div className="flex rounded-lg border" aria-label="Project archive view">
+                  <Button variant={archiveView === 'active' ? 'default' : 'ghost'} size="sm" onClick={() => { setArchiveView('active'); setStatusFilter('all'); }} className="rounded-r-none">Active</Button>
+                  <Button variant={archiveView === 'archived' ? 'default' : 'ghost'} size="sm" onClick={() => { setArchiveView('archived'); setStatusFilter('all'); }} className="rounded-l-none">Archived</Button>
+                </div>
                 <h1 className="text-3xl font-bold">Projects</h1>
                 <span className="text-muted-foreground">({filteredProjects.length} projects)</span>
               </div>
@@ -352,8 +452,8 @@ const Projects = () => {
               </div>
 
               <div className="flex items-center gap-3">
-                {(isAdmin || isInternalUser(user?.email ?? '')) && (
-                  <Button onClick={() => setIsAddProjectDialogOpen(true)}>
+                {(isAdmin || isInternalUser(user?.email ?? '')) && lifecycleActionsEnabled && (
+                  <Button disabled={!!templateRecovery} onClick={() => setIsAddProjectDialogOpen(true)}>
                     <Plus className="h-4 w-4 mr-2" />
                     Add New Project
                   </Button>
@@ -387,6 +487,7 @@ const Projects = () => {
                     <SelectItem value="Ongoing">Ongoing</SelectItem>
                     <SelectItem value="Delayed">Delayed</SelectItem>
                     <SelectItem value="Completed">Completed</SelectItem>
+                    {archiveView === 'archived' && <SelectItem value="Archived">Archived</SelectItem>}
                   </SelectContent>
                 </Select>
 
@@ -485,9 +586,10 @@ const Projects = () => {
                               </Link>
                             </Button>
                           )}
-                          {!isPartner && (
+                          {!isPartner && lifecycleActionsEnabled && (
                             <>
-                              <Button
+                              <RestoreProjectAction projectId={project.projectId} projectName={project.projectName} projectStatus={project.status} onRestored={() => handleProjectRestored(project.projectId)} />
+                              {project.status !== 'Archived' && lifecycleActionsEnabled && <Button
                                 variant="outline"
                                 size="sm"
                                 onClick={() => handleEditClick(project)}
@@ -495,8 +597,8 @@ const Projects = () => {
                                 className="text-blue-600 hover:text-blue-700"
                               >
                                 <Edit className="h-4 w-4" />
-                              </Button>
-                              <Button
+                              </Button>}
+                              {project.status !== 'Archived' && <Button
                                 variant="outline"
                                 size="sm"
                                 onClick={() => handleArchiveClick(project)}
@@ -504,9 +606,10 @@ const Projects = () => {
                                 className="text-amber-600 hover:text-amber-700"
                               >
                                 <Archive className="h-4 w-4" />
-                              </Button>
+                              </Button>}
                             </>
                           )}
+                          {!isPartner && <ArchiveProjectRecoveryAction projectId={project.projectId} projectName={project.projectName} />}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -518,11 +621,11 @@ const Projects = () => {
 
           {filteredProjects.length === 0 && (
             <div className="text-center py-12">
-              <div className="text-muted-foreground text-lg">No projects found matching your criteria.</div>
-              <Button className="mt-4">
+              <div className="text-muted-foreground text-lg">{archiveView === 'archived' ? 'No archived projects found.' : 'No projects found matching your criteria.'}</div>
+              {archiveView === 'active' && (isAdmin || isInternalUser(user?.email ?? '')) && lifecycleActionsEnabled && <Button className="mt-4" onClick={() => setIsAddProjectDialogOpen(true)}>
                 <Plus className="h-4 w-4 mr-2" />
                 Create New Project
-              </Button>
+              </Button>}
             </div>
           )}
         </div>
@@ -539,9 +642,11 @@ const Projects = () => {
         project={selectedProject}
       />
       <DeleteProjectDialog
+        projectId={selectedProject?.projectId}
         open={isDeleteDialogOpen}
-        onOpenChange={setIsDeleteDialogOpen}
+        onOpenChange={open => { setIsDeleteDialogOpen(open); if (!open) setSelectedProject(null); }}
         onConfirm={handleArchiveProject}
+        onNativeArchived={handleNativeArchiveConfirmed}
         projectName={selectedProject?.projectName || ""}
       />
       <TranscriptPasteDialog
@@ -553,6 +658,11 @@ const Projects = () => {
       />
     </div>
   );
+};
+
+const Projects = () => {
+  const { user, isAdmin } = useAuth();
+  return <ProjectsContent key={JSON.stringify([user?.uid ?? null, isAdmin])} />;
 };
 
 export default Projects;

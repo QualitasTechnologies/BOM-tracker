@@ -1,5 +1,5 @@
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,12 @@ import { getProjectDocuments } from "@/utils/projectDocumentFirestore";
 import { listPulseProjects, type PulseProjectOption } from "@/utils/pulseProxyFirestore";
 import type { EditableProjectInput, FirestoreProject } from "@/types/project";
 import { useAuth } from "@/hooks/useAuth";
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
+import { isNativeMaterialCommandEnabled } from '@/utils/nativeMaterialCommands';
+import { createNativeProjectWorkspace, type NativeProjectPatch, type NativeProjectCommand } from '@/utils/nativeProjectOperations';
+import DelayLogDialog from '@/components/Milestones/DelayLogDialog';
+import type {DelayLogInput} from '@/types/milestone';
+import {useToast} from '@/components/ui/use-toast';
 
 interface EditProjectDialogProps {
   open: boolean;
@@ -23,8 +29,37 @@ interface EditProjectDialogProps {
   project: FirestoreProject | null;
 }
 
+type NativeProjectOpening = {
+  projectId: string; projectName: string; clientName: string; clientId?: string;
+  billingEntityId?: string; description: string; status: FirestoreProject['status'];
+  deadline: string; pulseProjectId?: number | null; isBaselined?: boolean;
+};
+
+const readNativeProjectOpening = (value: Record<string, unknown>, expectedProjectId: string): NativeProjectOpening => {
+  const statuses: readonly FirestoreProject['status'][] = ['Planning', 'Procurement', 'Ongoing', 'Delayed', 'Completed', 'Archived'];
+  if (value.projectId !== expectedProjectId || typeof value.projectName !== 'string' || typeof value.clientName !== 'string'
+    || typeof value.description !== 'string' || typeof value.deadline !== 'string'
+    || !statuses.includes(value.status as FirestoreProject['status'])) {
+    throw new Error('The native project details are incomplete. Reload the project before editing.');
+  }
+  return {
+    projectId: expectedProjectId,
+    projectName: value.projectName,
+    clientName: value.clientName,
+    ...(typeof value.clientId === 'string' ? { clientId: value.clientId } : {}),
+    ...(typeof value.billingEntityId === 'string' ? { billingEntityId: value.billingEntityId } : {}),
+    description: value.description,
+    status: value.status as FirestoreProject['status'],
+    deadline: value.deadline,
+    ...(value.pulseProjectId === null || typeof value.pulseProjectId === 'number' && Number.isSafeInteger(value.pulseProjectId)
+      ? { pulseProjectId: value.pulseProjectId as number | null } : {}),
+    ...(typeof value.isBaselined === 'boolean' ? { isBaselined: value.isBaselined } : {}),
+  };
+};
+
 const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: EditProjectDialogProps) => {
   const { user, isAdmin } = useAuth();
+  const {toast}=useToast();
   const [projectId, setProjectId] = useState("");
   const [projectName, setProjectName] = useState("");
   const [clientName, setClientName] = useState("");
@@ -38,6 +73,58 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
   const [pulseOptions, setPulseOptions] = useState<PulseProjectOption[]>([]);
   const [pulseFilter, setPulseFilter] = useState('');
   const [pulseProjectId, setPulseProjectId] = useState<number | undefined>(undefined);
+  // Keep the existing safe-edit route available while Projects gates the new
+  // lifecycle entry points on the complete scoped/native rollout pair.
+  const native = isNativeMaterialCommandEnabled();
+  const legacyEditingUnavailable = isScopedProjectReadEnabled() && !native;
+  const workspaceRef = useRef<ReturnType<typeof createNativeProjectWorkspace> | null>(null);
+  const actionRef = useRef<ReturnType<ReturnType<typeof createNativeProjectWorkspace>['capture']> | null>(null);
+  const openingRef = useRef<NativeProjectOpening | null>(null);
+  const busyRef = useRef(false);
+  const contextRef = useRef('');
+  contextRef.current = JSON.stringify([open, project?.projectId, user?.uid]);
+  const [nativeReady, setNativeReady] = useState(false);
+  const [nativeSaving, setNativeSaving] = useState(false);
+  const [deadlineDelayOpen,setDeadlineDelayOpen]=useState(false);
+  const [hasPendingProject,setHasPendingProject]=useState(false);
+  type DeadlineRequest={context:string;workspace:NonNullable<typeof workspaceRef.current>;action:NonNullable<typeof actionRef.current>;patch:NativeProjectPatch;previousDate:string;newDate:string;command?:NativeProjectCommand};
+  const deadlineRef=useRef<DeadlineRequest|null>(null);
+
+  useEffect(() => {
+    if (!native || !open || !project) return;
+    const context = contextRef.current;
+    const workspace = createNativeProjectWorkspace(project.projectId, undefined, user?.uid || '');
+    workspaceRef.current = workspace; actionRef.current = null; openingRef.current = null;
+    deadlineRef.current=null;setDeadlineDelayOpen(false);
+    setHasPendingProject(false);
+    busyRef.current = false; setNativeSaving(false); setNativeReady(false); setError('');
+    workspace.load().then(snapshot => {
+      if (contextRef.current !== context || workspaceRef.current !== workspace) return;
+      const current = readNativeProjectOpening(snapshot.project, project.projectId);
+      openingRef.current = current;
+      setProjectId(current.projectId); setProjectName(current.projectName || '');
+      setClientName(current.clientName || ''); setBillingEntityId(current.billingEntityId || '');
+      setDescription(current.description || ''); setStatus(current.status); setDeadline(current.deadline || '');
+      setPulseProjectId(current.pulseProjectId);
+      const action=workspace.capture('metadata');actionRef.current=action;const pending=action.pendingCommand;setHasPendingProject(!!pending);
+      if(pending?.kind==='metadata'){
+        const patch=pending.patch;
+        if(patch.projectName!==undefined)setProjectName(patch.projectName);if(patch.clientName!==undefined)setClientName(patch.clientName);if(patch.description!==undefined)setDescription(patch.description);
+        if(patch.status!==undefined)setStatus(patch.status as FirestoreProject['status']);if(patch.deadline!==undefined)setDeadline(patch.deadline);if(patch.billingEntityId!==undefined)setBillingEntityId(patch.billingEntityId);if(patch.pulseProjectId!==undefined)setPulseProjectId(patch.pulseProjectId??undefined);
+      }
+      if (!snapshot.permissions.edit) { setError('Project editing is not enabled for this account here. Pending requests can still be resolved.'); return; }
+      setNativeReady(true);
+    }).catch(error => {
+      if (contextRef.current === context && workspaceRef.current === workspace) setError((error as Error).message);
+    });
+    return () => { workspace.invalidate(); if (workspaceRef.current === workspace) workspaceRef.current = null; };
+  }, [native, open, project?.projectId, user?.uid]);
+
+  useEffect(() => {
+    if (native && nativeReady && billingEntities.length) {
+      setBillingEntityId(current => current || getDefaultBillingEntity(billingEntities)?.id || 'company');
+    }
+  }, [native, nativeReady, billingEntities]);
 
   // Load clients when dialog opens
   useEffect(() => {
@@ -78,6 +165,7 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
 
   // Set form values when project changes
   useEffect(() => {
+    if (native) return;
     if (!project || !open) return;
 
     setProjectId(project.projectId);
@@ -87,10 +175,11 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
     setDeadline(project.deadline);
     setPulseProjectId(project.pulseProjectId);
     setBillingEntityId(project.billingEntityId || getDefaultBillingEntity(billingEntities)?.id || 'company');
-  }, [project, open, billingEntities]);
+  }, [project, open, billingEntities, native]);
 
   // Set clientName after clients are loaded to ensure exact match
   useEffect(() => {
+    if (native) return;
     if (!project || !open || clients.length === 0) return;
     
     if (project.clientName) {
@@ -117,19 +206,49 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
         }
       }
     }
-  }, [project, clients, open]);
+  }, [project, clients, open, native]);
 
   const selectableClients = useMemo(
     () => clients.filter((clientItem) => clientItem.company?.trim()),
     [clients]
   );
+  const submitNative=async(command:NativeProjectCommand,source:{context:string;workspace:NonNullable<typeof workspaceRef.current>;action:NonNullable<typeof actionRef.current>})=>{
+    if(source.context!==contextRef.current||source.workspace!==workspaceRef.current)throw new Error('The project context changed. Reopen it before continuing.');
+    if(busyRef.current)return;
+    busyRef.current=true;setNativeSaving(true);
+    try{
+      await source.action.submit(command);
+      if(contextRef.current===source.context&&workspaceRef.current===source.workspace){setDeadlineDelayOpen(false);onOpenChange(false);}
+    }catch(error){if(contextRef.current===source.context&&workspaceRef.current===source.workspace){setError((error as Error).message);try{setHasPendingProject(!!source.action.pendingCommand);}catch{setHasPendingProject(true);}}throw error;}
+    finally{if(contextRef.current===source.context&&workspaceRef.current===source.workspace){busyRef.current=false;setNativeSaving(false);}}
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    if (legacyEditingUnavailable) return;
 
     if (!project) {
       setError("Select a project to edit.");
+      return;
+    }
+
+    if (native) {
+      if (!nativeReady || !actionRef.current || busyRef.current) return;
+      const context = contextRef.current, workspace = workspaceRef.current;
+      if(actionRef.current.pendingCommand){await submitNative(actionRef.current.pendingCommand,{context,workspace:workspace!,action:actionRef.current}).catch(()=>{});return;}
+      const patch: NativeProjectPatch = {
+        projectName, clientName, description, status, deadline,
+        ...(clients.find(client => client.company === clientName)?.id
+          ? { clientId: clients.find(client => client.company === clientName)!.id }
+          : openingRef.current?.clientName === clientName && openingRef.current?.clientId ? { clientId: openingRef.current.clientId } : {}),
+        ...(billingEntityId ? { billingEntityId } : {}), pulseProjectId: pulseProjectId ?? null,
+      };
+      if(deadlineRef.current?.command){setDeadlineDelayOpen(true);return;}
+      if(openingRef.current?.isBaselined&&deadline!==openingRef.current.deadline){
+        deadlineRef.current={context,workspace:workspace!,action:actionRef.current,patch:structuredClone(patch),previousDate:openingRef.current.deadline,newDate:deadline};setDeadlineDelayOpen(true);return;
+      }
+      await submitNative({kind:'metadata',patch},{context,workspace:workspace!,action:actionRef.current}).catch(()=>{});
       return;
     }
 
@@ -214,22 +333,27 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
     void submitUpdate();
   };
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+  const deadlineRequest=deadlineRef.current;
+  return (<>
+    <Dialog open={open} onOpenChange={value => { if (!native || !busyRef.current) onOpenChange(value); }}>
       <DialogContent className="@container max-w-[425px] max-h-[90vh] overflow-hidden flex flex-col p-4">
         <DialogHeader className="pb-2">
           <DialogTitle>Edit Project</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto space-y-3 pr-2 -mr-2">
+          {legacyEditingUnavailable && <Alert><AlertDescription>Project editing is temporarily unavailable here. Reopen the project to use its safe editing actions.</AlertDescription></Alert>}
           {error && (
             <Alert variant="destructive" className="py-2">
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
+          {native&&hasPendingProject&&<Alert><AlertDescription>An earlier save was not confirmed. Retry the same request or resolve it before making another change.</AlertDescription></Alert>}
+          <fieldset disabled={legacyEditingUnavailable || (native && (!nativeReady || nativeSaving || deadlineDelayOpen || hasPendingProject || !!deadlineRequest?.command))} className="contents">
           <div className="space-y-1">
             <Label htmlFor="projectId">Project ID</Label>
             <Input
               id="projectId"
+              disabled={native}
               value={projectId}
               onChange={(e) => setProjectId(e.target.value)}
               placeholder="Enter project ID"
@@ -359,15 +483,29 @@ const EditProjectDialog = ({ open, onOpenChange, onUpdateProject, project }: Edi
               className="h-8"
             />
           </div>
+          </fieldset>
           <div className="flex justify-end gap-2 pt-4 mt-4 border-t bg-background">
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} className="h-8">
+            {native&&hasPendingProject&&<Button type="button" variant="outline" disabled={nativeSaving} onClick={async()=>{
+              if(!actionRef.current||busyRef.current)return;const context=contextRef.current,workspace=workspaceRef.current;busyRef.current=true;setNativeSaving(true);
+              try{const result=await actionRef.current.resolve();if(contextRef.current===context&&workspaceRef.current===workspace){toast({title:result.resolution==='committed'?'Project save confirmed':'Project save cancelled'});onOpenChange(false);}}
+              catch(error){if(contextRef.current===context&&workspaceRef.current===workspace)setError((error as Error).message);}
+              finally{if(contextRef.current===context&&workspaceRef.current===workspace){busyRef.current=false;setNativeSaving(false);}}
+            }}>Resolve project request</Button>}
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={native && nativeSaving} className="h-8">
               Cancel
             </Button>
-            <Button type="submit" className="h-8">Update Project</Button>
+            <Button type="submit" disabled={legacyEditingUnavailable || (native && (!nativeReady || nativeSaving || deadlineDelayOpen))} className="h-8">Update Project</Button>
           </div>
         </form>
       </DialogContent>
     </Dialog>
+    {native&&deadlineRequest&&<DelayLogDialog key={`${project?.projectId}:${user?.uid}`} open={deadlineDelayOpen}
+      onOpenChange={value=>{if(!nativeSaving&&deadlineRequest.context===contextRef.current)setDeadlineDelayOpen(value);}}
+      entityType="project" entityId={project?.projectId||''} entityName={deadlineRequest.patch.projectName||project?.projectName||''} previousDate={deadlineRequest.previousDate} newDate={deadlineRequest.newDate}
+      onSubmit={async(input:DelayLogInput)=>{
+        deadlineRequest.command??={kind:'metadata',patch:deadlineRequest.patch,delay:{reason:input.reason,attribution:input.attribution}};
+        await submitNative(deadlineRequest.command,deadlineRequest);
+      }}/>} </>
   );
 };
 

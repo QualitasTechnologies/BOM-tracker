@@ -7,14 +7,14 @@ import { ArrowLeft, TrendingUp, TrendingDown, FileDown, Edit2, DollarSign, Clock
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { Progress } from "@/components/ui/progress";
 import Sidebar from "@/components/Sidebar";
-import { doc, getDoc } from "firebase/firestore";
-import { db, auth } from "@/firebase";
-import { getBOMData, getTotalBOMCost, updateProject, subscribeToProjects } from "@/utils/projectFirestore";
+import { auth } from "@/firebase";
+import { getBOMData, getProject, getTotalBOMCost, updateProject, subscribeToProjects } from "@/utils/projectFirestore";
 import { getProjectCosts, type ProjectCostRow } from "@/utils/pulseProxyFirestore";
 import { WeekNavigator, weekRangeFromDate, type WeekRange } from "@/components/CostAnalysis/WeekNavigator";
 import { subscribeToClients, Client } from "@/utils/settingsFirestore";
 import { uploadProjectDocument, getProjectDocuments, deleteProjectDocument } from "@/utils/projectDocumentFirestore";
 import { useAuth } from "@/hooks/useAuth";
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
 import { useToast } from "@/components/ui/use-toast";
 import type { FirestoreProject } from "@/types/project";
 import type { ProjectDocument } from "@/types/projectDocument";
@@ -46,25 +46,30 @@ const CostAnalysisSummary = ({
   const [clients, setClients] = useState<Client[]>([]);
   const [projectCosts, setProjectCosts] = useState<Map<string, ProjectCostData>>(new Map());
   const [loading, setLoading] = useState(true);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
   const [costsError, setCostsError] = useState<string | null>(null);
   const [range] = useState<WeekRange>(() => weekRangeFromDate(new Date()));
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['Ongoing', 'Delayed', 'Planning', 'Completed']));
 
   // Subscribe to projects and clients
   useEffect(() => {
+    let active = true;
+    setProjects([]); setProjectCosts(new Map()); setProjectsError(null); setLoading(true);
     const unsubscribeProjects = subscribeToProjects(
       (fetchedProjects) => {
+        if (!active) return;
         setProjects(fetchedProjects.filter(p => p.status !== 'Archived'));
       },
-      user ? { uid: user.uid, isAdmin } : undefined
+      user ? { uid: user.uid, isAdmin } : undefined,
+      (error) => { if (active) { setProjects([]); setProjectCosts(new Map()); setProjectsError(error.message || 'Could not load projects. Please retry.'); setLoading(false); } }
     );
     const unsubscribeClients = subscribeToClients(setClients);
 
     return () => {
-      unsubscribeProjects();
+      active = false; unsubscribeProjects();
       unsubscribeClients();
     };
-  }, []);
+  }, [user?.uid, isAdmin]);
 
   // Fetch cost data for all projects — real Pulse hours/cost via getProjectCosts roll-up
   useEffect(() => {
@@ -180,6 +185,7 @@ const CostAnalysisSummary = ({
               {costsError}
             </div>
           )}
+          {projectsError && <div role="alert" className="rounded-md border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">{projectsError}</div>}
           {loading ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-center">
@@ -310,7 +316,7 @@ const CostAnalysisDetail = ({
   setSidebarCollapsed: (collapsed: boolean) => void;
 }) => {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
   const [costPerHour, setCostPerHour] = useState(0);
   const [estimatedBudget, setEstimatedBudget] = useState(600000);
   const [isEditingBudget, setIsEditingBudget] = useState(false);
@@ -324,9 +330,11 @@ const CostAnalysisDetail = ({
   const [currentBOM, setCurrentBOM] = useState<any[]>([]);
   const [costRow, setCostRow] = useState<ProjectCostRow | null>(null);
   const [costsError, setCostsError] = useState<string | null>(null);
+  const [projectReadError, setProjectReadError] = useState<string | null>(null);
   const [range, setRange] = useState<WeekRange>(() => weekRangeFromDate(new Date()));
 
   const [projectDetails, setProjectDetails] = useState<{ projectName: string; projectId: string; clientName: string; deadline: string; status: string; bomSnapshot?: any[]; bomSnapshotDate?: string } | null>(null);
+  const projectFieldsReadOnly = isScopedProjectReadEnabled();
 
   // Customer PO document state
   const [customerPODocs, setCustomerPODocs] = useState<ProjectDocument[]>([]);
@@ -345,6 +353,7 @@ const CostAnalysisDetail = ({
 
   // Handle Customer PO upload
   const handleCustomerPOUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (projectFieldsReadOnly) { e.target.value = ''; return; }
     if (!e.target.files || !e.target.files[0]) return;
 
     const file = e.target.files[0];
@@ -376,6 +385,7 @@ const CostAnalysisDetail = ({
 
   // Handle Customer PO delete
   const handleDeleteCustomerPO = async (doc: ProjectDocument) => {
+    if (projectFieldsReadOnly) return;
     if (!window.confirm(`Delete "${doc.name}"?`)) return;
 
     try {
@@ -397,13 +407,17 @@ const CostAnalysisDetail = ({
   };
 
   useEffect(() => {
+    let active = true;
+    const uid = user?.uid;
+    const isCurrent = () => active && !!uid && user?.uid === uid;
+    setProjectDetails(null); setCurrentBOM([]); setMaterialCost(0); setCustomerPODocs([]); setProjectReadError(null);
     const fetchAllData = async () => {
-      if (!projectIdParam) return;
+      if (!projectIdParam || !uid) return;
       // Fetch project details and editable fields
-      const projectRef = doc(db, 'projects', projectIdParam);
-      const projectSnap = await getDoc(projectRef);
-      if (projectSnap.exists()) {
-        const data = projectSnap.data();
+      try {
+      const data = await getProject(projectIdParam, uid, () => { if (!isCurrent()) throw new Error('Account or project changed. Reopen this project.'); });
+      if (!isCurrent()) return;
+      if (data) {
         setProjectDetails({
           projectName: data.projectName || '',
           projectId: data.projectId || '',
@@ -421,19 +435,27 @@ const CostAnalysisDetail = ({
             ? data.estimatedBudget
             : 0
         );
+      } else {
+        setProjectDetails(null); setProjectReadError('Project not found or you no longer have access.'); return;
       }
       // Fetch BOM and calculate material cost
-      const bomCategories = await getBOMData(projectIdParam);
+      const bomCategories = await getBOMData(projectIdParam, uid, () => { if (!isCurrent()) throw new Error('Account or project changed. Reopen this project.'); });
+      if (!isCurrent()) return;
       const bomItems = bomCategories.flatMap(cat => cat.items);
       setCurrentBOM(bomItems);
       setMaterialCost(getTotalBOMCost(bomCategories));
 
       // Fetch Customer PO documents
       const docs = await getProjectDocuments(projectIdParam);
+      if (!isCurrent()) return;
       setCustomerPODocs(docs.filter(d => d.type === 'customer-po'));
+      } catch (error) {
+        if (isCurrent()) { setProjectDetails(null); setCurrentBOM([]); setMaterialCost(0); setCustomerPODocs([]); setProjectReadError(error instanceof Error ? error.message : 'Could not load project data. Please retry.'); }
+      }
     };
     fetchAllData();
-  }, [projectIdParam]);
+    return () => { active = false; };
+  }, [projectIdParam, user?.uid]);
 
   const fetchCosts = async () => {
     if (!projectIdParam) return;
@@ -565,6 +587,8 @@ const CostAnalysisDetail = ({
     <div className="flex min-h-screen bg-background">
       <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
       <div className={`flex-1 transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
+        {projectReadError && <div role="alert" className="mx-4 mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">{projectReadError}</div>}
+        {projectFieldsReadOnly && <div role="status" className="mx-4 mt-4 rounded-md border bg-muted px-4 py-2 text-sm">These project financial fields are currently read only.</div>}
         <div className="border-b bg-card">
           <div className="container mx-auto px-4 py-4">
             <div className="flex items-center gap-4">
@@ -670,6 +694,7 @@ const CostAnalysisDetail = ({
                           value={costPerHour}
                           onChange={(e) => setCostPerHour(parseInt(e.target.value) || 0)}
                           onBlur={handleCostPerHourBlur}
+                          disabled={projectFieldsReadOnly}
                           className="w-24 h-8"
                           autoFocus
                         />
@@ -680,6 +705,7 @@ const CostAnalysisDetail = ({
                             variant="ghost"
                             size="sm"
                             onClick={() => setIsEditingRate(true)}
+                            disabled={projectFieldsReadOnly}
                             className="h-6 w-6 p-0"
                           >
                             <Edit2 className="h-3 w-3" />
@@ -697,6 +723,7 @@ const CostAnalysisDetail = ({
                           value={miscCost}
                           onChange={(e) => setMiscCost(parseInt(e.target.value) || 0)}
                           onBlur={handleMiscCostBlur}
+                          disabled={projectFieldsReadOnly}
                           className="w-24 h-8"
                           autoFocus
                         />
@@ -707,6 +734,7 @@ const CostAnalysisDetail = ({
                             variant="ghost"
                             size="sm"
                             onClick={() => setIsEditingMisc(true)}
+                            disabled={projectFieldsReadOnly}
                             className="h-6 w-6 p-0"
                           >
                             <Edit2 className="h-3 w-3" />
@@ -754,6 +782,7 @@ const CostAnalysisDetail = ({
                         variant="ghost"
                         size="sm"
                         onClick={() => setIsEditingPO(true)}
+                        disabled={projectFieldsReadOnly}
                         className="h-6 w-6 p-0"
                       >
                         <Edit2 className="h-3 w-3" />
@@ -769,6 +798,7 @@ const CostAnalysisDetail = ({
                         setPoValue(isNaN(val) ? 0 : val);
                       }}
                       onBlur={handlePOValueBlur}
+                      disabled={projectFieldsReadOnly}
                       className="text-xl font-bold text-center"
                       autoFocus
                     />
@@ -824,10 +854,10 @@ const CostAnalysisDetail = ({
                     type="file"
                     className="hidden"
                     onChange={handleCustomerPOUpload}
-                    disabled={uploadingPO}
+                    disabled={uploadingPO || projectFieldsReadOnly}
                     accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
                   />
-                  <Button variant="outline" size="sm" disabled={uploadingPO} asChild>
+                  <Button variant="outline" size="sm" disabled={uploadingPO || projectFieldsReadOnly} asChild>
                     <span>
                       <Upload className="mr-2 h-4 w-4" />
                       {uploadingPO ? 'Uploading...' : 'Upload PO'}
@@ -868,6 +898,7 @@ const CostAnalysisDetail = ({
                       <Button
                         variant="ghost"
                         size="sm"
+                        disabled={projectFieldsReadOnly}
                         onClick={() => handleDeleteCustomerPO(doc)}
                         className="text-red-600 hover:text-red-700 hover:bg-red-50"
                         title="Delete document"
@@ -1112,7 +1143,7 @@ const CostAnalysisDetail = ({
 };
 
 // Main Component - decides which view to show
-const CostAnalysis = () => {
+const CostAnalysisContent = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchParams] = useSearchParams();
   const projectIdParam = searchParams.get('project');
@@ -1133,6 +1164,12 @@ const CostAnalysis = () => {
       setSidebarCollapsed={setSidebarCollapsed}
     />
   );
+};
+
+const CostAnalysis = () => {
+  const { user, isAdmin } = useAuth();
+  const [searchParams] = useSearchParams();
+  return <CostAnalysisContent key={JSON.stringify([searchParams.get('project'), user?.uid ?? null, isAdmin])} />;
 };
 
 export default CostAnalysis;
