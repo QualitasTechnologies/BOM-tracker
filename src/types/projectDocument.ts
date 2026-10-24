@@ -1,5 +1,13 @@
 export type DocumentType = 'vendor-quote' | 'vendor-po' | 'customer-po' | 'vendor-invoice' | 'spec-sheet';
 
+export interface NativeProjectDocumentOpening {
+  project_id: string;
+  actor_uid: string;
+  project_version: string;
+  bom_version: string;
+  document_version: string;
+}
+
 export interface ProjectDocument {
   id: string;
   projectId: string;
@@ -11,6 +19,8 @@ export interface ProjectDocument {
   linkedBOMItems?: string[]; // Array of BOM item IDs
   fileSize?: number;
   sourceUrl?: string; // For spec-sheets: original URL where document was found on the web
+  nativeOpening?: NativeProjectDocumentOpening;
+  pulseNativeDocument?: { operation_id: string; path: string; generation: string };
 }
 
 export interface DocumentTypeSection {

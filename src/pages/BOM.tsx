@@ -43,6 +43,7 @@ import ProjectMembersTab from '@/components/Project/ProjectMembersTab';
 import { ProjectCommunicationsTab } from '@/components/Project/ProjectCommunicationsTab';
 import { isNativeMaterialCommandEnabled, loadNativeMaterialSnapshot, submitNativeMaterialCommand, submitNativeMaterialFulfillment } from '@/utils/nativeMaterialCommands';
 import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
+import { createDocumentLinkAction, isDefinitiveDocumentLinkFailure, type DocumentLinkAction } from '@/utils/documentLinkAction';
 import OverheadsTab from '@/components/BOM/OverheadsTab';
 import ProjectCostBar from '@/components/BOM/ProjectCostBar';
 import { fetchAllUsers } from '@/utils/userService';
@@ -141,6 +142,38 @@ const BOMContent = () => {
   const [overheadTotal, setOverheadTotal] = useState(0);
   const { user, isAdmin } = useAuth();
   const legacyWritesDisabled = isScopedProjectReadEnabled() && !isNativeMaterialCommandEnabled();
+  // Document links in native mode: the dialog captures the revision, account and project it opened against.
+  // A background refresh never rebases that draft, and an uncertain reply keeps its request identity.
+  const documentContext = JSON.stringify([projectId, user?.uid]);
+  const currentDocumentContext = useRef(documentContext);
+  currentDocumentContext.current = documentContext;
+  const nativeVersionContext = useRef<string | null>(null);
+  const documentLinkAction = useRef<DocumentLinkAction | null>(null);
+  const uncertainDocumentLinks = useRef(new Map<string, DocumentLinkAction>());
+  useEffect(() => { documentLinkAction.current = null; uncertainDocumentLinks.current.clear(); }, [documentContext]);
+  const openDocumentLinks = (document: ProjectDocument) => {
+    if (!isNativeMaterialCommandEnabled()) return;
+    const uid = user?.uid;
+    if (!projectId || !uid) throw new Error('Sign in again before changing document links.');
+    const retained = uncertainDocumentLinks.current.get(document.id);
+    if (retained && retained.projectId === projectId && retained.uid === uid) { documentLinkAction.current = retained; return; }
+    uncertainDocumentLinks.current.delete(document.id);
+    if (!nativeMaterialVersion || nativeVersionContext.current !== documentContext) throw new Error('BOM revision is still loading. Refresh the page before changing document links.');
+    const context = documentContext;
+    documentLinkAction.current = createDocumentLinkAction({ projectId, uid, version: nativeMaterialVersion, isCurrent: () => currentDocumentContext.current === context });
+  };
+  const saveDocumentLinks = async (document: ProjectDocument, addedIds: string[], removedIds: string[]) => {
+    const action = documentLinkAction.current;
+    if (!action || action.projectId !== projectId || action.uid !== user?.uid) throw new Error('Reopen the document links before saving.');
+    try {
+      await action.submit({ kind: 'link_document_delta', document_id: document.id, add_item_ids: addedIds, remove_item_ids: removedIds });
+    } catch (error) {
+      if (isDefinitiveDocumentLinkFailure(error)) uncertainDocumentLinks.current.delete(document.id);
+      else uncertainDocumentLinks.current.set(document.id, action);
+      throw error;
+    }
+    uncertainDocumentLinks.current.delete(document.id);
+  };
   const [fullProject, setFullProject] = useState<Project | null>(null);
   const [projectRefreshVersion, setProjectRefreshVersion] = useState(0);
   const projectReadGeneration = useRef(0);
@@ -180,6 +213,7 @@ const BOMContent = () => {
           const snapshot = await loadNativeMaterialSnapshot(projectId);
           if (!currentRead()) return;
           setCategories(snapshot.categories as BOMCategory[]);
+          nativeVersionContext.current = JSON.stringify([projectId, uid]);
           setNativeMaterialVersion(snapshot.version);
           setMaterialActionError(null);
         } catch (error) {
@@ -1241,13 +1275,15 @@ const BOMContent = () => {
                 {projectId && (
                   <ProjectDocuments
                     projectId={projectId}
-                    materialVersion={nativeMaterialVersion}
                     bomItems={visibleCategories.flatMap(cat => cat.items)}
                     filterItemIds={isPartner ? visibleItemIds : undefined}
-                    onDocumentsChange={() => {
-                      // Reload documents when they change
-                      getProjectDocuments(projectId).then(setProjectDocuments);
+                    onDocumentsChange={documents => {
+                      if (currentDocumentContext.current === documentContext) setProjectDocuments(documents);
                     }}
+                    awaitConfirmation={isNativeMaterialCommandEnabled()}
+                    confirmationContext={documentContext}
+                    onDocumentLinkOpen={openDocumentLinks}
+                    onSaveDocumentLinks={saveDocumentLinks}
                     onBOMItemUpdate={async (itemId: string, updates: Partial<BOMItem>) => {
                       if (projectId) {
                         await updateItemSafely(itemId, updates);

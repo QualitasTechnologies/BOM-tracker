@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { FileText, Upload, Trash2, Link as LinkIcon, X, AlertCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -14,8 +14,14 @@ import {
   uploadProjectDocument,
   getProjectDocuments,
   deleteProjectDocument,
-  linkDocumentToBOMItems
+  linkDocumentToBOMItems,
+  acknowledgeProjectDocumentUpload,
+  acknowledgeProjectDocumentDeletion
 } from '@/utils/projectDocumentFirestore';
+import {nativeProjectDocumentsEnabled} from '@/utils/projectDocumentMode';
+import {isScopedProjectReadEnabled} from '@/utils/projectReadMode';
+import {getPendingNativeProjectDocumentTypes} from '@/utils/nativeProjectDocumentUpload';
+import ProjectDocumentRecovery from './ProjectDocumentRecovery';
 import { validateDocumentDeletion } from '@/utils/bomDocumentLinking';
 import { ProjectDocument, DocumentType, DocumentTypeSection, BOM_DOCUMENT_SECTIONS } from '@/types/projectDocument';
 import { BOMItem } from '@/types/bom';
@@ -23,38 +29,82 @@ import { BOMItem } from '@/types/bom';
 interface ProjectDocumentsProps {
   projectId: string;
   bomItems: BOMItem[]; // BOM items for linking (pass only visible items for partners)
-  onDocumentsChange?: () => void;
+  onDocumentsChange?: (documents: ProjectDocument[]) => void | Promise<void>;
   onBOMItemUpdate?: (itemId: string, updates: Partial<BOMItem>) => Promise<void>; // Callback to update BOM items
   fullPage?: boolean; // When true, renders without collapsible wrapper for tab view
   sections?: DocumentTypeSection[]; // Document sections to show (defaults to BOM_DOCUMENT_SECTIONS)
   renderAfterSection?: { sectionType: DocumentType; content: React.ReactNode }; // Render content after specific section
   filterItemIds?: string[]; // When set, only show documents linked to these BOM item IDs (used for partner scoping)
+  awaitConfirmation?: boolean; // Opt in: link saves go only through onSaveDocumentLinks, awaited, with no direct Firestore link/item writes
+  confirmationContext?: string; // Identity of the data the dialog opened against; a change discards the open dialog and any pending result
+  onDocumentLinkOpen?: (document: ProjectDocument) => void;
+  onSaveDocumentLinks?: (document: ProjectDocument, addedItemIds: string[], removedItemIds: string[]) => Promise<void>;
   materialVersion?: string | null;
 }
 
-const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate, fullPage = false, sections = BOM_DOCUMENT_SECTIONS, renderAfterSection, filterItemIds, materialVersion }: ProjectDocumentsProps) => {
+const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpdate, fullPage = false, sections = BOM_DOCUMENT_SECTIONS, renderAfterSection, filterItemIds, awaitConfirmation = false, confirmationContext, onDocumentLinkOpen, onSaveDocumentLinks, materialVersion }: ProjectDocumentsProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [documentBusy,setDocumentBusy] = useState(false);
+  const documentBusyRef = useRef(false);
+  const documentMounted = useRef(true);
+  const documentScope = JSON.stringify([projectId,auth.currentUser?.uid]);
+  const documentScopeRef = useRef(documentScope);
+  documentScopeRef.current = documentScope;
   const [selectedType, setSelectedType] = useState<DocumentType>('vendor-quote');
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [selectedDocument, setSelectedDocument] = useState<ProjectDocument | null>(null);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [savingLinks, setSavingLinks] = useState(false);
   const { toast } = useToast();
+  const savingLinksRef = useRef(false);
+  const generationRef = useRef(0);
+  const openingActorUidRef = useRef<string | undefined>(undefined);
+  const openingLinkedIdsRef = useRef<string[]>([]);
+  const openingContextRef = useRef<string | undefined>(undefined);
 
-  // Load documents
+  // A native dialog is bound to the context and account it was opened against.
+  const nativeContext = confirmationContext;
+  const scopedReadsOn = isScopedProjectReadEnabled();
+  const documentWritesUnavailable = scopedReadsOn && !nativeProjectDocumentsEnabled();
+  const linkWritesUnavailable = scopedReadsOn && (awaitConfirmation ? !onSaveDocumentLinks : !isNativeMaterialCommandEnabled());
   useEffect(() => {
-    if (projectId) {
-      loadDocuments();
+    // Keep an open form visible but locked if its paired write route closes;
+    // still discard it when the account or project context changes.
+    if (!awaitConfirmation && scopedReadsOn && openingContextRef.current === nativeContext) {
+      savingLinksRef.current = false;
+      setSavingLinks(false);
+      return;
     }
-  }, [projectId]);
+    if (!awaitConfirmation) return;
+    generationRef.current += 1;
+    savingLinksRef.current = false;
+    setSavingLinks(false);
+    setLinkDialogOpen(false);
+    setSelectedDocument(null);
+    setSelectedItemIds([]);
+  }, [awaitConfirmation, nativeContext]);
 
-  const loadDocuments = async () => {
+  useEffect(()=>{documentMounted.current=true;return()=>{documentMounted.current=false;};},[]);
+  // Clear old rows immediately when switching project/account. Every async
+  // completion checks the captured scope before updating this view.
+  useEffect(() => {
+    documentBusyRef.current=false;setDocumentBusy(false);setUploading(false);setDocuments([]);
+    if (projectId) void loadDocuments();
+  }, [documentScope]);
+
+  const loadDocuments = async (throwOnError = false) => {
+    const scope=documentScope,uid=auth.currentUser?.uid;
+    const current=()=>documentMounted.current && documentScopeRef.current===scope && auth.currentUser?.uid===uid;
     try {
-      const docs = await getProjectDocuments(projectId);
+      const docs = await getProjectDocuments(projectId,{isCurrent:current});
+      if(!current()) {if(throwOnError)throw Error('The document context changed.');return;}
       setDocuments(docs);
-      onDocumentsChange?.(); // Notify parent of document changes
+      await onDocumentsChange?.(docs); // Keep the parent in sync with the verified list
     } catch (error) {
+      if(throwOnError)throw error;
+      if(!current())return;
       console.error('Error loading documents:', error);
       toast({
         title: 'Error',
@@ -66,35 +116,48 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: DocumentType) => {
     if (!e.target.files || !e.target.files[0]) return;
-
+    if (documentWritesUnavailable) { e.target.value = ''; return; }
+    if(documentBusyRef.current){e.target.value='';return;}
     const file = e.target.files[0];
+    const input=e.target,scope=documentScope,uid=auth.currentUser?.uid;
+    const current=()=>documentMounted.current && documentScopeRef.current===scope && auth.currentUser?.uid===uid;
+    let saved=false;
+    documentBusyRef.current=true;setDocumentBusy(true);
     setUploading(true);
 
     try {
       const user = auth.currentUser;
       if (!user) throw new Error('User not authenticated');
 
-      await uploadProjectDocument(file, projectId, type, user.uid);
-      await loadDocuments();
+      const native=nativeProjectDocumentsEnabled() || getPendingNativeProjectDocumentTypes(user.uid,projectId).includes(type);
+      const result=native
+        ? await uploadProjectDocument(file,projectId,type,user.uid,{isCurrent:current})
+        : await uploadProjectDocument(file,projectId,type,user.uid);
+      saved=true;if(!current())return;
+      await loadDocuments(true);if(!current())return;
+      if(result.pulseNativeDocument){await acknowledgeProjectDocumentUpload(projectId,type,user.uid,{isCurrent:current});if(!current())return;}
 
       toast({
         title: 'Success',
         description: 'Document uploaded successfully'
       });
     } catch (error) {
+      if(!current())return;
       console.error('Error uploading document:', error);
       toast({
-        title: 'Upload Failed',
-        description: error instanceof Error ? error.message : 'Failed to upload document',
+        title: saved?'Document saved':'Upload Failed',
+        description: saved?'The document was saved, but the view could not refresh. Retry its saved request before uploading again.':error instanceof Error ? error.message : 'Failed to upload document',
         variant: 'destructive'
       });
     } finally {
-      setUploading(false);
-      e.target.value = ''; // Reset input
+      if(current()){documentBusyRef.current=false;setDocumentBusy(false);setUploading(false);}
+      input.value = '';
     }
   };
 
   const handleDelete = async (doc: ProjectDocument) => {
+    if (documentWritesUnavailable) return;
+    if(documentBusyRef.current)return;
     // Validate deletion based on document type and linked BOM items
     const validation = validateDocumentDeletion(doc, bomItems);
 
@@ -109,32 +172,117 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
     }
 
     if (!window.confirm(`Delete "${doc.name}"?`)) return;
-
+    const scope=documentScope,uid=auth.currentUser?.uid;
+    const current=()=>documentMounted.current && documentScopeRef.current===scope && auth.currentUser?.uid===uid;
+    let saved=false;documentBusyRef.current=true;setDocumentBusy(true);
     try {
-      await deleteProjectDocument(doc.id, doc.url);
-      await loadDocuments();
+      const native=nativeProjectDocumentsEnabled() || !!doc.nativeOpening || !!doc.pulseNativeDocument;
+      if(native)await deleteProjectDocument(doc.id,doc.url,doc,{isCurrent:current});
+      else await deleteProjectDocument(doc.id,doc.url);
+      saved=true;if(!current())return;
+      await loadDocuments(true);if(!current())return;
+      if(native && uid){await acknowledgeProjectDocumentDeletion(projectId,doc.id,uid,{isCurrent:current});if(!current())return;}
 
       toast({
         title: 'Success',
         description: 'Document deleted successfully'
       });
     } catch (error) {
+      if(!current())return;
       console.error('Error deleting document:', error);
       toast({
-        title: 'Delete Failed',
-        description: 'Failed to delete document',
+        title: saved?'Deletion saved':'Delete Failed',
+        description: saved?'The deletion is confirmed, but the view could not refresh. Retry its saved request to refresh.':error instanceof Error?error.message:'Failed to delete document',
         variant: 'destructive'
       });
+    } finally {
+      if(current()){documentBusyRef.current=false;setDocumentBusy(false);}
     }
   };
 
   const handleOpenLinkDialog = (doc: ProjectDocument) => {
+    if (linkWritesUnavailable) return;
+    if (awaitConfirmation) {
+      try { onDocumentLinkOpen?.(doc); }
+      catch (error) { toast({ title: 'Cannot open material links', description: (error as Error).message, variant: 'destructive' }); return; }
+    }
     setSelectedDocument(doc);
     setSelectedItemIds(doc.linkedBOMItems || []);
+    openingLinkedIdsRef.current = [...(doc.linkedBOMItems || [])];
+    openingActorUidRef.current = auth.currentUser?.uid;
+    openingContextRef.current = nativeContext;
     setLinkDialogOpen(true);
   };
 
+  const handleLinkDialogOpenChange = (open: boolean) => {
+    if (awaitConfirmation && savingLinksRef.current && !open) return;
+    setLinkDialogOpen(open);
+  };
+
+  const closeLinkDialog = () => {
+    setLinkDialogOpen(false);
+    setSelectedDocument(null);
+    setSelectedItemIds([]);
+  };
+
+  const handleSaveNativeLinks = async () => {
+    if (linkWritesUnavailable) return;
+    if (!selectedDocument || savingLinksRef.current) return;
+
+    if (!onSaveDocumentLinks) {
+      toast({ title: 'Error', description: 'Document links cannot be saved right now', variant: 'destructive' });
+      return;
+    }
+    const actorUid = openingActorUidRef.current;
+    if (!actorUid || auth.currentUser?.uid !== actorUid || openingContextRef.current !== nativeContext) {
+      toast({ title: 'Error', description: 'The account or project data changed. Close this dialog and try again.', variant: 'destructive' });
+      return;
+    }
+
+    const opening = openingLinkedIdsRef.current;
+    const selected = Array.from(new Set(selectedItemIds));
+    const addedItemIds = selected.filter(id => !opening.includes(id));
+    const removedItemIds = opening.filter(id => !selected.includes(id));
+    if (addedItemIds.length === 0 && removedItemIds.length === 0) {
+      closeLinkDialog();
+      return;
+    }
+
+    const document = selectedDocument;
+    const generation = generationRef.current;
+    savingLinksRef.current = true;
+    setSavingLinks(true);
+    try {
+      await onSaveDocumentLinks(document, addedItemIds, removedItemIds);
+    } catch (error) {
+      if (generationRef.current !== generation) return;
+      console.error('Error updating links:', error);
+      savingLinksRef.current = false;
+      setSavingLinks(false);
+      toast({
+        title: 'Error',
+        description: error instanceof Error && error.message ? error.message : 'Failed to update document links',
+        variant: 'destructive'
+      });
+      return;
+    }
+    if (generationRef.current !== generation) return;
+    savingLinksRef.current = false;
+    setSavingLinks(false);
+    if (auth.currentUser?.uid !== actorUid) {
+      generationRef.current += 1;
+      closeLinkDialog();
+      return;
+    }
+    await loadDocuments();
+    if (generationRef.current !== generation) return;
+    toast({ title: 'Success', description: 'Document links updated' });
+    closeLinkDialog();
+  };
+
   const handleSaveLinks = async () => {
+    if (linkWritesUnavailable) return;
+    if (awaitConfirmation) return handleSaveNativeLinks();
     if (!selectedDocument) return;
 
     try {
@@ -164,7 +312,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
           for (const itemId of unlinkedIds) await onBOMItemUpdate(itemId, { linkedPODocumentId: undefined });
         }
       }
-      
+
       await loadDocuments();
 
       toast({
@@ -224,18 +372,19 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
           </div>
           {/* Hide upload button for vendor-po - POs are generated via the app */}
           {section.type !== 'vendor-po' && (
-            <label className="cursor-pointer">
+            <label className={documentWritesUnavailable ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}>
               <input
                 type="file"
                 className="hidden"
                 onChange={(e) => handleFileUpload(e, section.type)}
-                disabled={uploading}
+                disabled={documentBusy || documentWritesUnavailable}
+                aria-label={`Upload ${section.label}`}
                 accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg"
               />
               <Button
                 variant="outline"
                 size={isFullPage ? 'default' : 'sm'}
-                disabled={uploading}
+                disabled={documentBusy || documentWritesUnavailable}
                 asChild
               >
                 <span>
@@ -320,6 +469,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
                     variant="ghost"
                     size="sm"
                     onClick={() => handleOpenLinkDialog(doc)}
+                    disabled={savingLinks || documentBusy || linkWritesUnavailable}
                     title="Link to BOM items"
                   >
                     <LinkIcon size={16} />
@@ -330,6 +480,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
                     onClick={() => handleDelete(doc)}
                     className="text-red-600 hover:text-red-700 hover:bg-red-50"
                     title="Delete document"
+                    disabled={documentBusy || documentWritesUnavailable}
                   >
                     <Trash2 size={16} />
                   </Button>
@@ -343,7 +494,8 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
   };
 
   // Collapsible mode content (uses tabs)
-  const TabsDocumentView = () => (
+  const tabsDocumentView = (
+    <><ProjectDocumentRecovery projectId={projectId} types={sections.map(section=>section.type)} documents={documents} refreshKey={documentBusy} onRefresh={()=>loadDocuments(true)} disabled={documentBusy||savingLinks}/>
     <Tabs value={selectedType} onValueChange={(value) => setSelectedType(value as DocumentType)}>
       <TabsList className="grid w-full" style={{ gridTemplateColumns: `repeat(${sections.length}, minmax(0, 1fr))` }}>
         {sections.map(section => (
@@ -358,7 +510,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
           <DocumentSection section={section} isFullPage={false} />
         </TabsContent>
       ))}
-    </Tabs>
+    </Tabs></>
   );
 
   // Full page mode - render all sections vertically
@@ -366,6 +518,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
     return (
       <>
         <div className="space-y-6">
+          <ProjectDocumentRecovery projectId={projectId} types={sections.map(section=>section.type)} documents={documents} refreshKey={documentBusy} onRefresh={()=>loadDocuments(true)} disabled={documentBusy||savingLinks}/>
           {sections.map(section => (
             <React.Fragment key={section.type}>
               <DocumentSection section={section} isFullPage={true} />
@@ -375,7 +528,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
         </div>
 
         {/* Link to BOM Items Dialog */}
-        <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
+        <Dialog open={linkDialogOpen} onOpenChange={handleLinkDialogOpenChange}>
           <DialogContent className="max-w-md max-h-[80vh] flex flex-col">
             <DialogHeader>
               <DialogTitle>Link Document to BOM Items</DialogTitle>
@@ -426,7 +579,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
                         <Checkbox
                           id={item.id}
                           checked={isCurrentlyLinked}
-                          disabled={isDisabled}
+                          disabled={isDisabled || savingLinks || linkWritesUnavailable}
                           onCheckedChange={(checked) => {
                             if (checked) {
                               setSelectedItemIds([...selectedItemIds, item.id]);
@@ -454,11 +607,11 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
             </div>
 
             <DialogFooter className="mt-4">
-              <Button variant="outline" onClick={() => setLinkDialogOpen(false)}>
+              <Button variant="outline" disabled={savingLinks} onClick={() => setLinkDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button onClick={handleSaveLinks}>
-                Save Links ({selectedItemIds.length})
+              <Button onClick={handleSaveLinks} disabled={savingLinks || linkWritesUnavailable}>
+                {savingLinks ? 'Saving...' : `Save Links (${selectedItemIds.length})`}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -488,13 +641,13 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
 
         <CollapsibleContent>
           <CardContent className="pt-0">
-            <TabsDocumentView />
+            {tabsDocumentView}
           </CardContent>
         </CollapsibleContent>
       </Collapsible>
 
       {/* Link to BOM Items Dialog */}
-      <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
+      <Dialog open={linkDialogOpen} onOpenChange={handleLinkDialogOpenChange}>
         <DialogContent className="max-w-md max-h-[80vh] flex flex-col">
           <DialogHeader>
             <DialogTitle>Link Document to BOM Items</DialogTitle>
@@ -545,7 +698,7 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
                       <Checkbox
                         id={item.id}
                         checked={isCurrentlyLinked}
-                        disabled={isDisabled}
+                        disabled={isDisabled || savingLinks || linkWritesUnavailable}
                         onCheckedChange={(checked) => {
                           if (checked) {
                             setSelectedItemIds([...selectedItemIds, item.id]);
@@ -573,11 +726,11 @@ const ProjectDocuments = ({ projectId, bomItems, onDocumentsChange, onBOMItemUpd
           </div>
 
           <DialogFooter className="mt-4">
-            <Button variant="outline" onClick={() => setLinkDialogOpen(false)}>
+            <Button variant="outline" disabled={savingLinks} onClick={() => setLinkDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleSaveLinks}>
-              Save Links ({selectedItemIds.length})
+            <Button onClick={handleSaveLinks} disabled={savingLinks || linkWritesUnavailable}>
+              {savingLinks ? 'Saving...' : `Save Links (${selectedItemIds.length})`}
             </Button>
           </DialogFooter>
         </DialogContent>

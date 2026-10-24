@@ -2,9 +2,12 @@ import { collection, addDoc, query, where, getDocs, deleteDoc, doc, updateDoc, T
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { auth, db, storage } from '@/firebase';
 import { ProjectDocument, DocumentType } from '@/types/projectDocument';
+import { nativeProjectDocumentsEnabled } from './projectDocumentMode';
 import { isNativeMaterialCommandEnabled } from './nativeMaterialCommands';
-import { nativeProjectReads, type NativeProjectDocument } from './nativeProjectReads';
 import { isScopedProjectReadEnabled } from './projectReadMode';
+import { createNativeProjectDocumentUploadAttempt, getPendingNativeProjectDocumentTypes } from './nativeProjectDocumentUpload';
+import { createNativeProjectDocumentDeleteAttempt, getNativeProjectDocuments, getPendingNativeProjectDocumentDeletes } from './nativeProjectDocumentOperations';
+import { nativeProjectReads, type NativeProjectDocument } from './nativeProjectReads';
 
 export interface ProjectDocumentRequestOptions {
   isCurrent?: () => boolean;
@@ -18,16 +21,61 @@ export interface ReceivedPhotoInvoiceOptions extends ProjectDocumentRequestOptio
 const PAGE_LIMIT = 100;
 const MAX_PAGES = 1000;
 const MAX_SCAN_ATTEMPTS = 3;
+
+const isSafeMaterialEditsEnabled = () => import.meta.env.VITE_BOM_SAFE_MATERIAL_EDITS_ENABLED === 'true';
+const nativeFinalized = /(%2F|\/)documents(%2F|\/)native(%2F|\/)finalized(%2F|\/)/;
 const currentUid = () => auth.currentUser?.uid || '';
 const currentOf = (options?: ProjectDocumentRequestOptions) => options?.isCurrent ?? (() => true);
 const readError = (code: string, message: string) => Object.assign(new Error(message), { code });
+const changed = () => readError('identity_changed', 'The signed-in account or document project changed. Reopen the form.');
 const integrity = () => readError('integrity', 'Project data failed an integrity check. Refresh and try again.');
 const signInRequired = () => readError('sign_in_required', 'Sign in again to read project documents.');
-const changed = () => readError('identity_changed', 'The signed-in account or document project changed. Reopen the form.');
 const assertSame = (uid: string, isCurrent: () => boolean) => {
   if (!isCurrent() || currentUid() !== uid) throw changed();
 };
 const scopedWriteUnavailable = () => new Error('Document changes are temporarily unavailable here. Reopen the project to use its safe document actions.');
+const savedStateRequired = () => new Error('There is no saved document request to recover.');
+
+// Saved work for this account and project, read from metadata only. Throws when recovery storage is unreadable.
+export function getPendingProjectDocumentOperations(projectId: string, uid: string): { uploads: DocumentType[]; deletions: string[] } {
+  return {
+    uploads: getPendingNativeProjectDocumentTypes(uid, projectId),
+    deletions: getPendingNativeProjectDocumentDeletes(uid, projectId),
+  };
+}
+
+const hasPendingWork = (uid: string, projectId: string) => {
+  const pending = getPendingProjectDocumentOperations(projectId, uid);
+  return pending.uploads.length > 0 || pending.deletions.length > 0;
+};
+
+// Legacy Firestore reads must remain available when optional recovery metadata is damaged.
+// Native requests still fail closed because their own client validates its persisted operation.
+const hasPendingReadWork = (uid: string, projectId: string) => {
+  try {
+    return hasPendingWork(uid, projectId);
+  } catch {
+    return false;
+  }
+};
+
+// A saved deletion for this exact document (unreadable recovery storage counts as none, failing closed).
+const hasPendingDeletion = (projectId: string | undefined, documentId: string) => {
+  const uid = currentUid();
+  if (!uid || !projectId) return false;
+  try {
+    return getPendingNativeProjectDocumentDeletes(uid, projectId).includes(documentId);
+  } catch {
+    return false;
+  }
+};
+
+// Native documents must be read through the authenticated API: the shared Firestore metadata is tokenless.
+async function readNative(projectId: string, uid: string, isCurrent: () => boolean) {
+  const documents = await getNativeProjectDocuments(projectId, uid, isCurrent);
+  assertSame(uid, isCurrent);
+  return documents;
+}
 
 const toLegacyDocuments = (snapshot: { docs: any[] }) => snapshot.docs.map(doc => ({
   id: doc.id,
@@ -74,7 +122,8 @@ async function scanScopedDocuments(projectId: string, uid: string, assertContext
   throw integrity();
 }
 
-// Strict authorized read: never falls back to the SDK after a denied, malformed or failed read.
+// Strict authorized read: never falls back to the SDK or the older native document API after a
+// denied, malformed or failed read.
 async function readScopedDocuments(projectId: string, options?: ProjectDocumentRequestOptions): Promise<ProjectDocument[]> {
   const uid = currentUid(), isCurrent = currentOf(options);
   const assertContext = () => assertSame(uid, isCurrent);
@@ -97,9 +146,18 @@ export async function uploadProjectDocument(
   file: File,
   projectId: string,
   documentType: DocumentType,
-  userId: string
+  userId: string,
+  options?: ProjectDocumentRequestOptions
 ): Promise<ProjectDocument> {
-  // No paired versioned document writer exists in this client: refuse before any side effect.
+  // A saved native request for this type keeps using the native path even when the flag is off.
+  if (nativeProjectDocumentsEnabled() || getPendingNativeProjectDocumentTypes(userId, projectId).includes(documentType)) {
+    // The caller refreshes, then acknowledges explicitly.
+    return createNativeProjectDocumentUploadAttempt({
+      projectId, documentType, expectedActorUid: userId, file, isCurrent: currentOf(options),
+    }).run();
+  }
+
+  // No paired versioned writer covers this legacy path: scoped reads must never take it.
   if (isScopedProjectReadEnabled()) throw scopedWriteUnavailable();
 
   // Create storage path
@@ -141,6 +199,8 @@ export async function getProjectDocuments(
   options?: ProjectDocumentRequestOptions
 ): Promise<ProjectDocument[]> {
   if (isScopedProjectReadEnabled()) return readScopedDocuments(projectId, options);
+  const uid = currentUid(), isCurrent = currentOf(options);
+  if (nativeProjectDocumentsEnabled() || (uid && hasPendingReadWork(uid, projectId))) return readNative(projectId, uid, isCurrent);
 
   const q = query(
     collection(db, 'projectDocuments'),
@@ -148,7 +208,11 @@ export async function getProjectDocuments(
   );
 
   const snapshot = await getDocs(q);
-  return toLegacyDocuments(snapshot);
+  assertSame(uid, isCurrent);
+  const documents = toLegacyDocuments(snapshot);
+  // Tokenless public metadata must never become a broken link.
+  if (uid && documents.some(d => d.pulseNativeDocument)) return readNative(projectId, uid, isCurrent);
+  return documents;
 }
 
 /**
@@ -160,6 +224,10 @@ export async function getProjectDocumentsByType(
   options?: ProjectDocumentRequestOptions
 ): Promise<ProjectDocument[]> {
   if (isScopedProjectReadEnabled()) return (await readScopedDocuments(projectId, options)).filter(d => d.type === documentType);
+  const uid = currentUid(), isCurrent = currentOf(options);
+  if (nativeProjectDocumentsEnabled() || (uid && hasPendingReadWork(uid, projectId))) {
+    return (await readNative(projectId, uid, isCurrent)).filter(d => d.type === documentType);
+  }
 
   const q = query(
     collection(db, 'projectDocuments'),
@@ -168,7 +236,12 @@ export async function getProjectDocumentsByType(
   );
 
   const snapshot = await getDocs(q);
-  return toLegacyDocuments(snapshot);
+  assertSame(uid, isCurrent);
+  const documents = toLegacyDocuments(snapshot);
+  if (uid && documents.some(d => d.pulseNativeDocument)) {
+    return (await readNative(projectId, uid, isCurrent)).filter(d => d.type === documentType);
+  }
+  return documents;
 }
 
 /**
@@ -178,7 +251,8 @@ export async function linkDocumentToBOMItems(
   documentId: string,
   bomItemIds: string[]
 ): Promise<void> {
-  if (isNativeMaterialCommandEnabled() || isScopedProjectReadEnabled()) throw new Error('Use the versioned BOM action to update document links in native mode.');
+  // Native linking is one atomic command in the parent screen; never bypass it through the SDK.
+  if (nativeProjectDocumentsEnabled() || isSafeMaterialEditsEnabled() || isNativeMaterialCommandEnabled() || isScopedProjectReadEnabled()) throw new Error('Document links are saved with the BOM item in native mode.');
   const docRef = doc(db, 'projectDocuments', documentId);
   await updateDoc(docRef, {
     linkedBOMItems: bomItemIds
@@ -188,9 +262,27 @@ export async function linkDocumentToBOMItems(
 /**
  * Delete a project document
  */
-export async function deleteProjectDocument(documentId: string, fileUrl: string): Promise<void> {
-  // No paired versioned document writer exists in this client: refuse before any side effect.
-  if (isScopedProjectReadEnabled()) throw scopedWriteUnavailable();
+export async function deleteProjectDocument(
+  documentId: string,
+  fileUrl: string,
+  original?: ProjectDocument,
+  options?: ProjectDocumentRequestOptions
+): Promise<void> {
+  const scoped = isScopedProjectReadEnabled();
+  // Rows read through scoped reads all carry an opening, so under scoped reads the opening alone no
+  // longer proves a native document: only a saved deletion for this exact document does.
+  const nativeByOpening = !!original?.nativeOpening && (!scoped || hasPendingDeletion(original.projectId, documentId));
+  if (nativeProjectDocumentsEnabled() || nativeByOpening || original?.pulseNativeDocument || nativeFinalized.test(fileUrl)) {
+    // Exact displayed opening only: never re-read or rebase before deleting.
+    if (!original?.projectId || !original.nativeOpening) throw new Error('Reload the documents before deleting this document.');
+    await createNativeProjectDocumentDeleteAttempt({
+      projectId: original.projectId, documentId, expectedActorUid: currentUid(), opening: original.nativeOpening, isCurrent: currentOf(options),
+    }).run();
+    return;
+  }
+
+  // No paired versioned writer covers this legacy path: scoped reads must never take it.
+  if (scoped) throw scopedWriteUnavailable();
 
   // Delete from Storage first
   try {
@@ -253,4 +345,52 @@ export async function getReceivedPhotoInvoice(
     if ((error as { code?: string } | null)?.code === 'not_found') return undefined;
     throw error;
   }
+}
+
+const requireSavedUpload = (projectId: string, type: DocumentType, uid: string) => {
+  if (!getPendingNativeProjectDocumentTypes(uid, projectId).includes(type)) throw savedStateRequired();
+};
+const requireSavedDeletion = (projectId: string, documentId: string, uid: string) => {
+  if (!getPendingNativeProjectDocumentDeletes(uid, projectId).includes(documentId)) throw savedStateRequired();
+};
+const uploadAttempt = (projectId: string, type: DocumentType, uid: string, options?: ProjectDocumentRequestOptions, file?: File) =>
+  createNativeProjectDocumentUploadAttempt({ projectId, documentType: type, expectedActorUid: uid, file, isCurrent: currentOf(options) });
+const deleteAttempt = (projectId: string, documentId: string, uid: string, options?: ProjectDocumentRequestOptions) =>
+  createNativeProjectDocumentDeleteAttempt({ projectId, documentId, expectedActorUid: uid, opening: undefined, isCurrent: currentOf(options) });
+
+// Recovery runs the same saved request (same ids); it never creates a new one and never acknowledges.
+export async function recoverProjectDocumentUpload(
+  projectId: string, type: DocumentType, uid: string, file?: File, options?: ProjectDocumentRequestOptions
+): Promise<ProjectDocument> {
+  requireSavedUpload(projectId, type, uid);
+  return uploadAttempt(projectId, type, uid, options, file).run();
+}
+
+export async function cancelProjectDocumentUpload(
+  projectId: string, type: DocumentType, uid: string, options?: ProjectDocumentRequestOptions
+): Promise<{ resolution: 'cancelled' | 'committed'; document?: ProjectDocument }> {
+  requireSavedUpload(projectId, type, uid);
+  return uploadAttempt(projectId, type, uid, options).cancel();
+}
+
+export async function acknowledgeProjectDocumentUpload(
+  projectId: string, type: DocumentType, uid: string, options?: ProjectDocumentRequestOptions
+): Promise<void> {
+  requireSavedUpload(projectId, type, uid);
+  await uploadAttempt(projectId, type, uid, options).acknowledge();
+}
+
+export async function recoverProjectDocumentDeletion(
+  projectId: string, documentId: string, uid: string, resolve: boolean, options?: ProjectDocumentRequestOptions
+): Promise<'committed' | 'cancelled'> {
+  requireSavedDeletion(projectId, documentId, uid);
+  const attempt = deleteAttempt(projectId, documentId, uid, options);
+  return resolve ? attempt.resolve() : attempt.run();
+}
+
+export async function acknowledgeProjectDocumentDeletion(
+  projectId: string, documentId: string, uid: string, options?: ProjectDocumentRequestOptions
+): Promise<void> {
+  requireSavedDeletion(projectId, documentId, uid);
+  await deleteAttempt(projectId, documentId, uid, options).acknowledge();
 }
