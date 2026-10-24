@@ -34,9 +34,11 @@ import { cn } from '@/lib/utils';
 import { useToast } from '@/components/ui/use-toast';
 import { BOMItem, calculateExpectedArrival, parseLeadTimeToDays } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
-import { uploadProjectDocument, linkDocumentToBOMItems } from '@/utils/projectDocumentFirestore';
+import { uploadProjectDocument, getProjectDocuments, linkDocumentToBOMItems, acknowledgeProjectDocumentUpload } from '@/utils/projectDocumentFirestore';
 import { auth } from '@/firebase';
 import { isNativeMaterialCommandEnabled } from '@/utils/nativeMaterialCommands';
+import { procurementDocumentUploadUnavailable, procurementDocumentUploadUnavailableMessage } from './procurementDocumentUploadGate';
+import ProjectDocumentRecovery from './ProjectDocumentRecovery';
 import { Vendor } from '@/utils/settingsFirestore';
 
 interface OrderItemDialogProps {
@@ -59,7 +61,7 @@ interface OrderItemDialogProps {
       availability: string;
     };
   }) => void;
-  onDocumentUploaded?: (doc: ProjectDocument) => void;
+  onDocumentUploaded?: (doc: ProjectDocument) => void | Promise<void>;
 }
 
 const OrderItemDialog = ({
@@ -81,8 +83,18 @@ const OrderItemDialog = ({
   const [selectedVendorId, setSelectedVendorId] = useState<string>('');
   const [vendorPopoverOpen, setVendorPopoverOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadedPODoc, setUploadedPODoc] = useState<ProjectDocument | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const generationRef = useRef(0);
+  const contextActorUid = auth.currentUser?.uid;
+  const uploadContextKey = JSON.stringify([projectId, open, item?.id, auth.currentUser?.uid]);
+  const uploadContextRef = useRef(uploadContextKey);
+  if (uploadContextRef.current !== uploadContextKey) {
+    uploadContextRef.current = uploadContextKey;
+    generationRef.current += 1;
+  }
   const { toast } = useToast();
+  useEffect(() => { setUploading(false); return () => { generationRef.current += 1; }; }, [uploadContextKey]);
 
   // Get selected vendor details
   const selectedVendor = vendors.find(v => v.id === selectedVendorId);
@@ -135,6 +147,7 @@ const OrderItemDialog = ({
       // Check if item is already linked via item's linkedPODocumentId
       let preSelectedDocId = item.linkedPODocumentId || '';
       setLinkedPODocumentId(preSelectedDocId);
+      setUploadedPODoc(null);
 
       // Pre-fill vendor if finalizedVendor exists - find matching vendor by name
       if (item.finalizedVendor?.name) {
@@ -149,7 +162,7 @@ const OrderItemDialog = ({
       setCalculatedArrival('');
       setLeadTimeDays(0);
     }
-  }, [open, item, vendors]);
+  }, [open, item, vendors, projectId]);
 
   // Separate effect to detect documents linked to this item via linkedBOMItems
   // This handles the case where a PO was linked before the item was marked as ordered
@@ -168,35 +181,61 @@ const OrderItemDialog = ({
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || !e.target.files[0] || !projectId || !item) return;
 
+    if (procurementDocumentUploadUnavailable()) {
+      toast({ title: 'Upload unavailable', description: procurementDocumentUploadUnavailableMessage, variant: 'destructive' });
+      e.target.value = '';
+      return;
+    }
+
     const file = e.target.files[0];
+    const generation = generationRef.current;
+    const scope = uploadContextKey;
+    const actorUid = auth.currentUser?.uid;
+    const current = () => generationRef.current === generation && uploadContextRef.current === scope && open && auth.currentUser?.uid === actorUid;
     setUploading(true);
+    let saved = false;
 
     try {
       const user = auth.currentUser;
       if (!user) throw new Error('User not authenticated');
+      if (user.uid !== actorUid) return;
 
-      const newDoc = await uploadProjectDocument(file, projectId, 'vendor-po', user.uid);
-      
-      // In native mode, the audited order command links the document and material together
-      // when the user confirms the order. Do not write the document link independently here.
-      if (!isNativeMaterialCommandEnabled()) await linkDocumentToBOMItems(newDoc.id, [item.id]);
-      
-      onDocumentUploaded?.(newDoc);
-      setLinkedPODocumentId(newDoc.id);
+      const newDoc = await uploadProjectDocument(file, projectId, 'vendor-po', user.uid, { isCurrent: current });
+      saved = true;
+      if (!current()) return;
+      if (newDoc.pulseNativeDocument) {
+        const refreshedDocuments = await getProjectDocuments(projectId, { isCurrent: current });
+        if (!current()) return;
+        const refreshedDoc = refreshedDocuments.find((doc) => doc.id === newDoc.id);
+        if (!refreshedDoc) throw new Error('The saved PO is not visible after refresh. Finish its saved request below.');
+        await onDocumentUploaded?.(refreshedDoc);
+        if (!current()) return;
+        setUploadedPODoc(refreshedDoc);
+        setLinkedPODocumentId(refreshedDoc.id);
+        await acknowledgeProjectDocumentUpload(projectId, 'vendor-po', user.uid, { isCurrent: current });
+        if (!current()) return;
+      } else {
+        if (!isNativeMaterialCommandEnabled()) await linkDocumentToBOMItems(newDoc.id, [item.id]);
+        if (!current()) return;
+        onDocumentUploaded?.(newDoc);
+        setUploadedPODoc(newDoc);
+        setLinkedPODocumentId(newDoc.id);
+      }
 
       toast({
         title: 'PO Uploaded',
         description: `${file.name} uploaded and linked`,
       });
     } catch (error) {
+      if (!current()) return;
       console.error('Error uploading PO:', error);
       toast({
-        title: 'Upload Failed',
-        description: error instanceof Error ? error.message : 'Failed to upload document',
+        title: saved ? 'PO saved' : 'Upload Failed',
+        description: saved ? `The PO was saved but could not be fully refreshed. Finish its saved request below. ${error instanceof Error ? error.message : ''}` : error instanceof Error ? error.message : 'Failed to upload document',
         variant: 'destructive',
       });
     } finally {
-      setUploading(false);
+      if (current()) setUploading(false);
       e.target.value = '';
     }
   };
@@ -224,6 +263,11 @@ const OrderItemDialog = ({
   const hasPODocument = linkedPODocumentId && linkedPODocumentId !== '__NONE__';
   const hasPONumber = poNumber.trim().length > 0;
   const canSubmit = hasVendor && hasPODocument && hasPONumber && expectedArrival;
+  const documentUploadUnavailable = procurementDocumentUploadUnavailable();
+  const poDocuments = uploadedPODoc && !availablePODocuments.some((doc) => doc.id === uploadedPODoc.id)
+    ? [uploadedPODoc, ...availablePODocuments]
+    : availablePODocuments;
+  const documentContext = JSON.stringify([projectId, open, item?.id]);
 
   if (!item) return null;
 
@@ -440,7 +484,7 @@ const OrderItemDialog = ({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__NONE__" disabled>Select a PO document</SelectItem>
-                      {availablePODocuments.map((doc) => (
+                      {poDocuments.map((doc) => (
                         <SelectItem key={doc.id} value={doc.id}>
                           <span className="flex items-center gap-2">
                             <FileText className="h-3 w-3" />
@@ -455,6 +499,7 @@ const OrderItemDialog = ({
                     type="file"
                     accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
                     onChange={handleFileUpload}
+                    disabled={documentUploadUnavailable}
                     className="hidden"
                   />
                   <Button
@@ -463,7 +508,8 @@ const OrderItemDialog = ({
                     size="sm"
                     className="h-8 px-2.5"
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={uploading}
+                    disabled={uploading || documentUploadUnavailable}
+                    title={documentUploadUnavailable ? 'New document uploads are unavailable' : 'Upload PO'}
                   >
                     {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                   </Button>
@@ -475,6 +521,9 @@ const OrderItemDialog = ({
             </>
           )}
         </div>
+
+        {documentUploadUnavailable && <p role="status" className="text-xs text-amber-700">{procurementDocumentUploadUnavailableMessage}</p>}
+        <ProjectDocumentRecovery projectId={projectId} types={['vendor-po']} documents={poDocuments} refreshKey={uploading} contextKey={documentContext} disabled={uploading} isCurrent={() => open && auth.currentUser?.uid === contextActorUid} onUploadRecovered={async (doc) => { const generation = generationRef.current; await onDocumentUploaded?.(doc); if (generationRef.current !== generation || !open) throw new Error('The PO dialog changed. Reopen the original project.'); setUploadedPODoc(doc); setLinkedPODocumentId(doc.id); }} />
 
         <DialogFooter className="gap-2">
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>

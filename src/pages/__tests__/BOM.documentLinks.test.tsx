@@ -10,11 +10,20 @@ const h = vi.hoisted(() => ({
   version: '1:1', categories: [] as any[], docs: [] as any[],
   onValue: null as null | ((value: unknown[]) => void),
   load: vi.fn(), command: vi.fn(), submitLive: vi.fn(), legacyLink: vi.fn(), updateItem: vi.fn(),
+  uploadDocument: null as null | ((document: any) => void),
+  orderDocuments: [] as any[],
 }));
 vi.mock('react-router-dom', () => ({ useParams: () => ({ projectId: h.projectId }), useSearchParams: () => [new URLSearchParams()] }));
 vi.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ user: { uid: h.uid, email: 'a@qualitastech.com' }, isAdmin: true }) }));
 vi.mock('@/firebase', () => ({ db: {}, storage: {}, functions: {}, auth: { get currentUser() { return { uid: h.uid }; } } }));
 vi.mock('@/components/ui/use-toast', () => ({ useToast: () => ({ toast: h.toast }), toast: h.toast }));
+// The scoped root read is native now; this fixture serves the same project the file already provides.
+vi.mock('@/utils/nativeProjectOperations', () => ({
+  createNativeProjectWorkspace: () => ({
+    load: async () => ({ ok: true, version: '1:0', project: { projectId: h.projectId, projectName: 'Proj', clientName: 'Client' } }),
+    recover: () => null, capture: () => ({ pendingCommand: undefined }), invalidate: vi.fn(),
+  }),
+}));
 vi.mock('@/utils/projectReadMode', () => ({ isScopedProjectReadEnabled: () => h.scopedReads }));
 vi.mock('@/utils/nativeMaterialCommands', () => ({
   isNativeMaterialCommandEnabled: () => h.native, loadNativeMaterialSnapshot: (...a: unknown[]) => h.load(...a),
@@ -39,7 +48,7 @@ vi.mock('@/utils/projectDocumentFirestore', () => ({
 vi.mock('@/utils/settingsFirestore', () => ({ getVendors: vi.fn().mockResolvedValue([]), getBOMSettings: vi.fn().mockResolvedValue({ categories: [] }) }));
 vi.mock('@/utils/brandFirestore', () => ({ getBrands: vi.fn().mockResolvedValue([]) }));
 vi.mock('@/utils/userService', () => ({ fetchAllUsers: vi.fn().mockResolvedValue({ users: [] }) }));
-vi.mock('@/utils/bomDocumentLinking', async importOriginal => ({ ...(await importOriginal<any>()), syncPODocumentLinks: vi.fn().mockResolvedValue([]), getOutgoingPODocuments: () => [] }));
+vi.mock('@/utils/bomDocumentLinking', async importOriginal => ({ ...(await importOriginal<any>()), syncPODocumentLinks: vi.fn().mockResolvedValue([]) }));
 vi.mock('@/components/ui/dialog', () => ({
   Dialog: ({ open, children }: any) => open ? <div role="dialog">{children}</div> : null,
   DialogContent: ({ children }: any) => <div>{children}</div>, DialogHeader: ({ children }: any) => <div>{children}</div>,
@@ -55,7 +64,7 @@ vi.mock('@/components/BOM/BOMPartRow', () => ({ default: () => null }));
 vi.mock('@/components/BOM/ImportBOMDialog', () => ({ default: () => null }));
 vi.mock('@/components/BOM/PurchaseRequestDialog', () => ({ default: () => null }));
 vi.mock('@/components/BOM/CreatePODialog', () => ({ default: () => null }));
-vi.mock('@/components/BOM/OrderItemDialog', () => ({ default: () => null }));
+vi.mock('@/components/BOM/OrderItemDialog', () => ({ default: ({ onDocumentUploaded, availablePODocuments }: any) => { h.uploadDocument = onDocumentUploaded; h.orderDocuments = availablePODocuments; return null; } }));
 vi.mock('@/components/BOM/ReceiveItemDialog', () => ({ default: () => null }));
 vi.mock('@/components/BOM/InwardTracking', () => ({ default: () => null }));
 vi.mock('@/components/BOM/POListSection', () => ({ default: () => null }));
@@ -109,6 +118,16 @@ beforeEach(() => {
 });
 
 describe('original BOM document links with native material commands', () => {
+  it('shows an uploaded document once when recovery republishes it after an uncertain acknowledgement', async () => {
+    await mount();
+    expect(h.uploadDocument).toBeTypeOf('function');
+    const uploaded = { ...quote([]), id: 'UPLOADED-PO', type: 'vendor-po', name: 'new-po.pdf' };
+    await act(async () => {
+      h.uploadDocument?.(uploaded);
+      h.uploadDocument?.(uploaded);
+    });
+    expect(h.orderDocuments.filter(document => document.id === uploaded.id)).toHaveLength(1);
+  });
   it('sends the explicit delta against the version displayed at opening, not a version that arrived in the background', async () => {
     await mount();
     openLinks();

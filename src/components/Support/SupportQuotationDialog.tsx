@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FileText, Loader2, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -22,6 +22,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import type { SupportQuotation, SupportQuotationLine, SupportTicket } from '@/types/support';
 import { updateProject, type Project } from '@/utils/projectFirestore';
+import { createNativeProjectWorkspace } from '@/utils/nativeProjectOperations';
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
+import { isNativeSupportProfileEnabled } from '@/utils/nativeSupportProfile';
 import { prepareSupportQuotation } from '@/utils/supportFirestore';
 import { calculateQuotationTotals, createQuotationLine } from '@/utils/supportQuotation';
 import { getDefaultBillingEntity, subscribeToBillingEntities, type BillingEntity, type Client } from '@/utils/settingsFirestore';
@@ -49,14 +52,78 @@ export function SupportQuotationDialog({ open, onOpenChange, project, ticket, cl
   const [termsAndConditions, setTermsAndConditions] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [nativeOpeningError, setNativeOpeningError] = useState('');
+  const [nativeOpeningReady, setNativeOpeningReady] = useState(false);
+  const [hasPendingBilling, setHasPendingBilling] = useState(false);
+  const nativeWorkspace = useRef<ReturnType<typeof createNativeProjectWorkspace> | null>(null);
+  const nativeAction = useRef<ReturnType<ReturnType<typeof createNativeProjectWorkspace>['capture']> | null>(null);
+  const openingBillingEntityId = useRef<string | undefined>(undefined);
+  const nativeOpeningLoaded = useRef(false);
+  const billingChangedByUser = useRef(false);
+  // Bumped whenever the project, ticket or open state changes (and on unmount) so an A-B-A switch
+  // can never let an older load, submit or resolve touch the form that is now visible.
+  const generation = useRef(0);
+  const nativeMode = isNativeSupportProfileEnabled() || isScopedProjectReadEnabled();
 
   useEffect(() => subscribeToBillingEntities(setEntities), []);
+  const entitiesRef = useRef(entities);
+  entitiesRef.current = entities;
   const selectedEntity = entities.find((entity) => entity.id === billingEntityId);
+
+  useEffect(() => {
+    const gen = ++generation.current;
+    setSaving(false);
+    if (!open || !(isNativeSupportProfileEnabled() || isScopedProjectReadEnabled())) {
+      nativeWorkspace.current = null; nativeAction.current = null; nativeOpeningLoaded.current = false;
+      setNativeOpeningReady(true); setHasPendingBilling(false);
+      return () => { generation.current += 1; };
+    }
+    let active = true;
+    const workspace = createNativeProjectWorkspace(project.projectId);
+    nativeWorkspace.current = workspace;
+    nativeAction.current = null;
+    nativeOpeningLoaded.current = false;
+    billingChangedByUser.current = false;
+    setNativeOpeningReady(false);
+    setNativeOpeningError('');
+    workspace.load().then((snapshot) => {
+      if (!active || nativeWorkspace.current !== workspace || generation.current !== gen) return;
+      // The native snapshot is authoritative: an absent route stays absent instead of borrowing a stale prop.
+      const current = typeof snapshot.project.billingEntityId === 'string' ? snapshot.project.billingEntityId : undefined;
+      const recovered = workspace.recover('support-billing');
+      const pendingCommand = recovered?.pendingCommand;
+      const pendingRoute = pendingCommand?.kind === 'support_billing_entity' ? pendingCommand.billing_entity_id : undefined;
+      openingBillingEntityId.current = current;
+      nativeOpeningLoaded.current = true;
+      nativeAction.current = recovered || workspace.capture('support-billing');
+      setBillingEntityId(pendingRoute || current || ticket.quotation?.billingEntityId || getDefaultBillingEntity(entitiesRef.current)?.id || 'company');
+      setHasPendingBilling(!!pendingRoute);
+      setNativeOpeningReady(true);
+    }).catch((error) => {
+      if (active && nativeWorkspace.current === workspace && generation.current === gen) {
+        setNativeOpeningError(error instanceof Error ? error.message : 'Could not open the billing route safely.');
+        setNativeOpeningReady(false);
+      }
+    });
+    return () => {
+      active = false;
+      generation.current += 1;
+      workspace.invalidate();
+      if (nativeWorkspace.current === workspace) nativeWorkspace.current = null;
+      nativeAction.current = null;
+    };
+  }, [open, project.projectId, ticket.id]);
+
+  useEffect(() => {
+    if (!open || !nativeMode || !nativeOpeningLoaded.current || billingChangedByUser.current || openingBillingEntityId.current || hasPendingBilling) return;
+    // The native route is authoritative; the (possibly stale) project prop is not a fallback here.
+    setBillingEntityId(ticket.quotation?.billingEntityId || getDefaultBillingEntity(entities)?.id || 'company');
+  }, [open, entities, ticket.quotation, nativeOpeningReady, hasPendingBilling]);
 
   useEffect(() => {
     if (!open) return;
     const quote = ticket.quotation;
-    setBillingEntityId(project.billingEntityId || quote?.billingEntityId || getDefaultBillingEntity(entities)?.id || 'company');
+    if (!nativeMode) setBillingEntityId(project.billingEntityId || quote?.billingEntityId || getDefaultBillingEntity(entities)?.id || 'company');
     setLines(quote?.lines?.length ? quote.lines : [createQuotationLine('engineering')]);
     setTaxType(quote?.taxType || 'igst');
     setTaxPercent(quote?.taxPercent ?? 18);
@@ -80,6 +147,7 @@ export function SupportQuotationDialog({ open, onOpenChange, project, ticket, cl
   ));
 
   const handleBillingEntityChange = (entityId: string) => {
+    billingChangedByUser.current = true;
     setBillingEntityId(entityId);
     const entity = entities.find((item) => item.id === entityId);
     if (entity) {
@@ -98,14 +166,54 @@ export function SupportQuotationDialog({ open, onOpenChange, project, ticket, cl
       toast({ title: 'Complete the quotation line items', description: 'Descriptions, quantities and rates are required.', variant: 'destructive' });
       return;
     }
+    const gen = generation.current;
+    const isCurrent = () => generation.current === gen;
+    const projectId = project.projectId, ticketId = ticket.id;
+    const action = nativeAction.current, workspace = nativeWorkspace.current;
     setSaving(true);
     try {
-      if (project.billingEntityId !== billingEntityId) {
-        await updateProject(project.projectId, { billingEntityId });
+      if (hasPendingBilling) throw new Error('Check the saved billing change before generating a quotation.');
+      const nativeRouteChanged = nativeOpeningLoaded.current
+        ? openingBillingEntityId.current !== billingEntityId
+        : project.billingEntityId !== billingEntityId;
+      if (nativeRouteChanged) {
+        if (isNativeSupportProfileEnabled()) {
+          if (!action || !workspace || nativeOpeningError) throw new Error(nativeOpeningError || 'Reopen the quotation before changing its billing entity.');
+          const pending = action.pendingCommand;
+          if (pending?.kind === 'support_billing_entity' && pending.billing_entity_id !== billingEntityId) throw new Error('A different billing route is awaiting confirmation. Check it before changing the selection.');
+          // Show the recovery control before the request leaves, so a first transport failure is already recoverable.
+          setHasPendingBilling(true);
+          try {
+            await action.submit({ kind: 'support_billing_entity', billing_entity_id: billingEntityId });
+            // Reconcile with a fresh authoritative read before the journal is released.
+            const snapshot = await workspace.load();
+            const savedRoute = typeof snapshot.project.billingEntityId === 'string' ? snapshot.project.billingEntityId : undefined;
+            if (savedRoute !== billingEntityId) throw new Error('The billing route was not confirmed by the fresh project read. Check the saved change.');
+            if (!isCurrent()) throw new Error('The quotation context changed. Reopen it before continuing.');
+            await action.acknowledge();
+            openingBillingEntityId.current = savedRoute;
+            if (isCurrent()) {
+              // The acknowledged action is spent; a later explicit route change needs its own request at the confirmed version.
+              nativeAction.current = workspace.capture('support-billing');
+              setHasPendingBilling(false);
+            }
+          } catch (error) {
+            // Only a request that was never journaled (validation, storage) is safe to drop from the UI.
+            let stillPending = true;
+            try { stillPending = !!action.pendingCommand; } catch { /* an unreadable journal stays pending */ }
+            if (isCurrent()) setHasPendingBilling(stillPending);
+            throw error;
+          }
+        } else if (isScopedProjectReadEnabled()) {
+          throw new Error('Billing entity changes are paused until the versioned Support writer is enabled.');
+        } else {
+          await updateProject(projectId, { billingEntityId });
+        }
       }
+      if (!isCurrent()) throw new Error('The quotation context changed. Reopen it before continuing.');
       const quotation = await prepareSupportQuotation({
-        projectId: project.projectId,
-        ticketId: ticket.id,
+        projectId,
+        ticketId,
         billingEntityId,
         lines: totals.lines,
         taxType,
@@ -119,16 +227,44 @@ export function SupportQuotationDialog({ open, onOpenChange, project, ticket, cl
         title: `${quotation.quotationNumber} prepared`,
         description: `${money(quotation.total)} · PDF added to ticket documents`,
       });
-      onOpenChange(false);
+      if (isCurrent()) onOpenChange(false);
     } catch (error) {
-      toast({
+      if (isCurrent()) toast({
         title: 'Could not prepare quotation',
         description: error instanceof Error ? error.message : 'Please try again.',
         variant: 'destructive',
       });
     } finally {
-      setSaving(false);
+      if (isCurrent()) setSaving(false);
     }
+  };
+
+  const resolvePendingBilling = async () => {
+    const action = nativeAction.current, workspace = nativeWorkspace.current;
+    if (!action || !workspace || !hasPendingBilling || saving) return;
+    const gen = generation.current;
+    const isCurrent = () => generation.current === gen;
+    setSaving(true); setNativeOpeningError('');
+    try {
+      const result = await action.resolve();
+      const snapshot = await workspace.load();
+      const savedRoute = typeof snapshot.project.billingEntityId === 'string' ? snapshot.project.billingEntityId : undefined;
+      if (!isCurrent()) return;
+      await action.acknowledge();
+      if (!isCurrent()) return;
+      openingBillingEntityId.current = savedRoute;
+      nativeOpeningLoaded.current = true;
+      billingChangedByUser.current = false;
+      setBillingEntityId(savedRoute || ticket.quotation?.billingEntityId || getDefaultBillingEntity(entities)?.id || 'company');
+      setHasPendingBilling(false);
+      nativeAction.current = workspace.capture('support-billing');
+      setNativeOpeningError(result.resolution === 'committed'
+        ? 'Billing change confirmed. Reopen this quotation to review the current route.'
+        : 'Saved billing change was cancelled. Reopen this quotation before generating.');
+      setNativeOpeningReady(true);
+    } catch (error) {
+      if (isCurrent()) setNativeOpeningError(error instanceof Error ? error.message : 'Could not check the saved billing change.');
+    } finally { if (isCurrent()) setSaving(false); }
   };
 
   return (
@@ -145,7 +281,7 @@ export function SupportQuotationDialog({ open, onOpenChange, project, ticket, cl
           <div className="grid gap-4 rounded-lg border bg-slate-50 p-4 md:grid-cols-3">
             <div className="grid gap-2 md:col-span-2">
               <Label>Issuing billing entity *</Label>
-              <Select value={billingEntityId} onValueChange={handleBillingEntityChange}>
+              <Select value={billingEntityId} onValueChange={handleBillingEntityChange} disabled={hasPendingBilling || saving || ((isNativeSupportProfileEnabled() || isScopedProjectReadEnabled()) && !nativeOpeningReady)}>
                 <SelectTrigger><SelectValue placeholder="Select billing entity" /></SelectTrigger>
                 <SelectContent>{entities.map((entity) => <SelectItem key={entity.id} value={entity.id}>{entity.displayName} · {entity.gstin}</SelectItem>)}</SelectContent>
               </Select>
@@ -217,8 +353,10 @@ export function SupportQuotationDialog({ open, onOpenChange, project, ticket, cl
         </div>
 
         <DialogFooter>
+          {nativeOpeningError && <p role="alert" className="mr-auto text-sm text-destructive">{nativeOpeningError}</p>}
+          {hasPendingBilling && <Button variant="outline" onClick={() => void resolvePendingBilling()} disabled={saving}>Check saved billing change</Button>}
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handlePrepare} disabled={saving || totals.total <= 0}>
+          <Button onClick={handlePrepare} disabled={saving || hasPendingBilling || totals.total <= 0 || (isNativeSupportProfileEnabled() || isScopedProjectReadEnabled()) && !nativeOpeningReady}>
             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
             Generate quotation PDF
           </Button>

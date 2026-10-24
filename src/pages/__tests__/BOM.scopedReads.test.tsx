@@ -10,6 +10,13 @@ const h = vi.hoisted(() => ({
 vi.mock('react-router-dom', () => ({ useParams: () => ({ projectId: 'P' }), useSearchParams: () => [new URLSearchParams()] }));
 vi.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ user: { uid: h.uid }, isAdmin: true }) }));
 vi.mock('@/firebase', () => ({ db: {}, auth: {}, storage: {}, functions: {} }));
+// The scoped root read is native now; this fixture serves the same project the file already provides.
+vi.mock('@/utils/nativeProjectOperations', () => ({
+  createNativeProjectWorkspace: () => ({
+    load: async () => { const project = await h.getProject(); if (!project) throw Object.assign(new Error('project_not_found'), { code: 'project_not_found' }); return { ok: true, version: '1:0', project }; },
+    recover: () => null, capture: () => ({ pendingCommand: undefined }), invalidate: vi.fn(),
+  }),
+}));
 vi.mock('@/utils/projectReadMode', () => ({ isScopedProjectReadEnabled: () => true }));
 vi.mock('@/utils/nativeMaterialCommands', () => ({ isNativeMaterialCommandEnabled: () => false, loadNativeMaterialSnapshot: vi.fn(), submitNativeMaterialCommand: vi.fn(), submitNativeMaterialFulfillment: vi.fn() }));
 vi.mock('@/utils/projectFirestore', () => ({

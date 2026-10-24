@@ -9,15 +9,20 @@ interface Props {
   overheadCost: number;
   canEdit: boolean;
   onUpdateBudget: (budget: number | undefined) => Promise<void>;
+  onBeginEdit?: () => void;
+  hasPendingRequest?: boolean;
+  pendingBudget?: number | null;
+  onResolvePendingRequest?: () => Promise<void>;
 }
 
 const INR = (n: number) =>
   `₹${Math.round(n).toLocaleString('en-IN')}`;
 
-const ProjectCostBar = ({ budget, bomCost, overheadCost, canEdit, onUpdateBudget }: Props) => {
+const ProjectCostBar = ({ budget, bomCost, overheadCost, canEdit, onUpdateBudget, onBeginEdit, hasPendingRequest = false, pendingBudget, onResolvePendingRequest }: Props) => {
   const [editing, setEditing] = useState(false);
   const [draftBudget, setDraftBudget] = useState('');
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   const totalSpent = bomCost + overheadCost;
   const remaining = budget != null ? budget - totalSpent : undefined;
@@ -31,20 +36,26 @@ const ProjectCostBar = ({ budget, bomCost, overheadCost, canEdit, onUpdateBudget
     : 'bg-emerald-500';
 
   const startEdit = () => {
+    setSaveError('');
+    try { onBeginEdit?.(); } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Could not open the budget editor.');
+      return;
+    }
     setDraftBudget(budget != null ? String(budget) : '');
     setEditing(true);
   };
 
-  const cancelEdit = () => { setEditing(false); setDraftBudget(''); };
+  const cancelEdit = () => { setEditing(false); setDraftBudget(''); setSaveError(''); };
 
   const commitEdit = async () => {
     const val = draftBudget.trim();
     const parsed = val === '' ? undefined : parseFloat(val);
     if (parsed !== undefined && (isNaN(parsed) || parsed < 0)) return;
     setSaving(true);
-    await onUpdateBudget(parsed);
-    setSaving(false);
-    setEditing(false);
+    setSaveError('');
+    try { await onUpdateBudget(parsed); setEditing(false); }
+    catch (error) { setSaveError(error instanceof Error ? error.message : 'Could not update the project budget. Try again.'); }
+    finally { setSaving(false); }
   };
 
   return (
@@ -64,13 +75,14 @@ const ProjectCostBar = ({ budget, bomCost, overheadCost, canEdit, onUpdateBudget
                 className="h-7 w-36 text-sm"
                 placeholder="e.g. 500000"
                 value={draftBudget}
+                disabled={saving || hasPendingRequest}
                 onChange={e => setDraftBudget(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') cancelEdit(); }}
               />
-              <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={commitEdit} disabled={saving}>
+              <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={commitEdit} disabled={saving || hasPendingRequest} aria-label="Save budget">
                 <Check size={13} className="text-emerald-600" />
               </Button>
-              <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={cancelEdit}>
+              <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={cancelEdit} disabled={hasPendingRequest}>
                 <X size={13} />
               </Button>
             </div>
@@ -79,7 +91,7 @@ const ProjectCostBar = ({ budget, bomCost, overheadCost, canEdit, onUpdateBudget
               <span className="text-sm font-bold text-gray-800">
                 {budget != null ? INR(budget) : <span className="text-gray-400 font-normal">Not set</span>}
               </span>
-              {canEdit && (
+              {canEdit && !hasPendingRequest && (
                 <Button size="sm" variant="ghost" className="h-6 w-6 p-0 opacity-50 hover:opacity-100" onClick={startEdit} title="Set budget">
                   <Pencil size={11} />
                 </Button>
@@ -94,6 +106,12 @@ const ProjectCostBar = ({ budget, bomCost, overheadCost, canEdit, onUpdateBudget
           </span>
         )}
       </div>
+
+      {saveError && <p role="alert" className="px-4 py-2 text-xs text-red-700">{saveError}</p>}
+      {hasPendingRequest && <div className="flex items-center gap-2 px-4 py-2 text-xs text-amber-800" role="status">
+        <span>Saved amount: {pendingBudget === null ? 'clear budget' : pendingBudget != null ? INR(pendingBudget) : 'unknown'}; this request is frozen.</span>
+        <Button size="sm" variant="outline" onClick={() => { void onResolvePendingRequest?.().catch(error => setSaveError(error instanceof Error ? error.message : 'Could not check the saved budget change.')); }}>Check saved change</Button>
+      </div>}
 
       {/* Cost breakdown */}
       <div className="grid grid-cols-3 divide-x">

@@ -280,3 +280,44 @@ test('revoked admin cannot use a malformed access list as a membership substring
   assert.equal((await f.call({operation:'command',expected_version:'10:1',operation_id:'revoked-admin',command:{ kind: 'metadata', patch: { description: 'No' } }})).error, 'project_forbidden');
   assert.equal(f.docs.get('projects/P').description, undefined);
 });
+
+test('budget command is an admin-only explicit raw-preserving edit with nullable clear semantics', async () => {
+  const f = fixture();
+  const raw = new Date('2024-01-01T00:00:00.000Z');
+  f.change({ internalBudget: 500000, rawLegacyField: raw, bomSnapshot: [{ amount: 12, history: true }] });
+  const opening = await f.call({ operation: 'get' });
+  const body = { operation: 'command', expected_version: opening.version, operation_id: 'budget-set', command: { kind: 'budget', amount: 650000 } };
+  assert.equal((await f.call(body)).ok, true);
+  assert.equal(f.docs.get('projects/P').internalBudget, 650000);
+  assert.equal(f.docs.get('projects/P').rawLegacyField, raw);
+  assert.deepEqual(f.docs.get('projects/P').bomSnapshot, [{ amount: 12, history: true }]);
+  assert.equal((await f.call(body)).ok, true);
+  const clearOpening = await f.call({ operation: 'get' });
+  assert.equal((await f.call({ operation: 'command', expected_version: clearOpening.version, operation_id: 'budget-clear', command: { kind: 'budget', amount: null } })).ok, true);
+  assert.equal(Object.hasOwn(f.docs.get('projects/P'), 'internalBudget'), false);
+  assert.equal(f.docs.get('pulseProjectOperations/P/audit/budget-clear').changes.internalBudget.before.value, 650000);
+  const partner = fixture({ uid: 'partner', supportProfileEnabled: true });
+  assert.equal((await partner.command({ kind: 'budget', amount: 10 })).error, 'project_edit_forbidden');
+  const disabled = fixture({ enabled: false });
+  assert.equal((await disabled.command({ kind: 'budget', amount: 10 })).error, 'project_mutations_disabled');
+  assert.equal((await fixture().command({ kind: 'budget', amount: -1 })).error, 'invalid_project_command');
+});
+
+test('Support billing routing keeps member permissions and raw project data under the versioned audit receipt', async () => {
+  const f = fixture({ uid: 'partner', supportProfileEnabled: true });
+  const raw = { legacyDate: new Date('2023-01-01T00:00:00.000Z') };
+  f.change({ billingEntityId: 'company', rawLegacyField: raw, internalBudget: 900000, bomSnapshot: [{ id: 'historic' }] });
+  const opening = await f.call({ operation: 'get' });
+  const request = { operation: 'command', expected_version: opening.version, operation_id: 'support-billing-route', command: { kind: 'support_billing_entity', billing_entity_id: 'B' } };
+  assert.equal((await f.call(request)).ok, true);
+  assert.equal(f.docs.get('projects/P').billingEntityId, 'B');
+  assert.equal(f.docs.get('projects/P').rawLegacyField, raw);
+  assert.equal(f.docs.get('projects/P').internalBudget, 900000);
+  assert.deepEqual(f.docs.get('projects/P').bomSnapshot, [{ id: 'historic' }]);
+  assert.equal(f.docs.get('pulseProjectOperations/P/audit/support-billing-route').operation, 'support_billing_entity');
+  assert.equal((await f.call(request)).ok, true);
+  const disabled = fixture({ uid: 'partner', supportProfileEnabled: false });
+  assert.equal((await disabled.command({ kind: 'support_billing_entity', billing_entity_id: 'B' })).error, 'support_profile_mutations_disabled');
+  const missing = fixture({ uid: 'partner', supportProfileEnabled: true });
+  assert.equal((await missing.command({ kind: 'support_billing_entity', billing_entity_id: 'missing' })).error, 'billing_entity_unavailable');
+});

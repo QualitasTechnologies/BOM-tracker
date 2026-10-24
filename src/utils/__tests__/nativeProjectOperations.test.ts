@@ -24,6 +24,22 @@ function fixture() {
   return { client, transport, calls, switchAccount: () => { uid = 'bob'; } };
 }
 
+it('retains a budget recovery record through resolve until a confirming read acknowledges it', async () => {
+  sessionStorage.clear();
+  const f = fixture(), workspace = createNativeProjectWorkspace('P', f.client, 'alice'); await workspace.load();
+  const action = workspace.capture('budget'), budget: NativeProjectCommand = { kind: 'budget', amount: 650000 };
+  f.transport.mockRejectedValueOnce(new Error('lost budget reply'));
+  await expect(action.submit(budget)).rejects.toThrow();
+  const reopened = createNativeProjectWorkspace('P', f.client, 'alice'); await reopened.load();
+  const recovery = reopened.recover('budget')!;
+  f.transport.mockImplementationOnce(async payload => ({ data: { ok: true, project_id: 'P', operation_id: payload.operation_id, resolution: 'committed' } }));
+  await recovery.resolve();
+  expect(reopened.recover('budget')?.pendingCommand).toEqual(budget);
+  await recovery.acknowledge();
+  expect(reopened.recover('budget')).toBeNull();
+  sessionStorage.clear();
+});
+
 it('sends every membership and recipient command as an exact explicit delta bound to UID, revision and nonce', async () => {
   for (const memberCommand of memberCommands) {
     const f = fixture(), workspace = createNativeProjectWorkspace('P', f.client, 'alice'); await workspace.load();
@@ -127,6 +143,21 @@ it('invalidating the workspace during the client UID await prevents command disp
   currentUid.mockImplementationOnce(async () => 'alice').mockImplementationOnce(async () => { workspace.invalidate(); return 'alice'; });
   await expect(action.submit(command)).rejects.toThrow(/context changed/);
   expect(callable.mock.calls.filter(([payload]) => payload.operation === 'command')).toHaveLength(0);
+});
+
+it('captures a nullable budget command with its opening version and operation ID for retry', async () => {
+  sessionStorage.clear();
+  const f = fixture(), workspace = createNativeProjectWorkspace('P', f.client); await workspace.load();
+  const command = { kind: 'budget', amount: null } as const;
+  const action = workspace.capture('budget');
+  f.transport.mockRejectedValueOnce(new Error('lost budget reply'));
+  await expect(action.submit(command)).rejects.toThrow(/lost budget reply/);
+  const reopened = createNativeProjectWorkspace('P', f.client); await reopened.load();
+  const retry = reopened.capture('budget');
+  expect(retry.pendingCommand).toEqual(command);
+  await retry.submit(command);
+  expect(f.calls.at(-1)).toMatchObject({ expected_version: '10:1', expected_actor_uid: 'alice', command });
+  sessionStorage.clear();
 });
 
 it('exports a typed error carrying the stable code', () => {

@@ -20,7 +20,9 @@ import {
 import { useToast } from '@/components/ui/use-toast';
 import { BOMItemType } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
-import { uploadProjectDocument } from '@/utils/projectDocumentFirestore';
+import { procurementDocumentUploadUnavailable, procurementDocumentUploadUnavailableMessage } from './procurementDocumentUploadGate';
+import ProjectDocumentRecovery from './ProjectDocumentRecovery';
+import { uploadProjectDocument, getProjectDocuments, acknowledgeProjectDocumentUpload } from '@/utils/projectDocumentFirestore';
 import { auth, storage } from '@/firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
@@ -99,8 +101,17 @@ const LogFulfillmentDialog = ({
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const generationRef = useRef(0);
+  const contextActorUid = auth.currentUser?.uid;
+  const uploadContextKey = JSON.stringify([projectId, open, itemType, itemName, contextActorUid]);
+  const uploadContextRef = useRef(uploadContextKey);
+  if (uploadContextRef.current !== uploadContextKey) {
+    uploadContextRef.current = uploadContextKey;
+    generationRef.current += 1;
+  }
   const photoInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  useEffect(() => { setUploading(false); return () => { generationRef.current += 1; }; }, [uploadContextKey]);
 
   useEffect(() => {
     if (open) {
@@ -110,7 +121,7 @@ const LogFulfillmentDialog = ({
       setPhotoUrl('');
       setPhotoPreview('');
     }
-  }, [open]);
+  }, [open, projectId, itemType, itemName]);
 
   // Deduplicate and sort: most recently uploaded first; show date in label
   const invoiceDocuments = (() => {
@@ -133,23 +144,48 @@ const LogFulfillmentDialog = ({
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0]) return;
+    if (procurementDocumentUploadUnavailable()) {
+      toast({ title: 'Upload unavailable', description: procurementDocumentUploadUnavailableMessage, variant: 'destructive' });
+      e.target.value = '';
+      return;
+    }
     const file = e.target.files[0];
+    const generation = generationRef.current;
+    const scope = uploadContextKey;
+    const actorUid = auth.currentUser?.uid;
+    const current = () => generationRef.current === generation && uploadContextRef.current === scope && open && auth.currentUser?.uid === actorUid;
     setUploading(true);
+    let saved = false;
     try {
       const user = auth.currentUser;
       if (!user) throw new Error('Not authenticated');
-      const newDoc = await uploadProjectDocument(file, projectId, 'vendor-invoice', user.uid);
-      setUploadedDoc(newDoc);
-      setInvoiceDocId(newDoc.id);
+      if (user.uid !== actorUid) return;
+      const newDoc = await uploadProjectDocument(file, projectId, 'vendor-invoice', user.uid, { isCurrent: current });
+      saved = true;
+      if (!current()) return;
+      if (newDoc.pulseNativeDocument) {
+        const refreshedDocuments = await getProjectDocuments(projectId, { isCurrent: current });
+        if (!current()) return;
+        const refreshedDoc = refreshedDocuments.find((doc) => doc.id === newDoc.id);
+        if (!refreshedDoc) throw new Error('The saved invoice is not visible after refresh. Finish its saved request below.');
+        setUploadedDoc(refreshedDoc);
+        setInvoiceDocId(refreshedDoc.id);
+        await acknowledgeProjectDocumentUpload(projectId, 'vendor-invoice', user.uid, { isCurrent: current });
+        if (!current()) return;
+      } else {
+        setUploadedDoc(newDoc);
+        setInvoiceDocId(newDoc.id);
+      }
       toast({ title: 'Invoice Uploaded', description: file.name });
     } catch (err) {
+      if (!current()) return;
       toast({
-        title: 'Upload Failed',
-        description: err instanceof Error ? err.message : 'Upload error',
+        title: saved ? 'Invoice saved' : 'Upload Failed',
+        description: saved ? `The invoice was saved but could not be fully refreshed. Finish its saved request below. ${err instanceof Error ? err.message : ''}` : err instanceof Error ? err.message : 'Upload error',
         variant: 'destructive',
       });
     } finally {
-      setUploading(false);
+      if (current()) setUploading(false);
       e.target.value = '';
     }
   };
@@ -186,6 +222,7 @@ const LogFulfillmentDialog = ({
   const validQty = !isNaN(qtyNum) && qtyNum >= min && qtyNum <= remainingQty;
   const overBudget = !isNaN(qtyNum) && qtyNum > remainingQty;
   const selectedDoc = invoiceDocuments.find(d => d.id === invoiceDocId);
+  const documentUploadUnavailable = procurementDocumentUploadUnavailable();
 
   const handleConfirm = () => {
     if (!validQty) return;
@@ -258,8 +295,8 @@ const LogFulfillmentDialog = ({
                   ))}
                 </SelectContent>
               </Select>
-              <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" onChange={handleFileUpload} className="hidden" />
-              <Button type="button" variant="outline" size="sm" className="h-9 px-3" onClick={() => fileInputRef.current?.click()} disabled={uploading} title="Upload invoice">
+              <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" onChange={handleFileUpload} disabled={documentUploadUnavailable} className="hidden" />
+              <Button type="button" variant="outline" size="sm" className="h-9 px-3" onClick={() => fileInputRef.current?.click()} disabled={uploading || documentUploadUnavailable} title={documentUploadUnavailable ? 'New document uploads are unavailable' : 'Upload invoice'}>
                 {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               </Button>
             </div>
@@ -314,6 +351,8 @@ const LogFulfillmentDialog = ({
           </div>
         </div>
 
+        {documentUploadUnavailable && <p role="status" className="text-xs text-amber-700">{procurementDocumentUploadUnavailableMessage}</p>}
+        <ProjectDocumentRecovery projectId={projectId} types={['vendor-invoice']} documents={invoiceDocuments} refreshKey={uploading} contextKey={uploadContextKey} disabled={uploading} isCurrent={() => open && auth.currentUser?.uid === contextActorUid} onUploadRecovered={async (doc) => { setUploadedDoc(doc); setInvoiceDocId(doc.id); }} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button onClick={handleConfirm} disabled={!validQty || (!isService && (!invoiceDocId || !photoUrl))}>

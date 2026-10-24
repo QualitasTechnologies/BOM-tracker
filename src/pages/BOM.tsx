@@ -43,6 +43,8 @@ import ProjectMembersTab from '@/components/Project/ProjectMembersTab';
 import { ProjectCommunicationsTab } from '@/components/Project/ProjectCommunicationsTab';
 import { isNativeMaterialCommandEnabled, loadNativeMaterialSnapshot, submitNativeMaterialCommand, submitNativeMaterialFulfillment } from '@/utils/nativeMaterialCommands';
 import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
+import { isNativeProjectLifecycleEnabled } from '@/utils/projectLifecycleAccess';
+import { createNativeProjectWorkspace } from '@/utils/nativeProjectOperations';
 import { createDocumentLinkAction, isDefinitiveDocumentLinkFailure, type DocumentLinkAction } from '@/utils/documentLinkAction';
 import OverheadsTab from '@/components/BOM/OverheadsTab';
 import ProjectCostBar from '@/components/BOM/ProjectCostBar';
@@ -76,6 +78,11 @@ interface OrderDialogData {
     availability: string;
   };
 }
+
+// The scoped project read reports a missing or inaccessible project by code; keep the wording of the legacy path.
+const projectLoadErrorMessage = (error: unknown) => ['project_not_found', 'project_forbidden'].includes((error as { code?: string } | null)?.code ?? '')
+  ? 'Project not found or you no longer have access.'
+  : error instanceof Error ? error.message : 'Could not load project details. Please retry.';
 
 const BOMContent = () => {
   const [searchParams] = useSearchParams();
@@ -175,6 +182,13 @@ const BOMContent = () => {
     uncertainDocumentLinks.current.delete(document.id);
   };
   const [fullProject, setFullProject] = useState<Project | null>(null);
+  const budgetProjectWorkspace = useRef<ReturnType<typeof createNativeProjectWorkspace> | null>(null);
+  type BudgetAction = ReturnType<ReturnType<typeof createNativeProjectWorkspace>['capture']>;
+  const budgetRecoveryAction = useRef<BudgetAction | null>(null);
+  // The action opened with the editor binds the version the visible draft was based on; a refresh never rebases it.
+  const budgetDraft = useRef<{ workspace: ReturnType<typeof createNativeProjectWorkspace>; action: BudgetAction } | null>(null);
+  const [hasPendingBudget, setHasPendingBudget] = useState(false);
+  const [pendingBudgetValue, setPendingBudgetValue] = useState<number | null | undefined>(undefined);
   const [projectRefreshVersion, setProjectRefreshVersion] = useState(0);
   const projectReadGeneration = useRef(0);
   const materialReadGeneration = useRef(0);
@@ -252,12 +266,36 @@ const BOMContent = () => {
     let active = true;
     const uid = user?.uid;
     const generation = projectReadGeneration.current;
+    let nativeWorkspace: ReturnType<typeof createNativeProjectWorkspace> | null = null;
     const isCurrent = () => active && generation === projectReadGeneration.current && !!uid && user?.uid === uid;
+    budgetProjectWorkspace.current = null; budgetRecoveryAction.current = null; budgetDraft.current = null;
+    setHasPendingBudget(false); setPendingBudgetValue(undefined);
     const loadProjectDetails = async () => {
       if (!projectId || !uid) { setFullProject(null); setProjectDetails(null); setProjectDocuments([]); return; }
 
       try {
-        const projectData = await getProject(projectId, uid, () => { if (!isCurrent()) throw new Error('Account or project changed. Reopen the project.'); });
+        let projectData: Project | null;
+        if (isScopedProjectReadEnabled() || isNativeProjectLifecycleEnabled()) {
+          nativeWorkspace = createNativeProjectWorkspace(projectId, undefined, uid);
+          const snapshot = await nativeWorkspace.load();
+          projectData = snapshot.project as unknown as Project;
+          if (isCurrent()) {
+            budgetProjectWorkspace.current = nativeWorkspace;
+            try {
+              budgetRecoveryAction.current = nativeWorkspace.recover('budget');
+              const pendingBudget = budgetRecoveryAction.current?.pendingCommand;
+              setHasPendingBudget(!!pendingBudget);
+              setPendingBudgetValue(pendingBudget?.kind === 'budget' ? pendingBudget.amount : undefined);
+            } catch {
+              // An unreadable saved request still blocks new edits; it just has no amount to show.
+              budgetRecoveryAction.current = null;
+              setHasPendingBudget(true);
+              setPendingBudgetValue(undefined);
+            }
+          }
+        } else {
+          projectData = await getProject(projectId, uid, () => { if (!isCurrent()) throw new Error('Account or project changed. Reopen this project.'); });
+        }
         if (!isCurrent()) return;
         if (projectData) {
           const detail = projectData as Project & { projectName: string; clientName: string };
@@ -291,13 +329,16 @@ const BOMContent = () => {
       } catch (error) {
         if (isCurrent()) {
           projectReadGeneration.current += 1; materialReadGeneration.current += 1;
-          setFullProject(null); setProjectDetails(null); setProjectDocuments([]); setCategories([]); setNativeMaterialVersion(null); setMaterialActionError(error instanceof Error ? error.message : 'Could not load project details. Please retry.');
+          setFullProject(null); setProjectDetails(null); setProjectDocuments([]); setCategories([]); setNativeMaterialVersion(null); setMaterialActionError(projectLoadErrorMessage(error));
         }
       }
     };
 
     loadProjectDetails();
-    return () => { active = false; };
+    return () => {
+      active = false; nativeWorkspace?.invalidate();
+      if (nativeWorkspace && budgetProjectWorkspace.current === nativeWorkspace) { budgetProjectWorkspace.current = null; budgetRecoveryAction.current = null; budgetDraft.current = null; }
+    };
   }, [projectId, user?.uid, projectRefreshVersion]);
 
   // Load settings data (vendors, makes/brands, categories)
@@ -807,8 +848,69 @@ const BOMContent = () => {
 
   const handleUpdateBudget = async (budget: number | undefined) => {
     if (!projectId) return;
+    if (isScopedProjectReadEnabled()) {
+      if (!isNativeProjectLifecycleEnabled()) throw new Error('Project budget changes are paused until the versioned project writer is enabled.');
+      const workspace = budgetProjectWorkspace.current;
+      if (!workspace) throw new Error('Reopen the project before changing its budget.');
+      const isCurrent = () => budgetProjectWorkspace.current === workspace;
+      const draft = budgetDraft.current;
+      const action = budgetRecoveryAction.current || (draft?.workspace === workspace ? draft.action : null);
+      if (!action) throw new Error('Reopen the budget editor before saving.');
+      const requested = budget ?? null;
+      const pending = action.pendingCommand;
+      if (pending && (pending.kind !== 'budget' || pending.amount !== requested)) throw new Error('A different budget change is awaiting confirmation. Check it before editing again.');
+      // Publish the recoverable state before the request leaves so a first transport failure is already recoverable.
+      budgetRecoveryAction.current = action;
+      setHasPendingBudget(true);
+      setPendingBudgetValue(requested);
+      try {
+        await action.submit({ kind: 'budget', amount: requested });
+        // Reconcile with a fresh authoritative read before the saved request is released.
+        const snapshot = await workspace.load();
+        if (!isCurrent()) throw new Error('The project changed while saving. Reopen it to confirm the budget.');
+        await action.acknowledge();
+        setFullProject(snapshot.project as unknown as Project);
+        budgetRecoveryAction.current = null; budgetDraft.current = null;
+        setHasPendingBudget(false);
+        setPendingBudgetValue(undefined);
+      } catch (error) {
+        if (isCurrent()) {
+          // Only a request that never reached the journal (validation, storage) may fall back to an editable draft.
+          let stillPending = true;
+          try { stillPending = !!action.pendingCommand; } catch { /* an unreadable saved request stays pending */ }
+          if (!stillPending) { budgetRecoveryAction.current = null; setHasPendingBudget(false); setPendingBudgetValue(undefined); }
+        }
+        throw error;
+      }
+      return;
+    }
     await updateProject(projectId, { internalBudget: budget });
     setFullProject(prev => prev ? { ...prev, internalBudget: budget } : prev);
+  };
+
+  const beginBudgetEdit = () => {
+    if (!isScopedProjectReadEnabled()) return;
+    const workspace = budgetProjectWorkspace.current;
+    if (!workspace) throw new Error('Reopen the project before changing its budget.');
+    budgetDraft.current = budgetRecoveryAction.current ? null : { workspace, action: workspace.capture('budget') };
+  };
+
+  const resolveBudgetRequest = async () => {
+    const workspace = budgetProjectWorkspace.current;
+    if (!workspace) throw new Error('Reopen the project before checking its saved budget change.');
+    const action = budgetRecoveryAction.current;
+    if (!action) throw new Error('The saved budget change cannot be read. Restore browser session storage, then reopen the project.');
+    const isCurrent = () => budgetProjectWorkspace.current === workspace;
+    // The outcome may be established first, but the saved request is only released after a fresh read.
+    await action.resolve();
+    const snapshot = await workspace.load();
+    if (!isCurrent()) return;
+    await action.acknowledge();
+    if (!isCurrent()) return;
+    setFullProject(snapshot.project as unknown as Project);
+    budgetRecoveryAction.current = null; budgetDraft.current = null;
+    setHasPendingBudget(false);
+    setPendingBudgetValue(undefined);
   };
 
   const handleOrderDialogConfirm = async (data: OrderDialogData) => {
@@ -930,8 +1032,12 @@ const BOMContent = () => {
                     budget={fullProject?.internalBudget}
                     bomCost={calculateBOMMetrics().totalCost}
                     overheadCost={overheadTotal}
-                    canEdit={isAdmin && !legacyWritesDisabled}
+                    canEdit={isAdmin && (!isScopedProjectReadEnabled() || isNativeProjectLifecycleEnabled())}
                     onUpdateBudget={handleUpdateBudget}
+                    onBeginEdit={beginBudgetEdit}
+                    hasPendingRequest={hasPendingBudget}
+                    pendingBudget={pendingBudgetValue}
+                    onResolvePendingRequest={resolveBudgetRequest}
                   />
                 )}
                 {/* Search and Actions Bar */}
@@ -1708,7 +1814,7 @@ const BOMContent = () => {
           onConfirm={handleOrderDialogConfirm}
           onDocumentUploaded={(newDoc) => {
             // Add the new document to the list
-            setProjectDocuments(prev => [...prev, newDoc]);
+            setProjectDocuments(prev => prev.some(document => document.id === newDoc.id) ? prev : [...prev, newDoc]);
           }}
         />
       )}
@@ -1754,7 +1860,7 @@ const BOMContent = () => {
           }}
           onDocumentUploaded={(newDoc) => {
             // Add the new invoice document to the list
-            setProjectDocuments(prev => [...prev, newDoc]);
+            setProjectDocuments(prev => prev.some(document => document.id === newDoc.id) ? prev : [...prev, newDoc]);
           }}
         />
       )}

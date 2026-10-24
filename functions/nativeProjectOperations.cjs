@@ -18,7 +18,7 @@ const validVersion = value => typeof value === 'string' && /^(0|[1-9]\d*):(0|[1-
 const exact = (data, keys) => { if (!plain(data) || Object.keys(data).some(key => !keys.includes(key))) throw fault('invalid_project_command'); };
 const text = (value, max, nonempty = false) => typeof value === 'string' && value.length <= max && (!nonempty || value.trim());
 const normalizeEmail = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
-const resolvableKinds = new Set(['metadata', 'archive', 'restore', 'support_profile', 'member_add', 'member_remove', 'member_scope', 'member_notifications',
+const resolvableKinds = new Set(['metadata', 'budget', 'archive', 'restore', 'support_profile', 'support_billing_entity', 'member_add', 'member_remove', 'member_scope', 'member_notifications',
   'recipient_add', 'recipient_remove', 'recipient_notifications']);
 const validReceipt = (receipt, projectId, operationId) => plain(receipt) && typeof receipt.actor_uid === 'string' &&
   typeof receipt.actor_email === 'string' && /^[a-f0-9]{64}$/.test(receipt.payload_hash || '') && plain(receipt.result) &&
@@ -84,14 +84,15 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
       const command = data.command;
       const resolving=data.resolve_only===true;
       if(Object.hasOwn(data,'resolve_only')&&(!resolving||!resolvableKinds.has(command.kind)))throw fault('invalid_project_command');
-      const shapes = { metadata: ['kind', 'patch','delay'], archive: ['kind'], member_add: ['kind', 'user_id', 'category_scope'], member_remove: ['kind', 'user_id'], member_scope: ['kind', 'user_id', 'category_scope'],
+      const shapes = { metadata: ['kind', 'patch','delay'], budget: ['kind', 'amount'], support_billing_entity: ['kind', 'billing_entity_id'], archive: ['kind'], member_add: ['kind', 'user_id', 'category_scope'], member_remove: ['kind', 'user_id'], member_scope: ['kind', 'user_id', 'category_scope'],
         member_notifications: ['kind', 'user_id', 'enabled'], recipient_add: ['kind', 'email', 'name'], recipient_remove: ['kind', 'email'], recipient_notifications: ['kind', 'email', 'enabled'], restore: ['kind'], support_profile:['kind','patch','machines'] };
       if (!shapes[command.kind]) throw fault('invalid_project_command');
       exact(command, shapes[command.kind]);
       const manage = ['member_add', 'member_remove', 'member_scope', 'recipient_add', 'recipient_remove'].includes(command.kind);
-      const support = command.kind === 'support_profile';
+      const support = ['support_profile', 'support_billing_entity'].includes(command.kind);
       if (manage && actor.customClaims.role !== 'admin') throw fault('project_management_forbidden', 403);
       if (!manage && !canEdit && !support) throw fault('project_edit_forbidden', 403);
+      if (command.kind === 'budget' && actor.customClaims.role !== 'admin') throw fault('project_edit_forbidden', 403);
       if (command.kind === 'member_notifications' && actor.customClaims.role !== 'admin' && command.user_id !== actor.uid) throw fault('member_notification_forbidden', 403);
       if (command.kind.startsWith('member_') && (!validId(command.user_id) || command.user_id.length > 128)) throw fault('invalid_project_command');
       if (command.kind.endsWith('_notifications') && typeof command.enabled !== 'boolean') throw fault('invalid_project_command');
@@ -104,6 +105,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
         assertAccess(project,current);
         if(manage&&current.customClaims.role!=='admin')throw fault('project_management_forbidden',403);
         if(!manage&&!support&&current.customClaims.role!=='admin'&&!internal(current))throw fault('project_edit_forbidden',403);
+        if(command.kind==='budget'&&current.customClaims.role!=='admin')throw fault('project_edit_forbidden',403);
         if(command.kind==='member_notifications'&&current.customClaims.role!=='admin'&&command.user_id!==current.uid)throw fault('member_notification_forbidden',403);
       };
       return await db.runTransaction(async transaction => {
@@ -143,8 +145,21 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
         if (revision(snapshot) !== data.expected_version) throw fault('project_version_conflict', 409);
         let patch = {}, removeFields = [], delayLog;
         if (support) {
-          const merged=applySupportProfileCommand(project.supportProfile,command);
-          patch={supportProfile:merged.profile};
+          if (command.kind === 'support_profile') {
+            const merged=applySupportProfileCommand(project.supportProfile,command);
+            patch={supportProfile:merged.profile};
+          } else {
+            if (!validId(command.billing_entity_id)) throw fault('invalid_project_command');
+            const billing = command.billing_entity_id === 'company'
+              ? await transaction.get(db.collection('settings').doc('company'))
+              : await transaction.get(db.collection('billingEntities').doc(command.billing_entity_id));
+            if (!billing.exists || command.billing_entity_id !== 'company' && billing.data().isActive === false) throw fault('billing_entity_unavailable', 409);
+            patch = { billingEntityId: command.billing_entity_id };
+          }
+        } else if (command.kind === 'budget') {
+          if (command.amount !== null && (typeof command.amount !== 'number' || !Number.isFinite(command.amount) || command.amount < 0)) throw fault('invalid_project_command');
+          if (command.amount === null) removeFields.push('internalBudget');
+          else patch = { internalBudget: command.amount };
         } else if (command.kind === 'metadata') {
           const value = command.patch;
           exact(value, ['projectName', 'clientName', 'clientId', 'billingEntityId', 'description', 'status', 'deadline', 'pulseProjectId']);
@@ -225,7 +240,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
             if (members.length <= 1) throw fault('last_project_member', 409);
             patch = { members: members.filter(row => row.userId !== command.user_id), memberIds: accessIds.filter(id => id !== command.user_id) };
           } else patch.members = members.map(row => row.userId !== command.user_id ? row : { ...row, ...(command.kind === 'member_scope' ? { categoryScope: scope } : { notificationsEnabled: command.enabled }) });
-        } else {
+        } else if (command.kind.startsWith('recipient_')) {
           const recipients = project.externalRecipients ?? [], email = normalizeEmail(command.email);
           if (!Array.isArray(recipients) || recipients.length > 200 || recipients.some(row => !plain(row) || !mail(normalizeEmail(row.email)))) throw fault('invalid_project_recipients', 409);
           const existing = recipients.find(row => normalizeEmail(row.email) === email);

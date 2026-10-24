@@ -20,7 +20,9 @@ import {
 import { useToast } from '@/components/ui/use-toast';
 import { BOMItem, getTotalReceivedQty } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
-import { uploadProjectDocument } from '@/utils/projectDocumentFirestore';
+import { procurementDocumentUploadUnavailable, procurementDocumentUploadUnavailableMessage } from './procurementDocumentUploadGate';
+import ProjectDocumentRecovery from './ProjectDocumentRecovery';
+import { uploadProjectDocument, getProjectDocuments, acknowledgeProjectDocumentUpload } from '@/utils/projectDocumentFirestore';
 import { auth, storage } from '@/firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
@@ -31,7 +33,7 @@ interface ReceiveItemDialogProps {
   projectId: string;
   availableVendorQuotes: ProjectDocument[]; // Vendor quotes that can serve as invoices
   onConfirm: (data: { actualArrival: string; linkedInvoiceDocumentId: string; receivedPhotoUrl: string; receivedQty: number }) => void;
-  onDocumentUploaded?: (doc: ProjectDocument) => void;
+  onDocumentUploaded?: (doc: ProjectDocument) => void | Promise<void>;
 }
 
 const ReceiveItemDialog = ({
@@ -54,8 +56,17 @@ const ReceiveItemDialog = ({
   const [photoPreview, setPhotoPreview] = useState<string>('');
   const [uploadedInvoiceDoc, setUploadedInvoiceDoc] = useState<ProjectDocument | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const generationRef = useRef(0);
+  const contextActorUid = auth.currentUser?.uid;
+  const uploadContextKey = JSON.stringify([projectId, open, item?.id, contextActorUid]);
+  const uploadContextRef = useRef(uploadContextKey);
+  if (uploadContextRef.current !== uploadContextKey) {
+    uploadContextRef.current = uploadContextKey;
+    generationRef.current += 1;
+  }
   const photoInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  useEffect(() => { setUploading(false); return () => { generationRef.current += 1; }; }, [uploadContextKey]);
 
   // Compress image to max 800px width and reduce quality
   const compressImage = async (file: File): Promise<Blob> => {
@@ -129,38 +140,65 @@ const ReceiveItemDialog = ({
       setPhotoUrl('');
       setPhotoPreview('');
     }
-  }, [open, item]);
+  }, [open, item, projectId]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || !e.target.files[0] || !projectId || !item) return;
 
+    if (procurementDocumentUploadUnavailable()) {
+      toast({ title: 'Upload unavailable', description: procurementDocumentUploadUnavailableMessage, variant: 'destructive' });
+      e.target.value = '';
+      return;
+    }
+
     const file = e.target.files[0];
+    const generation = generationRef.current;
+    const scope = uploadContextKey;
+    const actorUid = auth.currentUser?.uid;
+    const current = () => generationRef.current === generation && uploadContextRef.current === scope && open && auth.currentUser?.uid === actorUid;
     setUploading(true);
+    let saved = false;
 
     try {
       const user = auth.currentUser;
       if (!user) throw new Error('User not authenticated');
+      if (user.uid !== actorUid) return;
 
       // Upload as vendor-invoice type
-      const newDoc = await uploadProjectDocument(file, projectId, 'vendor-invoice', user.uid);
-
-      onDocumentUploaded?.(newDoc);
-      setUploadedInvoiceDoc(newDoc);
-      setLinkedInvoiceDocumentId(newDoc.id);
+      const newDoc = await uploadProjectDocument(file, projectId, 'vendor-invoice', user.uid, { isCurrent: current });
+      saved = true;
+      if (!current()) return;
+      if (newDoc.pulseNativeDocument) {
+        const refreshedDocuments = await getProjectDocuments(projectId, { isCurrent: current });
+        if (!current()) return;
+        const refreshedDoc = refreshedDocuments.find((doc) => doc.id === newDoc.id);
+        if (!refreshedDoc) throw new Error('The saved invoice is not visible after refresh. Finish its saved request below.');
+        await onDocumentUploaded?.(refreshedDoc);
+        if (!current()) return;
+        setUploadedInvoiceDoc(refreshedDoc);
+        setLinkedInvoiceDocumentId(refreshedDoc.id);
+        await acknowledgeProjectDocumentUpload(projectId, 'vendor-invoice', user.uid, { isCurrent: current });
+        if (!current()) return;
+      } else {
+        onDocumentUploaded?.(newDoc);
+        setUploadedInvoiceDoc(newDoc);
+        setLinkedInvoiceDocumentId(newDoc.id);
+      }
 
       toast({
         title: 'Invoice Uploaded',
         description: `${file.name} uploaded successfully`,
       });
     } catch (error) {
+      if (!current()) return;
       console.error('Error uploading invoice:', error);
       toast({
-        title: 'Upload Failed',
-        description: error instanceof Error ? error.message : 'Failed to upload document',
+        title: saved ? 'Invoice saved' : 'Upload Failed',
+        description: saved ? `The invoice was saved but could not be fully refreshed. Finish its saved request below. ${error instanceof Error ? error.message : ''}` : error instanceof Error ? error.message : 'Failed to upload document',
         variant: 'destructive',
       });
     } finally {
-      setUploading(false);
+      if (current()) setUploading(false);
       e.target.value = '';
     }
   };
@@ -295,6 +333,7 @@ const ReceiveItemDialog = ({
     : availableVendorQuotes;
   const selectedInvoiceDoc = invoiceDocuments.find((doc) => doc.id === linkedInvoiceDocumentId);
   const hasInvoice = linkedInvoiceDocumentId && linkedInvoiceDocumentId !== '__NONE__';
+  const documentUploadUnavailable = procurementDocumentUploadUnavailable();
   const hasPhoto = !!photoUrl;
   const canSubmit = actualArrival && hasInvoice && hasPhoto;
 
@@ -423,6 +462,7 @@ const ReceiveItemDialog = ({
                 type="file"
                 accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
                 onChange={handleFileUpload}
+                disabled={documentUploadUnavailable}
                 className="hidden"
               />
               <Button
@@ -431,8 +471,8 @@ const ReceiveItemDialog = ({
                 size="sm"
                 className="h-9 px-3"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                title={hasInvoice ? 'Upload another file to replace selected invoice' : 'Upload invoice'}
+                disabled={uploading || documentUploadUnavailable}
+                title={documentUploadUnavailable ? 'New document uploads are unavailable' : hasInvoice ? 'Upload another file to replace selected invoice' : 'Upload invoice'}
               >
                 {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               </Button>
@@ -520,6 +560,8 @@ const ReceiveItemDialog = ({
           </div>
         </div>
 
+        {documentUploadUnavailable && <p role="status" className="text-xs text-amber-700">{procurementDocumentUploadUnavailableMessage}</p>}
+        <ProjectDocumentRecovery projectId={projectId} types={['vendor-invoice']} documents={invoiceDocuments} refreshKey={uploading} contextKey={uploadContextKey} disabled={uploading} isCurrent={() => open && auth.currentUser?.uid === contextActorUid} onUploadRecovered={async (doc) => { const generation = generationRef.current; await onDocumentUploaded?.(doc); if (generationRef.current !== generation || !open) throw new Error('The invoice dialog changed. Reopen the original project.'); setUploadedInvoiceDoc(doc); setLinkedInvoiceDocumentId(doc.id); }} />
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
