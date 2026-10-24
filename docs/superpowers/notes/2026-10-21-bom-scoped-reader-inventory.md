@@ -106,3 +106,69 @@ control flow around each result: the SDK calls intentionally remain for
 coexistence. Their presence alone does not mean a scoped-mode bypass; a projected
 DTO passing into a legacy write is never acceptable.
 
+
+## 2026-10-24 document, schedule and communications source review
+
+The existing document and milestone screens have been reused in canonical BOM
+and embedded Pulse. Scoped reads still do not enable edits. Saved native upload,
+finalization and deletion recovery remains available when edit switches close;
+legacy document effects remain fenced. Document item links use explicit deltas,
+retain hidden links, and canonical captures the displayed actor/project/revision.
+An uncertain same-page retry retains its operation identity. Link identity is
+not persisted across reload: current source links reload and native version
+checks prevent stale overwrites; cross-reload receipt proof remains a limitation.
+
+Native milestone commands now distinguish absent membership from explicit null
+only under the scoped-read server gate, while retaining existing legacy mode
+and external/member/admin permissions. Receipt replay and resolution recheck
+current access. Pending add/edit forms and nested delay details show saved values
+locked, and retry the original request rather than discarding visible changes.
+Independent source reviews found no remaining important milestone or document
+boundary blocker. A final visible read-only document-control correction is under
+focused verification; saved-request recovery must remain enabled.
+
+The existing communications panel now reads bounded list previews and authorized
+single-record details, enriching the surviving Pulse duplicate without changing
+its actions or Sales provenance. Full bodies preserve the stored string exactly
+and render as inert text. No guessed HTML stripping or valid-body truncation is
+allowed; populated non-string or impossible oversized bodies fail explicitly.
+BOM communications capability checks precede reads. Initiative transparency and
+CRM open-deal stages are unchanged. Firebase remains the BOM history authority.
+
+Parent verification so far: canonical full UI 948/948 before the final visible
+control correction; complete backend 781/781; mirrored contracts 581/581; Pulse
+root 707 passed and 6 skipped; focused canonical document 174/174, milestone
+92/92, embedded combined 222/222. Actual app-project TypeScript remains nonzero
+at 45 canonical and 95 embedded diagnostics, with zero new normalized groups.
+These are source checks, not real-user, object, monetary or full-history parity.
+No deployment, flag/Rules activation, main merge or production data change is
+part of this source batch. Task 5 and all controlled-cutover gates remain open.
+
+### Additional Task 5 consumers verified on 24 October
+
+A fresh Claude Sonnet 5.5 caller audit found remaining workflow gaps even though
+the root/BOM/document helpers fail closed: `pages/BOM.tsx` internal-budget editing
+still calls fenced `updateProject`, and `SupportQuotationDialog.tsx` changes the
+project billing entity through that helper before quotation preparation. These
+need a paired explicit versioned route; disabling them is not workflow parity.
+Order/receive/fulfilment document inputs also need correct read-on/edit-off UI
+routing outside the standalone Documents panel. Existing edit-dialog scoped
+checks must continue to make the legacy raw unlink unreachable. The source
+inventory is not a declaration that Task 5 or retirement is complete.
+
+Final source verification, 24 October: the visible read-only control correction
+passed canonical 24/24 in a quiet three-file run, including the previously timed
+out account-change case. Assertions and timeouts were unchanged. Both production
+builds passed. Actual final app-project checks remain at 45/95 diagnostics and
+29/46 normalized groups, with zero additions. The final embedded full UI runner
+was interrupted after its owning process disappeared; its log has no terminal
+result, so it is not a pass or a demonstrated source failure. The PR workflow
+runs the complete embedded UI suite on the pushed head. Exact-head hosted checks
+must be observed before accepting this batch. Backend 781/781, mirrored contracts
+581/581 and root 707 passed plus 6 skipped remain the completed source results.
+
+Live Firebase recheck now has a diagnosed authentication prerequisite: saved ADC
+returned invalid_grant/invalid_rapt, and the CLI refresh returned HTTP 400 with an
+explicit reauthentication message. These fail before project authorization and
+do not establish a missing IAM grant. Official Google reauthentication is pending;
+no new project permissions, data or production configuration were changed.
