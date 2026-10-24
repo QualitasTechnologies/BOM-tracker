@@ -1,5 +1,5 @@
 const { createProjectActorFactory } = require('./projectReviewActor.cjs');
-const { readProjectCommunications } = require('./projectReviewCommunications.cjs');
+const { readProjectCommunications, readCommunicationDetail } = require('./projectReviewCommunications.cjs');
 
 const normalizeEmail = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
 const fault = (code, status) => Object.assign(new Error(code), { code, status });
@@ -62,8 +62,11 @@ function createProjectReviewHandler({ db, auth, getServiceKey, timestampFromPart
       if (req.method !== 'GET') return res.status(405).json({ ok: false, error: 'method_not_allowed' });
       const actor = await actorFor(req);
       const id = req.query?.project_id;
-      if (req.query?.resource != null && !['communications', 'session'].includes(req.query.resource)) throw fault('invalid_resource', 400);
-      if (req.query?.resource === 'communications' && id == null) throw fault('invalid_project_id', 400);
+      if (req.query?.resource != null && !['communications', 'communication', 'session'].includes(req.query.resource)) throw fault('invalid_resource', 400);
+      const communicationsResource = req.query?.resource === 'communications' || req.query?.resource === 'communication';
+      if (communicationsResource && id == null) throw fault('invalid_project_id', 400);
+      // Membership alone is not enough: BOM keeps emails and meetings admin/internal only (describeActor), so partners are refused before any project read.
+      if (communicationsResource && !describeActor(actor).capabilities.communications) throw fault('communications_forbidden', 403);
       if (req.query?.resource === 'session') {
         if (id != null) throw fault('invalid_project_id', 400);
         return res.json({ ok: true, session: describeActor(actor) });
@@ -76,6 +79,7 @@ function createProjectReviewHandler({ db, auth, getServiceKey, timestampFromPart
         const data = snapshot.data();
         if (!canReview(data, actor)) throw fault('project_forbidden', 403);
         if (req.query?.resource === 'communications') return res.json(await readProjectCommunications(ref, id, req.query, timestampFromParts));
+        if (req.query?.resource === 'communication') return res.json(await readCommunicationDetail(ref, id, req.query));
         const project = sanitizedProject(snapshot);
         const bom = await ref.collection('bom').doc('data').get();
         const member = (Array.isArray(data.members) ? data.members : []).find(row => row.userId === actor.uid);

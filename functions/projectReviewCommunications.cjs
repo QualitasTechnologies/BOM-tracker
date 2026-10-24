@@ -26,7 +26,13 @@ function participant(value) {return value && typeof value==='object'?{name:text(
 function sourceUrl(value) {
   try { const url=new URL(value);return url.protocol==='https:'&&url.hostname==='fathom.video'&&!url.username&&!url.password&&!url.search&&!url.hash?url.href:null; } catch {return null;}
 }
-function sanitize(projectId,type,snapshot) {
+// List rows carry a bounded preview; full bodies and every action item are served only by readCommunicationDetail, one record per request.
+const PREVIEW_CHARS=500, LIST_ACTION_ITEMS=20, LIST_ACTION_ITEM_CHARS=500, MAX_BODY_BYTES=1048576;
+const clip=(value,max)=>{const out=value.slice(0,max);return out.length&&/[\ud800-\udbff]/.test(out[out.length-1])?out.slice(0,-1):out;};
+// The stored string is never rewritten: there is no content-type metadata, so stripping "markup" would silently delete real text such as <john@acme.com> or List<String>. It reaches the browser only as a React text child.
+const bodyText=value=>typeof value==='string'?value:'';
+function actionItems(value) {return (Array.isArray(value)?value:[]).map(text).filter(Boolean);}
+function sanitize(projectId,type,snapshot,full=false) {
   const data=snapshot.data(), provider_ids={},canonical_keys=[];
   const set=(key,value)=>{if(value && value.length<=2048 && !/[\r\n]/.test(value))provider_ids[key]=value;};
   if(type==='email') {
@@ -38,7 +44,24 @@ function sanitize(projectId,type,snapshot) {
   } else { const id=text(data.fathomRecordingId);set('fathom_recording_id',id);if(provider_ids.fathom_recording_id)canonical_keys.push(`fathom:${id}`); }
   const people=type==='email'?[data.from,...(Array.isArray(data.to)?data.to:[]),...(Array.isArray(data.cc)?data.cc:[])]:[...(Array.isArray(data.attendees)?data.attendees:[]),...(email(data.hostEmail)?[{email:data.hostEmail}]:[])];
   const participants=people.map(participant).filter(p=>p&&p.email);
-  return {id:`bom:${type}:${projectId}:${snapshot.id}`,source_system:'bom',source_type:type,source_id:snapshot.id,occurred_at:iso(data[fields[type]]),recorded_at:iso(data.createdAt),title:text(type==='email'?data.subject:data.title)||'',summary:text(data.summary),participants,source_url:type==='meeting'?sourceUrl(data.shareUrl):null,provider_ids,canonical_keys};
+  const row={id:`bom:${type}:${projectId}:${snapshot.id}`,source_system:'bom',source_type:type,source_id:snapshot.id,occurred_at:iso(data[fields[type]]),recorded_at:iso(data.createdAt),title:text(type==='email'?data.subject:data.title)||'',summary:text(data.summary),participants,source_url:type==='meeting'?sourceUrl(data.shareUrl):null,provider_ids,canonical_keys,detail_available:true};
+  const people2=list=>(Array.isArray(list)?list:[]).map(participant).filter(p=>p&&p.email);
+  if(type==='email') {
+    if(full && data.body!=null && typeof data.body!=='string') throw Object.assign(new Error('communication_integrity_error'),{code:'communication_integrity_error',status:502});
+    const body=bodyText(data.body), from=participant(data.from);
+    Object.assign(row,{from:from&&from.email?from:null,to:people2(data.to),cc:people2(data.cc),direction:['inbound','outbound'].includes(data.direction)?data.direction:null,
+      body_preview:clip(body,PREVIEW_CHARS),body_length:body.length,sanitize_failed:data.sanitizeFailed===true});
+    if(full) {
+      // A stored body cannot exceed one Firestore document; if it does the source is inconsistent, so fail loudly rather than claim full content.
+      if(Buffer.byteLength(body,'utf8')>MAX_BODY_BYTES) throw Object.assign(new Error('communication_integrity_error'),{code:'communication_integrity_error',status:502});
+      row.body=body;
+    }
+  } else {
+    const items=actionItems(data.actionItems);
+    Object.assign(row,{ended_at:iso(data.endedAt),host_email:email(data.hostEmail),action_item_count:items.length,
+      action_items:full?items:items.slice(0,LIST_ACTION_ITEMS).map(item=>clip(item,LIST_ACTION_ITEM_CHARS))});
+  }
+  return row;
 }
 function parseQuery(projectId,query) {
   const type=query.type??null;
@@ -75,4 +98,12 @@ async function readProjectCommunications(ref,projectId,query,timestampFromParts=
   for(const row of page) positions[row.type]=row.position;
   return {ok:true,items:page.map(row=>sanitize(projectId,row.type,row.snapshot)),next_cursor:rows.length>limit?Buffer.from(JSON.stringify({binding,positions})).toString('base64url'):null,coverage:{source_system:'bom',project_id:projectId,types,from:binding.from,to:binding.to}};
 }
-module.exports={readProjectCommunications};
+// One record, read by id after the caller has been authorized; nothing from the query reaches Firestore except a validated collection and document id.
+async function readCommunicationDetail(ref,projectId,query) {
+  const type=query.type,id=query.source_id;
+  if(typeof type!=='string'||!Object.hasOwn(fields,type)||typeof id!=='string'||!id||id.length>512||id.includes('/')) throw fault('invalid_communication_detail');
+  const snapshot=await ref.collection(type==='email'?'emails':'meetings').doc(id).get();
+  if(!snapshot.exists) throw Object.assign(new Error('communication_not_found'),{code:'communication_not_found',status:404});
+  return {ok:true,item:sanitize(projectId,type,snapshot,true)};
+}
+module.exports={readProjectCommunications,readCommunicationDetail};
