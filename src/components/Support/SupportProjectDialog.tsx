@@ -32,6 +32,8 @@ import {
 import { AddClientContactDialog } from './AddClientContactDialog';
 import { SupportDocuments } from './SupportDocuments';
 import { getInstalledMachines } from '@/utils/supportLogic';
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
+import { createNativeSupportProfileDiff, createNativeSupportProfileWorkspace, hasPendingNativeSupportProfile, isNativeSupportProfileEnabled, nativeSupportProfileClient, type NativeSupportProfileCommand } from '@/utils/nativeSupportProfile';
 
 interface Props {
   open: boolean;
@@ -47,6 +49,26 @@ const emptyProfile: SupportProjectProfile = {
   machines: [],
 };
 
+// A recovered request previews its frozen deltas. Only that original command,
+// never this display projection, is retried against its captured revision.
+function previewPendingProfile(stored: SupportProjectProfile, command?: NativeSupportProfileCommand): SupportProjectProfile {
+  if (!command) return stored;
+  const next = { ...stored, ...command.patch } as SupportProjectProfile;
+  if (command.machines?.length) {
+    let machines = getInstalledMachines(stored).map(machine => ({ ...machine }));
+    for (const operation of command.machines) {
+      if (operation.kind === 'remove') machines = machines.filter(machine => machine.id !== operation.id);
+      if (operation.kind === 'patch') machines = machines.map(machine => machine.id === operation.id ? { ...machine, ...(operation.patch as object) } : machine);
+      if (operation.kind === 'add') {
+        const machine = operation.machine as unknown as InstalledMachine;
+        machines = [...machines.filter(row => row.id !== machine.id), machine];
+      }
+    }
+    next.machines = machines;
+  }
+  return next;
+}
+
 export function SupportProjectDialog({
   open,
   onOpenChange,
@@ -58,10 +80,60 @@ export function SupportProjectDialog({
   const { toast } = useToast();
   const [profile, setProfile] = useState<SupportProjectProfile>(emptyProfile);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [editable, setEditable] = useState(false);
+  const [frozen, setFrozen] = useState(false);
+  const nativeEnabled = isNativeSupportProfileEnabled();
+  const pendingProbe = project ? hasPendingNativeSupportProfile(project.projectId, userId) : { kind: 'absent' as const };
+  const nativeMode = nativeEnabled || isScopedProjectReadEnabled() || pendingProbe.kind !== 'absent';
+  type Action = ReturnType<ReturnType<typeof createNativeSupportProfileWorkspace>['capture']>;
+  const actionRef = useRef<Action | null>(null);
+  const frozenCommandRef = useRef<NativeSupportProfileCommand | undefined>();
+  const sessionRef = useRef<{ live: boolean; projectId: string; uid: string } | null>(null);
+  const busyRef = useRef(false);
+  const renderedRef = useRef({ open, projectId: project?.projectId, userId });
+  renderedRef.current = { open, projectId: project?.projectId, userId };
   const activeProjectIdRef = useRef('');
   const contacts = useMemo(() => getClientContacts(client), [client]);
+  const contactDefaultsRef = useRef({ contacts, client });
+  contactDefaultsRef.current = { contacts, client };
+  const currentSession = (session: typeof sessionRef.current) => !!session?.live && sessionRef.current === session
+    && renderedRef.current.open && renderedRef.current.projectId === session.projectId && renderedRef.current.userId === session.uid;
 
   useEffect(() => {
+    if (!nativeMode || !open || !project) return;
+    const session = { live: true, projectId: project.projectId, uid: userId };
+    sessionRef.current = session; actionRef.current = null; frozenCommandRef.current = undefined;
+    busyRef.current = false; setSaving(false); setFrozen(false); setEditable(false); setLoading(true); setError('');
+    let workspace: ReturnType<typeof createNativeSupportProfileWorkspace> | undefined;
+    const load = async () => {
+      try {
+        if (pendingProbe.kind === 'error') throw new Error(pendingProbe.message);
+        workspace = createNativeSupportProfileWorkspace(session.projectId, nativeSupportProfileClient, session.uid);
+        const opening = await workspace.load();
+        if (!currentSession(session)) return;
+        const action = workspace.capture();
+        actionRef.current = action;
+        frozenCommandRef.current = action.pendingCommand;
+        setFrozen(!!action.pendingCommand);
+        const { supportContacts: _legacyContacts, ...rawProfile } = (opening.support_profile || {}) as SupportProjectProfile;
+        const stored = previewPendingProfile(rawProfile, frozenCommandRef.current);
+        const defaults = contactDefaultsRef.current;
+        const selected = defaults.contacts.find(contact => contact.id === stored.supportContactId) || getPrimaryClientContact(defaults.client);
+        const pendingContact = frozenCommandRef.current?.patch && Object.hasOwn(frozenCommandRef.current.patch, 'supportContactId');
+        setProfile({ ...emptyProfile, ...stored, machines: getInstalledMachines(stored), supportContactId: pendingContact ? stored.supportContactId : selected?.id });
+        setEditable(nativeEnabled && opening.permissions.edit);
+      } catch (failure) {
+        if (currentSession(session)) setError(failure instanceof Error ? failure.message : 'Could not load the current Support profile.');
+      } finally { if (currentSession(session)) setLoading(false); }
+    };
+    void load();
+    return () => { session.live = false; workspace?.invalidate(); };
+  }, [open, project?.projectId, userId, nativeMode, nativeEnabled]);
+
+  useEffect(() => {
+    if (nativeMode) return;
     if (project) {
       const projectChanged = activeProjectIdRef.current !== project.projectId;
       const { supportContacts: _legacyContacts, ...storedProfile } =
@@ -90,7 +162,7 @@ export function SupportProjectDialog({
       });
       activeProjectIdRef.current = project.projectId;
     }
-  }, [client, contacts, project]);
+  }, [client, contacts, project, nativeMode]);
 
   if (!project) return null;
 
@@ -100,6 +172,7 @@ export function SupportProjectDialog({
   ) => setProfile((current) => ({ ...current, [key]: value }));
 
   const handleSave = async () => {
+    if (busyRef.current || nativeMode && (!editable || !actionRef.current)) return;
     const incompleteMachine = (profile.machines || []).find(
       (machine) => !machine.name.trim() || !machine.serialNumber.trim(),
     );
@@ -111,20 +184,48 @@ export function SupportProjectDialog({
       });
       return;
     }
-    setSaving(true);
+    const session = sessionRef.current;
+    if (nativeMode && !currentSession(session)) return;
+    busyRef.current = true; setSaving(true); setError('');
     try {
       const { supportContacts: _legacyContacts, ...canonicalProfile } = profile;
-      await updateProject(project.projectId, { supportProfile: canonicalProfile });
+      if (nativeMode) {
+        const action = actionRef.current!;
+        const command = frozenCommandRef.current || createNativeSupportProfileDiff(action.baseline.support_profile, canonicalProfile as unknown as Record<string, unknown>);
+        if (!command) { toast({ title: 'No Support changes to save' }); return; }
+        frozenCommandRef.current = command; setFrozen(true);
+        await action.submit(command);
+        if (!currentSession(session)) return;
+        onOpenChange(false);
+      } else {
+        if (isScopedProjectReadEnabled() || hasPendingNativeSupportProfile(project.projectId, userId).kind !== 'absent') throw new Error('Reopen Support to check the saved request before editing.');
+        await updateProject(project.projectId, { supportProfile: canonicalProfile });
+      }
       toast({ title: 'Support profile saved' });
     } catch (error) {
+      if (nativeMode && !currentSession(session)) return;
+      setError(error instanceof Error ? error.message : 'Please try again.');
       toast({
         title: 'Could not save profile',
         description: error instanceof Error ? error.message : 'Please try again.',
         variant: 'destructive',
       });
     } finally {
-      setSaving(false);
+      if (!nativeMode || currentSession(session)) { busyRef.current = false; setSaving(false); }
     }
+  };
+
+  const resolveSaved = async () => {
+    const session = sessionRef.current, action = actionRef.current;
+    if (busyRef.current || !action || !currentSession(session)) return;
+    busyRef.current = true; setSaving(true); setError('');
+    try {
+      const result = await action.resolve();
+      if (!currentSession(session)) return;
+      toast({ title: result.resolution === 'committed' ? 'Support profile saved' : 'Saved request cancelled', description: 'Reopen Support to review current values before another edit.' });
+      onOpenChange(false);
+    } catch (failure) { if (currentSession(session)) setError(failure instanceof Error ? failure.message : 'Could not check the saved request.'); }
+    finally { if (currentSession(session)) { busyRef.current = false; setSaving(false); } }
   };
 
   const addMachine = () => {
@@ -170,6 +271,11 @@ export function SupportProjectDialog({
             <TabsTrigger value="documents">Document pack</TabsTrigger>
           </TabsList>
           <TabsContent value="coverage" className="space-y-5 pt-4">
+            {loading && <p role="status">Loading current Support profile…</p>}
+            {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+            {nativeMode && !loading && !editable && !error && <p className="text-sm text-muted-foreground">Support profile changes are currently paused.</p>}
+            {frozen && <p className="text-sm text-amber-700">A saved request needs confirmation before another edit. Retry the same changes, or confirm a completed save and cancel it if it never saved.</p>}
+            <fieldset disabled={saving || nativeMode && (loading || !editable || frozen || !actionRef.current)} className="space-y-5">
             <div className="rounded-lg border p-4">
               <div className="mb-4 flex items-start justify-between gap-4">
                 <div>
@@ -264,11 +370,13 @@ export function SupportProjectDialog({
               <Label>Internal support notes</Label>
               <Textarea value={profile.internalNotes || ''} onChange={(e) => setField('internalNotes', e.target.value)} placeholder="Access constraints, backup location, known exclusions, special escalation notes…" />
             </div>
+            </fieldset>
 
             <DialogFooter>
-              <Button onClick={handleSave} disabled={saving}>
+              {nativeMode && frozen && <Button variant="outline" onClick={resolveSaved} disabled={saving || loading || !actionRef.current}>Confirm or cancel saved request</Button>}
+              <Button onClick={handleSave} disabled={saving || nativeMode && (loading || !editable || !actionRef.current)}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Save support profile
+                {nativeMode && frozen ? 'Retry saved changes' : 'Save support profile'}
               </Button>
             </DialogFooter>
           </TabsContent>

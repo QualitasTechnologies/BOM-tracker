@@ -12,6 +12,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:writer-inventory": "node --test tests/clientWriterInventory.test.cjs && node scripts/checkClientWriterManifest.cjs",
     "deploy": "npm run build && git add . && git commit -m \"🚀 Deploy: $(date '+%Y-%m-%d %H:%M:%S')\" && firebase deploy --only functions && firebase deploy --only hosting"
   },
   "dependencies": {

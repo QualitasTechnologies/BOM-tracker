@@ -21,8 +21,10 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import { initializeApp, cert, applicationDefault } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { readFileSync } from "fs";
+import { createMcpMaterialWriter } from "./mcpMaterialWriter.cjs";
+import { resolveGooglePrincipal } from "./googlePrincipal.js";
 
 // ─── Firebase Init ────────────────────────────────────────────────────────────
 
@@ -45,6 +47,11 @@ try {
 }
 
 const db = getFirestore();
+const materialWriter = createMcpMaterialWriter({
+  db,
+  resolvePrincipal: resolveGooglePrincipal,
+  getServerTimestamp: () => FieldValue.serverTimestamp(),
+});
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -249,7 +256,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "bom_add_item",
       description:
-        "Add a new component or service item to a project's BOM. The category must already exist in the project. Returns the new item ID.",
+        "Add a new component or service item to a project's BOM. The category must already exist in the project. Requires expected_version (exact value printed by project_bom) and operation_id (a caller-chosen nonce, reused unchanged when retrying). A stale version is rejected, never refreshed. Returns the new item ID.",
       inputSchema: {
         type: "object",
         properties: {
@@ -272,8 +279,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             enum: ["component", "service"],
             description: "Item type. Default: component.",
           },
+          expected_version: {
+            type: "string",
+            pattern: "^\d{1,15}:\d{1,9}$",
+            description: "BOM version exactly as printed by project_bom (seconds:nanoseconds).",
+          },
+          operation_id: {
+            type: "string",
+            pattern: "^[a-zA-Z0-9_-]{1,128}$",
+            description: "Stable caller nonce; keep it unchanged when retrying the same add.",
+          },
         },
-        required: ["project_id", "category", "name", "description", "quantity"],
+        additionalProperties: false,
+        required: ["project_id", "category", "name", "description", "quantity", "expected_version", "operation_id"],
       },
     },
   ],
@@ -528,82 +546,25 @@ async function toolVendorsSearch(args: Record<string, unknown>) {
 }
 
 async function toolBomAddItem(args: Record<string, unknown>) {
-  const {
-    project_id,
-    category,
-    name,
-    description,
-    quantity,
-    price,
-    make,
-    sku,
-    item_type = "component",
-  } = args as {
-    project_id: string;
-    category: string;
-    name: string;
-    description: string;
-    quantity: number;
-    price?: number;
-    make?: string;
-    sku?: string;
-    item_type?: string;
-  };
-
-  if (!project_id || !category || !name || !description || !quantity) {
-    throw new McpError(
-      ErrorCode.InvalidParams,
-      "project_id, category, name, description, and quantity are all required"
-    );
+  let result;
+  try {
+    result = await materialWriter.addItem(args);
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === "string" && /^[a-z_]+$/.test(code)) {
+      throw new McpError(ErrorCode.InvalidParams, `bom_add_item rejected: ${code}`);
+    }
+    throw err;
   }
-
-  const bomRef = db
-    .collection("projects")
-    .doc(project_id)
-    .collection("bom")
-    .doc("data");
-  const bomSnap = await bomRef.get();
-  if (!bomSnap.exists) {
-    throw new McpError(ErrorCode.InvalidParams, `Project ${project_id} has no BOM yet`);
-  }
-
-  const categories: BOMCategory[] = bomSnap.data()?.categories ?? [];
-  const catIdx = categories.findIndex(
-    (c) => c.name.toLowerCase() === category.toLowerCase()
-  );
-  if (catIdx === -1) {
-    const available = categories.map((c) => c.name).join(", ");
-    throw new McpError(
-      ErrorCode.InvalidParams,
-      `Category "${category}" not found in ${project_id}. Available: ${available}`
-    );
-  }
-
-  const itemId = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  const newItem: Record<string, unknown> = {
-    id: itemId,
-    name,
-    description,
-    itemType: item_type,
-    category: categories[catIdx].name,
-    quantity: Number(quantity),
-    status: "not-ordered",
-    vendors: [],
-  };
-  if (price != null) newItem.price = Number(price);
-  if (make) newItem.make = make;
-  if (sku) newItem.sku = sku;
-
-  categories[catIdx].items = [
-    ...categories[catIdx].items,
-    newItem as unknown as BOMItem,
-  ];
-  await bomRef.update({ categories });
-
-  const costStr = price != null ? INR(Number(price) * Number(quantity)) : "no price yet";
+  const costStr =
+    result.price != null ? INR(result.price * result.quantity) : "no price yet";
   return text(
-    `✅ Added **${name}** ×${quantity} to **${project_id} / ${categories[catIdx].name}**\n` +
-      `Total cost: ${costStr}\nItem ID: ${itemId}`
+    `✅ ${result.replayed ? "Already added (matching retry)" : "Added"} **${result.name}** ×${result.quantity} to **${result.project_id} / ${result.category}**
+` +
+      `Total cost: ${costStr}
+Item ID: ${result.item_id}
+` +
+      `Run project_bom again for the new expected_version before another add.`
   );
 }
 

@@ -64,7 +64,31 @@ import { billingEntityToCompanySettings, getBillingEntity } from '@/utils/settin
 import { getProject, getNotificationRecipients, NotificationRecipient } from '@/utils/projectFirestore';
 import { auth } from '@/firebase';
 import { useAuth } from '@/hooks/useAuth';
+import { createNativePOSendSession, isNativePOSendEnabled, POSendOutcome, POSendSnapshot } from '@/utils/nativeProcurementOperations';
 import EditPODialog from './EditPODialog';
+
+const getNativePODeleteRestriction = (po: PurchaseOrder): { label: string; title: string } | null => {
+  if (!isNativePOSendEnabled()) return null;
+  const nativePO = po as PurchaseOrder & {
+    sentBy?: string;
+    sentToEmail?: string;
+    nativeSendAttemptId?: string;
+    nativeSendPhase?: string;
+  };
+  if (
+    ['sent', 'acknowledged', 'partially-received', 'completed', 'cancelled'].includes(po.status)
+    || !!nativePO.sentAt || !!nativePO.sentBy || !!nativePO.sentToEmail
+  ) {
+    return { label: 'Sent POs cannot be deleted', title: 'Sent purchase orders are retained for audit history.' };
+  }
+  const phase = nativePO.nativeSendPhase;
+  const activeAttempt = ['prepared', 'dispatching', 'uncertain', 'needs_reconciliation', 'accepted', 'material_pending', 'metadata_pending'].includes(phase || '')
+    || (!!nativePO.nativeSendAttemptId && phase !== 'complete' && phase !== 'cancelled');
+  if (activeAttempt) {
+    return { label: 'Resolve send before deleting', title: 'Resolve or cancel the active send attempt before deleting this purchase order.' };
+  }
+  return null;
+};
 
 // Helper to convert image URL to base64
 const fetchImageAsBase64 = async (url: string): Promise<string | null> => {
@@ -120,6 +144,13 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
   const [poForChanges, setPOForChanges] = useState<PurchaseOrder | null>(null);
   const [changesNote, setChangesNote] = useState('');
   const [requestingChanges, setRequestingChanges] = useState(false);
+  const [nativeSession, setNativeSession] = useState<ReturnType<typeof createNativePOSendSession> | null>(null);
+  const [nativeActive, setNativeActive] = useState(false);
+  const [nativePermissionsSend, setNativePermissionsSend] = useState(false);
+  const [nativeOutcome, setNativeOutcome] = useState<POSendOutcome | null>(null);
+  const [nativeError, setNativeError] = useState<string | null>(null);
+  const [nativeBusy, setNativeBusy] = useState(false);
+  const [nativeMaterials, setNativeMaterials] = useState<POSendSnapshot['material_items'] | null>(null);
   const { toast } = useToast();
   const { isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -364,7 +395,124 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
     }
   };
 
+  const dropNativeSession = () => {
+    nativeSession?.invalidate();
+    setNativeSession(null);
+    setNativeActive(false);
+    setNativeOutcome(null);
+    setNativeError(null);
+    setNativeMaterials(null);
+    setNativePermissionsSend(false);
+    setNativeBusy(false);
+  };
+
+  const handleNativeOutcome = (outcome: POSendOutcome, poNumber: string) => {
+    setNativeOutcome(outcome);
+    if (outcome.phase === 'complete') {
+      toast({ title: 'PO Sent', description: sendMode === 'mark'
+        ? `Purchase Order ${poNumber} has been marked as sent.`
+        : `Purchase Order ${poNumber} has been emailed to ${outcome.recipient_email || sendToEmail}.` });
+      setSendDialogOpen(false);
+      setPOToSend(null);
+      setSendToEmail('');
+      dropNativeSession();
+    } else if (outcome.phase === 'cancelled') {
+      toast({ title: 'Request Cancelled', description: `The saved send request for PO ${poNumber} was cancelled.` });
+      setSendDialogOpen(false);
+      setPOToSend(null);
+      dropNativeSession();
+    }
+  };
+
+  const runNative = async <T,>(operation: (session: ReturnType<typeof createNativePOSendSession>) => Promise<T>, onResult: (result: T) => void) => {
+    const session = nativeSession;
+    if (!session || nativeBusy) return;
+    setNativeBusy(true);
+    setNativeError(null);
+    try {
+      const result = await operation(session);
+      if (nativeSession !== session) return;
+      onResult(result);
+    } catch (error) {
+      if (nativeSession !== session) return;
+      const message = error instanceof Error ? error.message : 'The Purchase Order operation failed.';
+      setNativeError(message);
+      toast({ title: 'Error', description: message, variant: 'destructive' });
+    } finally {
+      if (nativeSession === session) setNativeBusy(false);
+    }
+  };
+
+  const handleNativeSendClick = async (po: PurchaseOrder, mode: 'email' | 'mark') => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      toast({ title: 'Not signed in', description: 'Sign in again before sending this PO.', variant: 'destructive' });
+      return;
+    }
+    dropNativeSession();
+    const session = createNativePOSendSession(projectId, po.id, uid);
+    setNativeSession(session);
+    try {
+      const snapshot = await session.load();
+      if (auth.currentUser?.uid !== uid) throw new Error('The signed-in account changed. Reopen this PO before continuing.');
+      const attempt = snapshot.attempt;
+      const raw = snapshot.purchase_order;
+      const vendorEmail = raw.vendorEmail || raw.vendor_email || po.vendorEmail || '';
+      setPOToSend({ ...po, poNumber: raw.poNumber || raw.po_number || po.poNumber, vendorEmail } as PurchaseOrder);
+      setSendToEmail(attempt?.recipient_email || vendorEmail);
+      setSendMode(attempt?.mode || mode);
+      setNativePermissionsSend(snapshot.permissions.send);
+      setNativeOutcome(attempt);
+      setNativeError(null);
+      setNativeMaterials(null);
+      setNativeActive(true);
+      setSendDialogOpen(true);
+      setLoadingCcRecipients(true);
+      try {
+        const project = await getProject(projectId);
+        if (auth.currentUser?.uid !== uid) return;
+        const recipients = project ? getNotificationRecipients(project) : [];
+        setCcRecipients(recipients);
+        setSelectedCCStakeholderEmails(attempt?.cc_emails || recipients.map((recipient) => recipient.email.trim()));
+      } catch (error) {
+        console.error('Error fetching CC recipients:', error);
+        setCcRecipients([]);
+        setSelectedCCStakeholderEmails(attempt?.cc_emails || []);
+      } finally {
+        setLoadingCcRecipients(false);
+      }
+    } catch (error) {
+      session.invalidate();
+      setNativeSession(null);
+      const message = error instanceof Error ? error.message : 'Failed to open Purchase Order send.';
+      toast({ title: 'Error', description: message, variant: 'destructive' });
+    }
+  };
+
+  const handleNativeSend = () => {
+    if (!poToSend || !sendToEmail.trim()) {
+      toast({ title: 'Email Required', description: 'Please enter an email address to send the PO.', variant: 'destructive' });
+      return;
+    }
+    const ccSet = new Set<string>();
+    if (auth.currentUser?.email) ccSet.add(auth.currentUser.email.trim().toLowerCase());
+    selectedCCStakeholderEmails.map((email) => email.trim().toLowerCase()).filter(Boolean).forEach((email) => ccSet.add(email));
+    ccSet.delete(sendToEmail.trim().toLowerCase());
+    void runNative(
+      (session) => session.send({ mode: sendMode, recipient_email: sendToEmail.trim(), cc_emails: sendMode === 'email' ? Array.from(ccSet).sort() : [] }),
+      (outcome) => handleNativeOutcome(outcome as POSendOutcome, poToSend.poNumber),
+    );
+  };
+  const handleNativeRecover = () => void runNative((session) => session.recover(), (outcome) => handleNativeOutcome(outcome, poToSend?.poNumber || ''));
+  const handleNativeCancel = () => void runNative((session) => session.cancel(), (outcome) => handleNativeOutcome(outcome, poToSend?.poNumber || ''));
+  const handleNativeReview = () => void runNative((session) => session.reviewMaterials(), (snapshot) => setNativeMaterials(snapshot.material_items));
+  const handleNativeReconcile = () => void runNative((session) => session.reconcile(), (outcome) => handleNativeOutcome(outcome, poToSend?.poNumber || ''));
+
   const handleSendClick = async (po: PurchaseOrder, mode: 'email' | 'mark' = 'email') => {
+    if (isNativePOSendEnabled()) {
+      await handleNativeSendClick(po, mode);
+      return;
+    }
     setPOToSend(po);
     setSendToEmail(po.vendorEmail || '');
     setSendMode(mode);
@@ -582,7 +730,9 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
             No purchase orders created yet. Use "Create PO" button in the BOM Items tab.
           </div>
         ) : (
-          purchaseOrders.map((po) => (
+          purchaseOrders.map((po) => {
+            const deleteRestriction = getNativePODeleteRestriction(po);
+            return (
             <div
               key={po.id}
               className="flex items-center gap-3 p-3 bg-gray-50 rounded border border-gray-200 hover:bg-gray-100 transition-colors"
@@ -662,6 +812,14 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                       </DropdownMenuItem>
                     )}
 
+                    {isNativePOSendEnabled() && po.status === 'sent' && (po as PurchaseOrder & { nativeSendAttemptId?: string; nativeSendPhase?: string }).nativeSendAttemptId
+                      && !['complete', 'cancelled'].includes((po as PurchaseOrder & { nativeSendPhase?: string }).nativeSendPhase || '') && isAdmin && (
+                      <DropdownMenuItem onClick={() => handleNativeSendClick(po, 'email')}>
+                        <RotateCcw className="mr-2 h-4 w-4" />
+                        Recover PO send
+                      </DropdownMenuItem>
+                    )}
+
                     {po.status === 'pending-approval' && isAdmin && (
                       <DropdownMenuItem onClick={() => handleSendClick(po, 'email')}>
                         <Mail className="mr-2 h-4 w-4" />
@@ -687,16 +845,19 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
 
                     <DropdownMenuItem
                       onClick={() => handleDeleteClick(po)}
+                      disabled={!!deleteRestriction}
+                      title={deleteRestriction?.title}
                       className="text-red-600 focus:text-red-600"
                     >
                       <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
+                      {deleteRestriction?.label || 'Delete'}
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
             </div>
-          ))
+            );
+          })
         )}
       </div>
 
@@ -932,7 +1093,11 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
       </AlertDialog>
 
       {/* Send PO Dialog */}
-      <Dialog open={sendDialogOpen} onOpenChange={setSendDialogOpen}>
+      <Dialog open={sendDialogOpen} onOpenChange={(open) => {
+        if (!open && nativeBusy) return;
+        setSendDialogOpen(open);
+        if (!open && nativeActive) dropNativeSession();
+      }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
@@ -947,6 +1112,38 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
           </DialogHeader>
 
           <div className="space-y-4 py-4">
+            {nativeActive && !nativePermissionsSend && (
+              <div role="alert" className="flex items-start gap-2 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+                <span>Native PO sending is disabled for this project until the server rollout is enabled. Contact your project administrator. No legacy send will be attempted.</span>
+              </div>
+            )}
+            {nativeActive && nativeError && <div role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{nativeError}</div>}
+            {nativeActive && nativeOutcome?.phase === 'needs_reconciliation' && (
+              <div role="alert" className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                Manual confirmation is required because the email delivery outcome could not be confirmed. Contact an administrator before starting another send.
+              </div>
+            )}
+            {nativeActive && nativeOutcome && ['prepared', 'pending', 'uncertain', 'accepted', 'metadata_pending'].includes(nativeOutcome.phase) && (
+              <div className="rounded border bg-gray-50 p-3 text-sm">
+                <p className="mb-2">A saved send request is {nativeOutcome.phase === 'prepared' ? 'ready to continue' : `in ${nativeOutcome.phase.replace('_', ' ')} state`}.</p>
+                {nativeOutcome.phase === 'prepared' && <Button variant="outline" onClick={handleNativeCancel} disabled={nativeBusy}>Cancel saved request</Button>}
+                <Button className="ml-2" variant="outline" onClick={handleNativeRecover} disabled={nativeBusy}>Recover send</Button>
+              </div>
+            )}
+            {nativeActive && nativeOutcome?.phase === 'material_pending' && (
+              <div className="rounded border bg-gray-50 p-3 text-sm">
+                <p className="mb-2">The PO was sent. The linked BOM update needs review.</p>
+                {!nativeMaterials ? (
+                  <Button variant="outline" onClick={handleNativeReview} disabled={nativeBusy}>Review BOM update</Button>
+                ) : (
+                  <>
+                    <ul className="mb-2 list-inside list-disc">{nativeMaterials.map((item) => <li key={item.id}>{item.name}: {item.status}</li>)}</ul>
+                    <Button variant="outline" onClick={handleNativeReconcile} disabled={nativeBusy}>Retry material update</Button>
+                  </>
+                )}
+              </div>
+            )}
             <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800">
               <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
               <span>
@@ -965,6 +1162,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                 value={sendToEmail}
                 onChange={(e) => setSendToEmail(e.target.value)}
                 placeholder="vendor@example.com"
+                disabled={nativeActive && (nativeBusy || !!nativeOutcome)}
               />
               <p className="text-xs text-gray-500">
                 {sendMode === 'email'
@@ -1005,6 +1203,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                                 </div>
                                 <Checkbox
                                   checked={isChecked}
+                                  disabled={nativeActive && (nativeBusy || !!nativeOutcome)}
                                   onCheckedChange={(checked) => {
                                     setSelectedCCStakeholderEmails((prev) =>
                                       checked
@@ -1028,10 +1227,16 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setSendDialogOpen(false)} disabled={sending || sendingEmail}>
-              Cancel
+            <Button variant="outline" onClick={() => setSendDialogOpen(false)} disabled={sending || sendingEmail || (nativeActive && nativeBusy)}>
+              {nativeActive && nativeOutcome ? 'Close' : 'Cancel'}
             </Button>
-            {sendMode === 'email' ? (
+            {nativeActive ? (
+              !nativeOutcome && (
+                <Button onClick={handleNativeSend} disabled={nativeBusy || !nativePermissionsSend || !sendToEmail.trim()}>
+                  {nativeBusy ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Sending...</> : <>{sendMode === 'email' ? <Mail className="mr-2 h-4 w-4" /> : <Send className="mr-2 h-4 w-4" />}{sendMode === 'email' ? 'Send Email' : 'Mark as Sent'}</>}
+                </Button>
+              )
+            ) : sendMode === 'email' ? (
               <Button onClick={handleSendPOEmail} disabled={sendingEmail || !sendToEmail.trim()}>
                 {sendingEmail ? (
                   <>

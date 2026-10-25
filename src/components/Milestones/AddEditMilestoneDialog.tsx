@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Calendar } from 'lucide-react';
 import {
   Dialog,
@@ -27,6 +27,17 @@ import { getProject } from '@/utils/projectFirestore';
 import type { Milestone, MilestoneInput, MilestoneStatus, DelayLogInput } from '@/types/milestone';
 import { validateMilestoneName, calculateDelayDays, MILESTONE_STATUS_LABELS } from '@/types/milestone';
 import { useAuth } from '@/hooks/useAuth';
+import type { MilestoneCommand } from '@/utils/nativeMilestoneOperations';
+
+// Native schedule context supplied by MilestoneList; absent means the original direct-write behaviour.
+export interface NativeMilestoneContext {
+  canMutate: boolean;
+  isCurrent: () => boolean;
+  scheduleVersion: string;
+  pendingCommand: () => MilestoneCommand | null;
+  // Resolves false when the account/project changed while waiting, so the acknowledgement must be ignored.
+  issue: (command: MilestoneCommand) => Promise<boolean>;
+}
 
 interface AddEditMilestoneDialogProps {
   open: boolean;
@@ -35,7 +46,27 @@ interface AddEditMilestoneDialogProps {
   milestone?: Milestone | null;
   isBaselined: boolean;
   currentDeadline: string;
+  native?: NativeMilestoneContext;
 }
+
+const newMilestoneId = () => globalThis.crypto.randomUUID();
+
+// The frozen request keeps its nonce, versions and payload; a form that no longer shows exactly those values must not be saved over it.
+const sameDraft = (saved: MilestoneCommand, draft: MilestoneCommand) => {
+  if (saved.kind === 'add' && draft.kind === 'add') {
+    return saved.milestone_id === draft.milestone_id && saved.input.name === draft.input.name
+      && (saved.input.description ?? '') === (draft.input.description ?? '')
+      && saved.input.currentPlannedEndDate === draft.input.currentPlannedEndDate
+      && (saved.input.status ?? 'not-started') === (draft.input.status ?? 'not-started');
+  }
+  if (saved.kind === 'edit' && draft.kind === 'edit') {
+    const savedPatch = saved.patch as Record<string, unknown>;
+    const draftPatch = draft.patch as Record<string, unknown>;
+    return saved.milestone_id === draft.milestone_id && Object.keys(savedPatch).every(key => savedPatch[key] === draftPatch[key])
+      && JSON.stringify(saved.delay ?? null) === JSON.stringify(draft.delay ?? null);
+  }
+  return false;
+};
 
 const AddEditMilestoneDialog = ({
   open,
@@ -44,9 +75,12 @@ const AddEditMilestoneDialog = ({
   milestone,
   isBaselined,
   currentDeadline,
+  native,
 }: AddEditMilestoneDialogProps) => {
   const { user } = useAuth();
   const isEditing = !!milestone;
+  const addIdRef = useRef<string | null>(null);
+  const baseVersionRef = useRef<string | null>(null);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -54,6 +88,12 @@ const AddEditMilestoneDialog = ({
   const [status, setStatus] = useState<MilestoneStatus>('not-started');
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+
+  // An unconfirmed native add/edit for this form is frozen: its fields show the saved values and cannot be edited.
+  const saved = native ? native.pendingCommand() : null;
+  const frozen = saved && ((saved.kind === 'edit' && !!milestone && saved.milestone_id === milestone.id) || (saved.kind === 'add' && !milestone)) ? saved : null;
+  const frozenDelay = frozen?.kind === 'edit' ? frozen.delay : undefined;
+  const fieldsLocked = isSaving || !!frozen;
 
   // Delay logging state
   const [delayDialogOpen, setDelayDialogOpen] = useState(false);
@@ -63,25 +103,79 @@ const AddEditMilestoneDialog = ({
   } | null>(null);
 
   // Reset form when dialog opens/closes or milestone changes
+  // Native: only the milestone identity (not a refreshed server copy) resets the draft.
   useEffect(() => {
     if (open) {
-      if (milestone) {
+      const pendingCommand = native?.pendingCommand() ?? null;
+      if (pendingCommand?.kind === 'edit' && milestone && pendingCommand.milestone_id === milestone.id) {
+        const patch = pendingCommand.patch;
+        setName(patch.name ?? milestone.name);
+        setDescription(patch.description === undefined ? milestone.description || '' : patch.description ?? '');
+        setEndDate(patch.currentPlannedEndDate ?? milestone.currentPlannedEndDate);
+        setStatus((patch.status as MilestoneStatus | undefined) ?? milestone.status);
+      } else if (pendingCommand?.kind === 'add' && !milestone) {
+        addIdRef.current = pendingCommand.milestone_id;
+        setName(pendingCommand.input.name);
+        setDescription(pendingCommand.input.description ?? '');
+        setEndDate(pendingCommand.input.currentPlannedEndDate);
+        setStatus((pendingCommand.input.status as MilestoneStatus | undefined) ?? 'not-started');
+      } else if (milestone) {
         setName(milestone.name);
         setDescription(milestone.description || '');
         setEndDate(milestone.currentPlannedEndDate);
         setStatus(milestone.status);
       } else {
+        addIdRef.current = null;
         setName('');
         setDescription('');
         setEndDate('');
         setStatus('not-started');
       }
+      baseVersionRef.current = native?.scheduleVersion ?? null;
       setError(null);
     }
-  }, [open, milestone]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, native ? milestone?.id : milestone]);
+
+  // Native save of an add/edit. A pending add/edit for this same milestone is replayed exactly, never rebuilt from the form.
+  const submitNative = async (command: MilestoneCommand) => {
+    if (!native) return;
+    const pendingCommand = native.pendingCommand();
+    if (pendingCommand) {
+      const sameTarget = (pendingCommand.kind === 'add' && command.kind === 'add' && pendingCommand.milestone_id === command.milestone_id)
+        || (pendingCommand.kind === 'edit' && command.kind === 'edit' && pendingCommand.milestone_id === command.milestone_id);
+      if (!sameTarget) throw new Error('Resolve the pending schedule request first.');
+      if (!sameDraft(pendingCommand, command)) {
+        throw new Error('This form no longer matches the saved request. Cancel, resolve the saved request, then enter the new values.');
+      }
+      command = pendingCommand;
+    } else if (command.kind === 'edit' && baseVersionRef.current !== native.scheduleVersion) {
+      throw new Error('The schedule changed on the server while you were editing. Close and reopen this milestone to continue.');
+    }
+    if (await native.issue(command)) {
+      addIdRef.current = null;
+      onOpenChange(false);
+    }
+  };
+
+  const nativeEditCommand = (target: Milestone, newDate: string, delay?: { reason: string; attribution: DelayLogInput['attribution'] }): MilestoneCommand => ({
+    kind: 'edit',
+    milestone_id: target.id,
+    patch: {
+      name: name.trim(),
+      description: description.trim() || null,
+      currentPlannedEndDate: newDate,
+      status,
+    },
+    ...(delay ? { delay } : {}),
+  });
 
   const handleSubmit = async () => {
     if (!user) return;
+    if (native && !native.canMutate) {
+      setError('Schedule changes are not available right now.');
+      return;
+    }
 
     // Validate name
     const nameValidation = validateMilestoneName(name);
@@ -104,6 +198,25 @@ const AddEditMilestoneDialog = ({
         // Check if date changed on baselined project
         const dateChanged = endDate !== milestone.currentPlannedEndDate;
 
+        if (native) {
+          const pendingCommand = native.pendingCommand();
+          const replaying = pendingCommand?.kind === 'edit' && pendingCommand.milestone_id === milestone.id;
+          if (replaying && frozenDelay) {
+            setPendingDateChange({ previousDate: milestone.currentPlannedEndDate, newDate: endDate });
+            setDelayDialogOpen(true);
+            setIsSaving(false);
+            return;
+          }
+          if (isBaselined && dateChanged && !replaying) {
+            setPendingDateChange({ previousDate: milestone.currentPlannedEndDate, newDate: endDate });
+            setDelayDialogOpen(true);
+            setIsSaving(false);
+            return;
+          }
+          await submitNative(nativeEditCommand(milestone, endDate));
+          return;
+        }
+
         if (isBaselined && dateChanged) {
           // Date changed on baselined project - need to log delay
           setPendingDateChange({
@@ -122,6 +235,18 @@ const AddEditMilestoneDialog = ({
           currentPlannedEndDate: endDate,
           status,
         });
+      } else if (native) {
+        addIdRef.current ??= newMilestoneId();
+        await submitNative({
+          kind: 'add',
+          milestone_id: addIdRef.current,
+          input: {
+            name: name.trim(),
+            ...(description.trim() ? { description: description.trim() } : {}),
+            currentPlannedEndDate: endDate,
+            status,
+          },
+        });
       } else {
         // Get project to check if baselined
         const project = await getProject(projectId);
@@ -139,6 +264,7 @@ const AddEditMilestoneDialog = ({
 
       onOpenChange(false);
     } catch (error: any) {
+      if (native && !native.isCurrent()) return;
       setError(error.message || 'Failed to save milestone');
     } finally {
       setIsSaving(false);
@@ -147,6 +273,22 @@ const AddEditMilestoneDialog = ({
 
   const handleDelayLogSubmit = async (input: DelayLogInput) => {
     if (!user || !pendingDateChange || !milestone) return;
+
+    if (native) {
+      // One atomic edit carries every captured draft field plus the delay reason; no separate delay-log write.
+      try {
+        await submitNative(nativeEditCommand(milestone, pendingDateChange.newDate, { reason: input.reason, attribution: input.attribution }));
+        if (native.isCurrent()) {
+          setPendingDateChange(null);
+          setDelayDialogOpen(false);
+        }
+      } catch (error: any) {
+        if (!native.isCurrent()) return;
+        setError(error.message || 'Failed to save milestone');
+        throw error;
+      }
+      return;
+    }
 
     try {
       // Log the delay
@@ -178,7 +320,7 @@ const AddEditMilestoneDialog = ({
   const handleDelayDialogClose = (open: boolean) => {
     if (!open) {
       // User cancelled delay logging - revert date
-      if (milestone) {
+      if (milestone && !frozen) {
         setEndDate(milestone.currentPlannedEndDate);
       }
       setPendingDateChange(null);
@@ -205,6 +347,15 @@ const AddEditMilestoneDialog = ({
           </DialogHeader>
 
           <div className="space-y-4 py-4">
+            {frozen && (
+              <Alert>
+                <AlertDescription>
+                  A saved request is awaiting confirmation. These are its original values and cannot be changed. Retry it as is, or cancel and
+                  use Resolve pending schedule request before entering new values.
+                </AlertDescription>
+              </Alert>
+            )}
+
             {error && (
               <Alert variant="destructive">
                 <AlertDescription>{error}</AlertDescription>
@@ -217,7 +368,8 @@ const AddEditMilestoneDialog = ({
               <Input
                 id="name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => { if (!fieldsLocked) setName(e.target.value); }}
+                disabled={fieldsLocked}
                 placeholder="e.g., Planning & Requirements"
                 maxLength={100}
               />
@@ -229,7 +381,8 @@ const AddEditMilestoneDialog = ({
               <Textarea
                 id="description"
                 value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                onChange={(e) => { if (!fieldsLocked) setDescription(e.target.value); }}
+                disabled={fieldsLocked}
                 placeholder="Brief description of this milestone"
                 rows={2}
               />
@@ -243,7 +396,8 @@ const AddEditMilestoneDialog = ({
                   id="endDate"
                   type="date"
                   value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
+                  onChange={(e) => { if (!fieldsLocked) setEndDate(e.target.value); }}
+                  disabled={fieldsLocked}
                   min={isEditing ? undefined : today}
                 />
               </div>
@@ -258,7 +412,7 @@ const AddEditMilestoneDialog = ({
             {isEditing && (
               <div className="space-y-2">
                 <Label htmlFor="status">Status</Label>
-                <Select value={status} onValueChange={(v) => setStatus(v as MilestoneStatus)}>
+                <Select value={status} onValueChange={(v) => { if (!fieldsLocked) setStatus(v as MilestoneStatus); }} disabled={fieldsLocked}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -296,6 +450,9 @@ const AddEditMilestoneDialog = ({
           previousDate={pendingDateChange.previousDate}
           newDate={pendingDateChange.newDate}
           onSubmit={handleDelayLogSubmit}
+          lockedInput={!!frozenDelay}
+          initialReason={frozenDelay?.reason}
+          initialAttribution={frozenDelay?.attribution}
         />
       )}
     </>

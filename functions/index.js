@@ -10,11 +10,12 @@
 const functions = require("firebase-functions");
 const {onRequest, onCall} = require("firebase-functions/v2/https");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
-const {onDocumentWritten} = require("firebase-functions/v2/firestore");
+const {onDocumentWritten, onDocumentCreated} = require("firebase-functions/v2/firestore");
 const logger = require("firebase-functions/logger");
 const {defineSecret} = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const { Resend } = require("resend");
+const { createLegacyPoAccess } = require('./legacyPoAccess.cjs');
 const pdfParse = require("pdf-parse");
 const PDFDocument = require("pdfkit");
 const {
@@ -1006,128 +1007,35 @@ exports.notifyExpenseApproval = onCall(
   async (request) => {
     const { auth, data } = request;
     if (!auth) throw new Error('Authentication required');
-
-    const { mode, projectId, projectName, visitDates, visitLocation, visitPurpose, visitTotal, ownerUid } = data;
-    const resend = new Resend(getResendApiKey());
-    const FROM = 'BOM Tracker <info@qualitastech.com>';
-
-    const formatINR = (n) => `₹${Math.round(n || 0).toLocaleString('en-IN')}`;
-    const esc = (s) => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-    const visitRows = [
-      `<tr><td style="padding:6px 0;color:#666;width:130px;vertical-align:top;">Project</td><td style="padding:6px 0;font-weight:600;">${esc(projectName)}</td></tr>`,
-      `<tr><td style="padding:6px 0;color:#666;vertical-align:top;">Dates</td><td style="padding:6px 0;">${esc(visitDates)}</td></tr>`,
-      visitLocation ? `<tr><td style="padding:6px 0;color:#666;vertical-align:top;">Location</td><td style="padding:6px 0;">${esc(visitLocation)}</td></tr>` : '',
-      visitPurpose ? `<tr><td style="padding:6px 0;color:#666;vertical-align:top;">Purpose</td><td style="padding:6px 0;">${esc(visitPurpose)}</td></tr>` : '',
-      `<tr><td style="padding:6px 0;color:#666;vertical-align:top;">Amount</td><td style="padding:6px 0;font-weight:700;font-size:17px;color:#0066cc;">${formatINR(visitTotal)}</td></tr>`,
-    ].filter(Boolean).join('');
-
-    const visitSummary = `<table style="width:100%;font-size:14px;border-collapse:collapse;margin:16px 0;">${visitRows}</table>`;
-
-    const footer = `
-      <div style="padding:16px 28px;background:#f8f9fa;border-top:1px solid #eee;font-size:12px;color:#888;text-align:center;">
-        BOM Tracker — Qualitas Technologies Pvt Ltd
-      </div>`;
-
-    const projectUrl = `https://visionbomtracker.web.app/project/${esc(projectId)}/bom`;
-    const ctaBtn = (label, href = projectUrl) =>
-      `<a href="${href}" style="display:inline-block;margin-top:16px;padding:10px 22px;background:#0066cc;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:600;">${label} →</a>`;
-
-    // ── mode: submitted ──────────────────────────────────────────────
+    // Old expense callbacks have no visit ID: do not guess a native event from dates/amount.
+    // Legacy expense writers and their callbacks must be fenced together at cutover.
+    const {legacyApprovalSendingAllowed}=require('./poApprovalLegacyGuard.cjs');
+    if (!await legacyApprovalSendingAllowed(admin.firestore())) throw new Error('Legacy notifications disabled; reopen the project in Pulse');
+    const {buildExpenseApprovalEmail}=require('./expenseApprovalEmail.cjs');
+    const {mode,projectId,projectName,visitDates,visitLocation,visitPurpose,visitTotal,ownerUid}=data;
+    if (!['submitted','approved','rejected'].includes(mode)) throw new Error('Invalid expense notification mode');
+    let to,actorName;
     if (mode === 'submitted') {
-      const allUsers = await admin.auth().listUsers(1000);
-      const adminEmails = allUsers.users
-        .filter(u => u.customClaims?.role === 'admin' && u.customClaims?.status === 'approved' && u.email)
-        .map(u => u.email);
-
-      if (adminEmails.length === 0) {
-        logger.warn('[notifyExpenseApproval] No admin emails found');
-        return { success: false, reason: 'no-admins' };
-      }
-
-      const submitter = await admin.auth().getUser(auth.uid);
-      const submitterName = esc(submitter.displayName || submitter.email || 'A team member');
-
-      const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;color:#333;margin:0;padding:0;background:#f4f4f4;">
-<div style="max-width:600px;margin:24px auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);overflow:hidden;">
-  <div style="background:linear-gradient(135deg,#f59e0b,#d97706);padding:28px 32px;">
-    <h1 style="margin:0;color:#fff;font-size:22px;">Expense Approval Required</h1>
-    <p style="margin:8px 0 0;color:rgba(255,255,255,.9);font-size:14px;">${submitterName} has submitted a travel expense for review</p>
-  </div>
-  <div style="padding:28px 32px;">${visitSummary}
-    <p style="color:#666;font-size:14px;margin:20px 0 0;">Log in to BOM Tracker to approve or reject this claim.</p>
-    ${ctaBtn('Review Claim')}
-  </div>${footer}
-</div></body></html>`;
-
-      await resend.emails.send({
-        from: FROM,
-        to: adminEmails,
-        subject: `Expense Approval Required — ${projectName} (${formatINR(visitTotal)})`,
-        html,
-      });
-
-      logger.info('[notifyExpenseApproval] Submitted', { adminEmails, projectId });
-      return { success: true, sent: adminEmails.length };
-    }
-
-    // ── mode: approved / rejected ─────────────────────────────────────
-    if (mode === 'approved' || mode === 'rejected') {
-      // Verify caller is an admin — prevents non-admins from sending fake approval emails
-      const callerRecord = await admin.auth().getUser(auth.uid);
-      const callerClaims = callerRecord.customClaims || {};
-      if (callerClaims.role !== 'admin' || callerClaims.status !== 'approved') {
-        throw new Error('Admin privileges required');
-      }
-
+      const allUsers=await admin.auth().listUsers(1000);
+      to=allUsers.users.filter(user=>user.customClaims?.role==='admin'&&user.customClaims?.status==='approved'&&user.email).map(user=>user.email);
+      if (!to.length) return {success:false,reason:'no-admins'};
+      const submitter=await admin.auth().getUser(auth.uid);
+      actorName=submitter.displayName||submitter.email||'A team member';
+    } else {
+      const caller=await admin.auth().getUser(auth.uid);
+      if (caller.customClaims?.role!=='admin'||caller.customClaims?.status!=='approved') throw new Error('Admin privileges required');
       if (!ownerUid) throw new Error('ownerUid required');
-
-      const owner = await admin.auth().getUser(ownerUid);
-      if (!owner.email) {
-        logger.warn('[notifyExpenseApproval] Owner has no email', { ownerUid });
-        return { success: false, reason: 'no-owner-email' };
-      }
-
-      const approver = await admin.auth().getUser(auth.uid);
-      const approverName = esc(approver.displayName || approver.email || 'An admin');
-      const isApproved = mode === 'approved';
-      const word = isApproved ? 'Approved' : 'Rejected';
-      const color = isApproved ? '#059669' : '#dc2626';
-      const bgColor = isApproved ? '#ecfdf5' : '#fef2f2';
-
-      const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;color:#333;margin:0;padding:0;background:#f4f4f4;">
-<div style="max-width:600px;margin:24px auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);overflow:hidden;">
-  <div style="background:${color};padding:28px 32px;">
-    <h1 style="margin:0;color:#fff;font-size:22px;">Expense ${word}</h1>
-    <p style="margin:8px 0 0;color:rgba(255,255,255,.9);font-size:14px;">${approverName} has ${word.toLowerCase()} your travel expense claim</p>
-  </div>
-  <div style="padding:28px 32px;">
-    <div style="background:${bgColor};border:1px solid ${color}44;border-radius:6px;padding:10px 16px;margin-bottom:20px;">
-      <p style="margin:0;font-weight:600;color:${color};">Status: ${word}</p>
-    </div>
-    ${visitSummary}
-    <p style="color:#666;font-size:14px;margin:20px 0 0;">${isApproved
-        ? 'Your expense claim has been approved. Please proceed with reimbursement as per company policy.'
-        : 'Your expense claim was not approved. Please contact your manager for details or resubmit with updated information.'}</p>
-    ${ctaBtn('Open BOM Tracker')}
-  </div>${footer}
-</div></body></html>`;
-
-      await resend.emails.send({
-        from: FROM,
-        to: owner.email,
-        subject: `Your expense claim was ${word} — ${projectName}`,
-        html,
-      });
-
-      logger.info('[notifyExpenseApproval] Status sent', { ownerEmail: owner.email, mode, projectId });
-      return { success: true };
+      const owner=await admin.auth().getUser(ownerUid);
+      if (!owner.email) return {success:false,reason:'no-owner-email'};
+      to=owner.email;actorName=caller.displayName||caller.email||'An admin';
     }
-
-    throw new Error(`Invalid mode: ${mode}`);
+    const mail=buildExpenseApprovalEmail({mode,projectId,projectName,visitDates,visitLocation,visitPurpose,visitTotal,actorName,to,legacyCompatibility:true});
+    const resend=new Resend(getResendApiKey());
+    await resend.emails.send(mail);
+    logger.info('[notifyExpenseApproval] Status sent',{mode,projectId});
+    return mode==='submitted'?{success:true,sent:to.length}:{success:true};
   }
 );
-
 // ==================== PURCHASE ORDER APPROVAL NOTIFICATIONS ====================
 
 // Notify on PO approval workflow events
@@ -1136,128 +1044,40 @@ exports.notifyExpenseApproval = onCall(
 exports.notifyPOApproval = onCall(
   { secrets: [resendApiKey] },
   async (request) => {
-    const { auth, data } = request;
+    const {auth, data} = request;
     if (!auth) throw new Error('Authentication required');
-
-    const { mode, projectId, projectName, poId, poNumber, vendorName, totalAmount, submitterUid, note } = data;
+    const managed = await require('./poApprovalLegacyGuard.cjs').managedApprovalNotification({db:admin.firestore(),auth:admin.auth(),request,data});
+    if (managed) return managed;
+    if (!await require('./poApprovalLegacyGuard.cjs').legacyApprovalSendingAllowed(admin.firestore())) throw new Error('Legacy notifications disabled; reopen in Pulse');
+    const {mode, projectId, projectName, poId, poNumber, vendorName, totalAmount, submitterUid, note} = data;
+    const {buildPOApprovalEmail} = require('./poApprovalEmail.cjs');
     const resend = new Resend(getResendApiKey());
-    const FROM = 'BOM Tracker <info@qualitastech.com>';
-
-    const formatINR = (n) => `₹${Math.round(n || 0).toLocaleString('en-IN')}`;
-    const esc = (s) => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-    const poRows = [
-      `<tr><td style="padding:6px 0;color:#666;width:130px;vertical-align:top;">Project</td><td style="padding:6px 0;font-weight:600;">${esc(projectName)}</td></tr>`,
-      `<tr><td style="padding:6px 0;color:#666;vertical-align:top;">PO Number</td><td style="padding:6px 0;">${esc(poNumber)}</td></tr>`,
-      `<tr><td style="padding:6px 0;color:#666;vertical-align:top;">Vendor</td><td style="padding:6px 0;">${esc(vendorName)}</td></tr>`,
-      `<tr><td style="padding:6px 0;color:#666;vertical-align:top;">Amount</td><td style="padding:6px 0;font-weight:700;font-size:17px;color:#0066cc;">${formatINR(totalAmount)}</td></tr>`,
-    ].join('');
-
-    const poSummary = `<table style="width:100%;font-size:14px;border-collapse:collapse;margin:16px 0;">${poRows}</table>`;
-
-    const footer = `
-      <div style="padding:16px 28px;background:#f8f9fa;border-top:1px solid #eee;font-size:12px;color:#888;text-align:center;">
-        BOM Tracker — Qualitas Technologies Pvt Ltd
-      </div>`;
-
-    // Deep-link straight to the Documents tab with this PO pre-opened, instead of
-    // dropping the reader on the generic BOM page where they have to hunt for it.
-    const poDeepLink = poId
-      ? `https://visionbomtracker.web.app/project/${esc(projectId)}/bom?tab=documents&po=${esc(poId)}`
-      : `https://visionbomtracker.web.app/project/${esc(projectId)}/bom?tab=documents`;
-    const ctaBtn = (label) =>
-      `<a href="${poDeepLink}" style="display:inline-block;margin-top:16px;padding:10px 22px;background:#0066cc;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:600;">${label} →</a>`;
-
-    // ── mode: submitted ──────────────────────────────────────────────
     if (mode === 'submitted') {
       const allUsers = await admin.auth().listUsers(1000);
-      const adminEmails = allUsers.users
-        .filter(u => u.customClaims?.role === 'admin' && u.customClaims?.status === 'approved' && u.email)
-        .map(u => u.email);
-
-      if (adminEmails.length === 0) {
-        logger.warn('[notifyPOApproval] No admin emails found');
-        return { success: false, reason: 'no-admins' };
-      }
-
+      const adminEmails = allUsers.users.filter(user => user.customClaims?.role === 'admin' && user.customClaims?.status === 'approved' && user.email).map(user => user.email);
+      if (!adminEmails.length) return {success:false,reason:'no-admins'};
       const submitter = await admin.auth().getUser(auth.uid);
-      const submitterName = esc(submitter.displayName || submitter.email || 'A team member');
-
-      const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;color:#333;margin:0;padding:0;background:#f4f4f4;">
-<div style="max-width:600px;margin:24px auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);overflow:hidden;">
-  <div style="background:linear-gradient(135deg,#f59e0b,#d97706);padding:28px 32px;">
-    <h1 style="margin:0;color:#fff;font-size:22px;">PO Approval Required</h1>
-    <p style="margin:8px 0 0;color:rgba(255,255,255,.9);font-size:14px;">${submitterName} has submitted a purchase order for review</p>
-  </div>
-  <div style="padding:28px 32px;">${poSummary}
-    <p style="color:#666;font-size:14px;margin:20px 0 0;">Log in to BOM Tracker to review and send this PO, or request changes.</p>
-    ${ctaBtn('Review PO')}
-  </div>${footer}
-</div></body></html>`;
-
-      await resend.emails.send({
-        from: FROM,
-        to: adminEmails,
-        subject: `PO Approval Required — ${poNumber} (${formatINR(totalAmount)})`,
-        html,
-      });
-
-      logger.info('[notifyPOApproval] Submitted', { adminEmails, projectId, poNumber });
-      return { success: true, sent: adminEmails.length };
+      const mail = buildPOApprovalEmail({mode,projectId,projectName,poId,poNumber,vendorName,totalAmount,actorName:submitter.displayName || submitter.email || 'A team member',to:adminEmails,legacyCompatibility:true});
+      const response = await resend.emails.send(mail);
+      if (response?.error) throw new Error('PO notification outcome unconfirmed');
+      logger.info('[notifyPOApproval] Submitted',{projectId,poId,recipientCount:adminEmails.length});
+      return {success:true,sent:adminEmails.length};
     }
-
-    // ── mode: changes-requested ─────────────────────────────────────
     if (mode === 'changes-requested') {
-      // Verify caller is an admin — prevents non-admins from sending fake changes-requested emails
-      const callerRecord = await admin.auth().getUser(auth.uid);
-      const callerClaims = callerRecord.customClaims || {};
-      if (callerClaims.role !== 'admin' || callerClaims.status !== 'approved') {
-        throw new Error('Admin privileges required');
-      }
-
-      if (!submitterUid) throw new Error('submitterUid required');
-
-      const submitter = await admin.auth().getUser(submitterUid);
-      if (!submitter.email) {
-        logger.warn('[notifyPOApproval] Submitter has no email', { submitterUid });
-        return { success: false, reason: 'no-submitter-email' };
-      }
-
       const approver = await admin.auth().getUser(auth.uid);
-      const approverName = esc(approver.displayName || approver.email || 'An admin');
-
-      const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;color:#333;margin:0;padding:0;background:#f4f4f4;">
-<div style="max-width:600px;margin:24px auto;background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);overflow:hidden;">
-  <div style="background:#dc2626;padding:28px 32px;">
-    <h1 style="margin:0;color:#fff;font-size:22px;">Changes Requested</h1>
-    <p style="margin:8px 0 0;color:rgba(255,255,255,.9);font-size:14px;">${approverName} has requested changes to your purchase order</p>
-  </div>
-  <div style="padding:28px 32px;">
-    ${note ? `<div style="background:#fef2f2;border:1px solid #dc262644;border-radius:6px;padding:10px 16px;margin-bottom:20px;">
-      <p style="margin:0;font-weight:600;color:#dc2626;">Note:</p>
-      <p style="margin:4px 0 0;color:#333;">${esc(note)}</p>
-    </div>` : ''}
-    ${poSummary}
-    <p style="color:#666;font-size:14px;margin:20px 0 0;">The PO has been reverted to draft. Please make the requested changes and resubmit for approval.</p>
-    ${ctaBtn('Open PO')}
-  </div>${footer}
-</div></body></html>`;
-
-      await resend.emails.send({
-        from: FROM,
-        to: submitter.email,
-        subject: `Changes Requested — PO ${poNumber}`,
-        html,
-      });
-
-      logger.info('[notifyPOApproval] Changes requested', { submitterEmail: submitter.email, projectId, poNumber });
-      return { success: true };
+      if (approver.customClaims?.role !== 'admin' || approver.customClaims?.status !== 'approved') throw new Error('Admin privileges required');
+      if (!submitterUid) throw new Error('submitterUid required');
+      const submitter = await admin.auth().getUser(submitterUid);
+      if (!submitter.email) return {success:false,reason:'no-submitter-email'};
+      const mail = buildPOApprovalEmail({mode,projectId,projectName,poId,poNumber,vendorName,totalAmount,note,actorName:approver.displayName || approver.email || 'An admin',to:submitter.email,legacyCompatibility:true});
+      const response = await resend.emails.send(mail);
+      if (response?.error) throw new Error('PO notification outcome unconfirmed');
+      logger.info('[notifyPOApproval] Changes requested',{projectId,poId});
+      return {success:true};
     }
-
-    throw new Error(`Invalid mode: ${mode}`);
+    throw new Error('Invalid PO notification mode');
   }
 );
-
 // Extract text from PDF quotation
 // This function downloads a PDF from a URL and extracts its text content
 // Note: pdfParse is already imported at the top of the file
@@ -4655,7 +4475,7 @@ async function processOneEmailBackfillJob({ db, projectId, jobRef, job, clientId
   // per tick — the job resumes from pageToken on the next scheduled run.
   const { messageIds, nextPageToken } = await searchGmailMessageIds({ accessToken, query, pageToken, fetchImpl: fetch });
   for (const messageId of messageIds) {
-    const matched = await processGmailMessage({ db, accessToken, messageId, geminiApiKey });
+    const matched = await processGmailMessage({ db, accessToken, messageId, geminiApiKey, mailboxEmail: connectionSnap.data().email });
     processedCount += 1;
     if (matched) matchedCount += 1;
   }
@@ -4835,7 +4655,7 @@ async function syncOneGmailAccount({ db, connectionRef, connection, clientId, cl
   }
 
   for (const messageId of messageIds) {
-    await processGmailMessage({ db, accessToken, messageId, geminiApiKey });
+    await processGmailMessage({ db, accessToken, messageId, geminiApiKey, mailboxEmail: connection.email });
   }
 
   await connectionRef.set(
@@ -4844,7 +4664,7 @@ async function syncOneGmailAccount({ db, connectionRef, connection, clientId, cl
   );
 }
 
-async function processGmailMessage({ db, accessToken, messageId, geminiApiKey }) {
+async function processGmailMessage({ db, accessToken, messageId, geminiApiKey, mailboxEmail }) {
   const dedupRef = db.collection('gmailIngestedMessages').doc(messageId);
   const dedupSnap = await dedupRef.get();
   if (dedupSnap.exists) return false;
@@ -4897,6 +4717,12 @@ async function processGmailMessage({ db, accessToken, messageId, geminiApiKey })
   const baseDoc = {
     gmailMessageId: parsed.gmailMessageId,
     gmailThreadId: parsed.gmailThreadId,
+    // Preserve verified provider identity for cross-store deduplication. The
+    // mailbox comes from the authenticated Gmail connection, never participants.
+    ...(typeof parsed.messageIdHeader === 'string' && parsed.messageIdHeader.trim()
+      ? { rfcMessageId: parsed.messageIdHeader } : {}),
+    ...(typeof mailboxEmail === 'string' && mailboxEmail.trim()
+      ? { mailboxEmail: mailboxEmail.trim().toLowerCase() } : {}),
     subject: parsed.subject,
     from: parsed.from,
     to: parsed.to,
@@ -4994,7 +4820,8 @@ exports.discardUnassignedEmail = onCall(async (request) => {
  * Generate Purchase Order PDF
  * Creates a professional PO document and stores it in Firebase Storage
  */
-exports.generatePOPDF = onCall(async (request) => {
+const { readNativePoArtifact, writeNativePoArtifact } = require('./nativePoArtifact.cjs');
+async function generatePOPDFHandler(request, immutableTarget) {
   const { purchaseOrder, companySettings, companyLogo, companyLogoUrl, companyLogoPath } = request.data;
 
   if (!purchaseOrder || !companySettings) {
@@ -5005,6 +4832,10 @@ exports.generatePOPDF = onCall(async (request) => {
   }
 
   try {
+    if (immutableTarget) {
+      const cached = await readNativePoArtifact(admin.storage().bucket(), immutableTarget);
+      if (cached) return cached;
+    }
     // Resolve company logo - can be base64, URL, or storage path
     let resolvedLogo = companyLogo;
 
@@ -5533,6 +5364,7 @@ exports.generatePOPDF = onCall(async (request) => {
 
     // Upload to Firebase Storage
     const bucket = admin.storage().bucket();
+    if (immutableTarget) return writeNativePoArtifact(bucket, immutableTarget, pdfBuffer);
     const poNumberSafe = (purchaseOrder.poNumber || 'DRAFT').replace(/[^a-zA-Z0-9-]/g, '_');
     const filename = `purchase-orders/${purchaseOrder.projectId || 'unknown'}/${poNumberSafe}.pdf`;
     const file = bucket.file(filename);
@@ -5587,7 +5419,66 @@ exports.generatePOPDF = onCall(async (request) => {
       `Failed to generate PO PDF: ${error.message}`
     );
   }
+}
+const legacyPoAccess = createLegacyPoAccess({ admin, functions });
+exports.generatePOPDF = onCall(async (request) => {
+  const authorized = await legacyPoAccess.preparePreview(request);
+  return generatePOPDFHandler({ data: { ...authorized, purchaseOrder: authorized.po } });
 });
+
+function buildPOEmailData(purchaseOrder, companySettings, recipientEmail, ccEmails, pdfBuffer) {
+  const poNum = purchaseOrder.poNumber || 'DRAFT';
+  const emailData = {
+    from: 'info@qualitastech.com', // Must be verified in Resend
+    to: recipientEmail,
+    cc: ccEmails || [],
+    subject: `Purchase Order ${poNum} - ${companySettings.companyName || 'Company'}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #1e40af;">Purchase Order ${poNum}</h2>
+        <p>Dear ${purchaseOrder.vendorName || 'Vendor'},</p>
+        <p>Please find attached our Purchase Order for your reference.</p>
+
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+          <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Number:</strong></td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${poNum}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Date:</strong></td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${formatDateSafe(purchaseOrder.poDate)}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Total Amount:</strong></td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${formatIndianCurrency(purchaseOrder.totalAmount)}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Items:</strong></td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${purchaseOrder.items?.length || 0} item(s)</td>
+          </tr>
+        </table>
+
+        <p>Please acknowledge receipt of this Purchase Order.</p>
+
+        <p>
+          Best regards,<br/>
+          <strong>${companySettings.companyName || 'Company'}</strong><br/>
+          ${companySettings.phone ? `Phone: ${companySettings.phone}<br/>` : ''}
+          ${companySettings.email ? `Email: ${companySettings.email}` : ''}
+        </p>
+      </div>
+    `,
+    attachments: [
+      {
+        content: pdfBuffer.toString('base64'),
+        filename: `${poNum}.pdf`,
+        type: 'application/pdf'
+      }
+    ]
+  };
+
+  return emailData;
+}
 
 /**
  * Send Purchase Order via Email
@@ -5596,25 +5487,19 @@ exports.generatePOPDF = onCall(async (request) => {
 exports.sendPurchaseOrder = onCall(
   { secrets: [resendApiKey] },
   async (request) => {
-    const { purchaseOrder, companySettings, companyLogo, companyLogoPath, recipientEmail, ccEmails } = request.data;
-
-    if (!purchaseOrder || !companySettings || !recipientEmail) {
-      throw new functions.https.HttpsError(
-        'invalid-argument',
-        'purchaseOrder, companySettings, and recipientEmail are required'
-      );
-    }
+    const { uid, projectId, po, companySettings, companyLogoPath, recipientEmail, ccEmails } =
+      await legacyPoAccess.prepareSend(request, { nativeEnabled: procurementEnabled(process.env) });
 
     try {
       logger.info('Sending PO via email', {
-        poNumber: purchaseOrder.poNumber,
+        poNumber: po.poNumber,
         to: recipientEmail
       });
 
-      // First generate the PDF
-      const pdfResult = await exports.generatePOPDF.run({
-        data: { purchaseOrder, companySettings, companyLogo, companyLogoPath }
-      }, { auth: request.auth });
+      // Render from the stored PO and billing entity, never from caller snapshots.
+      const pdfResult = await generatePOPDFHandler({
+        data: { purchaseOrder: po, companySettings, companyLogoPath }
+      });
 
       // Download the PDF from storage
       const bucket = admin.storage().bucket();
@@ -5624,65 +5509,16 @@ exports.sendPurchaseOrder = onCall(
       // Initialize Resend
       const resend = new Resend(getResendApiKey());
 
-      // Build email
-      const poNum = purchaseOrder.poNumber || 'DRAFT';
-      const emailData = {
-        from: 'info@qualitastech.com', // Must be verified in Resend
-        to: recipientEmail,
-        cc: ccEmails || [],
-        subject: `Purchase Order ${poNum} - ${companySettings.companyName || 'Company'}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #1e40af;">Purchase Order ${poNum}</h2>
-            <p>Dear ${purchaseOrder.vendorName || 'Vendor'},</p>
-            <p>Please find attached our Purchase Order for your reference.</p>
-
-            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-              <tr>
-                <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Number:</strong></td>
-                <td style="padding: 8px; border: 1px solid #ddd;">${poNum}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px; border: 1px solid #ddd;"><strong>PO Date:</strong></td>
-                <td style="padding: 8px; border: 1px solid #ddd;">${formatDateSafe(purchaseOrder.poDate)}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Total Amount:</strong></td>
-                <td style="padding: 8px; border: 1px solid #ddd;">${formatIndianCurrency(purchaseOrder.totalAmount)}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Items:</strong></td>
-                <td style="padding: 8px; border: 1px solid #ddd;">${purchaseOrder.items?.length || 0} item(s)</td>
-              </tr>
-            </table>
-
-            <p>Please acknowledge receipt of this Purchase Order.</p>
-
-            <p>
-              Best regards,<br/>
-              <strong>${companySettings.companyName || 'Company'}</strong><br/>
-              ${companySettings.phone ? `Phone: ${companySettings.phone}<br/>` : ''}
-              ${companySettings.email ? `Email: ${companySettings.email}` : ''}
-            </p>
-          </div>
-        `,
-        attachments: [
-          {
-            content: pdfBuffer.toString('base64'),
-            filename: `${poNum}.pdf`,
-            type: 'application/pdf'
-          }
-        ]
-      };
+      const emailData = buildPOEmailData(po, companySettings, recipientEmail, ccEmails, pdfBuffer);
 
       await resend.emails.send(emailData);
 
       // Update PO status to 'sent' in Firestore
       const db = admin.firestore();
-      await db.collection('projects').doc(purchaseOrder.projectId).collection('purchaseOrders').doc(purchaseOrder.id).update({
+      await db.collection('projects').doc(projectId).collection('purchaseOrders').doc(po.id).update({
         status: 'sent',
         sentAt: admin.firestore.FieldValue.serverTimestamp(),
-        sentBy: request.auth?.uid || 'system',
+        sentBy: uid,
         sentToEmail: recipientEmail,
         pdfUrl: pdfResult.pdfUrl
       });
@@ -5690,36 +5526,36 @@ exports.sendPurchaseOrder = onCall(
       // Create ProjectDocument entry for the generated PO PDF
       // This makes the PO appear in the "Vendor POs" documents section
       const projectDocRef = await db.collection('projectDocuments').add({
-        projectId: purchaseOrder.projectId,
-        name: (purchaseOrder.poNumber || 'PO') + '.pdf',
+        projectId,
+        name: (po.poNumber || 'PO') + '.pdf',
         url: pdfResult.pdfUrl,
         type: 'vendor-po',
         uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
-        uploadedBy: request.auth?.uid || 'system',
-        linkedBOMItems: purchaseOrder.items.map(item => item.bomItemId),
+        uploadedBy: uid,
+        linkedBOMItems: (Array.isArray(po.items) ? po.items : []).map(item => item.bomItemId),
         fileSize: pdfResult.size || 0
       });
 
       logger.info('ProjectDocument created for PO', {
         documentId: projectDocRef.id,
-        poNumber: purchaseOrder.poNumber
+        poNumber: po.poNumber
       });
 
       logger.info('PO email sent successfully', {
-        poNumber: purchaseOrder.poNumber,
+        poNumber: po.poNumber,
         to: recipientEmail
       });
 
       return {
         success: true,
-        message: `Purchase Order ${purchaseOrder.poNumber} sent to ${recipientEmail}`,
+        message: `Purchase Order ${po.poNumber} sent to ${recipientEmail}`,
         pdfUrl: pdfResult.pdfUrl
       };
 
     } catch (error) {
       // Log full error for debugging
       logger.error('Failed to send PO email', {
-        poNumber: purchaseOrder?.poNumber,
+        poNumber: po?.poNumber,
         error: error.message,
         code: error.code,
         response: error.response?.body,
@@ -5731,11 +5567,27 @@ exports.sendPurchaseOrder = onCall(
       let userMessage = 'Failed to send Purchase Order';
       let troubleshooting = '';
 
-      if (error.code === 401 || error.message?.includes('Unauthorized') || error.message?.includes('Invalid API key')) {
+      if (error.code === 'actor_authentication_required' || error.code === 401 || error.message?.includes('Unauthorized')) {
+        errorCode = 'unauthenticated';
+        userMessage = 'Authentication required';
+        troubleshooting = error.message;
+      } else if (error.code === 'actor_forbidden' || error.code === 403 || error.message?.includes('Forbidden')) {
+        errorCode = 'permission-denied';
+        userMessage = 'You are not allowed to send this Purchase Order';
+        troubleshooting = error.message;
+      } else if (error.code === 'native_procurement_required') {
+        errorCode = 'failed-precondition';
+        userMessage = 'Legacy PO sending is disabled';
+        troubleshooting = error.message;
+      } else if (['purchase_order_not_found', 'purchase_order_not_approved', 'purchase_order_attempt_active'].includes(error.code)) {
+        errorCode = 'failed-precondition';
+        userMessage = 'Purchase Order cannot be sent';
+        troubleshooting = error.message;
+      } else if (error.code === 401 || error.message?.includes('Invalid API key')) {
         errorCode = 'unauthenticated';
         userMessage = 'Email service authentication failed';
         troubleshooting = 'The Resend API key is invalid or expired. Please contact your administrator.';
-      } else if (error.code === 403 || error.message?.includes('Forbidden') || error.message?.includes('Domain not verified')) {
+      } else if (error.code === 403 || error.message?.includes('Domain not verified')) {
         errorCode = 'permission-denied';
         userMessage = 'Email service access denied';
         troubleshooting = 'The sender email may not be verified in Resend.';
@@ -7467,3 +7319,302 @@ exports.migrateStakeholdersToMembers = onCall(async (request) => {
     message: `Processed ${results.processed} project(s), skipped ${results.skipped} with no stakeholders. Errors: ${results.errors.length}`,
   };
 });
+
+// Pulse project review: authenticate the caller and recheck the mapped Firebase user.
+const { createProjectReviewHandler } = require('./projectReview.cjs');
+const bomProjectReviewKey = defineSecret('BOM_PROJECT_REVIEW_KEY');
+exports.projectReview = onRequest(
+  {
+    region: 'us-central1',
+    secrets: [bomProjectReviewKey],
+    cors: false,
+    invoker: 'public',
+    timeoutSeconds: 30,
+    maxInstances: 5,
+  },
+  createProjectReviewHandler({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    getServiceKey: () => bomProjectReviewKey.value(),
+  })
+);
+
+// Native Support ticket creation is independently gated and defaults off.
+const { createNativeSupportTicketCreate, supportTicketCreateEnabled } = require('./nativeSupportTicketCreate.cjs');
+exports.nativeSupportTicketCreate = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeSupportTicketCreate({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    enabled: () => supportTicketCreateEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
+// Native Support ticket status changes are separately gated and default off.
+const { createNativeSupportTicketStatus, supportTicketStatusEnabled } = require('./nativeSupportTicketStatus.cjs');
+exports.nativeSupportTicketStatus = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeSupportTicketStatus({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    enabled: () => supportTicketStatusEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
+// Native Support ticket assignment is separately gated and default off.
+const { createNativeSupportTicketAssignment, supportTicketAssignmentEnabled } = require('./nativeSupportTicketAssignment.cjs');
+exports.nativeSupportTicketAssignment = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeSupportTicketAssignment({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    enabled: () => supportTicketAssignmentEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
+// Native Support ticket resolution fields are separately gated and default off.
+const { createNativeSupportTicketResolution, supportTicketResolutionEnabled } = require('./nativeSupportTicketResolution.cjs');
+exports.nativeSupportTicketResolution = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeSupportTicketResolution({
+    db: admin.firestore(),
+    auth: admin.auth(),
+    enabled: () => supportTicketResolutionEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
+// Native materials stage. Writes require explicit server configuration.
+const { createProjectOperationsHandler } = require('./projectOperations.cjs');
+const bomProjectOperationsKey = defineSecret('BOM_PROJECT_OPERATIONS_KEY');
+exports.projectOperations = onRequest(
+  { region: 'us-central1', secrets: [bomProjectOperationsKey], cors: false, invoker: 'public', timeoutSeconds: 30, maxInstances: 5 },
+  createProjectOperationsHandler({
+    db: admin.firestore(), auth: admin.auth(), getServiceKey: () => bomProjectOperationsKey.value(),
+    mutationsEnabled: () => process.env.BOM_MATERIAL_MUTATIONS_ENABLED === 'true',
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
+
+// Reused BOM UI uses its real Firebase session; both write gates remain off by default.
+const { createNativeMaterialOperations } = require('./nativeMaterialOperations.cjs');
+exports.nativeMaterialOperations = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeMaterialOperations({
+    db: admin.firestore(), auth: admin.auth(),
+    mutationsEnabled: () => process.env.BOM_MATERIAL_MUTATIONS_ENABLED === 'true'
+      && process.env.BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED === 'true',
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
+
+// Durable native PO recovery; no provider call is possible until all three gates are enabled.
+const { createNativeProcurementOperations } = require('./nativeProcurementOperations.cjs');
+const { createNativePoRuntime, procurementEnabled } = require('./nativePoRuntime.cjs');
+exports.nativeProcurementOperations = onCall(
+  { region: 'us-central1', secrets: [resendApiKey], timeoutSeconds: 120, maxInstances: 5 },
+  createNativeProcurementOperations({
+    db: admin.firestore(), auth: admin.auth(),
+    enabled: () => procurementEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    ...createNativePoRuntime({
+      db: admin.firestore(), bucket: admin.storage().bucket(), renderPdf: generatePOPDFHandler,
+      createResend: () => new Resend(getResendApiKey()), buildEmail: buildPOEmailData,
+    }),
+  })
+);
+
+// Native project metadata, archive and membership controls; default-off write gates.
+const { createNativeProjectOperations, projectMutationsEnabled, supportProfileMutationsEnabled } = require('./nativeProjectOperations.cjs');
+exports.nativeProjectOperations = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeProjectOperations({
+    db: admin.firestore(), auth: admin.auth(), enabled: () => projectMutationsEnabled(process.env),
+    supportProfileEnabled: () => supportProfileMutationsEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    getDeleteField: () => admin.firestore.FieldValue.delete(),
+  })
+);
+
+// Dedicated self-preference writes use the independent runtime cutover mode; GET, replay, and resolve remain available while paused.
+const { createProjectMemberNotifications } = require('./projectMemberNotifications.cjs');
+exports.updateProjectMemberNotifications = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createProjectMemberNotifications({
+    db: admin.firestore(), auth: admin.auth(),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
+
+// Native receipt photos: protected reservation + verified finalization; off by default.
+const { createNativeUploadOperations } = require('./nativeUploadOperations.cjs');
+exports.nativeUploadOperations = onCall(
+  { region: 'us-central1', timeoutSeconds: 60, maxInstances: 5 },
+  createNativeUploadOperations({
+    db: admin.firestore(), auth: admin.auth(), bucket: admin.storage().bucket(),
+    enabled: () => process.env.BOM_MATERIAL_MUTATIONS_ENABLED === 'true'
+      && process.env.BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED === 'true'
+      && process.env.BOM_NATIVE_UPLOADS_ENABLED === 'true',
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
+
+// Native PO authoring: atomic numbering, draft edits and approval transitions; off by default.
+const { createNativePOAuthoringOperations, authoringEnabled } = require('./nativePOAuthoringOperations.cjs');
+exports.nativePOAuthoringOperations = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativePOAuthoringOperations({
+    db: admin.firestore(), auth: admin.auth(), enabled: () => authoringEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
+
+// Durable PO approval notifications: private outbox and per-batch delivery jobs, default off.
+const {createPOApprovalDispatcher} = require('./poApprovalDispatcher.cjs');
+const {createPOApprovalSender} = require('./poApprovalProvider.cjs');
+const poApprovalNotificationsEnabled = () => process.env.BOM_NATIVE_PO_NOTIFICATIONS_ENABLED === 'true';
+const poApprovalDispatcher = createPOApprovalDispatcher({
+  db: admin.firestore(), auth: admin.auth(), enabled: poApprovalNotificationsEnabled,
+  getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  workspaceUrl: process.env.BOM_PULSE_WORKSPACE_URL || 'https://eagle-eye.qualitastech.com/pulse/bom',
+  sendEmail: createPOApprovalSender({Resend, getApiKey: getResendApiKey}),
+});
+exports.preparePOApprovalNotification = onDocumentCreated(
+  {document:'pulsePOApprovalNotifications/{jobId}',region:'us-central1',timeoutSeconds:120,maxInstances:3,retry:true},
+  async event => poApprovalDispatcher.prepare(event.params.jobId),
+);
+exports.sendPOApprovalNotification = onDocumentCreated(
+  {document:'pulsePOApprovalNotificationDeliveries/{jobId}',region:'us-central1',secrets:[resendApiKey],timeoutSeconds:120,maxInstances:3,retry:true},
+  async event => poApprovalDispatcher.deliver(event.params.jobId),
+);
+exports.retryPOApprovalNotifications = onSchedule(
+  {schedule:'every 1 minutes',region:'us-central1',secrets:[resendApiKey],timeoutSeconds:300,maxInstances:1},
+  async () => {
+    if (!poApprovalNotificationsEnabled()) return;
+    const db=admin.firestore();
+    for (const [collection,processJob] of [
+      ['pulsePOApprovalNotifications',id=>poApprovalDispatcher.prepare(id)],
+      ['pulsePOApprovalNotificationDeliveries',id=>poApprovalDispatcher.deliver(id)],
+    ]) {
+      const due=await db.collection(collection).where('next_attempt_ms','<=',Date.now()).orderBy('next_attempt_ms').limit(25).get();
+      for(let offset=0;offset<due.docs.length;offset+=3) {
+        await Promise.all(due.docs.slice(offset,offset+3).map(async job=>{
+          try {await processJob(job.id);} catch {logger.warn('[po-approval] Deferred job remains unconfirmed',{jobId:job.id,collection});}
+        }));
+      }
+    }
+  },
+);
+
+// PO approval notification operator status and audited same-key retries; no provider secret.
+const {createPOApprovalNotificationOperations} = require('./poApprovalNotificationOperations.cjs');
+exports.nativePOApprovalNotificationOperations = onCall(
+  {region:'us-central1',timeoutSeconds:30,maxInstances:5},
+  createPOApprovalNotificationOperations({
+    db:admin.firestore(),auth:admin.auth(),
+    enabled:()=>process.env.BOM_NATIVE_PO_NOTIFICATIONS_ENABLED === 'true',
+    reconciliationEnabled:()=>process.env.BOM_NATIVE_PO_NOTIFICATION_RECONCILIATION_ENABLED === 'true',
+    getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp(),
+  }),
+);
+
+// PO approval provider evidence: GET-only verification, default off; never sends email.
+const {createPOApprovalReconciliation}=require('./poApprovalReconciliation.cjs');
+const {createPOApprovalLookup}=require('./poApprovalProvider.cjs');
+exports.nativePOApprovalNotificationReconciliation=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:3,secrets:[resendApiKey]},
+  createPOApprovalReconciliation({
+    db:admin.firestore(),auth:admin.auth(),
+    enabled:()=>process.env.BOM_NATIVE_PO_NOTIFICATION_RECONCILIATION_ENABLED === 'true',
+    getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp(),
+    lookup:createPOApprovalLookup({Resend,getApiKey:getResendApiKey}),
+  }),
+);
+
+// Native delivery schedule: original milestone/baseline/history actions, default off.
+const {createNativeMilestoneOperations,milestoneMutationsEnabled}=require('./nativeMilestoneOperations.cjs');
+exports.nativeMilestoneOperations=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:5},
+  createNativeMilestoneOperations({db:admin.firestore(),auth:admin.auth(),enabled:()=>milestoneMutationsEnabled(process.env),scopedReadsEnabled:()=>process.env.BOM_SCOPED_READS_ENABLED==='true',getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
+);
+
+// Native project overheads: original cost entries and reimbursement transitions, default off.
+const {createNativeOverheadOperations,overheadMutationsEnabled}=require('./nativeOverheadOperations.cjs');
+exports.nativeOverheadOperations=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:5},
+  createNativeOverheadOperations({db:admin.firestore(),auth:admin.auth(),enabled:()=>overheadMutationsEnabled(process.env),requireReceiptProof:()=>process.env.BOM_NATIVE_EXPENSE_RECEIPTS_ENABLED==='true',getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
+);
+
+// Durable expense approval notifications: original messages with private atomic jobs, default off.
+const {createExpenseApprovalDispatcher}=require('./expenseApprovalAdapter.cjs');
+const expenseApprovalNotificationsEnabled=()=>process.env.BOM_NATIVE_EXPENSE_NOTIFICATIONS_ENABLED==='true';
+const expenseApprovalDispatcher=createExpenseApprovalDispatcher({
+  db:admin.firestore(),auth:admin.auth(),enabled:expenseApprovalNotificationsEnabled,
+  getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp(),
+  workspaceUrl:process.env.BOM_PULSE_WORKSPACE_URL||'https://eagle-eye.qualitastech.com/pulse/bom',
+  sendEmail:createPOApprovalSender({Resend,getApiKey:getResendApiKey}),
+});
+exports.prepareExpenseApprovalNotification=onDocumentCreated(
+  {document:'pulseExpenseApprovalNotifications/{jobId}',region:'us-central1',timeoutSeconds:120,maxInstances:3,retry:true},
+  async event=>expenseApprovalDispatcher.prepare(event.params.jobId),
+);
+exports.sendExpenseApprovalNotification=onDocumentCreated(
+  {document:'pulseExpenseApprovalNotificationDeliveries/{jobId}',region:'us-central1',secrets:[resendApiKey],timeoutSeconds:120,maxInstances:3,retry:true},
+  async event=>expenseApprovalDispatcher.deliver(event.params.jobId),
+);
+exports.retryExpenseApprovalNotifications=onSchedule(
+  {schedule:'every 1 minutes',region:'us-central1',secrets:[resendApiKey],timeoutSeconds:300,maxInstances:1},
+  async()=>{
+    if(!expenseApprovalNotificationsEnabled())return;
+    const db=admin.firestore();
+    for(const[collection,processJob]of[
+      ['pulseExpenseApprovalNotifications',id=>expenseApprovalDispatcher.prepare(id)],
+      ['pulseExpenseApprovalNotificationDeliveries',id=>expenseApprovalDispatcher.deliver(id)],
+    ]){
+      const due=await db.collection(collection).where('next_attempt_ms','<=',Date.now()).orderBy('next_attempt_ms').limit(25).get();
+      for(let offset=0;offset<due.docs.length;offset+=3){
+        await Promise.all(due.docs.slice(offset,offset+3).map(async job=>{
+          try{await processJob(job.id);}catch{logger.warn('[expense-approval] Deferred job remains unconfirmed',{jobId:job.id,collection});}
+        }));
+      }
+    }
+  },
+);
+
+// Native travel receipts: original image/PDF attachments with protected proof, default off.
+const {createNativeExpenseReceiptOperations,expenseReceiptsEnabled}=require('./nativeExpenseReceiptOperations.cjs');
+exports.nativeExpenseReceiptOperations=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:5},
+  createNativeExpenseReceiptOperations({db:admin.firestore(),auth:admin.auth(),bucket:admin.storage().bucket(),enabled:()=>expenseReceiptsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
+);
+
+// Native project documents: protected staging/finalization with private proof, default off.
+const {createNativeProjectDocumentOperations,projectDocumentsEnabled}=require('./nativeProjectDocumentOperations.cjs');
+exports.nativeProjectDocumentOperations=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:5},
+  createNativeProjectDocumentOperations({db:admin.firestore(),auth:admin.auth(),bucket:admin.storage().bucket(),enabled:()=>projectDocumentsEnabled(process.env),getServerTimestamp:()=>admin.firestore.FieldValue.serverTimestamp()}),
+);
+
+// Authorized original-screen reads. Provision a base64url 32-byte key before
+// deploying this export; enabling reads remains independent of every write gate.
+const bomProjectReadCursorKey = defineSecret('BOM_PROJECT_READ_CURSOR_KEY');
+const {createNativeProjectReads,projectReadsEnabled}=require('./nativeProjectReads.cjs');
+exports.nativeProjectReads=onCall(
+  {region:'us-central1',timeoutSeconds:60,maxInstances:5,secrets:[bomProjectReadCursorKey]},
+  createNativeProjectReads({db:admin.firestore(),auth:admin.auth(),bucket:admin.storage().bucket(),enabled:()=>projectReadsEnabled(process.env),getCursorKey:()=>bomProjectReadCursorKey.value()}),
+);
+
+// Content-free read notices: server-only { version, nonce } bumps that tell
+// scoped clients to re-read. Default-off under BOM_SCOPED_READS_ENABLED (exact
+// 'true'). Keep the bindings self-contained and limited to source paths.
+// Signal collections are server-written only and match no trigger.
+const {onDocumentWritten: onReadSignalWritten}=require('firebase-functions/v2/firestore');
+const {createProjectReadSignals,projectReadSignalsEnabled}=require('./projectReadSignals.cjs');
+const readSignals=createProjectReadSignals({db:admin.firestore(),enabled:()=>projectReadSignalsEnabled(process.env),logger:require('firebase-functions/logger')});
+const readSignalOptions=document=>({document,region:'us-central1',timeoutSeconds:60,maxInstances:5,retry:true});
+exports.pulseReadSignalProject=onReadSignalWritten(readSignalOptions('projects/{projectId}'),event=>readSignals.onProject(event));
+exports.pulseReadSignalBom=onReadSignalWritten(readSignalOptions('projects/{projectId}/bom/data'),event=>readSignals.onBom(event));
+exports.pulseReadSignalDocument=onReadSignalWritten(readSignalOptions('projectDocuments/{documentId}'),event=>readSignals.onDocument(event));

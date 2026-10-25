@@ -30,7 +30,8 @@ import {
 import { useAuth } from "@/hooks/useAuth";
 import { doc, getDoc, collection, getDocs, query, orderBy, limit } from "firebase/firestore";
 import { db } from "@/firebase";
-import { getBOMData, type ProjectMember } from "@/utils/projectFirestore";
+import { getBOMData, getProjects, type Project, type ProjectMember } from "@/utils/projectFirestore";
+import { isScopedProjectReadEnabled } from "@/utils/projectReadMode";
 import { getProjectCosts } from "@/utils/pulseProxyFirestore";
 import { computeDashboardCostTotals, type DashboardCostTotals } from "@/utils/dashboardCostTotals";
 import { extractPendingClaims, type PendingClaimsSummary, type ProjectVisits } from "@/utils/pendingApprovals";
@@ -47,7 +48,7 @@ import { mergeUnassignedCommunications } from "@/utils/communicationsMerge";
 import { Mail } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-const KPI = () => {
+const KPIContent = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -66,6 +67,7 @@ const KPI = () => {
     totalCost: 0,
   });
   const [costsError, setCostsError] = useState<string | null>(null);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
   const [pendingClaims, setPendingClaims] = useState<PendingClaimsSummary>({
     claims: [],
     count: 0,
@@ -83,42 +85,52 @@ const KPI = () => {
   const [resolvingEmailId, setResolvingEmailId] = useState<string | null>(null);
 
   useEffect(() => {
+    let active = true;
+    const uid = user?.uid;
+    const isCurrent = () => active && !!uid && user?.uid === uid;
     const fetchKPIData = async () => {
-      if (!user) return;
+      if (!user || !uid) { setProjects([]); setLoading(false); return; }
 
       try {
         // Fetch projects
-        const projectsRef = collection(db, 'projects');
-        const projectsQuery = query(projectsRef, orderBy('createdAt', 'desc'));
-        const projectsSnapshot = await getDocs(projectsQuery);
+        const projectsData: Array<Partial<Project> & { id: string }> = isScopedProjectReadEnabled()
+          ? await getProjects({ uid, isAdmin: !!user.isAdmin }, () => { if (!isCurrent()) throw new Error('Account changed. Reload the dashboard.'); })
+          : await (async () => {
+              const projectsRef = collection(db, 'projects');
+              const projectsQuery = query(projectsRef, orderBy('createdAt', 'desc'));
+              const projectsSnapshot = await getDocs(projectsQuery);
+              return projectsSnapshot.docs.map(projectDoc => ({ id: projectDoc.id, ...projectDoc.data() }));
+            })();
+        if (!isCurrent()) return;
 
-        const projectsData = [];
         let totalBOMParts = 0;
         const projectVisits: ProjectVisits[] = [];
         const projectPOs: ProjectPOs[] = [];
 
-        for (const projectDoc of projectsSnapshot.docs) {
-          const projectData = { id: projectDoc.id, ...projectDoc.data() } as {
+        for (const projectDoc of projectsData) {
+          if (!isCurrent()) return;
+          const projectData = projectDoc as {
             id: string;
             projectName?: string;
             members?: ProjectMember[];
             [key: string]: unknown;
           };
-          projectsData.push(projectData);
-
           // Get BOM data for part count
           try {
-            const bomData = await getBOMData(projectDoc.id);
+            const bomData = await getBOMData(projectDoc.id, uid, () => { if (!isCurrent()) throw new Error('Account changed. Reload the dashboard.'); });
+            if (!isCurrent()) return;
             bomData.forEach(category => {
-              totalBOMParts += category.parts.length;
+              totalBOMParts += category.items?.length ?? 0;
             });
           } catch (error) {
+            if (isScopedProjectReadEnabled()) throw error;
             console.log(`No BOM data for project ${projectDoc.id}`);
           }
 
           // Get overheads for pending expense-claim detection
           try {
             const overheads = await getOverheads(projectDoc.id);
+            if (!isCurrent()) return;
             projectVisits.push({
               projectId: projectDoc.id,
               projectName: projectData.projectName || projectDoc.id,
@@ -132,6 +144,7 @@ const KPI = () => {
           // Get purchase orders for pending-approval detection
           try {
             const purchaseOrders = await getPurchaseOrders(projectDoc.id);
+            if (!isCurrent()) return;
             projectPOs.push({
               projectId: projectDoc.id,
               projectName: projectData.projectName || projectDoc.id,
@@ -142,6 +155,8 @@ const KPI = () => {
           }
         }
 
+        if (!isCurrent()) return;
+        setProjectsError(null);
         setProjects(projectsData);
         setTotalProjects(projectsData.length);
         setActiveProjects(projectsData.filter(p => p.status === 'Ongoing').length);
@@ -167,15 +182,18 @@ const KPI = () => {
         // Fetch vendor count
         const vendorsRef = collection(db, 'vendors');
         const vendorsSnapshot = await getDocs(vendorsRef);
+        if (!isCurrent()) return;
         setVendorCount(vendorsSnapshot.size);
 
         // Real hours/cost data from Pulse (via getProjectCosts roll-up)
         try {
           const range = weekRangeFromDate(new Date());
           const costsRes = await getProjectCosts(range.start, range.end);
+          if (!isCurrent()) return;
           setDashboardCosts(computeDashboardCostTotals(costsRes.projects));
           setCostsError(null);
         } catch (error) {
+          if (!isCurrent()) return;
           console.error('Error fetching project costs from Pulse:', error);
           setCostsError('Could not load hours/cost data from Pulse.');
         }
@@ -183,36 +201,47 @@ const KPI = () => {
         // Pending user account approvals
         try {
           const pendingRes = await fetchPendingUsers() as { users: { id?: string; uid?: string; email?: string; displayName?: string }[] };
+          if (!isCurrent()) return;
           setPendingUsers(pendingRes.users ?? []);
         } catch (error) {
+          if (!isCurrent()) return;
           console.error('Error fetching pending users:', error);
         }
 
         // Meetings needing manual project assignment
         try {
           const unassigned = await getUnassignedMeetings();
+          if (!isCurrent()) return;
           setUnassignedMeetings(unassigned);
         } catch (error) {
+          if (!isCurrent()) return;
           console.error('Error fetching unassigned meetings:', error);
         }
 
         // Emails needing manual project assignment
         try {
           const unassigned = await getUnassignedEmails();
+          if (!isCurrent()) return;
           setUnassignedEmails(unassigned);
         } catch (error) {
+          if (!isCurrent()) return;
           console.error('Error fetching unassigned emails:', error);
         }
 
       } catch (error) {
-        console.error('Error fetching KPI data:', error);
+        if (isCurrent()) {
+          setProjects([]);
+          setTotalProjects(0);
+          setProjectsError(error instanceof Error ? error.message : 'Could not load projects. Please retry.');
+        }
       } finally {
-        setLoading(false);
+        if (isCurrent()) setLoading(false);
       }
     };
 
     fetchKPIData();
-  }, [user]);
+    return () => { active = false; };
+  }, [user?.uid, user?.isAdmin]);
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat("en-IN", {
@@ -315,6 +344,7 @@ const KPI = () => {
 
   return (
     <div className="min-h-screen bg-background">
+      {projectsError && <div role="alert" className="mx-auto mt-4 max-w-7xl rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900">{projectsError}</div>}
       {/* Header */}
       <header className="border-b bg-card">
         <div className="container mx-auto px-6 py-4">
@@ -697,6 +727,11 @@ const KPI = () => {
       </div>
     </div>
   );
+};
+
+const KPI = () => {
+  const { user, isAdmin } = useAuth();
+  return <KPIContent key={JSON.stringify([user?.uid ?? null, isAdmin])} />;
 };
 
 export default KPI;

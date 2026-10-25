@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Plus, Lock, AlertTriangle, Calendar, FileText, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -23,6 +23,15 @@ import { subscribeToDelayLogs, getDelayStats } from '@/utils/delayLogFirestore';
 import type { Milestone, DelayLog } from '@/types/milestone';
 import type { Project } from '@/utils/projectFirestore';
 import { useAuth } from '@/hooks/useAuth';
+import { auth } from '@/firebase';
+import { isNativeMaterialCommandEnabled } from '@/utils/nativeMaterialCommands';
+import { createNativeMilestoneSession } from '@/utils/nativeMilestoneOperations';
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
+import type { MilestoneCommand, MilestoneSnapshot } from '@/utils/nativeMilestoneOperations';
+import type { NativeMilestoneContext } from './AddEditMilestoneDialog';
+
+type NativeSession = ReturnType<typeof createNativeMilestoneSession>;
+const errorText = (error: unknown, fallback: string) => (error instanceof Error && error.message ? error.message : fallback);
 
 interface MilestoneListProps {
   projectId: string;
@@ -30,9 +39,26 @@ interface MilestoneListProps {
 
 const MilestoneList = ({ projectId }: MilestoneListProps) => {
   const { user } = useAuth();
-  const [milestones, setMilestones] = useState<Milestone[]>([]);
+  const native = isNativeMaterialCommandEnabled();
+  // Scoped reads never enable the legacy writers; without the native commands the schedule is read-only.
+  const legacyLocked = !native && isScopedProjectReadEnabled();
+  const uid = user?.uid ?? null;
+  const [legacyMilestones, setMilestones] = useState<Milestone[]>([]);
   const [delayLogs, setDelayLogs] = useState<DelayLog[]>([]);
-  const [project, setProject] = useState<Project | null>(null);
+  const [legacyProject, setProject] = useState<Project | null>(null);
+  const [snapshot, setSnapshot] = useState<MilestoneSnapshot | null>(null);
+  const [nativeError, setNativeError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [, bumpPending] = useState(0);
+  const sessionRef = useRef<NativeSession | null>(null);
+  const contextRef = useRef<object | null>(null);
+  const milestones: Milestone[] = native ? ((snapshot?.milestones ?? []) as unknown as Milestone[]) : legacyMilestones;
+  const project: Project | null = native ? ((snapshot?.project ?? null) as unknown as Project | null) : legacyProject;
+  const pending = native ? sessionRef.current?.pending ?? null : null;
+  const nativeReady = native && !!snapshot;
+  const canEdit = nativeReady && snapshot?.permissions.edit === true;
+  const canMutate = native ? canEdit && !pending && !busy : !legacyLocked;
   const [isLoading, setIsLoading] = useState(true);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [editingMilestone, setEditingMilestone] = useState<Milestone | null>(null);
@@ -50,31 +76,85 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
 
   // Load project data
   useEffect(() => {
+    if (native) return;
     const loadProject = async () => {
       const proj = await getProject(projectId);
       setProject(proj);
     };
     loadProject();
-  }, [projectId]);
+  }, [projectId, native]);
 
   // Subscribe to milestones
   useEffect(() => {
+    if (native) return;
     const unsubscribe = subscribeToMilestones(projectId, (data) => {
       setMilestones(data);
       setIsLoading(false);
     });
 
     return () => unsubscribe();
-  }, [projectId]);
+  }, [projectId, native]);
 
-  // Subscribe to delay logs
+  // Native opening: authoritative project + milestones are loaded together through one session per uid/project.
+  const reloadNative = useCallback(async (session: NativeSession, context: object) => {
+    try {
+      const fresh = await session.load();
+      if (contextRef.current !== context) return;
+      setSnapshot(fresh);
+      setNativeError(null);
+    } catch (error) {
+      if (contextRef.current !== context) return;
+      setNativeError(errorText(error, 'Failed to load the schedule'));
+    } finally {
+      if (contextRef.current === context) {
+        setIsLoading(false);
+        bumpPending((n) => n + 1);
+      }
+    }
+  }, []);
+
   useEffect(() => {
+    if (!native) return;
+    const context = {};
+    contextRef.current = context;
+    sessionRef.current = null;
+    setSnapshot(null);
+    setNativeError(null);
+    setActionError(null);
+    setBusy(false);
+    setIsLoading(true);
+    setAddDialogOpen(false);
+    setEditingMilestone(null);
+    setLockBaselineDialogOpen(false);
+    setTemplateDialogOpen(false);
+    if (!uid || auth.currentUser?.uid !== uid) {
+      setNativeError('Sign in again to load the schedule.');
+      setIsLoading(false);
+      return () => { if (contextRef.current === context) contextRef.current = null; };
+    }
+    const session = createNativeMilestoneSession(
+      projectId,
+      uid,
+      () => contextRef.current === context && auth.currentUser?.uid === uid,
+    );
+    sessionRef.current = session;
+    void reloadNative(session, context);
+    return () => {
+      if (contextRef.current === context) contextRef.current = null;
+    };
+  }, [native, projectId, uid, reloadNative]);
+
+  // Subscribe to delay logs (read-only history); in native mode a change triggers a reload that never touches pending/draft state.
+  useEffect(() => {
+    let first = true;
     const unsubscribe = subscribeToDelayLogs(projectId, (data) => {
       setDelayLogs(data);
+      if (native && !first && sessionRef.current && contextRef.current) void reloadNative(sessionRef.current, contextRef.current);
+      first = false;
     });
 
     return () => unsubscribe();
-  }, [projectId]);
+  }, [projectId, native, reloadNative]);
 
   // Load delay stats when project changes
   useEffect(() => {
@@ -91,11 +171,97 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
     loadDelayStats();
   }, [projectId, project?.isBaselined, delayLogs]);
 
+  // Issues one native command; false means the context changed while waiting, so the acknowledgement is ignored.
+  const nativeIssue = async (command: MilestoneCommand): Promise<boolean> => {
+    const session = sessionRef.current;
+    const context = contextRef.current;
+    if (!session || !context) throw new Error('The schedule is not ready. Reload and try again.');
+    const outstanding = session.pending;
+    if (outstanding && JSON.stringify(outstanding.command) !== JSON.stringify(command)) {
+      throw new Error('Resolve the pending schedule request first.');
+    }
+    setBusy(true);
+    try {
+      await session.issue(outstanding ? outstanding.command : command);
+    } catch (error) {
+      if (contextRef.current === context) bumpPending((n) => n + 1);
+      throw error;
+    } finally {
+      if (contextRef.current === context) setBusy(false);
+    }
+    if (contextRef.current !== context) return false;
+    bumpPending((n) => n + 1);
+    // A reload failure here must not turn a committed mutation into a failed save.
+    await reloadNative(session, context);
+    return contextRef.current === context;
+  };
+
+  const runAction = async (command: MilestoneCommand) => {
+    const context=contextRef.current;
+    setActionError(null);
+    try {
+      await nativeIssue(command);
+    } catch (error) {
+      if(contextRef.current===context)setActionError(errorText(error, 'Failed to update the schedule'));
+    }
+  };
+
+  const handleResolvePending = async () => {
+    const session = sessionRef.current;
+    const context = contextRef.current;
+    if (!session || !context) return;
+    setActionError(null);
+    setBusy(true);
+    try {
+      await session.resolve();
+      if (contextRef.current !== context) return;
+      await reloadNative(session, context);
+    } catch (error) {
+      if (contextRef.current === context) setActionError(errorText(error, 'Could not resolve the pending request'));
+    } finally {
+      if (contextRef.current === context) {
+        setBusy(false);
+        bumpPending((n) => n + 1);
+      }
+    }
+  };
+
+  const handleReopenPending = () => {
+    const command = sessionRef.current?.pending?.command;
+    if (!command) return;
+    setActionError(null);
+    if (command.kind === 'add') {
+      setEditingMilestone(null);
+      setAddDialogOpen(true);
+    } else if (command.kind === 'edit') {
+      const existing = milestones.find((m) => m.id === command.milestone_id);
+      setEditingMilestone(existing ?? ({ id: command.milestone_id, name: '', currentPlannedEndDate: '', status: 'not-started' } as unknown as Milestone));
+      setAddDialogOpen(true);
+    }
+  };
+
+  const handleRetryPending = async () => {
+    const command = sessionRef.current?.pending?.command;
+    if (command) await runAction(command);
+  };
+
   const handleLockBaseline = async () => {
-    if (!user) return;
+    if (!user || legacyLocked) return;
 
     setLockingBaseline(true);
     setBaselineError(null);
+
+    if (native) {
+      const context = contextRef.current;
+      try {
+        if (await nativeIssue({ kind: 'baseline_lock' })) setLockBaselineDialogOpen(false);
+      } catch (error) {
+        if (contextRef.current === context) setBaselineError(errorText(error, 'Failed to lock baseline'));
+      } finally {
+        if (contextRef.current === context) setLockingBaseline(false);
+      }
+      return;
+    }
 
     try {
       // Validate milestones first
@@ -125,10 +291,22 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
   };
 
   const handleApplyTemplate = async () => {
-    if (!user || !project?.deadline) return;
+    if (!user || !project?.deadline || legacyLocked) return;
 
     setApplyingTemplate(true);
     setTemplateError(null);
+
+    if (native) {
+      const context = contextRef.current;
+      try {
+        if (await nativeIssue({ kind: 'template',time_zone:Intl.DateTimeFormat().resolvedOptions().timeZone })) setTemplateDialogOpen(false);
+      } catch (error) {
+        if (contextRef.current === context) setTemplateError(errorText(error, 'Failed to apply template'));
+      } finally {
+        if (contextRef.current === context) setApplyingTemplate(false);
+      }
+      return;
+    }
 
     try {
       await applyMilestoneTemplate(projectId, project.deadline, user.uid);
@@ -141,11 +319,17 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
   };
 
   const handleEditMilestone = (milestone: Milestone) => {
+    if (legacyLocked) return;
     setEditingMilestone(milestone);
     setAddDialogOpen(true);
   };
 
   const handleStatusChange = async (milestoneId: string, status: MilestoneStatus) => {
+    if (legacyLocked) return;
+    if (native) {
+      await runAction({ kind: 'status', milestone_id: milestoneId, status });
+      return;
+    }
     try {
       await updateMilestoneStatus(projectId, milestoneId, status);
     } catch (error) {
@@ -154,7 +338,11 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
   };
 
   const handleDeleteMilestone = async (milestoneId: string) => {
-    if (!confirm('Are you sure you want to delete this milestone?')) return;
+    if (legacyLocked || !confirm('Are you sure you want to delete this milestone?')) return;
+    if (native) {
+      await runAction({ kind: 'delete', milestone_id: milestoneId });
+      return;
+    }
     try {
       await deleteMilestone(projectId, milestoneId);
     } catch (error) {
@@ -168,6 +356,19 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
   };
 
   const isBaselined = project?.isBaselined ?? false;
+
+  const nativeContext: NativeMilestoneContext | undefined = native && nativeReady
+    ? {
+        canMutate: canEdit,
+        isCurrent: () => contextRef.current !== null && sessionRef.current !== null,
+        scheduleVersion: snapshot!.schedule_version,
+        pendingCommand: () => sessionRef.current?.pending?.command ?? null,
+        issue: async (command) => {
+          setActionError(null);
+          return nativeIssue(command);
+        },
+      }
+    : undefined;
 
   // Check if deadline is in the future (for template validation)
   const isDeadlineInFuture = project?.deadline ? new Date(project.deadline) > new Date() : false;
@@ -184,25 +385,73 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
         </div>
 
         <div className="flex gap-2">
-          {!isBaselined && milestones.length > 0 && (
+          {(!native || nativeReady) && !isBaselined && milestones.length > 0 && (
             <Button
               variant="outline"
               onClick={() => setLockBaselineDialogOpen(true)}
+              disabled={!canMutate}
               className="gap-2"
             >
               <Lock size={16} />
               Lock Baseline
             </Button>
           )}
-          <Button onClick={() => setAddDialogOpen(true)} className="gap-2">
-            <Plus size={16} />
-            Add Milestone
-          </Button>
+          {(!native || nativeReady) && (
+            <Button onClick={() => setAddDialogOpen(true)} disabled={!canMutate} className="gap-2">
+              <Plus size={16} />
+              Add Milestone
+            </Button>
+          )}
         </div>
       </div>
 
+      {legacyLocked && (
+        <Alert>
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription>Schedule editing is temporarily unavailable here. Reopen the project to use its safe schedule actions.</AlertDescription>
+        </Alert>
+      )}
+
+      {native && nativeError && (
+        <Alert variant="destructive">
+          <AlertDescription>
+            {nativeError}
+            {' '}
+            {sessionRef.current && (
+              <Button variant="outline" size="sm" onClick={() => contextRef.current && void reloadNative(sessionRef.current!, contextRef.current)}>
+                Reload schedule
+              </Button>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {native && actionError && (
+        <Alert variant="destructive">
+          <AlertDescription>{actionError}</AlertDescription>
+        </Alert>
+      )}
+
+      {native && pending && (
+        <Alert>
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription>
+            <strong>Resolve the pending schedule request</strong> ({pending.command.kind}) before making other changes. Its outcome was not confirmed.
+            <div className="flex gap-2 mt-2">
+              {canEdit && (pending.command.kind === 'add' || pending.command.kind === 'edit') && (
+                <Button variant="outline" size="sm" disabled={busy} onClick={handleReopenPending}>Reopen pending request</Button>
+              )}
+              {canEdit && pending.command.kind !== 'add' && pending.command.kind !== 'edit' && (
+                <Button variant="outline" size="sm" disabled={busy} onClick={handleRetryPending}>Retry pending request</Button>
+              )}
+              <Button variant="outline" size="sm" disabled={busy} onClick={handleResolvePending}>Resolve pending schedule request</Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Baseline status banner */}
-      {!isBaselined && milestones.length > 0 && (
+      {(!native || nativeReady) && !isBaselined && milestones.length > 0 && (
         <Alert>
           <AlertTriangle className="h-4 w-4" />
           <AlertDescription>
@@ -231,8 +480,8 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
 
 
       {/* Milestones list */}
-      {isLoading ? (
-        <div className="text-center py-8 text-gray-500">Loading milestones...</div>
+      {isLoading || (native && !nativeReady) ? (
+        <div className="text-center py-8 text-gray-500">{native && nativeError && !nativeReady ? 'Schedule unavailable.' : 'Loading milestones...'}</div>
       ) : milestones.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center">
@@ -246,13 +495,14 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
                 <Button
                   variant="outline"
                   onClick={() => setTemplateDialogOpen(true)}
+                  disabled={!canMutate}
                   className="gap-2"
                 >
                   <FileText size={16} />
                   Apply Template
                 </Button>
               )}
-              <Button onClick={() => setAddDialogOpen(true)} className="gap-2">
+              <Button onClick={() => setAddDialogOpen(true)} disabled={!canMutate} className="gap-2">
                 <Plus size={16} />
                 Add Milestone
               </Button>
@@ -274,9 +524,9 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
           milestones={milestones}
           project={project}
           isBaselined={isBaselined}
-          onEdit={handleEditMilestone}
-          onStatusChange={handleStatusChange}
-          onDelete={handleDeleteMilestone}
+          onEdit={canMutate ? handleEditMilestone : undefined}
+          onStatusChange={canMutate ? handleStatusChange : undefined}
+          onDelete={canMutate ? handleDeleteMilestone : undefined}
         />
       )}
 
@@ -293,10 +543,12 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
         milestone={editingMilestone}
         isBaselined={isBaselined}
         currentDeadline={project?.deadline || ''}
+        native={nativeContext}
+        key={native ? `${projectId}:${uid}` : undefined}
       />
 
       {/* Lock Baseline Confirmation Dialog */}
-      <AlertDialog open={lockBaselineDialogOpen} onOpenChange={setLockBaselineDialogOpen}>
+      <AlertDialog open={lockBaselineDialogOpen} onOpenChange={value=>{if(!native||!lockingBaseline)setLockBaselineDialogOpen(value);}}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Lock Project Baseline?</AlertDialogTitle>
@@ -317,7 +569,7 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={lockingBaseline}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleLockBaseline}
+              onClick={event=>{if(native)event.preventDefault();void handleLockBaseline();}}
               disabled={lockingBaseline}
               className="bg-blue-600 hover:bg-blue-700"
             >
@@ -328,7 +580,7 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
       </AlertDialog>
 
       {/* Apply Template Confirmation Dialog */}
-      <AlertDialog open={templateDialogOpen} onOpenChange={setTemplateDialogOpen}>
+      <AlertDialog open={templateDialogOpen} onOpenChange={value=>{if(!native||!applyingTemplate)setTemplateDialogOpen(value);}}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Apply Milestone Template?</AlertDialogTitle>
@@ -365,7 +617,7 @@ const MilestoneList = ({ projectId }: MilestoneListProps) => {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={applyingTemplate}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleApplyTemplate}
+              onClick={event=>{if(native)event.preventDefault();void handleApplyTemplate();}}
               disabled={applyingTemplate || !isDeadlineInFuture}
               className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >

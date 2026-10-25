@@ -31,6 +31,9 @@ interface DelayLogDialogProps {
   previousDate: string;
   newDate: string;
   onSubmit: (input: DelayLogInput) => Promise<void>;
+  lockedInput?:boolean;
+  initialReason?: string;
+  initialAttribution?: DelayAttribution;
 }
 
 const DelayLogDialog = ({
@@ -42,9 +45,12 @@ const DelayLogDialog = ({
   previousDate,
   newDate,
   onSubmit,
+  lockedInput=false,
+  initialReason = '',
+  initialAttribution,
 }: DelayLogDialogProps) => {
-  const [reason, setReason] = useState('');
-  const [attribution, setAttribution] = useState<DelayAttribution | ''>('');
+  const [reason, setReason] = useState(initialReason);
+  const [attribution, setAttribution] = useState<DelayAttribution | ''>(initialAttribution ?? '');
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -94,8 +100,7 @@ const DelayLogDialog = ({
 
   const handleClose = () => {
     if (!isSaving) {
-      setReason('');
-      setAttribution('');
+      if(!lockedInput){setReason('');setAttribution('');}
       setError(null);
       onOpenChange(false);
     }
@@ -180,7 +185,8 @@ const DelayLogDialog = ({
             <Textarea
               id="reason"
               value={reason}
-              onChange={(e) => setReason(e.target.value)}
+              disabled={lockedInput||isSaving}
+              onChange={(e) => { if (!lockedInput) setReason(e.target.value); }}
               placeholder="Describe why this date changed. Be specific - this will be visible to clients and used for tracking."
               rows={3}
               className="resize-none"
@@ -197,7 +203,8 @@ const DelayLogDialog = ({
             </Label>
             <RadioGroup
               value={attribution}
-              onValueChange={(v) => setAttribution(v as DelayAttribution)}
+              disabled={lockedInput||isSaving}
+              onValueChange={(v) => { if (!lockedInput) setAttribution(v as DelayAttribution); }}
               className="space-y-2"
             >
               {attributionOptions.map((option) => (
@@ -208,7 +215,7 @@ const DelayLogDialog = ({
                       ? 'border-blue-500 bg-blue-50'
                       : 'border-gray-200 hover:border-gray-300'
                   }`}
-                  onClick={() => setAttribution(option.value)}
+                  onClick={() => { if (!lockedInput) setAttribution(option.value); }}
                 >
                   <RadioGroupItem value={option.value} id={option.value} className="mt-0.5" />
                   <div className="flex-1">

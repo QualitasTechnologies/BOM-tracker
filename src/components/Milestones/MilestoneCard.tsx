@@ -33,6 +33,14 @@ import {
   calculateDelayDays,
 } from '@/types/milestone';
 import { useAuth } from '@/hooks/useAuth';
+import type { MilestoneCommand } from '@/utils/nativeMilestoneOperations';
+
+// Optional native schedule context; issue resolves false when the context changed and the acknowledgement must be ignored.
+export interface NativeCardContext {
+  canMutate: boolean;
+  isCurrent: () => boolean;
+  issue: (command: MilestoneCommand) => Promise<boolean>;
+}
 
 interface MilestoneCardProps {
   milestone: Milestone;
@@ -41,6 +49,7 @@ interface MilestoneCardProps {
   projectId: string;
   onEdit: () => void;
   currentDeadline: string;
+  native?: NativeCardContext;
 }
 
 const MilestoneCard = ({
@@ -50,6 +59,7 @@ const MilestoneCard = ({
   projectId,
   onEdit,
   currentDeadline,
+  native,
 }: MilestoneCardProps) => {
   const { user } = useAuth();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -57,11 +67,24 @@ const MilestoneCard = ({
   const [pendingDateChange, setPendingDateChange] = useState<{ previousDate: string; newDate: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [nativeError, setNativeError] = useState<string | null>(null);
 
   const variance = getVarianceDisplay(milestone.originalPlannedEndDate, milestone.currentPlannedEndDate);
 
   const handleDelete = async () => {
     setIsDeleting(true);
+    if (native) {
+      setNativeError(null);
+      try {
+        if (native.canMutate && await native.issue({ kind: 'delete', milestone_id: milestone.id })) setDeleteDialogOpen(false);
+        else if (!native.canMutate) setNativeError('Schedule changes are not available right now.');
+      } catch (error) {
+        if (native.isCurrent()) setNativeError(error instanceof Error ? error.message : 'Failed to delete milestone');
+      } finally {
+        if (native.isCurrent()) setIsDeleting(false);
+      }
+      return;
+    }
     try {
       await deleteMilestone(projectId, milestone.id);
       setDeleteDialogOpen(false);
@@ -74,6 +97,18 @@ const MilestoneCard = ({
 
   const handleStatusChange = async (newStatus: MilestoneStatus) => {
     setIsUpdatingStatus(true);
+    if (native) {
+      setNativeError(null);
+      try {
+        if (!native.canMutate) throw new Error('Schedule changes are not available right now.');
+        await native.issue({ kind: 'status', milestone_id: milestone.id, status: newStatus });
+      } catch (error) {
+        if (native.isCurrent()) setNativeError(error instanceof Error ? error.message : 'Failed to update milestone status');
+      } finally {
+        if (native.isCurrent()) setIsUpdatingStatus(false);
+      }
+      return;
+    }
     try {
       await updateMilestoneStatus(projectId, milestone.id, newStatus);
     } catch (error) {
@@ -85,6 +120,22 @@ const MilestoneCard = ({
 
   const handleDelayLogSubmit = async (input: DelayLogInput) => {
     if (!user || !pendingDateChange) return;
+
+    if (native) {
+      // One atomic date command carries the delay reason; no separate delay-log write.
+      if (!native.canMutate) throw new Error('Schedule changes are not available right now.');
+      const settled = await native.issue({
+        kind: 'date',
+        milestone_id: milestone.id,
+        new_date: pendingDateChange.newDate,
+        delay: { reason: input.reason, attribution: input.attribution },
+      });
+      if (settled) {
+        setPendingDateChange(null);
+        setDelayDialogOpen(false);
+      }
+      return;
+    }
 
     try {
       // Log the delay
@@ -251,11 +302,16 @@ const MilestoneCard = ({
                 </span>
               )}
             </AlertDialogDescription>
+            {native && nativeError && <p className="text-sm text-red-600">{nativeError}</p>}
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleDelete}
+              onClick={(e) => {
+                // Native: the confirmation stays open while the request is pending and when it fails.
+                if (native) e.preventDefault();
+                void handleDelete();
+              }}
               disabled={isDeleting}
               className="bg-red-600 hover:bg-red-700"
             >

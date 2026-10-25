@@ -1,0 +1,20 @@
+import React from 'react';
+import {expect,it,vi} from 'vitest';
+import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
+import MilestoneList from '../MilestoneList';
+const mocks=vi.hoisted(()=>({issue:vi.fn(),uid:'alice'}));
+vi.mock('@/hooks/useAuth',()=>({useAuth:()=>({user:{uid:mocks.uid}})}));
+vi.mock('@/firebase',()=>({auth:{get currentUser(){return{uid:mocks.uid};}}}));
+vi.mock('@/utils/nativeMaterialCommands', () => ({ isNativeMaterialCommandEnabled: () => true }));
+vi.mock('@/utils/nativeMilestoneOperations',()=>({createNativeMilestoneSession:()=>({load:async()=>({project_id:'P',project:{projectId:'P',projectName:'Project',deadline:'2099-12-31'},milestones:[{id:'one',name:'Planning',currentPlannedEndDate:'2099-11-01',status:'not-started',order:1}],project_version:'10:1',schedule_version:'a'.repeat(64),permissions:{edit:true}}),issue:mocks.issue,resolve:vi.fn(),pending:undefined})}));
+vi.mock('@/utils/milestoneFirestore',()=>({DEFAULT_MILESTONE_TEMPLATE:[],subscribeToMilestones:()=>()=>{},lockMilestonesBaseline:vi.fn(),validateMilestonesForBaseline:vi.fn(),applyMilestoneTemplate:vi.fn(),updateMilestoneStatus:vi.fn(),deleteMilestone:vi.fn()}));
+vi.mock('@/utils/projectFirestore',()=>({getProject:vi.fn(),lockProjectBaseline:vi.fn()}));
+vi.mock('@/utils/delayLogFirestore',()=>({subscribeToDelayLogs:(_p:any,cb:any)=>{cb([]);return()=>{};},getDelayStats:async()=>({totalDelayDays:0,internalDays:0,externalDays:0})}));
+vi.mock('../AddEditMilestoneDialog',()=>({default:()=>null}));vi.mock('../MilestoneTableView',()=>({default:()=>null}));vi.mock('../DelayHistoryView',()=>({default:()=>null}));
+it('the real baseline confirmation stays open for a pending request and its failure',async()=>{
+  let reject!:(error:Error)=>void;mocks.issue.mockImplementation(()=>new Promise((_resolve,no)=>{reject=no;}));render(<MilestoneList projectId="P"/>);
+  fireEvent.click(await screen.findByRole('button',{name:'Lock Baseline'}));const dialog=screen.getByRole('alertdialog');
+  fireEvent.click(within(dialog).getByRole('button',{name:'Lock Baseline'}));await waitFor(()=>expect(mocks.issue).toHaveBeenCalledOnce());
+  expect(screen.getByRole('alertdialog')).toBeTruthy();await act(async()=>reject(Error('unconfirmed')));
+  expect(screen.getByRole('alertdialog')).toBeTruthy();expect(within(screen.getByRole('alertdialog')).getByText('unconfirmed')).toBeTruthy();
+});
