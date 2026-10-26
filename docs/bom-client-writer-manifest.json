@@ -34,7 +34,7 @@
     "src/utils/poFirestore.ts": {
       "addDoc": 1,
       "deleteDoc": 1,
-      "updateDoc": 6
+      "updateDoc": 5
     },
     "src/utils/projectContextFirestore.ts": {
       "deleteDoc": 1,

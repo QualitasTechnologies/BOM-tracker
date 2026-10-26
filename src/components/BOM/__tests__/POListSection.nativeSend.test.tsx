@@ -77,8 +77,9 @@ const session = (permissionsSend = true, phase = 'complete') => ({
 const setup = (canSend = true) => {
   mocks.session = session(canSend);
   const onPOSent = vi.fn().mockResolvedValue(undefined);
-  render(<POListSection projectId="project-1" onPOSent={onPOSent} />);
-  return { onPOSent };
+  const onNativeSaved = vi.fn();
+  render(<POListSection projectId="project-1" onPOSent={onPOSent} onNativeSaved={onNativeSaved} />);
+  return { onPOSent, onNativeSaved };
 };
 
 const openMode = async (mode: 'email' | 'mark') => {
@@ -100,9 +101,44 @@ describe('POListSection native send migration', () => {
   it('routes Mark as Sent through the native session', async () => {
     setup();
     await openMode('mark');
+    fireEvent.change(screen.getByLabelText('Actual sent date'), { target: { value: '2026-10-18' } });
     fireEvent.click(screen.getByRole('button', { name: 'Mark as Sent' }));
-    await waitFor(() => expect(mocks.session.send).toHaveBeenCalledWith({ mode: 'mark', recipient_email: 'vendor@acme.com', cc_emails: [] }));
+    await waitFor(() => expect(mocks.session.send).toHaveBeenCalledWith({ mode: 'mark', recipient_email: 'vendor@acme.com', cc_emails: [], actual_sent_date: '2026-10-18' }));
     expect(mocks.sendPurchaseOrder).not.toHaveBeenCalled();
+  });
+
+  it('requires an unprefilled actual sent day before a native mark can be sent', async () => {
+    setup();
+    await openMode('mark');
+    expect((screen.getByLabelText('Actual sent date') as HTMLInputElement).value).toBe('');
+    expect(screen.getByRole('button', { name: 'Mark as Sent' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Mark as Sent' }));
+    expect(mocks.session.send).not.toHaveBeenCalled();
+  });
+
+  it('offers no actual sent date for a native email send and sends none', async () => {
+    setup();
+    await openMode('email');
+    expect(screen.queryByLabelText('Actual sent date')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Send Email' }));
+    await waitFor(() => expect(mocks.session.send).toHaveBeenCalledTimes(1));
+    expect('actual_sent_date' in mocks.session.send.mock.calls[0][0]).toBe(false);
+  });
+
+  it('keeps the saved actual sent day stable and read-only when a prepared mark is reopened', async () => {
+    setup();
+    mocks.session.load.mockResolvedValueOnce({
+      purchase_order: { id: 'po-1', projectId: 'project-1', poNumber: 'PO-1', vendorEmail: 'vendor@acme.com' },
+      po_version: '1:1', material_version: '1:1', material_items: [], permissions: { send: true },
+      attempt: { attempt_id: 'attempt-1', phase: 'prepared', mode: 'mark', actual_sent_date: '2026-10-18', recipient_email: 'vendor@acme.com', cc_emails: [] },
+    });
+    await openMode('mark');
+    const date = screen.getByLabelText('Actual sent date') as HTMLInputElement;
+    expect(date.value).toBe('2026-10-18');
+    expect(date).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Recover send' }));
+    await waitFor(() => expect(mocks.session.recover).toHaveBeenCalledTimes(1));
+    expect(mocks.session.send).not.toHaveBeenCalled();
   });
 
   it('routes Email through the native session and skips the stale BOM callback', async () => {
@@ -151,11 +187,13 @@ describe('POListSection native send migration', () => {
 
   it('keeps the legacy email flow when the explicit client gate is off', async () => {
     vi.stubEnv('VITE_BOM_NATIVE_PO_SEND_ENABLED', 'false');
-    const { onPOSent } = setup();
+    const { onPOSent, onNativeSaved } = setup();
     await openMode('email');
     fireEvent.click(screen.getByRole('button', { name: 'Send Email' }));
     await waitFor(() => expect(mocks.sendPOEmail).toHaveBeenCalledTimes(1));
     expect(mocks.createSession).not.toHaveBeenCalled();
-    expect(onPOSent).toHaveBeenCalledWith('po-1', [], 'PO-1');
+    // The server finalizes the PO and linked BOM items atomically, so the client no longer writes them.
+    expect(onPOSent).not.toHaveBeenCalled();
+    expect(onNativeSaved).toHaveBeenCalledTimes(1);
   });
 });

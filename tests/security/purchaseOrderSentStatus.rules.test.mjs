@@ -296,3 +296,80 @@ test('completed and cancelled purchase orders cannot be reopened', async () => {
   await assertSucceeds(updateDoc(sent, { status: 'cancelled', closedAt: Timestamp.fromMillis(1_760_000_000_001) }));
   await assertFails(updateDoc(sent, { status: 'acknowledged' }));
 });
+
+const legacySendFields = {
+  acceptedAt: '2026-10-18T18:30:00.000Z',
+  actualSentDate: '2026-10-19',
+  legacySendAttemptId: 'forged-attempt',
+  legacySendPhase: 'preparing',
+  legacySendAcceptedAt: '2026-10-18T18:30:00.000Z',
+  legacySendPreparingAt: Timestamp.fromMillis(1_760_000_000_000),
+  legacySendDispatchStartedAt: Timestamp.fromMillis(1_760_000_000_000),
+  legacySendProviderId: 'forged-provider',
+  legacySendActorUid: 'alice',
+  legacySendRecipientEmail: 'attacker@example.com',
+  legacySendPdfUrl: 'https://example.test/forged.pdf',
+  legacySendFileSize: 1,
+  legacySendDocumentId: 'forged-document',
+  legacySendRetryPayloadReady: true,
+};
+
+test('legacy email send metadata and receipts cannot be forged, cleared or edited around by project members or admins', async () => {
+  await env.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'projects/P/purchaseOrders/legacy-active'), {
+      status: 'pending-approval', paymentTerms: 'Net 30', items: [{ bomItemId: 'item-1', quantity: 2 }],
+      legacySendAttemptId: 'attempt-1', legacySendPhase: 'uncertain', legacySendRetryPayloadReady: true,
+      legacySendDispatchStartedAt: Timestamp.fromMillis(1_760_000_000_000), legacySendRecipientEmail: 'vendor@example.com',
+    });
+    await setDoc(doc(db, 'projects/P/purchaseOrders/legacy-sent'), {
+      status: 'sent', paymentTerms: 'Net 30', items: [{ bomItemId: 'item-1', quantity: 2 }],
+      // Keep these different from legacySendFields: unchanged writes do not forge metadata.
+      sentAt: Timestamp.fromMillis(1_760_000_000_000), acceptedAt: '2026-10-17T18:30:00.000Z',
+      actualSentDate: '2026-10-18', sentBy: 'admin', sentToEmail: 'vendor@example.com',
+    });
+    await setDoc(doc(db, 'projects/P/purchaseOrders/accepted-only'), {
+      status: 'pending-approval', paymentTerms: 'Net 30', actualSentDate: '2026-10-19',
+    });
+  });
+  for (const actor of [member(), member('alice', { role: 'admin' })]) {
+    const db = actor.firestore();
+    const draft = doc(db, 'projects/P/purchaseOrders/draft');
+    const active = doc(db, 'projects/P/purchaseOrders/legacy-active');
+    const legacySent = doc(db, 'projects/P/purchaseOrders/legacy-sent');
+    for (const [field, value] of Object.entries(legacySendFields)) {
+      await assertFails(setDoc(doc(db, `projects/P/purchaseOrders/forged-${field}`), { status: 'draft', [field]: value }), `create ${field}`);
+      await assertFails(updateDoc(draft, { [field]: value }), `draft ${field}`);
+      await assertFails(updateDoc(active, { [field]: value }), `active ${field}`);
+      await assertFails(updateDoc(legacySent, { [field]: value }), `sent ${field}`);
+    }
+    for (const field of ['legacySendAttemptId', 'legacySendPhase', 'legacySendRetryPayloadReady', 'legacySendDispatchStartedAt', 'legacySendRecipientEmail']) {
+      await assertFails(updateDoc(active, { [field]: deleteField() }), `clear ${field}`);
+    }
+    for (const field of ['acceptedAt', 'actualSentDate']) {
+      await assertFails(updateDoc(legacySent, { [field]: deleteField() }), `clear ${field}`);
+    }
+    // A reserved or uncertain legacy send freezes ordinary edits, status changes and deletion.
+    await assertFails(updateDoc(active, { paymentTerms: 'Net 90' }));
+    await assertFails(updateDoc(active, { status: 'draft' }));
+    await assertFails(updateDoc(active, { status: 'sent' }));
+    await assertFails(deleteDoc(active));
+    // Server-written acceptance evidence marks the PO as sent for post-send field limits and deletion.
+    await assertFails(updateDoc(doc(db, 'projects/P/purchaseOrders/accepted-only'), { paymentTerms: 'Net 90' }));
+    await assertFails(deleteDoc(doc(db, 'projects/P/purchaseOrders/accepted-only')));
+    await assertFails(updateDoc(legacySent, { items: [{ bomItemId: 'other', quantity: 99, rate: 0 }] }));
+    await assertFails(deleteDoc(legacySent));
+    await assertSucceeds(updateDoc(legacySent, { status: 'acknowledged', updatedAt: Timestamp.fromMillis(1_760_000_000_001) }));
+    await assertSucceeds(updateDoc(draft, { paymentTerms: 'Net 60' }));
+
+    for (const path of [
+      'pulseLegacyPOSendAttempts/P/attempts/attempt-1',
+      'pulseLegacyPOSendRecoveries/P/operations/forged',
+      'pulseProcurementOperations/P/audit/attempt-1-legacy-email',
+      'pulseProcurementOperations/P/legacyMarks/operation-1',
+    ]) {
+      await assertFails(getDoc(doc(db, path)), `read ${path}`);
+      await assertFails(setDoc(doc(db, path), { project_id: 'P', po_id: 'draft' }), `write ${path}`);
+    }
+  }
+});

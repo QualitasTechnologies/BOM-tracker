@@ -9,7 +9,7 @@ const versionValid = value => value === 'missing' || typeof value === 'string' &
 const freeze = value => value instanceof Date ? value.toISOString() : value && typeof value.toDate === 'function' ? value.toDate().toISOString()
   : Array.isArray(value) ? value.map(freeze) : plain(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, freeze(value[key])])) : value;
 const hash = value => createHash('sha256').update(JSON.stringify(freeze(value))).digest('hex');
-const business = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['status', 'updatedAt', 'sentAt', 'sentBy', 'sentToEmail', 'pdfUrl', 'nativeSendAttemptId', 'nativeSendPhase'].includes(key)));
+const business = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['status', 'updatedAt', 'sentAt', 'sentBy', 'sentToEmail', 'actualSentDate', 'pdfUrl', 'nativeSendAttemptId', 'nativeSendPhase'].includes(key)));
 const mail = value => typeof value === 'string' && value.length <= 254 && /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(value);
 const RETRY_WINDOW = 23 * 60 * 60 * 1000;
 const LEASE = 5 * 60 * 1000;
@@ -29,6 +29,10 @@ function dateOnly(value) {
   } catch { return null; }
 }
 
+// Manual-mark day: the frozen entered day; an older record without one falls back only to its own recorded acceptance day.
+const markDay = record => record?.mode !== 'mark' ? null
+  : typeof record.actual_sent_date === 'string' ? dateOnly(record.actual_sent_date)
+  : Number.isSafeInteger(record.accepted_ms) && record.accepted_ms >= 0 ? dateOnly(record.accepted_ms) : null;
 // The provider and artifact seams must be server-only and preserve immutable bytes.
 function createNativeProcurementOperations({ db, auth, enabled = false, now = Date.now, getServerTimestamp, resolveBilling, prepareArtifact, sendEmail }) {
   const writesOn = () => (typeof enabled === 'function' ? enabled() : enabled) === true;
@@ -40,7 +44,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
       if (!plain(data) || !['open', 'send', 'recover', 'reconcile', 'cancel'].includes(data.operation) || !id(data.project_id) || !id(data.po_id)) throw fault('invalid_procurement_request');
       if (data.expected_actor_uid !== actor.uid) throw fault('actor_session_changed', 403);
       const shared = ['operation', 'project_id', 'po_id', 'expected_actor_uid'];
-      const fields = data.operation === 'send' ? [...shared, 'attempt_id', 'expected_po_version', 'expected_material_version', 'mode', 'recipient_email', 'cc_emails']
+      const fields = data.operation === 'send' ? [...shared, 'attempt_id', 'expected_po_version', 'expected_material_version', 'mode', 'recipient_email', 'cc_emails', ...(data.mode === 'mark' ? ['actual_sent_date'] : [])]
         : data.operation === 'reconcile' ? [...shared, 'attempt_id', 'expected_material_version'] : ['recover', 'cancel'].includes(data.operation) ? [...shared, 'attempt_id'] : shared;
       if (Object.keys(data).some(key => !fields.includes(key))) throw fault('invalid_procurement_request');
       const projectRef = db.collection('projects').doc(data.project_id);
@@ -57,6 +61,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
       const publicAttempt = attempt => ({ ok: true, project_id: data.project_id, po_id: data.po_id, attempt_id: attempt.attempt_id,
         phase: attempt.phase === 'dispatching' ? attempt.lease_until > now() ? 'pending' : 'uncertain' : attempt.phase,
         mode: attempt.mode, recipient_email: attempt.recipient_email, cc_emails: attempt.cc_emails,
+        ...(markDay(attempt) ? { actual_sent_date: markDay(attempt) } : {}),
         ...(attempt.problem ? { problem: attempt.problem } : {}) });
       if (data.operation === 'open') return await db.runTransaction(async transaction => {
         const state = await read(transaction);
@@ -73,8 +78,10 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
       if (data.operation === 'send') {
         if (!attemptId || !versionValid(data.expected_po_version) || !versionValid(data.expected_material_version)
           || !['email', 'mark'].includes(data.mode) || !mail(data.recipient_email) || !Array.isArray(data.cc_emails) || data.cc_emails.length > 100 || data.cc_emails.some(value => !mail(value))) throw fault('invalid_procurement_request');
+        // A manual mark needs the admin's exact calendar day (never prefilled); email derives its day from provider acceptance.
+        if (data.mode === 'mark' ? typeof data.actual_sent_date !== 'string' || dateOnly(data.actual_sent_date) !== data.actual_sent_date : Object.hasOwn(data, 'actual_sent_date')) throw fault('invalid_procurement_request');
         const intent = { po_id: data.po_id, expected_po_version: data.expected_po_version, expected_material_version: data.expected_material_version,
-          mode: data.mode, recipient_email: data.recipient_email.trim().toLowerCase(), cc_emails: [...new Set([...data.cc_emails.map(value => value.trim().toLowerCase()), actor.email])].filter(value => value !== data.recipient_email.trim().toLowerCase()).sort() };
+          mode: data.mode, ...(data.mode === 'mark' ? { actual_sent_date: data.actual_sent_date } : {}), recipient_email: data.recipient_email.trim().toLowerCase(), cc_emails: [...new Set([...data.cc_emails.map(value => value.trim().toLowerCase()), actor.email])].filter(value => value !== data.recipient_email.trim().toLowerCase()).sort() };
         await db.runTransaction(async transaction => {
           const state = await read(transaction), previous = await transaction.get(attempts.doc(attemptId));
           if (previous.exists) {
@@ -82,7 +89,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
             if (record.po_id !== data.po_id || record.actor_uid !== actor.uid || record.intent_hash !== hash(intent)) throw fault('operation_conflict', 409);
             return;
           }
-          if (state.po.data().nativeSendAttemptId) throw fault('purchase_order_attempt_active', 409);
+          if (state.po.data().nativeSendAttemptId || state.po.data().legacySendAttemptId) throw fault('purchase_order_attempt_active', 409);
           if (state.po.data().status !== 'pending-approval') throw fault('purchase_order_not_approved', 409);
           if (version(state.po) !== data.expected_po_version || version(state.bom) !== data.expected_material_version) throw fault('procurement_version_conflict', 409);
           const billing = data.mode === 'email' ? await resolveBilling(state.po.data(), state.project.data(), transaction) : {};
@@ -120,6 +127,8 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
         if (record.phase === 'complete') return record;
         if (!['accepted', 'material_pending', 'metadata_pending'].includes(record.phase) && record.actor_uid !== actor.uid) throw fault('procurement_attempt_owner_required', 403);
         if (record.lease_until > now()) return { ...record, pending: true };
+        // An older mark record with no recorded day can neither be dated honestly nor guessed from today.
+        if (record.mode === 'mark' && !markDay(record)) return { ...record, phase: 'needs_reconciliation', problem: 'actual_sent_date_required' };
         if (record.dispatched_ms !== undefined && !['accepted', 'material_pending', 'metadata_pending'].includes(record.phase) && now() - record.dispatched_ms >= RETRY_WINDOW) return { ...record, phase: 'needs_reconciliation' };
         if (data.operation === 'reconcile' && !['accepted', 'material_pending', 'metadata_pending'].includes(record.phase)) throw fault('send_outcome_unconfirmed', 409);
         if (hash(business({ ...state.po.data(), id: data.po_id, projectId: data.project_id })) !== record.po_hash) throw fault('purchase_order_changed', 409);
@@ -190,12 +199,13 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
                 const poItem = record.po_snapshot.items.find(row => row.bomItemId === item_id && dateOnly(row.dueDate))
                   || record.po_snapshot.items.find(row => row.bomItemId === item_id);
                 const patch = { ...(item?.status === 'received' ? {} : { status: 'ordered' }), poNumber: record.po_snapshot.poNumber || item?.poNumber || '' };
-                const hasAcceptedTimestamp = Number.isSafeInteger(record.accepted_ms) && record.accepted_ms >= 0;
-                if (hasAcceptedTimestamp && !item?.orderDate) {
-                  const orderDate = dateOnly(record.accepted_ms);
+                // Manual marks always carry the admin's day; email dates need the recorded provider acceptance time.
+                const hasDateSource = record.mode === 'mark' || (Number.isSafeInteger(record.accepted_ms) && record.accepted_ms >= 0);
+                if (hasDateSource && !item?.orderDate) {
+                  const orderDate = record.mode === 'mark' ? markDay(record) : dateOnly(record.accepted_ms);
                   if (orderDate) patch.orderDate = orderDate;
                 }
-                if (hasAcceptedTimestamp && !item?.expectedArrival) {
+                if (hasDateSource && !item?.expectedArrival) {
                   const expectedArrival = dateOnly(poItem?.dueDate) || dateOnly(record.po_snapshot.expectedDeliveryDate);
                   if (expectedArrival) patch.expectedArrival = expectedArrival;
                 }
@@ -206,11 +216,13 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
           }
           const phase = nextCategories ? 'complete' : 'material_pending';
           const sentFields = { status: 'sent', sentBy: record.actor_uid, sentToEmail: record.recipient_email, nativeSendPhase: phase,
+            ...(record.mode === 'mark' ? { actualSentDate: markDay(record) } : {}),
             ...(state.po.data().sentAt ? {} : { sentAt: getServerTimestamp() }), ...(record.artifact ? { pdfUrl: record.artifact.url } : {}) };
           const generated = record.artifact ? { projectId: data.project_id, name: `${record.po_snapshot.poNumber || 'PO'}.pdf`, type: 'vendor-po', url: record.artifact.url,
             uploadedAt: getServerTimestamp(), uploadedBy: record.actor_uid, linkedBOMItems: [...new Set(record.po_snapshot.items.map(item => item.bomItemId))], fileSize: record.artifact.size } : null;
           if (document?.exists && (document.data().projectId !== data.project_id || document.data().url !== record.artifact.url)) throw fault('procurement_document_conflict', 409);
           const finalAudit = { operation: 'finalize_po_send', actor_uid: actor.uid, sending_actor_uid: record.actor_uid, project_id: data.project_id, po_id: data.po_id, attempt_id: attemptId,
+            ...(record.mode === 'mark' ? { actual_sent_date: markDay(record) } : {}),
             material_before: changes?.before ?? null, material_after: changes?.after ?? null, phase, created_at: getServerTimestamp() };
           assertDocumentBudget([{ path: poRef.path, data: { ...state.po.data(), ...sentFields } }, { path: auditRef.path, data: finalAudit },
             ...(generated ? [{ path: docRef.path, data: generated }] : []), ...(nextCategories ? [{ path: bomRef.path, data: { ...state.bom.data(), categories: nextCategories } }] : [])]);

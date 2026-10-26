@@ -10,6 +10,7 @@ export class NativeProjectError extends Error {
 export type NativeProjectPatch = Partial<Record<'projectName' | 'clientName' | 'clientId' | 'billingEntityId' | 'description' | 'status' | 'deadline', string>> & { pulseProjectId?: number | null };
 export type NativeProjectCommand = { kind: 'metadata'; patch: NativeProjectPatch; delay?:{reason:string;attribution:'internal-team'|'internal-process'|'external-client'|'external-vendor'|'external-other'} } | { kind: 'archive' } | { kind: 'restore' }
   | { kind: 'budget'; amount: number | null }
+  | { kind: 'cost_field'; field: 'costPerHour' | 'miscCost' | 'poValue'; amount: number }
   | { kind: 'support_billing_entity'; billing_entity_id: string }
   | { kind: 'member_add'; user_id: string; category_scope?: string[] }
   | { kind: 'member_remove'; user_id: string }
@@ -44,6 +45,10 @@ const memberCommand = (value: unknown): value is NativeProjectCommand => {
 const budgetCommand = (value: unknown): value is NativeProjectCommand => object(value) && value.kind === 'budget'
   && Object.keys(value).sort().join(',') === 'amount,kind'
   && (value.amount === null || typeof value.amount === 'number' && Number.isFinite(value.amount) && value.amount >= 0);
+// Legacy Cost Analysis accepted any finite signed number and never deleted a field, so there is no null/clear form.
+const costFieldCommand = (value: unknown): value is NativeProjectCommand => object(value) && value.kind === 'cost_field'
+  && Object.keys(value).sort().join(',') === 'amount,field,kind' && typeof value.field === 'string' && ['costPerHour', 'miscCost', 'poValue'].includes(value.field)
+  && typeof value.amount === 'number' && Number.isFinite(value.amount);
 const supportBillingCommand = (value: unknown): value is NativeProjectCommand => object(value) && value.kind === 'support_billing_entity'
   && Object.keys(value).sort().join(',') === 'billing_entity_id,kind' && id(value.billing_entity_id);
 const revision = (value: unknown): value is string => typeof value === 'string' && /^(0|[1-9]\d*):(0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value.split(':')[0])) && Number(value.split(':')[1]) < 1e9;
@@ -112,7 +117,7 @@ export const createNativeProjectClient = (deps: Deps) => {
       return { ok: true, project_id: projectId, operation_id: input.operation_id };
     },
     async resolve(projectId:string,input:{expected_version:string;operation_id:string;command:NativeProjectCommand},uid:string,assertContext?:()=>void):Promise<NativeProjectResult&{resolution:'committed'|'cancelled'}>{
-      if(!revision(input.expected_version)||!/^[-\w]{1,128}$/.test(input.operation_id)||!['metadata','restore','archive'].includes(input.command.kind)&&!memberCommand(input.command)&&!budgetCommand(input.command)&&!supportBillingCommand(input.command))throw invalid();
+      if(!revision(input.expected_version)||!/^[-\w]{1,128}$/.test(input.operation_id)||!['metadata','restore','archive'].includes(input.command.kind)&&!memberCommand(input.command)&&!budgetCommand(input.command)&&!costFieldCommand(input.command)&&!supportBillingCommand(input.command))throw invalid();
       const result=await call({operation:'command',project_id:projectId,...input,resolve_only:true},uid,assertContext);
       if(typeof result.operation_id!=='string'||result.operation_id!==input.operation_id||(result.resolution!=='committed'&&result.resolution!=='cancelled'))throw invalid();
       return { ok: true, project_id: projectId, operation_id: input.operation_id, resolution: result.resolution };
@@ -187,6 +192,22 @@ export const hasPendingNativeProjectMembers = (projectId: string, uid: string): 
   }
 };
 
+export const hasPendingNativeProjectCostFields = (projectId: string, uid: string): PendingNativeProjectArchiveProbe => {
+  const unreadable = (): PendingNativeProjectArchiveProbe => ({ kind: 'error', message: 'A saved cost change could not be read. Restore browser session storage before editing.' });
+  if (!id(projectId) || typeof uid !== 'string' || !uid) return { kind: 'absent' };
+  try {
+    const raw = sessionStorage.getItem(`pulse.project-cost-fields.v1:${JSON.stringify([uid, projectId])}`);
+    if (raw === null) return { kind: 'absent' };
+    if (raw.length > 270000) return unreadable();
+    const value: unknown = JSON.parse(raw);
+    if (object(value) && Object.keys(value).sort().join(',') === 'command,expected_version,operation_id' && revision(value.expected_version)
+      && typeof value.operation_id === 'string' && /^[-\w]{1,128}$/.test(value.operation_id) && costFieldCommand(value.command)) return { kind: 'pending' };
+    return unreadable();
+  } catch {
+    return unreadable();
+  }
+};
+
 export const createNativeProjectWorkspace = (projectId: string, client = nativeProjectOperations, expectedUid?: string) => {
   let uid: string | undefined, snapshot: NativeProjectSnapshot | undefined, invalidated = false, pending = false;
   const assertContext = () => {
@@ -211,18 +232,18 @@ export const createNativeProjectWorkspace = (projectId: string, client = nativeP
       const result = await run(() => client.get(projectId, uid!, assertContext));
       snapshot = structuredClone(result); return structuredClone(result);
     },
-    recover(namespace:'metadata'|'restore'|'archive'|'members'|'budget'|'support-billing') {
+    recover(namespace:'metadata'|'restore'|'archive'|'members'|'budget'|'cost-fields'|'support-billing') {
       const action=this.capture(namespace);
       return action.pendingCommand ? action : null;
     },
-    capture(namespace?:'metadata'|'restore'|'archive'|'members'|'budget'|'support-billing') {
+    capture(namespace?:'metadata'|'restore'|'archive'|'members'|'budget'|'cost-fields'|'support-billing') {
       if (invalidated || !snapshot || !uid) throw error('native-project/not-loaded', 'Load current project values before editing.');
       const key=`pulse.project-${namespace || 'metadata'}.v1:${JSON.stringify([uid,projectId])}`;
       const stored=()=>{
         if(!namespace)return undefined;
         try{const raw=sessionStorage.getItem(key);if(raw===null)return undefined;if(raw.length>270000)throw 0;const value=JSON.parse(raw);
-          const isMetadata=namespace==='metadata'&&value.command?.kind==='metadata'&&object(value.command.patch),isRestore=namespace==='restore'&&value.command?.kind==='restore'&&Object.keys(value.command).length===1,isArchive=namespace==='archive'&&value.command?.kind==='archive'&&Object.keys(value.command).length===1,isMember=namespace==='members'&&memberCommand(value.command),isBudget=namespace==='budget'&&budgetCommand(value.command),isSupportBilling=namespace==='support-billing'&&supportBillingCommand(value.command);
-          if(Object.keys(value).sort().join(',')!=='command,expected_version,operation_id'||!revision(value.expected_version)||!/^[-\w]{1,128}$/.test(value.operation_id)||!object(value.command)||!(isMetadata||isRestore||isArchive||isMember||isBudget||isSupportBilling))throw 0;return value as {expected_version:string;operation_id:string;command:NativeProjectCommand};
+          const isMetadata=namespace==='metadata'&&value.command?.kind==='metadata'&&object(value.command.patch),isRestore=namespace==='restore'&&value.command?.kind==='restore'&&Object.keys(value.command).length===1,isArchive=namespace==='archive'&&value.command?.kind==='archive'&&Object.keys(value.command).length===1,isMember=namespace==='members'&&memberCommand(value.command),isBudget=namespace==='budget'&&budgetCommand(value.command),isCostFields=namespace==='cost-fields'&&costFieldCommand(value.command),isSupportBilling=namespace==='support-billing'&&supportBillingCommand(value.command);
+          if(Object.keys(value).sort().join(',')!=='command,expected_version,operation_id'||!revision(value.expected_version)||!/^[-\w]{1,128}$/.test(value.operation_id)||!object(value.command)||!(isMetadata||isRestore||isArchive||isMember||isBudget||isCostFields||isSupportBilling))throw 0;return value as {expected_version:string;operation_id:string;command:NativeProjectCommand};
         }catch{throw error('native-project/storage-unavailable','The saved project request cannot be read. Restore browser session storage before editing.');}
       };
       const saved=stored(),version = saved?.expected_version||snapshot.version, openingUid = uid, operationId = saved?.operation_id||crypto.randomUUID();
@@ -231,17 +252,17 @@ export const createNativeProjectWorkspace = (projectId: string, client = nativeP
       return { get pendingCommand(){return stored()?.command;}, async submit(command: NativeProjectCommand) {
         return run(async () => {
           if (frozen && JSON.stringify(frozen) !== JSON.stringify(command)) throw error('operation_conflict', 'The saved request has different values. Close and reopen before changing the draft.');
-          if (namespace === 'members' && !memberCommand(command) || namespace === 'budget' && !budgetCommand(command) || namespace === 'support-billing' && !supportBillingCommand(command) || (namespace === 'archive' || namespace === 'restore') && (!object(command) || Object.keys(command).length !== 1 || command.kind !== namespace)) throw invalid();
+          if (namespace === 'members' && !memberCommand(command) || namespace === 'budget' && !budgetCommand(command) || namespace === 'cost-fields' && !costFieldCommand(command) || namespace === 'support-billing' && !supportBillingCommand(command) || (namespace === 'archive' || namespace === 'restore') && (!object(command) || Object.keys(command).length !== 1 || command.kind !== namespace)) throw invalid();
           frozen ??= structuredClone(command);
           if(namespace){
             const existing=stored();if(existing&&existing.operation_id!==operationId)throw error('operation_conflict','Another project request is still unconfirmed. Resolve it first.');
             try{const raw=JSON.stringify({expected_version:version,operation_id:operationId,command:frozen});sessionStorage.setItem(key,raw);if(sessionStorage.getItem(key)!==raw)throw 0;}catch{throw error('native-project/storage-unavailable','Unable to save this project request in browser session storage.');}
           }
-          const result=await client.command(projectId, { expected_version: version, operation_id: operationId, command: structuredClone(frozen) }, openingUid, assertContext);await guard();if(namespace!=='members'&&namespace!=='archive'&&namespace!=='budget'&&namespace!=='support-billing')clear();return result;
+          const result=await client.command(projectId, { expected_version: version, operation_id: operationId, command: structuredClone(frozen) }, openingUid, assertContext);await guard();if(namespace!=='members'&&namespace!=='archive'&&namespace!=='budget'&&namespace!=='cost-fields'&&namespace!=='support-billing')clear();return result;
         });
       },async resolve(){return run(async()=>{
-        frozen??=stored()?.command;if(!frozen||namespace==='restore'&&frozen.kind!=='restore'||namespace==='archive'&&frozen.kind!=='archive'||namespace==='metadata'&&frozen.kind!=='metadata'||namespace==='members'&&!memberCommand(frozen)||namespace==='budget'&&!budgetCommand(frozen)||namespace==='support-billing'&&!supportBillingCommand(frozen))throw error('native-project/nothing-pending','There is no pending project request.');
-        const result=await client.resolve(projectId,{expected_version:version,operation_id:operationId,command:structuredClone(frozen)},openingUid,assertContext);await guard();if(namespace!=='budget'&&namespace!=='support-billing')clear();return result;
+        frozen??=stored()?.command;if(!frozen||namespace==='restore'&&frozen.kind!=='restore'||namespace==='archive'&&frozen.kind!=='archive'||namespace==='metadata'&&frozen.kind!=='metadata'||namespace==='members'&&!memberCommand(frozen)||namespace==='budget'&&!budgetCommand(frozen)||namespace==='cost-fields'&&!costFieldCommand(frozen)||namespace==='support-billing'&&!supportBillingCommand(frozen))throw error('native-project/nothing-pending','There is no pending project request.');
+        const result=await client.resolve(projectId,{expected_version:version,operation_id:operationId,command:structuredClone(frozen)},openingUid,assertContext);await guard();if(namespace!=='budget'&&namespace!=='cost-fields'&&namespace!=='support-billing')clear();return result;
       });},async acknowledge(){if(!stored())return;await run(async()=>{await guard();clear();});} };
     },
   };

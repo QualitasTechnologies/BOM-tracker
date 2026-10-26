@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   FileText,
@@ -55,6 +55,9 @@ import {
   sendPurchaseOrder,
   generatePOPDF,
   sendPOEmail,
+  recoverStaleLegacyPOSend,
+  recoverAcceptedLegacyPOSend,
+  retryUncertainLegacyPOSend,
   submitPOForApproval,
   requestPOChanges,
   notifyPOApproval,
@@ -65,6 +68,7 @@ import { getProject, getNotificationRecipients, NotificationRecipient } from '@/
 import { auth } from '@/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { createNativePOSendSession, isNativePOSendEnabled, POSendOutcome, POSendSnapshot } from '@/utils/nativeProcurementOperations';
+import { isRecoverableLegacyPOAcceptance, isRetryableLegacyPOSend, isStaleLegacyPOSendPreparation } from '@/utils/legacyPOSendRecovery';
 import EditPODialog from './EditPODialog';
 
 const getNativePODeleteRestriction = (po: PurchaseOrder): { label: string; title: string } | null => {
@@ -114,10 +118,13 @@ const fetchImageAsBase64 = async (url: string): Promise<string | null> => {
 
 interface POListSectionProps {
   projectId: string;
+  /** @deprecated The server now updates linked BOM items atomically with the PO; this is no longer called. */
   onPOSent?: (poId: string, bomItemIds: string[], poNumber: string) => Promise<void>;
+  /** Called after a server-backed send/recovery so the parent can refresh its BOM view. */
+  onNativeSaved?: () => void;
 }
 
-const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
+const POListSection = ({ projectId, onNativeSaved }: POListSectionProps) => {
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
@@ -127,6 +134,9 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
   const [poToDelete, setPOToDelete] = useState<PurchaseOrder | null>(null);
   const [poToSend, setPOToSend] = useState<PurchaseOrder | null>(null);
   const [sendToEmail, setSendToEmail] = useState('');
+  const [actualSentDate, setActualSentDate] = useState('');
+  const [recoveringLegacyId, setRecoveringLegacyId] = useState<string | null>(null);
+  const legacyMarkOperationRef = useRef<{ intent: string; id: string } | null>(null);
   const [sendMode, setSendMode] = useState<'email' | 'mark'>('email'); // 'email' = send email, 'mark' = just mark as sent
   const [sending, setSending] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -305,6 +315,14 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
     });
   };
 
+  // Date-only strings (YYYY-MM-DD) are calendar days; render them without a timezone shift.
+  const formatDateOnly = (value: string) => new Date(`${value}T00:00:00.000Z`).toLocaleDateString('en-IN', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'draft':
@@ -408,6 +426,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
 
   const handleNativeOutcome = (outcome: POSendOutcome, poNumber: string) => {
     setNativeOutcome(outcome);
+    if (outcome.phase === 'complete' || outcome.phase === 'material_pending') onNativeSaved?.();
     if (outcome.phase === 'complete') {
       toast({ title: 'PO Sent', description: sendMode === 'mark'
         ? `Purchase Order ${poNumber} has been marked as sent.`
@@ -461,6 +480,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
       setPOToSend({ ...po, poNumber: raw.poNumber || raw.po_number || po.poNumber, vendorEmail } as PurchaseOrder);
       setSendToEmail(attempt?.recipient_email || vendorEmail);
       setSendMode(attempt?.mode || mode);
+      setActualSentDate(attempt?.mode === 'mark' ? attempt.actual_sent_date ?? '' : '');
       setNativePermissionsSend(snapshot.permissions.send);
       setNativeOutcome(attempt);
       setNativeError(null);
@@ -494,12 +514,18 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
       toast({ title: 'Email Required', description: 'Please enter an email address to send the PO.', variant: 'destructive' });
       return;
     }
+    if (sendMode === 'mark' && !actualSentDate) {
+      toast({ title: 'Actual sent date required', description: 'Enter the date the PO was actually sent.', variant: 'destructive' });
+      return;
+    }
     const ccSet = new Set<string>();
     if (auth.currentUser?.email) ccSet.add(auth.currentUser.email.trim().toLowerCase());
     selectedCCStakeholderEmails.map((email) => email.trim().toLowerCase()).filter(Boolean).forEach((email) => ccSet.add(email));
     ccSet.delete(sendToEmail.trim().toLowerCase());
     void runNative(
-      (session) => session.send({ mode: sendMode, recipient_email: sendToEmail.trim(), cc_emails: sendMode === 'email' ? Array.from(ccSet).sort() : [] }),
+      (session) => session.send(sendMode === 'mark'
+        ? { mode: 'mark', recipient_email: sendToEmail.trim(), cc_emails: [], actual_sent_date: actualSentDate }
+        : { mode: 'email', recipient_email: sendToEmail.trim(), cc_emails: Array.from(ccSet).sort() }),
       (outcome) => handleNativeOutcome(outcome as POSendOutcome, poToSend.poNumber),
     );
   };
@@ -509,6 +535,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
   const handleNativeReconcile = () => void runNative((session) => session.reconcile(), (outcome) => handleNativeOutcome(outcome, poToSend?.poNumber || ''));
 
   const handleSendClick = async (po: PurchaseOrder, mode: 'email' | 'mark' = 'email') => {
+    setActualSentDate('');
     if (isNativePOSendEnabled()) {
       await handleNativeSendClick(po, mode);
       return;
@@ -535,6 +562,67 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
     }
   };
 
+  const handleRecoverStaleLegacySend = async (po: PurchaseOrder) => {
+    if (!isAdmin || !po.legacySendAttemptId
+      || !isStaleLegacyPOSendPreparation(po.legacySendPhase, po.legacySendAttemptId, po.legacySendPreparingAt)) return;
+    setRecoveringLegacyId(po.id);
+    try {
+      await recoverStaleLegacyPOSend(projectId, po.id, po.legacySendAttemptId);
+      toast({ title: 'Stale send reservation released', description: `You can retry sending PO ${po.poNumber}.` });
+      onNativeSaved?.();
+    } catch (error) {
+      toast({ variant: 'destructive', title: 'Unable to recover PO send', description: (error as Error).message });
+    } finally {
+      setRecoveringLegacyId(null);
+    }
+  };
+
+  const handleRecoverAcceptedLegacySend = async (po: PurchaseOrder) => {
+    if (!isAdmin || !po.legacySendAttemptId || !isRecoverableLegacyPOAcceptance({
+      phase: po.legacySendPhase,
+      attemptId: po.legacySendAttemptId,
+      acceptedAt: po.legacySendAcceptedAt,
+      providerId: po.legacySendProviderId,
+      actorUid: po.legacySendActorUid,
+      recipientEmail: po.legacySendRecipientEmail,
+      pdfUrl: po.legacySendPdfUrl,
+      fileSize: po.legacySendFileSize,
+      documentId: po.legacySendDocumentId,
+    })) return;
+    setRecoveringLegacyId(po.id);
+    try {
+      await recoverAcceptedLegacyPOSend(projectId, po.id, po.legacySendAttemptId);
+      toast({ title: 'Accepted PO send finalized', description: `PO ${po.poNumber} and its linked materials are up to date.` });
+      onNativeSaved?.();
+    } catch (error) {
+      toast({ variant: 'destructive', title: 'Unable to finalize accepted PO send', description: (error as Error).message });
+    } finally {
+      setRecoveringLegacyId(null);
+    }
+  };
+
+  const handleRetryUncertainLegacySend = async (po: PurchaseOrder) => {
+    if (!isAdmin || !po.legacySendAttemptId || !isRetryableLegacyPOSend({
+      status: po.status,
+      phase: po.legacySendPhase,
+      attemptId: po.legacySendAttemptId,
+      acceptedAt: po.legacySendAcceptedAt,
+      retryPayloadReady: po.legacySendRetryPayloadReady,
+      providerId: po.legacySendProviderId,
+      dispatchStartedAt: po.legacySendDispatchStartedAt,
+    })) return;
+    setRecoveringLegacyId(po.id);
+    try {
+      await retryUncertainLegacyPOSend(projectId, po.id, po.legacySendAttemptId);
+      toast({ title: 'PO email recovery complete', description: `PO ${po.poNumber} and its linked materials are up to date.` });
+      onNativeSaved?.();
+    } catch (error) {
+      toast({ variant: 'destructive', title: 'Unable to recover PO email', description: (error as Error).message });
+    } finally {
+      setRecoveringLegacyId(null);
+    }
+  };
+
   const handleConfirmSend = async () => {
     if (!poToSend) return;
 
@@ -546,11 +634,28 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
       });
       return;
     }
+    if (sendMode === 'mark' && !actualSentDate) {
+      toast({ title: 'Actual sent date required', description: 'Enter the date the PO was actually sent.', variant: 'destructive' });
+      return;
+    }
 
     setSending(true);
     try {
       const user = auth.currentUser;
       if (!user) throw new Error('Not authenticated');
+
+      const markIntent = `${actualSentDate}:${sendToEmail.trim().toLowerCase()}`;
+      const storageKey = `pulse:legacy-po-mark:${projectId}:${poToSend.id}`;
+      try {
+        const stored = JSON.parse(localStorage.getItem(storageKey) || 'null') as { intent?: string; id?: string } | null;
+        if (stored?.intent === markIntent && stored.id && /^[a-zA-Z0-9_-]{1,128}$/.test(stored.id)) {
+          legacyMarkOperationRef.current = { intent: markIntent, id: stored.id };
+        }
+      } catch { /* the in-memory operation identity remains usable if storage is unavailable */ }
+      if (!legacyMarkOperationRef.current || legacyMarkOperationRef.current.intent !== markIntent) {
+        legacyMarkOperationRef.current = { intent: markIntent, id: crypto.randomUUID() };
+      }
+      try { localStorage.setItem(storageKey, JSON.stringify(legacyMarkOperationRef.current)); } catch { /* continue with the in-memory identity */ }
 
       await sendPurchaseOrder(
         projectId,
@@ -558,11 +663,14 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
         {
           sentBy: user.uid,
           sentToEmail: sendToEmail.trim(),
+          actualSentDate,
         },
-        onPOSent ? async (bomItemIds) => {
-          await onPOSent(poToSend.id, bomItemIds, poToSend.poNumber);
-        } : undefined
+        legacyMarkOperationRef.current.id
       );
+
+      legacyMarkOperationRef.current = null;
+      try { localStorage.removeItem(storageKey); } catch { /* completed server receipt remains authoritative */ }
+      onNativeSaved?.();
 
       toast({
         title: 'PO Sent',
@@ -675,11 +783,8 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
         ccEmails: ccList,
       });
 
-      // Also update local status
-      if (onPOSent) {
-        const bomItemIds = poToSend.items.map(item => item.bomItemId);
-        await onPOSent(poToSend.id, bomItemIds, poToSend.poNumber);
-      }
+      // The server atomically updated the PO, linked BOM items, document, and audit.
+      onNativeSaved?.();
 
       toast({
         title: 'PO Sent',
@@ -745,6 +850,9 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                     {po.poNumber}
                   </span>
                   {getStatusBadge(po.status)}
+                  {po.status === 'sent' && po.actualSentDate && (
+                    <span className="text-xs text-blue-700">Actual sent: {formatDateOnly(po.actualSentDate)}</span>
+                  )}
                 </div>
                 <div className="text-sm text-gray-600 mt-1">
                   <span className="font-medium">{po.vendorName}</span>
@@ -817,6 +925,78 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                       <DropdownMenuItem onClick={() => handleNativeSendClick(po, 'email')}>
                         <RotateCcw className="mr-2 h-4 w-4" />
                         Recover PO send
+                      </DropdownMenuItem>
+                    )}
+
+                    {isAdmin && isStaleLegacyPOSendPreparation(
+                      po.legacySendPhase, po.legacySendAttemptId, po.legacySendPreparingAt,
+                    ) && (
+                      <DropdownMenuItem
+                        onClick={() => void handleRecoverStaleLegacySend(po)}
+                        disabled={recoveringLegacyId === po.id}
+                      >
+                        {recoveringLegacyId === po.id ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <RotateCcw className="mr-2 h-4 w-4" />
+                        )}
+                        Release stale PO send reservation
+                      </DropdownMenuItem>
+                    )}
+
+                    {isAdmin && isRecoverableLegacyPOAcceptance({
+                      phase: po.legacySendPhase,
+                      attemptId: po.legacySendAttemptId,
+                      acceptedAt: po.legacySendAcceptedAt,
+                      providerId: po.legacySendProviderId,
+                      actorUid: po.legacySendActorUid,
+                      recipientEmail: po.legacySendRecipientEmail,
+                      pdfUrl: po.legacySendPdfUrl,
+                      fileSize: po.legacySendFileSize,
+                      documentId: po.legacySendDocumentId,
+                    }) && (
+                      <DropdownMenuItem
+                        onClick={() => void handleRecoverAcceptedLegacySend(po)}
+                        disabled={recoveringLegacyId === po.id}
+                      >
+                        {recoveringLegacyId === po.id ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <RotateCcw className="mr-2 h-4 w-4" />
+                        )}
+                        Complete accepted PO send
+                      </DropdownMenuItem>
+                    )}
+
+                    {isAdmin && isRetryableLegacyPOSend({
+                      status: po.status,
+                      phase: po.legacySendPhase,
+                      attemptId: po.legacySendAttemptId,
+                      acceptedAt: po.legacySendAcceptedAt,
+                      retryPayloadReady: po.legacySendRetryPayloadReady,
+                      providerId: po.legacySendProviderId,
+                      dispatchStartedAt: po.legacySendDispatchStartedAt,
+                    }) && !isRecoverableLegacyPOAcceptance({
+                      phase: po.legacySendPhase,
+                      attemptId: po.legacySendAttemptId,
+                      acceptedAt: po.legacySendAcceptedAt,
+                      providerId: po.legacySendProviderId,
+                      actorUid: po.legacySendActorUid,
+                      recipientEmail: po.legacySendRecipientEmail,
+                      pdfUrl: po.legacySendPdfUrl,
+                      fileSize: po.legacySendFileSize,
+                      documentId: po.legacySendDocumentId,
+                    }) && (
+                      <DropdownMenuItem
+                        onClick={() => void handleRetryUncertainLegacySend(po)}
+                        disabled={recoveringLegacyId === po.id}
+                      >
+                        {recoveringLegacyId === po.id ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <RotateCcw className="mr-2 h-4 w-4" />
+                        )}
+                        Recover uncertain PO email
                       </DropdownMenuItem>
                     )}
 
@@ -898,7 +1078,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
               )}
 
               {/* Sent Info - show when PO was sent */}
-              {selectedPO.status === 'sent' && selectedPO.sentAt && (
+              {selectedPO.status === 'sent' && (selectedPO.sentAt || selectedPO.actualSentDate) && (
                 <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm">
                   <div className="flex items-center gap-2 text-blue-800">
                     <Mail className="h-4 w-4" />
@@ -906,7 +1086,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                     <span>{selectedPO.sentToEmail || 'N/A'}</span>
                   </div>
                   <div className="text-blue-600 mt-1 ml-6">
-                    {formatDate(selectedPO.sentAt)}
+                    {selectedPO.actualSentDate ? formatDateOnly(selectedPO.actualSentDate) : formatDate(selectedPO.sentAt!)}
                   </div>
                 </div>
               )}
@@ -1172,6 +1352,21 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
               </p>
             </div>
 
+            {sendMode === 'mark' && (
+              <div className="space-y-2">
+                <Label htmlFor="actualSentDate">Actual sent date</Label>
+                <Input
+                  id="actualSentDate"
+                  type="date"
+                  value={actualSentDate}
+                  onChange={(event) => setActualSentDate(event.target.value)}
+                  disabled={sending || (nativeActive && (nativeBusy || !!nativeOutcome))}
+                  required
+                />
+                <p className="text-xs text-gray-500">Enter the date the PO was actually sent. The date is not prefilled.</p>
+              </div>
+            )}
+
             {/* Members CC Section - only show for email mode */}
             {sendMode === 'email' && (
               <div className="space-y-2">
@@ -1232,7 +1427,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
             </Button>
             {nativeActive ? (
               !nativeOutcome && (
-                <Button onClick={handleNativeSend} disabled={nativeBusy || !nativePermissionsSend || !sendToEmail.trim()}>
+                <Button onClick={handleNativeSend} disabled={nativeBusy || !nativePermissionsSend || !sendToEmail.trim() || (sendMode === 'mark' && !actualSentDate)}>
                   {nativeBusy ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Sending...</> : <>{sendMode === 'email' ? <Mail className="mr-2 h-4 w-4" /> : <Send className="mr-2 h-4 w-4" />}{sendMode === 'email' ? 'Send Email' : 'Mark as Sent'}</>}
                 </Button>
               )
@@ -1251,7 +1446,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                 )}
               </Button>
             ) : (
-              <Button onClick={handleConfirmSend} disabled={sending}>
+              <Button onClick={handleConfirmSend} disabled={sending || !actualSentDate}>
                 {sending ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
