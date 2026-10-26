@@ -123,3 +123,39 @@ test('send callable passes the server-side native procurement gate into the shar
   assert.equal(receivedOptions?.nativeEnabled, true);
   assert.equal(sideEffects, 0);
 });
+
+for (const [stage, mutate, material] of [
+  ['a missing BOM item', f => { f.docs.get('projects/P/purchaseOrders/existing').items = [{ bomItemId: 'gone' }]; }, 'material_state_conflict'],
+  ['a service BOM item below the 0.5 day minimum', f => { Object.assign(f.docs.get('projects/P/bom/data').categories[0].items[0], { itemType: 'service', quantity: 0.3 }); }, 'invalid_material_command'],
+  ['a PO without lines', f => { f.docs.get('projects/P/purchaseOrders/existing').items = []; }, 'invalid_purchase_order'],
+]) {
+  test(`send callable surfaces ${stage} as failed-precondition before PDF, provider or reservation`, async () => {
+    const { fixture } = require('./nativePOAuthoringFixture.cjs');
+    const start = source.indexOf('const { authorizeLegacyPOSend');
+    const end = source.indexOf('// ==================== SUPPORT TICKET COMMUNICATIONS', start);
+    const f = fixture({ uid: 'admin' });
+    f.docs.get('projects/P/purchaseOrders/existing').status = 'pending-approval';
+    mutate(f);
+    const before = structuredClone(f.docs.get('projects/P/purchaseOrders/existing'));
+    let sideEffects = 0;
+    const context = {
+      exports: {}, require, onCall: (_options, callback) => callback, resendApiKey: 'secret', process: { env: {} },
+      procurementEnabled: () => false,
+      legacyPoAccess: { prepareSend: async () => ({ projectId: 'P', po: { id: 'existing', poNumber: 'PO-EX' },
+        companySettings: {}, recipientEmail: 'vendor@example.com', ccEmails: [] }) },
+      functions: { https: { HttpsError: class extends Error { constructor(code, message) { super(message); this.code = code; } } } },
+      logger: { info() {}, error() {}, warn() {} },
+      admin: { auth: () => f.auth, storage: () => ({ bucket: () => { sideEffects++; return {}; } }),
+        firestore: Object.assign(() => f.db, { FieldValue: { serverTimestamp: () => 'timestamp' } }) },
+      Resend: class { constructor() { sideEffects++; this.emails = { send: async () => { sideEffects++; } }; } },
+      getResendApiKey: () => 'secret',
+      buildPOEmailData: () => { sideEffects++; return {}; },
+      generatePOPDFHandler: async () => { sideEffects++; return { storagePath: 'po.pdf' }; },
+    };
+    vm.runInNewContext(source.slice(start, end), context);
+    await assert.rejects(context.exports.sendPurchaseOrder({ auth: { uid: 'admin' }, rawRequest: { get: () => 'Bearer test' }, data: {} }),
+      error => error.code === 'failed-precondition' && /cannot be sent/.test(error.message) && error.message.includes(`(${material})`));
+    assert.equal(sideEffects, 0);
+    assert.deepEqual(f.docs.get('projects/P/purchaseOrders/existing'), before);
+  });
+}

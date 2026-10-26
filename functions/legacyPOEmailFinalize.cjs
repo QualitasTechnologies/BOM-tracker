@@ -3,6 +3,29 @@ const { purchaseOrderAcceptanceDate } = require('./purchaseOrderAcceptanceDate.c
 const { calendarDate } = require('./calendarDate.cjs');
 const fault = (code, status = 409) => Object.assign(new Error(code), { code, status });
 
+// Pure material preconditions shared by the send reservation and finalization, so a PO that
+// cannot finalize is rejected before any provider call. Returns the unique linked BOM item IDs.
+function legacyPOMaterialItemIds({ stored, categories }) {
+  if (!Array.isArray(stored?.items) || !stored.items.length || !Array.isArray(categories)) throw fault('invalid_purchase_order');
+  const ids = [...new Set(stored.items.map(item => item?.bomItemId))];
+  if (ids.some(id => typeof id !== 'string' || !id.trim())) throw fault('invalid_purchase_order');
+  return ids;
+}
+
+// Dry-run of the finalizer's material patch (status unless already received, plus PO number) through the shared engine:
+// rejects missing items, duplicate IDs, malformed categories and received-quantity conflicts.
+function assertLegacyPOMaterialSendable({ stored, categories }) {
+  const ids = legacyPOMaterialItemIds({ stored, categories });
+  const known = categories.flatMap(category => Array.isArray(category?.items) ? category.items : []);
+  if (ids.some(id => !known.some(row => row?.id === id))) throw fault('material_state_conflict');
+  // Mirrors finalization: an already received item keeps its status (received -> ordered is not a valid transition).
+  applyCommand({ categories, scope: null, command: { kind: 'patch_items',
+    updates: ids.map(item_id => ({ item_id, patch: {
+      ...(known.find(row => row.id === item_id).status === 'received' ? {} : { status: 'ordered' }),
+      poNumber: stored.poNumber || '' } })) } });
+  return ids;
+}
+
 async function finalizeLegacyPOEmail({ db, projectId, poId, attemptId, actorUid, recipientEmail, acceptedMs,
   pdfUrl, fileSize, getServerTimestamp, documentId, providerId, assertActor }) {
   const projectRef = db.collection('projects').doc(projectId);
@@ -26,10 +49,7 @@ async function finalizeLegacyPOEmail({ db, projectId, poId, attemptId, actorUid,
     if (stored.legacySendAttemptId !== attemptId || stored.status !== 'pending-approval') throw fault('purchase_order_attempt_active');
     if (typeof providerId !== 'string' || !providerId.trim()) throw fault('legacy_send_provider_evidence_missing');
     if (cutover.exists) throw fault('material_cutover_required');
-    if (!Array.isArray(stored.items) || !stored.items.length || !Array.isArray(bom.data()?.categories)) throw fault('invalid_purchase_order');
-
-    const ids = [...new Set(stored.items.map(item => item?.bomItemId))];
-    if (ids.some(id => typeof id !== 'string' || !id.trim())) throw fault('invalid_purchase_order');
+    const ids = legacyPOMaterialItemIds({ stored, categories: bom.data()?.categories });
     const updates = ids.map(item_id => {
       const item = bom.data().categories.flatMap(category => Array.isArray(category.items) ? category.items : []).find(row => row.id === item_id);
       if (!item) throw fault('material_state_conflict');
@@ -69,4 +89,4 @@ async function finalizeLegacyPOEmail({ db, projectId, poId, attemptId, actorUid,
   });
 }
 
-module.exports = { finalizeLegacyPOEmail };
+module.exports = { finalizeLegacyPOEmail, assertLegacyPOMaterialSendable };

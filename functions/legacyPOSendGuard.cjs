@@ -1,5 +1,6 @@
 const { createHash, randomUUID } = require('node:crypto');
 const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
+const { assertLegacyPOMaterialSendable } = require('./legacyPOEmailFinalize.cjs');
 
 const id = value => typeof value === 'string' && value.length > 0 && value.length <= 512
   && !/[\/\x00-\x1f]/.test(value) && !['.', '..'].includes(value);
@@ -16,9 +17,11 @@ async function authorizeLegacyPOSend({ db, auth, request, projectId, poId, getSe
     const projectRef = db.collection('projects').doc(projectId);
     const poRef = projectRef.collection('purchaseOrders').doc(poId);
     const cutoverRef = db.collection('pulseMaterialCutovers').doc(projectId);
+    const bomRef = projectRef.collection('bom').doc('data');
     const project = await transaction.get(projectRef);
     const po = await transaction.get(poRef);
     const cutover = await transaction.get(cutoverRef);
+    const bom = await transaction.get(bomRef);
     if (!project.exists || !po.exists) throw fault('purchase_order_not_found', 'Purchase Order not found.', 404);
     if (cutover.exists) throw fault('material_cutover_required', 'This project has moved to Pulse procurement. Reopen it in Pulse to send the Purchase Order.', 409);
     const stored = po.data();
@@ -26,6 +29,10 @@ async function authorizeLegacyPOSend({ db, auth, request, projectId, poId, getSe
     if (stored.nativeSendAttemptId) throw fault('purchase_order_attempt_active', 'A native PO send attempt is already active.', 409);
     if (stored.legacySendAttemptId) throw fault('purchase_order_attempt_active', 'A legacy PO send is already in progress or needs reconciliation.', 409);
     if (stored.status !== 'pending-approval') throw fault('purchase_order_not_approved', 'Only approved Purchase Orders can be sent.', 409);
+    // Same material preconditions finalization needs, checked before the reservation write and any provider call.
+    if (!bom.exists) throw fault('material_state_conflict', 'The project BOM is missing; the Purchase Order cannot be recorded as sent.', 409);
+    try { assertLegacyPOMaterialSendable({ stored, categories: bom.data()?.categories }); }
+    catch (error) { throw fault(error.code || 'material_state_conflict', 'The Purchase Order does not match the project BOM, so sending it could not be recorded. Fix the PO or BOM items first.', 409); }
     transaction.update(poRef, { legacySendAttemptId: attemptId, legacySendPhase: 'preparing',
       legacySendPreparingAt: getServerTimestamp(), legacySendDispatchStartedAt: null,
       legacySendAcceptedAt: null, legacySendProviderId: null, legacySendActorUid: null,
