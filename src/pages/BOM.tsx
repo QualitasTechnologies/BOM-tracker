@@ -192,6 +192,9 @@ const BOMContent = () => {
   const [projectRefreshVersion, setProjectRefreshVersion] = useState(0);
   const projectReadGeneration = useRef(0);
   const materialReadGeneration = useRef(0);
+  const refreshMaterialRef = useRef<(() => Promise<void>) | null>(null);
+  const poContextRef = useRef({ projectId, uid: user?.uid });
+  poContextRef.current = { projectId, uid: user?.uid };
   const [approvedUsers, setApprovedUsers] = useState<Array<{ uid: string; email: string; displayName: string }>>([]);
   const canonicalCategoryNames = useMemo(
     () =>
@@ -243,6 +246,7 @@ const BOMContent = () => {
         } catch (error) { if (currentRead()) { setCategories([]); setMaterialActionError(error instanceof Error ? error.message : 'Could not load materials. Retry the project.'); } }
       }
     };
+    refreshMaterialRef.current = refreshBOM;
     refreshBOM();
 
     // Subscribe to real-time updates
@@ -258,7 +262,7 @@ const BOMContent = () => {
       }
     }, (error) => { if (isCurrent()) { projectReadGeneration.current += 1; materialReadGeneration.current += 1; setCategories([]); setNativeMaterialVersion(null); setFullProject(null); setProjectDetails(null); setProjectDocuments([]); setMaterialActionError(error.message || 'Could not load materials. Please retry.'); } });
 
-    return () => { active = false; unsubscribe(); };
+    return () => { active = false; unsubscribe(); if (refreshMaterialRef.current === refreshBOM) refreshMaterialRef.current = null; };
   }, [projectId, user?.uid]);
 
   // Load project details and documents
@@ -1401,24 +1405,14 @@ const BOMContent = () => {
                       content: (
                         <POListSection
                           projectId={projectId}
-                          onPOSent={async (poId, bomItemIds, poNumber) => {
-                            // Update linked BOM items in one write:
-                            // - mark as ordered
-                            // - persist PO number so Inward Tracking can show it
-                            if (isNativeMaterialCommandEnabled()) {
-                              if (!nativeMaterialVersion) throw new Error('BOM revision is still loading. Refresh the page before editing.');
-                              await submitNativeMaterialCommand(projectId, { kind: 'patch_items', updates: bomItemIds.map(item_id => ({ item_id, patch: { status: 'ordered', poNumber } })) }, nativeMaterialVersion);
-                            } else {
-                              const updatedCategories = categories.map((category) => ({
-                                ...category,
-                                items: category.items.map((item) =>
-                                  bomItemIds.includes(item.id)
-                                    ? { ...item, status: 'ordered' as BOMStatus, poNumber }
-                                    : item
-                                ),
-                              }));
-                              await updateBOMData(projectId, updatedCategories);
-                            }
+                          onNativeSaved={() => {
+                            // The server finalized the PO, linked materials and document atomically; re-read them
+                            // instead of writing client state. A callback from another project/account is ignored.
+                            const savedUid = user?.uid;
+                            if (poContextRef.current.projectId !== projectId || poContextRef.current.uid !== savedUid) return;
+                            projectReadGeneration.current += 1;
+                            setProjectRefreshVersion(version => version + 1);
+                            void refreshMaterialRef.current?.();
                           }}
                         />
                       )

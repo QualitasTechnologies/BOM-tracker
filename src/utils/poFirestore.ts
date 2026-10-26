@@ -36,6 +36,7 @@ import {
 
 // Re-export types for convenience
 export type { PurchaseOrder, POStatus, POItem, POWarning, TaxType };
+export { acceptedAtToBusinessDate, getPOPromisedDates } from './poDateMapping';
 
 /**
  * Remove undefined values from an object to prevent Firestore errors
@@ -101,6 +102,8 @@ const mapPODocument = (id: string, data: Record<string, unknown>): PurchaseOrder
     updatedAt: toDate(data.updatedAt as Timestamp | Date | undefined) || new Date(),
     expectedDeliveryDate: toDate(data.expectedDeliveryDate as Timestamp | Date | undefined),
     sentAt: toDate(data.sentAt as Timestamp | Date | undefined),
+    legacySendPreparingAt: toDate(data.legacySendPreparingAt as Timestamp | Date | undefined),
+    legacySendDispatchStartedAt: toDate(data.legacySendDispatchStartedAt as Timestamp | Date | undefined),
     closedAt: toDate(data.closedAt as Timestamp | Date | undefined),
     submittedForApprovalAt: toDate(data.submittedForApprovalAt as Timestamp | Date | undefined),
     changesRequestedAt: toDate(data.changesRequestedAt as Timestamp | Date | undefined),
@@ -457,42 +460,74 @@ export const requestPOChanges = async (
 export interface SendPOInput {
   sentBy: string;
   sentToEmail: string;
+  actualSentDate: string;
 }
 
 export const sendPurchaseOrder = async (
   projectId: string,
   poId: string,
   input: SendPOInput,
-  updateBOMItemsCallback?: (bomItemIds: string[]) => Promise<void>
+  operationId: string,
 ): Promise<void> => {
-  const docRef = doc(db, "projects", projectId, "purchaseOrders", poId);
-
-  // Get the PO to get BOM item IDs
-  const po = await getPurchaseOrder(projectId, poId);
-  if (!po) {
-    throw new Error("Purchase Order not found");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.actualSentDate)
+    || Number.isNaN(Date.parse(`${input.actualSentDate}T00:00:00.000Z`))
+    || new Date(`${input.actualSentDate}T00:00:00.000Z`).toISOString().slice(0, 10) !== input.actualSentDate) {
+    throw new Error('A valid actual sent date is required');
   }
-
-  if (po.status !== 'pending-approval') {
-    throw new Error("Only POs pending approval can be sent");
-  }
-
-  const now = new Date();
-
-  // Update PO status to sent
-  await updateDoc(docRef, {
-    status: 'sent',
-    sentAt: Timestamp.fromDate(now),
-    sentBy: input.sentBy,
-    sentToEmail: input.sentToEmail,
-    updatedAt: Timestamp.fromDate(now),
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(operationId)) throw new Error('A valid PO mark operation is required');
+  const markFunction = httpsCallable<{
+    project_id: string;
+    po_id: string;
+    operation_id: string;
+    expected_actor_uid: string;
+    actual_sent_date: string;
+    sent_to_email: string;
+  }, { ok: boolean; error?: string }>(functions, 'legacyMarkPurchaseOrderSent');
+  const result = await markFunction({
+    project_id: projectId,
+    po_id: poId,
+    operation_id: operationId,
+    expected_actor_uid: input.sentBy,
+    actual_sent_date: input.actualSentDate,
+    sent_to_email: input.sentToEmail,
   });
+  if (!result.data.ok) throw new Error(result.data.error || 'Failed to mark Purchase Order as sent');
+};
 
-  // Update BOM items to "Ordered" status if callback provided
-  if (updateBOMItemsCallback) {
-    const bomItemIds = po.items.map(item => item.bomItemId);
-    await updateBOMItemsCallback(bomItemIds);
-  }
+export const recoverStaleLegacyPOSend = async (projectId: string, poId: string, attemptId: string): Promise<void> => {
+  const recover = httpsCallable<{
+    operation: 'release_stale_preparing';
+    project_id: string;
+    po_id: string;
+    attempt_id: string;
+  }, { ok: boolean; released?: boolean; error?: string }>(functions, 'recoverStaleLegacyPOSend');
+  const result = await recover({ operation: 'release_stale_preparing', project_id: projectId, po_id: poId, attempt_id: attemptId });
+  if (!result.data.ok || !result.data.released) throw new Error(result.data.error || 'Unable to recover this PO send reservation');
+};
+
+export const recoverAcceptedLegacyPOSend = async (projectId: string, poId: string, attemptId: string): Promise<void> => {
+  const recover = httpsCallable<{
+    project_id: string;
+    po_id: string;
+    attempt_id: string;
+  }, { ok: boolean; phase?: string; error?: string }>(functions, 'recoverAcceptedLegacyPOSend');
+  const result = await recover({ project_id: projectId, po_id: poId, attempt_id: attemptId });
+  if (!result.data.ok || result.data.phase !== 'complete') throw new Error(result.data.error || 'Unable to finish the accepted PO send');
+};
+
+export const retryUncertainLegacyPOSend = async (projectId: string, poId: string, attemptId: string): Promise<void> => {
+  const retry = httpsCallable<{
+    project_id: string;
+    po_id: string;
+    attempt_id: string;
+  }, { ok: boolean; phase?: string; error?: string }>(
+    functions,
+    'retryUncertainLegacyPOSend',
+    // Matches the server callable limit (timeoutSeconds: 540); the SDK default of 70s would fail a still-running retry.
+    { timeout: 540_000 }
+  );
+  const result = await retry({ project_id: projectId, po_id: poId, attempt_id: attemptId });
+  if (!result.data.ok || result.data.phase !== 'complete') throw new Error(result.data.error || 'Unable to recover this PO email send');
 };
 
 // ============================================
@@ -695,6 +730,8 @@ export interface SendPOEmailResult {
   success: boolean;
   message: string;
   pdfUrl: string;
+  /** Persisted provider-accepted time returned by the Cloud Function, when available. */
+  acceptedAt?: string;
 }
 
 /**
@@ -706,7 +743,9 @@ export const sendPOEmail = async (
 ): Promise<SendPOEmailResult> => {
   const sendPurchaseOrderFunction = httpsCallable<SendPOEmailInput, SendPOEmailResult>(
     functions,
-    'sendPurchaseOrder'
+    'sendPurchaseOrder',
+    // Matches the server callable limit (timeoutSeconds: 540); the SDK default of 70s would fail a still-running send.
+    { timeout: 540_000 }
   );
 
   const result = await sendPurchaseOrderFunction(input);

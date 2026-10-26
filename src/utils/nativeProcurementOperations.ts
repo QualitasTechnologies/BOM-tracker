@@ -9,6 +9,7 @@ export interface POSendOutcome {
   attempt_id: string;
   phase: POSendPhase;
   mode?: 'email' | 'mark';
+  actual_sent_date?: string;
   recipient_email?: string;
   cc_emails?: string[];
   problem?: string;
@@ -21,10 +22,18 @@ export interface POSendSnapshot {
   material_version: string;
   purchase_order: Record<string, unknown>;
   material_items: Array<{ id: string; name: string; status: string; quantity: number; category: string }>;
-  permissions: { send: boolean };
+  permissions: { send: boolean; legacy_send?: boolean };
   attempt: POSendOutcome | null;
 }
-export interface POSendIntent { mode: 'email' | 'mark'; recipient_email: string; cc_emails: string[]; }
+export type POSendIntent =
+  | { mode: 'email'; recipient_email: string; cc_emails: string[] }
+  | { mode: 'mark'; recipient_email: string; cc_emails: string[]; actual_sent_date: string };
+
+type FrozenPOSend = POSendIntent & { attempt_id: string; expected_po_version: string; expected_material_version: string };
+
+// A manual mark records the calendar day the PO was really sent: a real YYYY-MM-DD date, never inferred.
+const isDateOnly = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+  && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
 
 const phases: POSendPhase[] = ['prepared', 'pending', 'uncertain', 'accepted', 'material_pending', 'metadata_pending', 'needs_reconciliation', 'complete', 'cancelled'];
 const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -68,7 +77,7 @@ export const createNativePOSendSession = (projectId: string, poId: string, expec
   let snapshot: POSendSnapshot | undefined;
   let preview: POSendSnapshot | undefined;
   let attemptId = globalThis.crypto.randomUUID();
-  let frozenInput: (POSendIntent & { attempt_id: string; expected_po_version: string; expected_material_version: string }) | undefined;
+  let frozenInput: FrozenPOSend | undefined;
   let invalidated = false;
   let pending = false;
   const assertContext = () => {
@@ -106,14 +115,15 @@ export const createNativePOSendSession = (projectId: string, poId: string, expec
     async send(intent: POSendIntent) {
       return run(async () => {
         if (!snapshot || !snapshot.permissions.send) throw nativeError('procurement_mutations_disabled', 'PO sending is disabled until the native procurement rollout is enabled.');
-        const input = {
-          mode: intent.mode,
-          recipient_email: intent.recipient_email.trim().toLowerCase(),
-          cc_emails: [...new Set(intent.cc_emails.map(value => value.trim().toLowerCase()))].sort(),
-          attempt_id: attemptId,
-          expected_po_version: snapshot.po_version,
-          expected_material_version: snapshot.material_version,
-        };
+        if (intent.mode !== 'email' && intent.mode !== 'mark') throw nativeError('native-procurement/invalid-input', 'Invalid PO send request.');
+        if (intent.mode === 'mark' && !isDateOnly((intent as { actual_sent_date?: unknown }).actual_sent_date)) throw nativeError('native-procurement/invalid-input', 'Enter the actual sent date as a valid date.');
+        if (intent.mode === 'email' && 'actual_sent_date' in intent) throw nativeError('native-procurement/invalid-input', 'An actual sent date is only valid when marking a PO as sent.');
+        const recipient_email = intent.recipient_email.trim().toLowerCase();
+        const cc_emails = [...new Set(intent.cc_emails.map(value => value.trim().toLowerCase()))].sort();
+        const frozenFields = { attempt_id: attemptId, expected_po_version: snapshot.po_version, expected_material_version: snapshot.material_version };
+        const input: FrozenPOSend = intent.mode === 'mark'
+          ? { mode: 'mark', recipient_email, cc_emails, actual_sent_date: intent.actual_sent_date, ...frozenFields }
+          : { mode: 'email', recipient_email, cc_emails, ...frozenFields };
         if (frozenInput && JSON.stringify(frozenInput) !== JSON.stringify(input)) throw nativeError('operation_conflict', 'The saved request has different recipients or mode. Recover or cancel it before starting another.');
         frozenInput ??= structuredClone(input);
         return remember(parseOutcome(await call('send', projectId, poId, uid!, frozenInput), attemptId));

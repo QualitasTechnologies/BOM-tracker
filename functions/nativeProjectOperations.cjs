@@ -18,7 +18,8 @@ const validVersion = value => typeof value === 'string' && /^(0|[1-9]\d*):(0|[1-
 const exact = (data, keys) => { if (!plain(data) || Object.keys(data).some(key => !keys.includes(key))) throw fault('invalid_project_command'); };
 const text = (value, max, nonempty = false) => typeof value === 'string' && value.length <= max && (!nonempty || value.trim());
 const normalizeEmail = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
-const resolvableKinds = new Set(['metadata', 'budget', 'archive', 'restore', 'support_profile', 'support_billing_entity', 'member_add', 'member_remove', 'member_scope', 'member_notifications',
+const costFields = ['costPerHour', 'miscCost', 'poValue'];
+const resolvableKinds = new Set(['metadata', 'budget', 'cost_field', 'archive', 'restore', 'support_profile', 'support_billing_entity', 'member_add', 'member_remove', 'member_scope', 'member_notifications',
   'recipient_add', 'recipient_remove', 'recipient_notifications']);
 const validReceipt = (receipt, projectId, operationId) => plain(receipt) && typeof receipt.actor_uid === 'string' &&
   typeof receipt.actor_email === 'string' && /^[a-f0-9]{64}$/.test(receipt.payload_hash || '') && plain(receipt.result) &&
@@ -84,15 +85,17 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
       const command = data.command;
       const resolving=data.resolve_only===true;
       if(Object.hasOwn(data,'resolve_only')&&(!resolving||!resolvableKinds.has(command.kind)))throw fault('invalid_project_command');
-      const shapes = { metadata: ['kind', 'patch','delay'], budget: ['kind', 'amount'], support_billing_entity: ['kind', 'billing_entity_id'], archive: ['kind'], member_add: ['kind', 'user_id', 'category_scope'], member_remove: ['kind', 'user_id'], member_scope: ['kind', 'user_id', 'category_scope'],
+      const shapes = { metadata: ['kind', 'patch','delay'], budget: ['kind', 'amount'], cost_field: ['kind', 'field', 'amount'], support_billing_entity: ['kind', 'billing_entity_id'], archive: ['kind'], member_add: ['kind', 'user_id', 'category_scope'], member_remove: ['kind', 'user_id'], member_scope: ['kind', 'user_id', 'category_scope'],
         member_notifications: ['kind', 'user_id', 'enabled'], recipient_add: ['kind', 'email', 'name'], recipient_remove: ['kind', 'email'], recipient_notifications: ['kind', 'email', 'enabled'], restore: ['kind'], support_profile:['kind','patch','machines'] };
       if (!shapes[command.kind]) throw fault('invalid_project_command');
       exact(command, shapes[command.kind]);
+      // Legacy Cost Analysis allowed any finite signed number and never deleted a field, so null/NaN/Infinity are not amounts.
+      if (command.kind === 'cost_field' && (!costFields.includes(command.field) || typeof command.amount !== 'number' || !Number.isFinite(command.amount))) throw fault('invalid_project_command');
       const manage = ['member_add', 'member_remove', 'member_scope', 'recipient_add', 'recipient_remove'].includes(command.kind);
       const support = ['support_profile', 'support_billing_entity'].includes(command.kind);
       if (manage && actor.customClaims.role !== 'admin') throw fault('project_management_forbidden', 403);
       if (!manage && !canEdit && !support) throw fault('project_edit_forbidden', 403);
-      if (command.kind === 'budget' && actor.customClaims.role !== 'admin') throw fault('project_edit_forbidden', 403);
+      if (['budget', 'cost_field'].includes(command.kind) && actor.customClaims.role !== 'admin') throw fault('project_edit_forbidden', 403);
       if (command.kind === 'member_notifications' && actor.customClaims.role !== 'admin' && command.user_id !== actor.uid) throw fault('member_notification_forbidden', 403);
       if (command.kind.startsWith('member_') && (!validId(command.user_id) || command.user_id.length > 128)) throw fault('invalid_project_command');
       if (command.kind.endsWith('_notifications') && typeof command.enabled !== 'boolean') throw fault('invalid_project_command');
@@ -105,7 +108,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
         assertAccess(project,current);
         if(manage&&current.customClaims.role!=='admin')throw fault('project_management_forbidden',403);
         if(!manage&&!support&&current.customClaims.role!=='admin'&&!internal(current))throw fault('project_edit_forbidden',403);
-        if(command.kind==='budget'&&current.customClaims.role!=='admin')throw fault('project_edit_forbidden',403);
+        if(['budget','cost_field'].includes(command.kind)&&current.customClaims.role!=='admin')throw fault('project_edit_forbidden',403);
         if(command.kind==='member_notifications'&&current.customClaims.role!=='admin'&&command.user_id!==current.uid)throw fault('member_notification_forbidden',403);
       };
       return await db.runTransaction(async transaction => {
@@ -160,6 +163,8 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
           if (command.amount !== null && (typeof command.amount !== 'number' || !Number.isFinite(command.amount) || command.amount < 0)) throw fault('invalid_project_command');
           if (command.amount === null) removeFields.push('internalBudget');
           else patch = { internalBudget: command.amount };
+        } else if (command.kind === 'cost_field') {
+          patch = { [command.field]: command.amount === 0 ? 0 : command.amount };
         } else if (command.kind === 'metadata') {
           const value = command.patch;
           exact(value, ['projectName', 'clientName', 'clientId', 'billingEntityId', 'description', 'status', 'deadline', 'pulseProjectId']);

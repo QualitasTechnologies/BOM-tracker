@@ -123,6 +123,21 @@ export interface PurchaseOrder {
   sentAt?: Date;
   sentBy?: string;               // Admin user ID who sent
   sentToEmail?: string;          // Email address it was sent to
+  actualSentDate?: string;       // Date supplied when an admin records a PO sent outside Pulse (YYYY-MM-DD)
+
+  // Server-owned legacy email send attempt state (read-only on the client)
+  legacySendAttemptId?: string | null;
+  legacySendPhase?: string | null;
+  legacySendPreparingAt?: Date | null;
+  legacySendDispatchStartedAt?: Date | null;
+  legacySendAcceptedAt?: string | null;
+  legacySendProviderId?: string | null;
+  legacySendActorUid?: string | null;
+  legacySendRecipientEmail?: string | null;
+  legacySendPdfUrl?: string | null;
+  legacySendFileSize?: number | null;
+  legacySendDocumentId?: string | null;
+  legacySendRetryPayloadReady?: boolean | null;
 
   // Documents
   pdfUrl?: string;               // Generated PDF in Firebase Storage

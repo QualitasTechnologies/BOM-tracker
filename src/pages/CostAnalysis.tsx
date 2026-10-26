@@ -15,9 +15,19 @@ import { subscribeToClients, Client } from "@/utils/settingsFirestore";
 import { uploadProjectDocument, getProjectDocuments, deleteProjectDocument } from "@/utils/projectDocumentFirestore";
 import { useAuth } from "@/hooks/useAuth";
 import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
+import { isNativeProjectLifecycleEnabled } from '@/utils/projectLifecycleAccess';
+import { createNativeProjectWorkspace, hasPendingNativeProjectCostFields } from '@/utils/nativeProjectOperations';
 import { useToast } from "@/components/ui/use-toast";
 import type { FirestoreProject } from "@/types/project";
 import type { ProjectDocument } from "@/types/projectDocument";
+
+type CostField = 'costPerHour' | 'miscCost' | 'poValue';
+type CostWorkspace = ReturnType<typeof createNativeProjectWorkspace>;
+type CostAction = ReturnType<CostWorkspace['capture']>;
+const COST_LABELS: Record<CostField, string> = { costPerHour: 'cost per hour', miscCost: 'miscellaneous cost', poValue: 'customer PO value' };
+const costErrorMessage = (error: unknown) => ['project_not_found', 'project_forbidden'].includes((error as { code?: string } | null)?.code ?? '')
+  ? 'Project not found or you no longer have access.'
+  : error instanceof Error ? error.message : 'Could not complete the cost change. Please retry.';
 
 // Project with calculated cost data
 interface ProjectCostData {
@@ -336,6 +346,31 @@ const CostAnalysisDetail = ({
   const [projectDetails, setProjectDetails] = useState<{ projectName: string; projectId: string; clientName: string; deadline: string; status: string; bomSnapshot?: any[]; bomSnapshotDate?: string } | null>(null);
   const projectFieldsReadOnly = isScopedProjectReadEnabled();
 
+  // Native cost writes: one field at a time, journaled in browser session storage until a fresh read confirms the outcome.
+  const costWorkspace = useRef<CostWorkspace | null>(null);
+  const costRecovery = useRef<CostAction | null>(null);
+  // The draft keeps the opening revision it started from; a refresh never rebases it.
+  const costDraft = useRef<{ workspace: CostWorkspace; action: CostAction; field: CostField } | null>(null);
+  const costOpening = useRef<Record<CostField, unknown>>({ costPerHour: 0, miscCost: 0, poValue: 0 });
+  const costBusy = useRef(false);
+  const [nativeCostEdit, setNativeCostEdit] = useState(false);
+  const [pendingCost, setPendingCost] = useState<{ field?: CostField; amount?: number; checkable: boolean } | null>(null);
+  const [costSaving, setCostSaving] = useState(false);
+  const [costError, setCostError] = useState<string | null>(null);
+  const [costRetryField, setCostRetryField] = useState<CostField | null>(null);
+  const [costNotice, setCostNotice] = useState<string | null>(null);
+  const nativeCostWritable = nativeCostEdit && isNativeProjectLifecycleEnabled();
+  const legacyCostWritable = !isScopedProjectReadEnabled() && !isNativeProjectLifecycleEnabled();
+  const costFieldsDisabled = !!pendingCost || costSaving || !(nativeCostWritable || legacyCostWritable);
+  const anyCostEditing = isEditingRate || isEditingMisc || isEditingPO;
+  const setCostEditing = (field: CostField, editing: boolean) => ({ costPerHour: setIsEditingRate, miscCost: setIsEditingMisc, poValue: setIsEditingPO })[field](editing);
+  // Displayed values come from the last authoritative read; an untouched blur is compared against them.
+  const applyCostValues = (project: { costPerHour?: unknown; miscCost?: unknown; poValue?: unknown }) => {
+    const next = { costPerHour: project.costPerHour || 0, miscCost: project.miscCost || 0, poValue: project.poValue || 0 };
+    costOpening.current = next;
+    setCostPerHour(next.costPerHour as number); setMiscCost(next.miscCost as number); setPoValue(next.poValue as number);
+  };
+
   // Customer PO document state
   const [customerPODocs, setCustomerPODocs] = useState<ProjectDocument[]>([]);
   const [uploadingPO, setUploadingPO] = useState(false);
@@ -410,12 +445,38 @@ const CostAnalysisDetail = ({
     let active = true;
     const uid = user?.uid;
     const isCurrent = () => active && !!uid && user?.uid === uid;
+    let nativeWorkspace: CostWorkspace | null = null;
     setProjectDetails(null); setCurrentBOM([]); setMaterialCost(0); setCustomerPODocs([]); setProjectReadError(null);
+    costWorkspace.current = null; costRecovery.current = null; costDraft.current = null; costBusy.current = false;
+    setNativeCostEdit(false); setPendingCost(null); setCostSaving(false); setCostError(null); setCostRetryField(null); setCostNotice(null);
+    setIsEditingRate(false); setIsEditingMisc(false); setIsEditingPO(false);
     const fetchAllData = async () => {
       if (!projectIdParam || !uid) return;
       // Fetch project details and editable fields
       try {
-      const data = await getProject(projectIdParam, uid, () => { if (!isCurrent()) throw new Error('Account or project changed. Reopen this project.'); });
+      let data: Awaited<ReturnType<typeof getProject>>;
+      // A saved cost request is recovered even after the write gates close, so it always opens the versioned reader.
+      const savedRequest = hasPendingNativeProjectCostFields(projectIdParam, uid);
+      if (savedRequest.kind !== 'absent') setPendingCost({ checkable: false });
+      if (isNativeProjectLifecycleEnabled() || savedRequest.kind !== 'absent') {
+        const workspace = createNativeProjectWorkspace(projectIdParam, undefined, uid);
+        nativeWorkspace = workspace;
+        const snapshot = await workspace.load();
+        if (!isCurrent()) return;
+        data = snapshot.project as unknown as Awaited<ReturnType<typeof getProject>>;
+        costWorkspace.current = workspace; setNativeCostEdit(snapshot.permissions.edit);
+        try {
+          const action = workspace.recover('cost-fields');
+          costRecovery.current = action;
+          const command = action?.pendingCommand;
+          setPendingCost(command?.kind === 'cost_field' ? { field: command.field, amount: command.amount, checkable: true } : null);
+        } catch {
+          // An unreadable saved request still blocks new edits; it just has nothing to confirm.
+          costRecovery.current = null; setPendingCost({ checkable: false });
+        }
+      } else {
+        data = await getProject(projectIdParam, uid, () => { if (!isCurrent()) throw new Error('Account or project changed. Reopen this project.'); });
+      }
       if (!isCurrent()) return;
       if (data) {
         setProjectDetails({
@@ -427,9 +488,7 @@ const CostAnalysisDetail = ({
           bomSnapshot: data.bomSnapshot || null,
           bomSnapshotDate: data.bomSnapshotDate || null,
         });
-        setCostPerHour(data.costPerHour || 0);
-        setMiscCost(data.miscCost || 0);
-        setPoValue(data.poValue || 0);
+        applyCostValues(data);
         setEstimatedBudget(
           typeof data.estimatedBudget === 'number' && !isNaN(data.estimatedBudget)
             ? data.estimatedBudget
@@ -450,11 +509,14 @@ const CostAnalysisDetail = ({
       if (!isCurrent()) return;
       setCustomerPODocs(docs.filter(d => d.type === 'customer-po'));
       } catch (error) {
-        if (isCurrent()) { setProjectDetails(null); setCurrentBOM([]); setMaterialCost(0); setCustomerPODocs([]); setProjectReadError(error instanceof Error ? error.message : 'Could not load project data. Please retry.'); }
+        if (isCurrent()) { setProjectDetails(null); setCurrentBOM([]); setMaterialCost(0); setCustomerPODocs([]); setProjectReadError(costErrorMessage(error)); }
       }
     };
     fetchAllData();
-    return () => { active = false; };
+    return () => {
+      active = false; nativeWorkspace?.invalidate();
+      if (nativeWorkspace && costWorkspace.current === nativeWorkspace) { costWorkspace.current = null; costRecovery.current = null; costDraft.current = null; }
+    };
   }, [projectIdParam, user?.uid]);
 
   const fetchCosts = async () => {
@@ -473,22 +535,89 @@ const CostAnalysisDetail = ({
     fetchCosts();
   }, [projectIdParam, range.start, range.end]);
 
-  // Update cost per hour in Firestore, then refetch so Engineering Cost
-  // reflects the new fallback rate immediately (it only applies to
-  // engineers without an individually configured rate — see
-  // functions/index.js resolveRate()).
-  const handleCostPerHourBlur = async () => {
-    if (!projectIdParam) return;
-    await updateProject(projectIdParam, { costPerHour });
-    setIsEditingRate(false);
-    await fetchCosts();
+  const beginCostEdit = (field: CostField) => {
+    if (costFieldsDisabled || anyCostEditing || costBusy.current) return;
+    setCostError(null); setCostRetryField(null); setCostNotice(null);
+    const workspace = costWorkspace.current;
+    costDraft.current = null;
+    if (workspace && nativeCostWritable) {
+      try { costDraft.current = { workspace, action: workspace.capture('cost-fields'), field }; } catch (error) { setCostError(costErrorMessage(error)); return; }
+    }
+    setCostEditing(field, true);
   };
 
-  // Update misc cost in Firestore
-  const handleMiscCostBlur = async () => {
-    if (!projectIdParam) return;
-    await updateProject(projectIdParam, { miscCost });
-    setIsEditingMisc(false);
+  // Saves on blur like the original editors, but only when the displayed value actually changed. Costs refetch after
+  // a rate change so Engineering Cost reflects the new fallback rate (see functions/index.js resolveRate()).
+  const saveCostField = async (field: CostField) => {
+    if (!projectIdParam || costBusy.current) return;
+    const value = ({ costPerHour, miscCost, poValue })[field];
+    const finish = () => { setCostEditing(field, false); costDraft.current = null; setCostRetryField(null); };
+    if (value === costOpening.current[field]) { finish(); return; }
+    const draft = costDraft.current?.field === field ? costDraft.current : null;
+    if (!draft) {
+      if (isScopedProjectReadEnabled() || isNativeProjectLifecycleEnabled()) { setCostError('Cost changes are paused until the versioned project writer is enabled.'); setCostRetryField(field); return; }
+      costBusy.current = true; setCostSaving(true); setCostError(null);
+      try {
+        await updateProject(projectIdParam, { [field]: value } as Partial<Record<CostField, number>>);
+        costOpening.current = { ...costOpening.current, [field]: value };
+        finish();
+        if (field === 'costPerHour') await fetchCosts();
+      } catch (error) {
+        setCostError(costErrorMessage(error)); setCostRetryField(field);
+      } finally { costBusy.current = false; setCostSaving(false); }
+      return;
+    }
+    const { workspace, action } = draft, current = () => costWorkspace.current === workspace;
+    if (!isNativeProjectLifecycleEnabled()) { setCostError('Cost changes are paused until the versioned project writer is enabled.'); setCostRetryField(field); return; }
+    if (typeof value !== 'number' || !Number.isFinite(value)) { setCostError('Enter a valid number.'); setCostRetryField(field); return; }
+    costBusy.current = true; setCostSaving(true); setCostError(null); setCostRetryField(null);
+    // Publish the recoverable state before the request leaves so a first transport failure is already recoverable.
+    costRecovery.current = action; setPendingCost({ field, amount: value, checkable: true });
+    try {
+      await action.submit({ kind: 'cost_field', field, amount: value });
+      // Reconcile with a fresh authoritative read before the saved request is released.
+      const snapshot = await workspace.load();
+      if (!current()) return;
+      await action.acknowledge();
+      if (!current()) return;
+      applyCostValues(snapshot.project); setNativeCostEdit(snapshot.permissions.edit);
+      costRecovery.current = null; setPendingCost(null); finish();
+      if (field === 'costPerHour') await fetchCosts();
+    } catch (error) {
+      if (!current()) return;
+      // Only a request that never reached the journal may fall back to an editable draft.
+      let stillPending = true;
+      try { stillPending = !!action.pendingCommand; } catch { /* an unreadable saved request stays pending */ }
+      if (stillPending) { applyCostValues(costOpening.current); finish(); }
+      else { costRecovery.current = null; setPendingCost(null); setCostRetryField(field); }
+      setCostError(costErrorMessage(error));
+    } finally {
+      if (current()) { costBusy.current = false; setCostSaving(false); }
+    }
+  };
+
+  const resolveCostRequest = async () => {
+    const workspace = costWorkspace.current, action = costRecovery.current, pending = pendingCost;
+    if (!workspace || !action || costBusy.current) return;
+    const current = () => costWorkspace.current === workspace;
+    costBusy.current = true; setCostSaving(true); setCostError(null); setCostNotice(null);
+    try {
+      const result = await action.resolve();
+      // The outcome may be established first, but the saved request is only released after a fresh read.
+      const snapshot = await workspace.load();
+      if (!current()) return;
+      await action.acknowledge();
+      if (!current()) return;
+      applyCostValues(snapshot.project); setNativeCostEdit(snapshot.permissions.edit);
+      costRecovery.current = null; costDraft.current = null; setPendingCost(null);
+      const label = pending?.field ? COST_LABELS[pending.field] : 'cost field';
+      setCostNotice(result.resolution === 'committed' ? `The ${label} change was saved.` : `The ${label} change${pending?.amount !== undefined ? ` to ${pending.amount}` : ''} was not saved. Edit it again to retry.`);
+      if (result.resolution === 'committed' && pending?.field === 'costPerHour') await fetchCosts();
+    } catch (error) {
+      if (current()) setCostError(costErrorMessage(error));
+    } finally {
+      if (current()) { costBusy.current = false; setCostSaving(false); }
+    }
   };
 
   // Update estimated budget in Firestore
@@ -496,13 +625,6 @@ const CostAnalysisDetail = ({
     if (!projectIdParam) return;
     await updateProject(projectIdParam, { estimatedBudget });
     setIsEditingBudget(false);
-  };
-
-  // Update PO value in Firestore
-  const handlePOValueBlur = async () => {
-    if (!projectIdParam) return;
-    await updateProject(projectIdParam, { poValue });
-    setIsEditingPO(false);
   };
 
   const totalManHours = costRow?.cumulative.timeHours ?? 0;
@@ -588,7 +710,21 @@ const CostAnalysisDetail = ({
       <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
       <div className={`flex-1 transition-all duration-300 ease-in-out ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
         {projectReadError && <div role="alert" className="mx-4 mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">{projectReadError}</div>}
-        {projectFieldsReadOnly && <div role="status" className="mx-4 mt-4 rounded-md border bg-muted px-4 py-2 text-sm">These project financial fields are currently read only.</div>}
+        {projectFieldsReadOnly && !nativeCostWritable && <div role="status" className="mx-4 mt-4 rounded-md border bg-muted px-4 py-2 text-sm">These project financial fields are currently read only.</div>}
+        {(pendingCost || costError) && (
+          <div role="alert" className="mx-4 mt-4 flex items-center gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+            <span>
+              {pendingCost && (pendingCost.field && pendingCost.amount !== undefined
+                ? `A saved ${COST_LABELS[pendingCost.field]} change to ${pendingCost.amount} is awaiting confirmation. Cost fields are locked until it is checked.`
+                : pendingCost.checkable ? 'A saved cost change is awaiting confirmation. Cost fields are locked until it is checked.'
+                : 'A saved cost change cannot be confirmed here. Restore browser session storage, then reopen the project.')}
+              {pendingCost && costError ? ' ' : ''}{costError}
+            </span>
+            {pendingCost?.checkable && <Button size="sm" variant="outline" onClick={resolveCostRequest} disabled={costSaving}>Check saved change</Button>}
+            {!pendingCost && costRetryField && <Button size="sm" variant="outline" onClick={() => saveCostField(costRetryField)} disabled={costSaving}>Retry save</Button>}
+          </div>
+        )}
+        {costNotice && <div role="status" className="mx-4 mt-4 rounded-md border bg-muted px-4 py-2 text-sm">{costNotice}</div>}
         <div className="border-b bg-card">
           <div className="container mx-auto px-4 py-4">
             <div className="flex items-center gap-4">
@@ -693,8 +829,8 @@ const CostAnalysisDetail = ({
                           type="number"
                           value={costPerHour}
                           onChange={(e) => setCostPerHour(parseInt(e.target.value) || 0)}
-                          onBlur={handleCostPerHourBlur}
-                          disabled={projectFieldsReadOnly}
+                          onBlur={() => saveCostField('costPerHour')}
+                          disabled={costFieldsDisabled}
                           className="w-24 h-8"
                           autoFocus
                         />
@@ -704,8 +840,9 @@ const CostAnalysisDetail = ({
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => setIsEditingRate(true)}
-                            disabled={projectFieldsReadOnly}
+                            onClick={() => beginCostEdit('costPerHour')}
+                            aria-label="Edit hourly rate"
+                            disabled={costFieldsDisabled || anyCostEditing}
                             className="h-6 w-6 p-0"
                           >
                             <Edit2 className="h-3 w-3" />
@@ -722,8 +859,8 @@ const CostAnalysisDetail = ({
                           type="number"
                           value={miscCost}
                           onChange={(e) => setMiscCost(parseInt(e.target.value) || 0)}
-                          onBlur={handleMiscCostBlur}
-                          disabled={projectFieldsReadOnly}
+                          onBlur={() => saveCostField('miscCost')}
+                          disabled={costFieldsDisabled}
                           className="w-24 h-8"
                           autoFocus
                         />
@@ -733,8 +870,9 @@ const CostAnalysisDetail = ({
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => setIsEditingMisc(true)}
-                            disabled={projectFieldsReadOnly}
+                            onClick={() => beginCostEdit('miscCost')}
+                            aria-label="Edit miscellaneous cost"
+                            disabled={costFieldsDisabled || anyCostEditing}
                             className="h-6 w-6 p-0"
                           >
                             <Edit2 className="h-3 w-3" />
@@ -781,8 +919,9 @@ const CostAnalysisDetail = ({
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setIsEditingPO(true)}
-                        disabled={projectFieldsReadOnly}
+                        onClick={() => beginCostEdit('poValue')}
+                        aria-label="Edit customer PO value"
+                        disabled={costFieldsDisabled || anyCostEditing}
                         className="h-6 w-6 p-0"
                       >
                         <Edit2 className="h-3 w-3" />
@@ -797,8 +936,8 @@ const CostAnalysisDetail = ({
                         const val = parseInt(e.target.value);
                         setPoValue(isNaN(val) ? 0 : val);
                       }}
-                      onBlur={handlePOValueBlur}
-                      disabled={projectFieldsReadOnly}
+                      onBlur={() => saveCostField('poValue')}
+                      disabled={costFieldsDisabled}
                       className="text-xl font-bold text-center"
                       autoFocus
                     />
