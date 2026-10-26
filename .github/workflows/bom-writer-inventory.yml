@@ -32,6 +32,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:writer-inventory
+      - name: Verify bounded legacy email enrichment
+        run: node --test tests/enrichLegacyEmailIdentity.test.cjs
 
   functions-tests:
     runs-on: ubuntu-24.04
