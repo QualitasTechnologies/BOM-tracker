@@ -5690,6 +5690,12 @@ exports.sendPurchaseOrder = onCall(
         errorCode = 'failed-precondition';
         userMessage = 'Purchase Order cannot be sent';
         troubleshooting = error.message;
+      } else if (['invalid_purchase_order', 'material_state_conflict', 'invalid_material_state', 'duplicate_material_id',
+        'duplicate_material_category', 'received_quantity_conflict', 'invalid_material_command'].includes(error.code)) {
+        // Rejected by the reservation preflight before any email is sent; nothing was locked or delivered.
+        errorCode = 'failed-precondition';
+        userMessage = 'Purchase Order cannot be sent';
+        troubleshooting = `${error.message} (${error.code})`;
       } else if (error.code === 401 || error.message?.includes('Invalid API key')) {
         errorCode = 'unauthenticated';
         userMessage = 'Email service authentication failed';

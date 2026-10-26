@@ -129,3 +129,12 @@ test('legacy email finalization revalidates the actor after its reads and before
   assert.deepEqual(f.docs.get('projects/P/bom/data'), bomBefore);
   assert.equal(f.docs.has('projectDocuments/doc-1'), false);
 });
+
+test('finalization and recovery still reconcile a valid stored PO with more than 200 lines', async () => {
+  const f = setup();
+  f.docs.get('projects/P/purchaseOrders/existing').items = Array.from({ length: 201 }, () => ({ bomItemId: 'bolt' }));
+  const result = await f.finalize();
+  assert.equal(result.ok, true);
+  assert.equal(f.docs.get('projects/P/purchaseOrders/existing').status, 'sent');
+  assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].status, 'ordered');
+});

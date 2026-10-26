@@ -1,5 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   calls: [] as Array<{ name: string; options: unknown; payload: unknown }>,
@@ -13,25 +12,48 @@ vi.mock('firebase/functions', () => ({
   },
 }));
 
+import type { PurchaseOrder } from '@/types/purchaseOrder';
 import {
   recoverAcceptedLegacyPOSend,
   recoverStaleLegacyPOSend,
   retryUncertainLegacyPOSend,
   sendPOEmail,
   sendPurchaseOrder,
+  type SendPOEmailInput,
 } from '../poFirestore';
 
 // @firebase/functions defaults to a 70s client timeout. Server callables that may run longer (timeoutSeconds: 540 in
 // functions/index.js) must pass the same limit or the user sees deadline-exceeded while the server is still finishing.
 const SERVER_540S = 540_000;
 
+const purchaseOrder: PurchaseOrder = {
+  id: 'po1', projectId: 'p1', poNumber: 'PO-QT-2026-001',
+  vendorId: 'v1', vendorName: 'Acme', vendorAddress: '1 Main St', vendorGstin: '29ABCDE1234F1Z5',
+  vendorStateCode: '29', vendorStateName: 'Karnataka', vendorEmail: 'vendor@acme.com',
+  projectReference: 'P1',
+  invoiceToCompany: 'Buyer Co', invoiceToAddress: '2 Side St', invoiceToGstin: '29ABCDE1234F1Z5',
+  invoiceToStateCode: '29', invoiceToStateName: 'Karnataka', shipToAddress: '2 Side St',
+  items: [{ bomItemId: 'b1', slNo: 1, description: 'Sensor', uom: 'nos', quantity: 2, rate: 100, amount: 200 }],
+  subtotal: 200, taxType: 'cgst_sgst', taxPercentage: 18, cgstAmount: 18, sgstAmount: 18, totalAmount: 236,
+  amountInWords: 'Two Hundred Thirty Six Rupees Only', currency: 'INR',
+  paymentTerms: '100% in 30 days', deliveryTerms: '2-4 weeks', includeAnnexure: false,
+  poDate: new Date('2026-10-01T00:00:00.000Z'), status: 'pending-approval', warnings: [],
+  createdAt: new Date('2026-10-01T00:00:00.000Z'), createdBy: 'u1', updatedAt: new Date('2026-10-01T00:00:00.000Z'),
+};
+const sendInput: SendPOEmailInput = {
+  purchaseOrder,
+  companySettings: {
+    companyName: 'Buyer Co', companyAddress: '2 Side St', gstin: '29ABCDE1234F1Z5', stateCode: '29', stateName: 'Karnataka',
+  },
+  recipientEmail: 'vendor@acme.com',
+};
+
 describe('PO callable client timeouts', () => {
   beforeEach(() => { mocks.calls.length = 0; });
 
   it('sendPOEmail waits as long as the sendPurchaseOrder server limit', async () => {
-    const input = { projectId: 'p1', poId: 'po1' } as Parameters<typeof sendPOEmail>[0];
-    await sendPOEmail(input);
-    expect(mocks.calls).toEqual([{ name: 'sendPurchaseOrder', options: { timeout: SERVER_540S }, payload: input }]);
+    await sendPOEmail(sendInput);
+    expect(mocks.calls).toEqual([{ name: 'sendPurchaseOrder', options: { timeout: SERVER_540S }, payload: sendInput }]);
   });
 
   it('retryUncertainLegacyPOSend waits as long as the retryUncertainLegacyPOSend server limit', async () => {

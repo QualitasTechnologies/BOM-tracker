@@ -138,3 +138,74 @@ test('the dispatch transaction revalidates the actor after its reads and before 
   assert.deepEqual(f.docs.get('projects/P/purchaseOrders/existing'), before);
   assert.equal(f.docs.has(`pulseLegacyPOSendAttempts/P/attempts/${reserved.attemptId}`), false);
 });
+
+// Preflight: the reservation must reject material state that finalization would reject, before any provider call.
+const preflightCases = {
+  'a PO line whose BOM item is missing': [f => { f.docs.get('projects/P/purchaseOrders/existing').items = [{ bomItemId: 'bolt' }, { bomItemId: 'gone' }]; }, 'material_state_conflict'],
+  'a missing bom/data document': [f => f.docs.delete('projects/P/bom/data'), 'material_state_conflict'],
+  'BOM categories that are not an array': [f => { f.docs.get('projects/P/bom/data').categories = {}; }, 'invalid_purchase_order'],
+  'a PO with no items': [f => { f.docs.get('projects/P/purchaseOrders/existing').items = []; }, 'invalid_purchase_order'],
+  'a PO with items that are not an array': [f => { f.docs.get('projects/P/purchaseOrders/existing').items = 'bolt'; }, 'invalid_purchase_order'],
+  'a blank bomItemId': [f => { f.docs.get('projects/P/purchaseOrders/existing').items = [{ bomItemId: '  ' }]; }, 'invalid_purchase_order'],
+  'a non-string bomItemId': [f => { f.docs.get('projects/P/purchaseOrders/existing').items = [{ bomItemId: 7 }]; }, 'invalid_purchase_order'],
+  'a null line': [f => { f.docs.get('projects/P/purchaseOrders/existing').items = [null]; }, 'invalid_purchase_order'],
+  'duplicate item ids in the BOM': [f => { f.docs.get('projects/P/bom/data').categories.push({ name: 'More', items: [{ id: 'bolt', quantity: 1 }] }); }, 'duplicate_material_id'],
+};
+for (const [name, [mutate, code]] of Object.entries(preflightCases)) {
+  test(`legacy PO email reservation rejects ${name} before any reservation write`, async () => {
+    const f = fixture({ uid: 'admin' });
+    f.docs.get('projects/P/purchaseOrders/existing').status = 'pending-approval';
+    mutate(f);
+    const before = structuredClone(f.docs.get('projects/P/purchaseOrders/existing'));
+    const bomBefore = structuredClone(f.docs.get('projects/P/bom/data'));
+    await assert.rejects(
+      authorizeLegacyPOSend({ db: f.db, auth: f.auth, request: request('admin'), projectId: 'P', poId: 'existing' }),
+      error => error.code === code && error.status === 409,
+    );
+    assert.deepEqual(f.docs.get('projects/P/purchaseOrders/existing'), before);
+    assert.deepEqual(f.docs.get('projects/P/bom/data'), bomBefore);
+  });
+}
+
+test('legacy PO email reservation accepts a valid PO with repeated lines for one BOM item', async () => {
+  const f = fixture({ uid: 'admin' });
+  const po = f.docs.get('projects/P/purchaseOrders/existing');
+  po.status = 'pending-approval';
+  po.items = [{ bomItemId: 'bolt' }, { bomItemId: 'bolt' }];
+  const result = await authorizeLegacyPOSend({ db: f.db, auth: f.auth, request: request('admin'), projectId: 'P', poId: 'existing' });
+  assert.ok(result.attemptId);
+});
+
+test('a material preflight failure does not hide the not-approved or cutover rejections', async () => {
+  const f = fixture({ uid: 'admin' });
+  f.docs.get('projects/P/purchaseOrders/existing').items = [{ bomItemId: 'gone' }];
+  await assert.rejects(authorizeLegacyPOSend({ db: f.db, auth: f.auth, request: request('admin'), projectId: 'P', poId: 'existing' }),
+    error => error.code === 'purchase_order_not_approved');
+});
+
+test('legacy PO email reservation accepts a valid historical received row without fulfillment tranches', async () => {
+  const f = fixture({ uid: 'admin' });
+  f.docs.get('projects/P/purchaseOrders/existing').status = 'pending-approval';
+  Object.assign(f.docs.get('projects/P/bom/data').categories[0].items[0], { status: 'received', quantity: 2 });
+  const result = await authorizeLegacyPOSend({ db: f.db, auth: f.auth, request: request('admin'), projectId: 'P', poId: 'existing' });
+  assert.ok(result.attemptId);
+  assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].status, 'received');
+});
+
+test('legacy PO reservation preserves support for more than 200 valid PO lines', async () => {
+  const f = fixture({ uid: 'admin' });
+  const po = f.docs.get('projects/P/purchaseOrders/existing');
+  po.status = 'pending-approval';
+  po.items = Array.from({ length: 201 }, () => ({ bomItemId: 'bolt' }));
+  const result = await authorizeLegacyPOSend({ db: f.db, auth: f.auth, request: request('admin'), projectId: 'P', poId: 'existing' });
+  assert.ok(result.attemptId);
+});
+
+test('legacy PO email reservation still rejects an invalid received row (tranches exceeding quantity)', async () => {
+  const f = fixture({ uid: 'admin' });
+  f.docs.get('projects/P/purchaseOrders/existing').status = 'pending-approval';
+  Object.assign(f.docs.get('projects/P/bom/data').categories[0].items[0], { status: 'received', quantity: 2, fulfillmentTranches: [{ quantity: 5 }] });
+  await assert.rejects(authorizeLegacyPOSend({ db: f.db, auth: f.auth, request: request('admin'), projectId: 'P', poId: 'existing' }),
+    error => error.code === 'invalid_material_state' && error.status === 409);
+  assert.equal(f.docs.get('projects/P/purchaseOrders/existing').legacySendAttemptId, undefined);
+});
