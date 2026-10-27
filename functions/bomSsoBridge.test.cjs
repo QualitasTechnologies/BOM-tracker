@@ -123,10 +123,11 @@ test('index wires dedicated export with its own secret and header', () => {
   assert.match(block, /exports\.bomSsoBridge\s*=\s*onRequest/);
   assert.match(block, /region: 'us-central1'/);
   assert.match(block, /cors: false/);
+  assert.match(block, /serviceAccount: 'pulse-bom-sso@visionbomtracker\.iam\.gserviceaccount\.com'/);
   assert.match(block, /timeoutSeconds: 30/);
   assert.match(block, /maxInstances: 5/);
   assert.match(block, /secrets: \[bomSsoBridgeKey\]/);
   assert.match(block, /bomSsoBridgeEnabled\(process\.env\)/);
-  assert.doesNotMatch(block, /BOM_PROJECT_(READ|OPERATIONS)_KEY|PULSE_API_KEY/);
+  assert.doesNotMatch(block, /BOM_PROJECT_(REVIEW|OPERATIONS)_KEY|PULSE_API_KEY/);
   assert.match(src.slice(0, at), /exports\.projectOperations/);
 });

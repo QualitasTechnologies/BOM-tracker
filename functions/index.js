@@ -7569,12 +7569,12 @@ exports.projectOperations = onRequest(
 
 // Canonical Pulse->BOM SSO bridge: mints a custom token for an existing approved
 // user only. Default OFF (BOM_SSO_BRIDGE_ENABLED === 'true'). Dedicated key; the
-// read/operations keys cannot mint. Do not deploy until the runtime service
-// account has reviewed token-creator IAM.
+// read/operations keys cannot mint. The dedicated identity needs Auth read and
+// self-only signing grants; no Firestore or Storage permissions are required.
 const { createBomSsoBridgeHandler, bomSsoBridgeEnabled } = require('./bomSsoBridge.cjs');
 const bomSsoBridgeKey = defineSecret('BOM_SSO_BRIDGE_KEY');
 exports.bomSsoBridge = onRequest(
-  { region: 'us-central1', secrets: [bomSsoBridgeKey], cors: false, invoker: 'public', timeoutSeconds: 30, maxInstances: 5 },
+  { region: 'us-central1', serviceAccount: 'pulse-bom-sso@visionbomtracker.iam.gserviceaccount.com', secrets: [bomSsoBridgeKey], cors: false, invoker: 'public', timeoutSeconds: 30, maxInstances: 5 },
   createBomSsoBridgeHandler({
     auth: admin.auth(),
     getEnabled: () => bomSsoBridgeEnabled(process.env),

@@ -19,10 +19,18 @@ Approved design: Pulse asserts an already-authenticated user to BOM over a dedic
 `method_not_allowed` 405, `caller_authentication_required` 401, `authentication_time_required` 401, `actor_forbidden` 403, `identity_provider_unavailable` 503, `bom_sso_bridge_unavailable` 503, `sso_token_unavailable` 503.
 
 ## Blockers before any deployment (not done here)
-- Compute default service account has no self/project `roles/iam.serviceAccountTokenCreator` binding; `createCustomToken` signing will fail until reviewed and granted.
+- Provision the dedicated `pulse-bom-sso@visionbomtracker.iam.gserviceaccount.com`
+  identity declared in the wrapper. Grant `roles/firebaseauth.viewer` on the
+  project, `roles/iam.serviceAccountTokenCreator` on itself only, and
+  `roles/secretmanager.secretAccessor` on its dedicated bridge secret only.
+  Leave the existing Compute identity unchanged; grant no Firestore or Storage
+  access to the bridge identity. Actual token signing remains unverified.
 - `BOM_SSO_BRIDGE_KEY` secret must be created (distinct from the read/operations keys) and shared with Pulse.
 - Pulse must call with a scoped BOM flow; do not widen the general Pulse external allowlist (it would grant the internal flow).
 - Set `BOM_SSO_BRIDGE_ENABLED=true` only at rollout.
 
 ## Verification
-`cd functions && node --test bomSsoBridge.test.cjs` (RED: module missing; GREEN: 27 tests) and `node --test` for the whole suite.
+Root verification: 28 focused tests and 942 full backend tests passed. Additional
+regressions caught response-envelope mismatch, whitespace tokens and missing
+dedicated service-account wiring before correction. Re-run full CI on the final
+head before merging. No live SSO configuration or account changes made here.
