@@ -743,7 +743,7 @@ const SERVER_MATERIAL_FINALIZATION_VERSION = 1;
 export const sendPOEmail = async (
   input: SendPOEmailInput
 ): Promise<SendPOEmailResult> => {
-  const sendPurchaseOrderFunction = httpsCallable<SendPOEmailInput & { serverMaterialFinalizationVersion: number }, SendPOEmailResult>(
+  const sendPurchaseOrderFunction = httpsCallable<SendPOEmailInput & { serverMaterialFinalizationVersion: typeof SERVER_MATERIAL_FINALIZATION_VERSION }, SendPOEmailResult>(
     functions,
     'sendPurchaseOrder',
     // Matches the server callable limit (timeoutSeconds: 540); the SDK default of 70s would fail a still-running send.

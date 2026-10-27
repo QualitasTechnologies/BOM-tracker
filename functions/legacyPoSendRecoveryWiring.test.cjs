@@ -150,7 +150,7 @@ test('an unconfirmed provider outcome keeps the PO locked with a verified frozen
 });
 
 test('a provider response without an email id is treated as uncertain, not as success', async () => {
-  const h = harness({ providerResult: () => ({ data: { serverMaterialFinalizationVersion: 1 }, error: null }) });
+  const h = harness({ providerResult: () => ({ data: {}, error: null }) });
   await assert.rejects(h.send(), error => error.code === 'failed-precondition');
   assert.equal(h.po().status, 'pending-approval');
   assert.equal(h.po().legacySendPhase, 'uncertain');
