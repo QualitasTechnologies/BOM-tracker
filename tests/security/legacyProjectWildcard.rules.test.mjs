@@ -17,9 +17,10 @@ const baseline = execFileSync('git', ['show', 'e36b18b:firestore.rules'], {
   cwd: new URL('../../', import.meta.url), encoding: 'utf8',
 });
 
-for (const [label, rules, protectedParent] of [
-  ['deployed September rules', baseline, false],
-  ['current source rules', await readFile(new URL('../../firestore.rules', import.meta.url), 'utf8'), true],
+for (const [label, rules, protectedMembership, protectedDelete] of [
+  ['deployed September rules', baseline, false, false],
+  ['current source rules', await readFile(new URL('../../firestore.rules', import.meta.url), 'utf8'), true, true],
+  ['staged PO rules', await readFile(new URL('../../firestore.legacy-po.rules', import.meta.url), 'utf8'), false, true],
 ]) {
   test(`${label}: recursive wildcard parent permissions are explicitly characterized`, async () => {
     const env = await initializeTestEnvironment({
@@ -35,9 +36,11 @@ for (const [label, rules, protectedParent] of [
     });
     const db = env.authenticatedContext('alice', { status: 'approved', role: 'viewer' }).firestore();
     await assertSucceeds(setDoc(doc(db, 'projects/P/emails/example'), { subject: 'Synthetic' }));
+    await assertSucceeds(setDoc(doc(db, 'projects/P/bom/data'), { categories: [] }));
+    await assertSucceeds(setDoc(doc(db, 'projects/P/supportTickets/example'), { summary: 'Synthetic' }));
+    await assertSucceeds(setDoc(doc(db, 'projects/P/supportTickets/example/activities/entry'), { message: 'Synthetic' }));
     await assertSucceeds(updateDoc(doc(db, 'projects/P'), { projectName: 'Synthetic rename' }));
-    const check = protectedParent ? assertFails : assertSucceeds;
-    await check(updateDoc(doc(db, 'projects/P'), { memberIds: ['alice', 'bob'] }));
-    await check(deleteDoc(doc(db, 'projects/P')));
+    await (protectedMembership ? assertFails : assertSucceeds)(updateDoc(doc(db, 'projects/P'), { memberIds: ['alice', 'bob'] }));
+    await (protectedDelete ? assertFails : assertSucceeds)(deleteDoc(doc(db, 'projects/P')));
   });
 }
