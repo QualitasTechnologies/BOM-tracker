@@ -7567,6 +7567,22 @@ exports.projectOperations = onRequest(
   })
 );
 
+// Canonical Pulse->BOM SSO bridge: mints a custom token for an existing approved
+// user only. Default OFF (BOM_SSO_BRIDGE_ENABLED === 'true'). Dedicated key; the
+// read/operations keys cannot mint. Do not deploy until the runtime service
+// account has reviewed token-creator IAM.
+const { createBomSsoBridgeHandler, bomSsoBridgeEnabled } = require('./bomSsoBridge.cjs');
+const bomSsoBridgeKey = defineSecret('BOM_SSO_BRIDGE_KEY');
+exports.bomSsoBridge = onRequest(
+  { region: 'us-central1', secrets: [bomSsoBridgeKey], cors: false, invoker: 'public', timeoutSeconds: 30, maxInstances: 5 },
+  createBomSsoBridgeHandler({
+    auth: admin.auth(),
+    getEnabled: () => bomSsoBridgeEnabled(process.env),
+    getServiceKey: () => bomSsoBridgeKey.value(),
+  })
+);
+// end bomSsoBridge
+
 // Reused BOM UI uses its real Firebase session; both write gates remain off by default.
 const { createNativeMaterialOperations } = require('./nativeMaterialOperations.cjs');
 exports.nativeMaterialOperations = onCall(
