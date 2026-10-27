@@ -53,7 +53,15 @@ describe('PO callable client timeouts', () => {
 
   it('sendPOEmail waits as long as the sendPurchaseOrder server limit', async () => {
     await sendPOEmail(sendInput);
-    expect(mocks.calls).toEqual([{ name: 'sendPurchaseOrder', options: { timeout: SERVER_540S }, payload: sendInput }]);
+    expect(mocks.calls).toEqual([{
+      name: 'sendPurchaseOrder', options: { timeout: SERVER_540S },
+      payload: { ...sendInput, serverMaterialFinalizationVersion: 1 },
+    }]);
+  });
+
+  it('sendPOEmail attaches the material-finalization marker itself; callers cannot override it', async () => {
+    await sendPOEmail({ ...sendInput, serverMaterialFinalizationVersion: 0 } as unknown as SendPOEmailInput);
+    expect((mocks.calls[0].payload as { serverMaterialFinalizationVersion: number }).serverMaterialFinalizationVersion).toBe(1);
   });
 
   it('retryUncertainLegacyPOSend waits as long as the retryUncertainLegacyPOSend server limit', async () => {

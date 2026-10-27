@@ -74,7 +74,7 @@ function harness({ providerResult, afterRender, afterProvider, render, onRead } 
   };
   vm.runInNewContext(wiringSource, context);
   const send = () => context.exports.sendPurchaseOrder({ auth: { uid: 'admin' }, rawRequest: { get: () => 'Bearer test' },
-    data: { purchaseOrder: { id: 'existing', projectId: 'P' }, recipientEmail: 'vendor@example.com' } });
+    data: { serverMaterialFinalizationVersion: 1, purchaseOrder: { id: 'existing', projectId: 'P' }, recipientEmail: 'vendor@example.com' } });
   return { f, context, send, files, providerCalls, emailBuilds, state, po: () => f.docs.get('projects/P/purchaseOrders/existing') };
 }
 
@@ -215,6 +215,7 @@ test('caller-supplied PO, company, recipient and PDF snapshots are never rendere
   const rendered = [];
   const h = harness({ render: async request => { rendered.push(request.data); h.files.set('generated/po.pdf', Buffer.from('%PDF-stored')); return { storagePath: 'generated/po.pdf', pdfUrl: 'https://example.test/g.pdf', size: 11 }; } });
   const result = await h.context.exports.sendPurchaseOrder({ auth: { uid: 'admin' }, rawRequest: { get: () => 'Bearer test' }, data: {
+    serverMaterialFinalizationVersion: 1,
     purchaseOrder: { id: 'existing', projectId: 'P', poNumber: 'CALLER-FORGED', status: 'sent' },
     companySettings: { companyName: 'Caller Company' }, recipientEmail: 'vendor@example.com', pdfUrl: 'https://attacker.example/forged.pdf',
   } });

@@ -5492,9 +5492,13 @@ const { createLegacyPOEmailRetry } = require('./legacyPOEmailRetry.cjs');
 const { freezeLegacyPOEmailPdf } = require('./legacyPOEmailRetryPdf.cjs');
 const { isDefinitiveResendRejection } = require('./legacyPOResendOutcome.cjs');
 const { purchaseOrderAcceptanceDate } = require('./purchaseOrderAcceptanceDate.cjs');
+const { assertLegacyPOSendClientContract } = require('./legacyPOSendClientContract.cjs');
 exports.sendPurchaseOrder = onCall(
   { secrets: [resendApiKey], timeoutSeconds: 540 },
   async (request) => {
+    // Cached clients without the marker still run the old whole-BOM post-send write; refuse before any side effect.
+    try { assertLegacyPOSendClientContract(request.data); }
+    catch (error) { throw new functions.https.HttpsError(error.code, error.message); }
     // Authorization, stored PO/billing data, recipients and the native gate are
     // resolved by the access helper; caller snapshots are never rendered or sent.
     const { projectId, po: accessPO, companySettings, companyLogoPath, recipientEmail, ccEmails } =
