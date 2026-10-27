@@ -734,6 +734,8 @@ export interface SendPOEmailResult {
   acceptedAt?: string;
 }
 
+const SERVER_MATERIAL_FINALIZATION_VERSION = 1;
+
 /**
  * Generate PDF and send PO via email to vendor
  * Uses Firebase Function with Resend
@@ -741,14 +743,15 @@ export interface SendPOEmailResult {
 export const sendPOEmail = async (
   input: SendPOEmailInput
 ): Promise<SendPOEmailResult> => {
-  const sendPurchaseOrderFunction = httpsCallable<SendPOEmailInput, SendPOEmailResult>(
+  const sendPurchaseOrderFunction = httpsCallable<SendPOEmailInput & { serverMaterialFinalizationVersion: number }, SendPOEmailResult>(
     functions,
     'sendPurchaseOrder',
     // Matches the server callable limit (timeoutSeconds: 540); the SDK default of 70s would fail a still-running send.
     { timeout: 540_000 }
   );
 
-  const result = await sendPurchaseOrderFunction(input);
+  // Server rejects sends without this marker, so cached clients that still write the whole BOM after a send fail closed.
+  const result = await sendPurchaseOrderFunction({ ...input, serverMaterialFinalizationVersion: SERVER_MATERIAL_FINALIZATION_VERSION });
   return result.data;
 };
 

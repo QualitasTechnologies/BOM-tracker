@@ -44,7 +44,7 @@ test('public PDF callable maps the real access helper output to the renderer pur
     generatePOPDFHandler: async request => { calls.push(['render', request]); return 'rendered'; },
   };
   vm.runInNewContext(source.slice(start, end), context);
-  const request = { auth: { uid: 'member-1' }, data: { purchaseOrder: { id: 'po-1', projectId: 'project-1', poNumber: 'Forged PO' } } };
+  const request = { auth: { uid: 'member-1' }, data: { serverMaterialFinalizationVersion: 1, purchaseOrder: { id: 'po-1', projectId: 'project-1', poNumber: 'Forged PO' } } };
   assert.equal(await context.exports.generatePOPDF(request), 'rendered');
   assert.deepEqual(calls.map(call => call[0]), ['render']);
   assert.equal(calls[0][1].data.purchaseOrder.poNumber, 'PO-STORED');
@@ -81,7 +81,7 @@ test('send callable validates authorization before invoking PDF, provider, or pe
   const callable = context.exports.sendPurchaseOrder;
   await assert.rejects(callable({
     auth: null,
-    data: { purchaseOrder: { id: 'po-1', projectId: 'project-1', items: [] }, companySettings: {}, recipientEmail: 'vendor@example.com' },
+    data: { serverMaterialFinalizationVersion: 1, purchaseOrder: { id: 'po-1', projectId: 'project-1', items: [] }, companySettings: {}, recipientEmail: 'vendor@example.com' },
   }), error => error.code === 'permission-denied');
   assert.equal(sideEffects, 0);
 });
@@ -118,6 +118,7 @@ test('send callable passes the server-side native procurement gate into the shar
   };
   vm.runInNewContext(source.slice(start, end), context);
   await assert.rejects(context.exports.sendPurchaseOrder({ data: {
+    serverMaterialFinalizationVersion: 1,
     purchaseOrder: { id: 'po-1', projectId: 'project-1' }, recipientEmail: 'vendor@example.com',
   } }), error => error.code === 'failed-precondition');
   assert.equal(receivedOptions?.nativeEnabled, true);
@@ -153,7 +154,7 @@ for (const [stage, mutate, material] of [
       generatePOPDFHandler: async () => { sideEffects++; return { storagePath: 'po.pdf' }; },
     };
     vm.runInNewContext(source.slice(start, end), context);
-    await assert.rejects(context.exports.sendPurchaseOrder({ auth: { uid: 'admin' }, rawRequest: { get: () => 'Bearer test' }, data: {} }),
+    await assert.rejects(context.exports.sendPurchaseOrder({ auth: { uid: 'admin' }, rawRequest: { get: () => 'Bearer test' }, data: { serverMaterialFinalizationVersion: 1 } }),
       error => error.code === 'failed-precondition' && /cannot be sent/.test(error.message) && error.message.includes(`(${material})`));
     assert.equal(sideEffects, 0);
     assert.deepEqual(f.docs.get('projects/P/purchaseOrders/existing'), before);
