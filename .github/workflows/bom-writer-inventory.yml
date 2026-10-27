@@ -83,3 +83,7 @@ jobs:
       - run: npm ci --prefix functions --include=dev
       - run: npm ci --prefix tests/security --ignore-scripts
       - run: npx --yes firebase-tools@14.9.0 emulators:exec --project demo-bom-native-security --config firebase.security-test.json --only "firestore,storage" "npm --prefix tests/security test"
+      - name: Verify staged legacy purchasing rules
+        run: npx --yes firebase-tools@14.9.0 emulators:exec --project demo-bom-native-security --config firebase.legacy-po-security-test.json --only firestore "node --test tests/security/purchaseOrderSentStatus.rules.test.mjs"
+        env:
+          FIRESTORE_RULES_PATH: firestore.legacy-po.rules

@@ -1,0 +1,283 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Staged PO-only candidate (not deployed): e36b18b rules plus PO protections.
+    function projectSubcollectionAccess(projectId) {
+      return request.auth != null
+        && request.auth.token.status == 'approved'
+        && (request.auth.token.role == 'admin'
+            || get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds == null
+            || request.auth.uid in get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds);
+    }
+
+    function purchaseOrderPostSendStatus(status) {
+      return status in ['sent', 'acknowledged', 'partially-received', 'completed', 'cancelled'];
+    }
+
+    function purchaseOrderCreateIsNotSent() {
+      return !purchaseOrderPostSendStatus(request.resource.data.get('status', null))
+        && !request.resource.data.keys().hasAny([
+          'sentAt', 'acceptedAt', 'actualSentDate', 'sentBy', 'sentToEmail',
+          'nativeSendAttemptId', 'nativeSendPhase', 'legacySendAttemptId', 'legacySendPhase', 'legacySendAcceptedAt',
+          'legacySendPreparingAt', 'legacySendDispatchStartedAt', 'legacySendProviderId', 'legacySendActorUid',
+          'legacySendRecipientEmail', 'legacySendPdfUrl', 'legacySendFileSize', 'legacySendDocumentId',
+          'legacySendRetryPayloadReady', 'pdfUrl'
+        ]);
+    }
+
+    function purchaseOrderHasBeenSent() {
+      return purchaseOrderPostSendStatus(resource.data.get('status', null))
+        || resource.data.keys().hasAny(['sentAt', 'acceptedAt', 'actualSentDate', 'sentBy', 'sentToEmail'])
+        || resource.data.get('nativeSendPhase', null) in [
+          'dispatching', 'uncertain', 'needs_reconciliation', 'accepted',
+          'material_pending', 'metadata_pending', 'complete'
+        ];
+    }
+
+    function purchaseOrderHasActiveSendAttempt() {
+      // A prepared attempt may own a durable reservation before provider I/O.
+      // The native cancel/recovery path must clear this pointer before clients
+      // can change or delete the PO again. A finalized send may still be
+      // resolving its linked-material write; keep that record frozen until the
+      // attempt reaches complete, even though sent metadata is already set.
+      let phase = resource.data.get('nativeSendPhase', null);
+      let attemptId = resource.data.get('nativeSendAttemptId', null);
+      let legacyAttemptId = resource.data.get('legacySendAttemptId', null);
+      return phase in [
+          'prepared', 'dispatching', 'uncertain', 'needs_reconciliation',
+          'accepted', 'material_pending', 'metadata_pending'
+        ]
+        || (attemptId != null && phase != 'complete' && phase != 'cancelled')
+        || legacyAttemptId != null;
+    }
+
+    function purchaseOrderPostSendTransitionIsAllowed() {
+      let oldStatus = resource.data.get('status', null);
+      let newStatus = request.resource.data.get('status', null);
+      return oldStatus == 'sent'
+          ? newStatus in ['sent', 'acknowledged', 'partially-received', 'completed', 'cancelled']
+        : oldStatus == 'acknowledged'
+          ? newStatus in ['acknowledged', 'partially-received', 'completed', 'cancelled']
+        : oldStatus == 'partially-received'
+          ? newStatus in ['partially-received', 'completed', 'cancelled']
+        : oldStatus == 'completed' || oldStatus == 'cancelled'
+          ? newStatus == oldStatus
+        : purchaseOrderPostSendStatus(newStatus);
+    }
+
+    function purchaseOrderPostSendFieldsAreLimited() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return !purchaseOrderHasBeenSent()
+        || changed.hasOnly(['status', 'updatedAt', 'closedAt']);
+    }
+
+    function purchaseOrderUpdateDoesNotChangeSentState() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return !purchaseOrderHasActiveSendAttempt()
+        && (purchaseOrderHasBeenSent()
+          ? purchaseOrderPostSendTransitionIsAllowed()
+          : !purchaseOrderPostSendStatus(request.resource.data.get('status', null)))
+        && purchaseOrderPostSendFieldsAreLimited()
+        && !changed.hasAny([
+          'sentAt', 'acceptedAt', 'actualSentDate', 'sentBy', 'sentToEmail',
+          'nativeSendAttemptId', 'nativeSendPhase', 'legacySendAttemptId', 'legacySendPhase', 'legacySendAcceptedAt',
+          'legacySendPreparingAt', 'legacySendDispatchStartedAt', 'legacySendProviderId', 'legacySendActorUid',
+          'legacySendRecipientEmail', 'legacySendPdfUrl', 'legacySendFileSize', 'legacySendDocumentId',
+          'legacySendRetryPayloadReady', 'pdfUrl'
+        ]);
+    }
+
+    // Projects: admins see all; non-admins see only projects where their UID is in memberIds.
+    // During migration window, projects without memberIds fall back to any authenticated user.
+    match /projects/{projectId} {
+      allow read: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && (request.auth.token.role == 'admin'
+            || (resource.data.memberIds == null)
+            || request.auth.uid in resource.data.memberIds);
+
+      allow create: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && (request.auth.token.role == 'admin'
+            || request.auth.uid in request.resource.data.memberIds);
+
+      allow update: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && (request.auth.token.role == 'admin'
+            || (resource.data.memberIds == null)
+            || request.auth.uid in resource.data.memberIds);
+
+      allow delete: if request.auth != null
+        && request.auth.token.role == 'admin';
+
+      // Collection-prefixed grant. The e36b18b recursive /{subcollection=**}
+      // also matched the project document itself; this form excludes ONLY
+      // purchaseOrders and does not match the parent path.
+      match /{projectCollection}/{document=**} {
+        allow read, write: if projectCollection != 'purchaseOrders'
+          && projectSubcollectionAccess(projectId);
+      }
+
+      // PO create/update/delete and nested records retain project member/admin
+      // access. Client sent-state fields are protected; Admin SDK send paths
+      // bypass these rules and remain responsible for authorization/audit.
+      match /purchaseOrders/{poId} {
+        allow read: if projectSubcollectionAccess(projectId);
+        allow create: if projectSubcollectionAccess(projectId)
+          && purchaseOrderCreateIsNotSent();
+        allow update: if projectSubcollectionAccess(projectId)
+          && purchaseOrderUpdateDoesNotChangeSentState();
+        allow delete: if projectSubcollectionAccess(projectId)
+          && !purchaseOrderHasBeenSent()
+          && !purchaseOrderHasActiveSendAttempt();
+      }
+
+      // Preserve the old wildcard grant for records nested beneath a PO.
+      match /purchaseOrders/{poId}/{nestedCollection}/{document=**} {
+        allow read, write: if projectSubcollectionAccess(projectId);
+      }
+    }
+
+    match /clients/{document=**} {
+      allow read: if request.auth != null
+        && request.auth.token.status == 'approved';
+      // Client master data is admin-managed. Approved project members add
+      // contacts through the scoped addClientCRMContact callable.
+      allow write: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && request.auth.token.role == 'admin';
+    }
+
+    match /billingEntities/{document=**} {
+      allow read: if request.auth != null
+        && request.auth.token.status == 'approved';
+      allow write: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && request.auth.token.role == 'admin';
+    }
+
+    match /vendors/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /settings/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /engineerRates/{doc} {
+      allow read, write: if request.auth != null
+        && request.auth.token.role == 'admin'
+        && request.auth.token.status == 'approved';
+    }
+
+    // Gmail refresh tokens: server-only. connectGmailAccount (write) and
+    // syncGmailAccounts (read) are Cloud Functions using the Admin SDK, which
+    // bypasses these rules entirely — this just blocks every client path.
+    match /gmailConnections/{document=**} {
+      allow read, write: if false;
+    }
+
+    // Internal routing and deduplication state is only accessed through the
+    // Admin SDK in Cloud Functions.
+    match /stakeholderIndex/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /projectStakeholderCache/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /gmailIngestedMessages/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /gmailIngestedMessageIds/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /fathomIngestedMeetings/{document=**} {
+      allow read, write: if false;
+    }
+
+    // Contact-discovery directory and job state are per-user and only ever
+    // written by processContactDiscoveryJobs (Admin SDK). The owning user can
+    // read their own directory/job to show scan progress and the picker.
+    match /gmailContactDirectory/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /gmailContactDiscoveryJobs/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // Backfill job state, one doc per project. Project members can read it to
+    // show progress; only addProjectBackfillStakeholders / processEmailBackfillJobs
+    // (Admin SDK) ever write it.
+    match /emailBackfillJobs/{projectId} {
+      allow read: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && (request.auth.token.role == 'admin'
+            || get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds == null
+            || request.auth.uid in get(/databases/$(database)/documents/projects/$(projectId)).data.memberIds);
+      allow write: if false;
+    }
+
+    // Admins can inspect triage queues, but assignment/discard writes must go
+    // through the authorization checks in their callable functions.
+    match /unassignedEmails/{document=**} {
+      allow read: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && request.auth.token.role == 'admin';
+      allow write: if false;
+    }
+
+    match /unassignedMeetings/{document=**} {
+      allow read: if request.auth != null
+        && request.auth.token.status == 'approved'
+        && request.auth.token.role == 'admin';
+      allow write: if false;
+    }
+
+    // Existing authenticated application data that previously relied on the
+    // global fallback is listed explicitly so server-only collections cannot
+    // accidentally inherit client access.
+    match /brands/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /bomTemplates/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /quotations/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /projectDocuments/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /projectContexts/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /transcripts/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /transcriptActivities/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /statusUpdates/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /userPermissions/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

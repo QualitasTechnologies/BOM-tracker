@@ -1,6 +1,7 @@
 import { after, before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { deleteDoc, deleteField, doc, getDoc, setDoc, Timestamp, updateDoc } from 'firebase/firestore';
 
@@ -16,7 +17,9 @@ before(async () => {
     firestore: {
       host: '127.0.0.1',
       port: 18080,
-      rules: await readFile(new URL('../../firestore.rules', import.meta.url), 'utf8'),
+      rules: await readFile(process.env.FIRESTORE_RULES_PATH
+        ? resolve(process.env.FIRESTORE_RULES_PATH)
+        : new URL('../../firestore.rules', import.meta.url), 'utf8'),
     },
   });
 });
