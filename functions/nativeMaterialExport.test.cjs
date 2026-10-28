@@ -24,3 +24,15 @@ test('actual callable export requires both explicit mutation flags and no machin
     assert.equal(config.secrets, undefined);
   }
 });
+
+test('actual callable export pins explicit small runtime options for this target only', () => {
+  const end = source.indexOf('// Durable native PO recovery', start);
+  const configs = [];
+  const context = { exports: {}, process: { env: {} }, admin: { firestore: Object.assign(() => 'db', { FieldValue: { serverTimestamp: () => 't' } }), auth: () => 'auth' },
+    require: () => ({ createNativeMaterialOperations: () => 'handler' }), onCall: options => { configs.push(options); return 'callable'; } };
+  vm.runInNewContext(source.slice(start, end), context);
+  assert.equal(configs.length, 1);
+  assert.deepEqual({ ...configs[0] }, { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5, memory: '256MiB', concurrency: 1 });
+  // Neighbouring upload/procurement/project targets keep their own separately reviewed options.
+  assert.doesNotMatch(source.slice(source.indexOf('// Native receipt photos')), /nativeUploadOperations = onCall\(\s*\{[^}]*concurrency/);
+});

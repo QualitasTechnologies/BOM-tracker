@@ -22,9 +22,9 @@ Rules, Storage, IAM roles, existing callables, user accounts or frontend flags.
   projections do not add broader financial access. External projections remain
   allowlisted. All 18 current project documents have populated `memberIds`
   arrays; none is missing, null, empty or malformed.
-- [ ] Pin this callable's source options to 256 MiB and concurrency 1, preserving
+- [x] Pin this callable's source options to 256 MiB and concurrency 1, preserving
   its 30-second timeout and maximum five instances. Other exports are unchanged.
-- [ ] Run the native project suites and exact-head CI; review before merge.
+- [x] Run the native project suites and exact-head CI; review before merge.
 
 Resolution while paused intentionally writes only an actor-bound cancellation
 receipt and audit entry after current actor, project and command authorization.
@@ -45,6 +45,11 @@ outside this target's deployment claim.
    to `false`: `BOM_NATIVE_PROJECT_MUTATIONS_ENABLED`,
    `BOM_MATERIAL_MUTATIONS_ENABLED`, `BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED`,
    `BOM_NATIVE_SUPPORT_PROFILE_ENABLED`.
+   Use an environment configuration file outside the upload directory, rather
+   than a comma-separated PowerShell argument. Include the verified existing
+   `FIREBASE_CONFIG` project/storage configuration: the shared entry module
+   initializes procurement's Storage bucket even for this project-only target.
+   A plain gcloud deployment does not supply that Firebase CLI configuration.
 4. Verify actual runtime metadata and all four false flags. Compare existing
    function fingerprints; never restore another agent's unrelated changes from
    the snapshot. Do not deploy the full codebase or candidate Rules.
@@ -55,6 +60,22 @@ outside this target's deployment claim.
    vendor emails or invent cost edits for testing.
 
 ## Later gates
+
+### 28 October runtime checkpoint
+
+The targeted deployment is active at revision
+`nativeprojectoperations-00001-yec` (02:11:13 UTC). Runtime metadata confirms
+Node 22, 256 MiB, concurrency one, timeout 30 seconds, maximum five instances
+and all four business-write flags set to the separate string `false`.
+An unauthenticated callable request returned HTTP 200 with the application
+denial `actor_authentication_required`; this is not a successful authorized read.
+The first revision failed to initialize because gcloud omitted Firebase's
+storage configuration. The corrected deployment supplied the existing project
+configuration through an external environment file and recovered startup.
+Private deployment records are retained outside Git in
+`C:/Users/rkash/worktrees/pulse-native-project-recovery-20261028`.
+Real-user read and denied-write acceptance remain open. No business-write flag
+has been enabled, and standalone BOM has not been retired.
 
 Do not enable global write flags merely for the three Cost Analysis fields.
 Dependent native services, all legacy/native writer fences, real actor/category
