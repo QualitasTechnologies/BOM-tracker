@@ -10,6 +10,18 @@ export type NativeProjectPage = { projects: Array<{ project_id: string; version:
 export type NativeProjectDocumentPage = { project_id: string; project_version: string; bom_version: string; documents: NativeProjectDocument[]; next_cursor: string | null };
 export type NativeProjectDocument = Record<string, unknown> & { id: string; projectId: string; type: string; url?: string; nativeOpening: NativeProjectReadOpening };
 export type NativeGalleryInvoice = { project_id: string; actor_uid: string; project_version: string; bom_version: string; document: NativeProjectDocument & { nativeOpening: NativeProjectReadOpening & { document_version: string } } };
+export type NativeManualActivity = {
+  id: string; projectId: string; projectName?: string; type: 'progress' | 'blocker' | 'decision' | 'action' | 'note'; summary: string;
+  rawExcerpt?: string; speaker?: string; meetingDate: string; timestamp?: string; source: 'transcript' | 'manual'; transcriptId?: string;
+  createdAt?: string; createdBy?: string; createdByName?: string;
+};
+export type NativeManualActivityPage = { project_id: string; project_version: string; activities: NativeManualActivity[]; next_cursor: string | null };
+export type NativeManualTranscript = {
+  id: string; rawText: string; meetingDate: string; processed: boolean; fileName?: string; meetingTitle?: string; processedAt?: string;
+  extractedProjectCount?: number; extractedActivityCount?: number; createdAt?: string; createdBy?: string; createdByName?: string;
+};
+// linked_project_count is how many projects have activities from this transcript, never which ones.
+export type NativeManualTranscriptRead = { project_id: string; project_version: string; transcript: NativeManualTranscript; linked_project_count: number; transcript_version: string };
 export type NativeReadContextGuard = () => void;
 export type NativeProjectReadErrorCode = 'access' | 'not_found' | 'paused' | 'integrity' | 'identity_changed' | 'request_failed' | 'sign_in_required' | 'invalid_request';
 export type NativeProjectReadError = Error & { code: NativeProjectReadErrorCode };
@@ -20,6 +32,8 @@ export type NativeProjectReadClient = {
   list(options: { limit?: number; cursor?: string | null }, uid: string, assertContext?: NativeReadContextGuard): Promise<NativeProjectPage>;
   documents(projectId: string, options: { limit?: number; cursor?: string | null }, uid: string, assertContext?: NativeReadContextGuard): Promise<NativeProjectDocumentPage>;
   galleryInvoice(projectId: string, itemId: string, uid: string, assertContext?: NativeReadContextGuard): Promise<NativeGalleryInvoice>;
+  activities(projectId: string, options: { limit?: number; cursor?: string | null }, uid: string, assertContext?: NativeReadContextGuard): Promise<NativeManualActivityPage>;
+  transcript(projectId: string, transcriptId: string, uid: string, assertContext?: NativeReadContextGuard): Promise<NativeManualTranscriptRead>;
 };
 
 function readError(code: NativeProjectReadErrorCode, message: string): NativeProjectReadError { return Object.assign(new Error(message), { code }); }
@@ -100,11 +114,35 @@ function parseDocument(value: unknown, projectId: string, uid: string, parent?: 
   if (value.nativeOpening.document_version === undefined) throw integrity();
   return value as NativeProjectDocument;
 }
+const ACTIVITY_TYPES = ['progress', 'blocker', 'decision', 'action', 'note'];
+const MAX_TRANSCRIPT_BYTES = 1048576;
+const tooLarge = () => readError('integrity', 'The stored transcript is larger than the allowed size and cannot be shown.');
+const optionalText = (value: Record<string, unknown>, keys: string[]) => keys.every(key => value[key] === undefined || typeof value[key] === 'string');
+function parseActivity(value: unknown, projectId: string): NativeManualActivity {
+  if (!record(value) || !exactKeys(value, ['id', 'projectId', 'projectName', 'type', 'summary', 'rawExcerpt', 'speaker', 'meetingDate', 'timestamp', 'source', 'transcriptId', 'createdAt', 'createdBy', 'createdByName'])
+    || !validId(value.id) || value.projectId !== projectId || !ACTIVITY_TYPES.includes(value.type as string) || typeof value.summary !== 'string' || !value.summary
+    || typeof value.meetingDate !== 'string' || !value.meetingDate || !['transcript', 'manual'].includes(value.source as string)
+    || !optionalText(value, ['projectName', 'rawExcerpt', 'speaker', 'timestamp', 'createdAt', 'createdBy', 'createdByName'])
+    || value.transcriptId !== undefined && !validId(value.transcriptId)) throw integrity();
+  return value as NativeManualActivity;
+}
+function parseTranscript(value: unknown, transcriptId: string): NativeManualTranscript {
+  if (!record(value) || !exactKeys(value, ['id', 'rawText', 'meetingDate', 'processed', 'fileName', 'meetingTitle', 'processedAt', 'extractedProjectCount', 'extractedActivityCount', 'createdAt', 'createdBy', 'createdByName'])
+    || value.id !== transcriptId || typeof value.rawText !== 'string' || typeof value.meetingDate !== 'string' || !value.meetingDate || typeof value.processed !== 'boolean'
+    || !optionalText(value, ['fileName', 'meetingTitle', 'processedAt', 'createdAt', 'createdBy', 'createdByName'])
+    || ['extractedProjectCount', 'extractedActivityCount'].some(key => value[key] !== undefined && !(Number.isSafeInteger(value[key]) && (value[key] as number) >= 0))) throw integrity();
+  if (new TextEncoder().encode(value.rawText).length > MAX_TRANSCRIPT_BYTES) throw tooLarge();
+  return value as NativeManualTranscript;
+}
 function failure(data: unknown): never {
   if (!record(data) || !safeJson(data) || data.ok !== false || !exactKeys(data, ['ok', 'error', 'status']) || typeof data.error !== 'string' || !Number.isInteger(data.status)) throw integrity();
   const code = data.error;
   if (code === 'actor_authentication_required') throw signedOut();
   if (['actor_forbidden', 'project_forbidden', 'project_document_forbidden', 'material_forbidden'].includes(code)) throw readError('access', 'You do not have access to this project.');
+  if (code === 'manual_history_forbidden') throw readError('access', 'Meeting history is available to internal team members only.');
+  if (code === 'manual_transcript_unavailable') throw readError('not_found', 'The source transcript is not available for this project.');
+  if (code === 'manual_transcript_too_large') throw tooLarge();
+  if (code === 'invalid_manual_history_state') throw integrity();
   if (['project_not_found', 'project_read_invoice_unavailable'].includes(code)) throw readError('not_found', 'This project data is unavailable.');
   if (code === 'project_reads_disabled') throw readError('paused', 'Project reads are paused.');
   if (code === 'actor_session_changed') throw changed();
@@ -203,6 +241,36 @@ export function createNativeProjectReadClient(deps: NativeProjectReadDependencie
         return { ...opening, document: parseDocument(data.document, projectId, uid, opening) as NativeGalleryInvoice['document'] };
       });
     },
+    async activities(projectId, options, uid, assertContext) {
+      if (!validId(projectId)) return Promise.reject(invalidRequest());
+      checkCursor(options);
+      const payload: Record<string, unknown> = { operation: 'activities', project_id: projectId };
+      if (options.limit !== undefined) payload.limit = options.limit;
+      if (options.cursor !== undefined) payload.cursor = options.cursor;
+      return call(payload, uid, projectId, assertContext, raw => {
+        const data = envelope(raw, ['project_id', 'actor_uid', 'project_version', 'activities', 'next_cursor']);
+        const limit = options.limit ?? 50;
+        if (data.project_id !== projectId || data.actor_uid !== uid || !validRevision(data.project_version) || !Array.isArray(data.activities) || data.activities.length > limit
+          || !(data.next_cursor === null || typeof data.next_cursor === 'string' && !!data.next_cursor.trim() && data.next_cursor.length <= 4096)) throw integrity();
+        const ids = new Set<string>();
+        const activities = data.activities.map(row => {
+          const activity = parseActivity(row, projectId);
+          if (ids.has(activity.id)) throw integrity();
+          ids.add(activity.id);
+          return activity;
+        });
+        return { project_id: projectId, project_version: data.project_version, activities, next_cursor: data.next_cursor as string | null };
+      });
+    },
+    transcript(projectId, transcriptId, uid, assertContext) {
+      if (!validId(projectId) || !validId(transcriptId)) return Promise.reject(invalidRequest());
+      return call({ operation: 'transcript', project_id: projectId, transcript_id: transcriptId }, uid, projectId, assertContext, raw => {
+        const data = envelope(raw, ['project_id', 'actor_uid', 'project_version', 'transcript', 'linked_project_count', 'transcript_version']);
+        if (data.project_id !== projectId || data.actor_uid !== uid || !validRevision(data.project_version) || !validRevision(data.transcript_version)
+          || !Number.isSafeInteger(data.linked_project_count) || (data.linked_project_count as number) < 1) throw integrity();
+        return { project_id: projectId, project_version: data.project_version, transcript: parseTranscript(data.transcript, transcriptId), linked_project_count: data.linked_project_count as number, transcript_version: data.transcript_version };
+      });
+    },
   };
 }
 
@@ -228,4 +296,6 @@ export const nativeProjectReads: NativeProjectReadClient = {
   async list(...args) { return (await getDefaultClient()).list(...args); },
   async documents(...args) { return (await getDefaultClient()).documents(...args); },
   async galleryInvoice(...args) { return (await getDefaultClient()).galleryInvoice(...args); },
+  async activities(...args) { return (await getDefaultClient()).activities(...args); },
+  async transcript(...args) { return (await getDefaultClient()).transcript(...args); },
 };

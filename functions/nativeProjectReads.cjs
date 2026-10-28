@@ -5,8 +5,10 @@ const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
 const { projectReadView, isProjectReadStateError } = require('./projectReadView.cjs');
 const { readProjectDocumentView } = require('./projectDocumentRead.cjs');
 const { plain, validId, version, isFault: isDocumentFault } = require('./projectDocumentState.cjs');
+const { createManualHistoryRead } = require('./manualHistoryRead.cjs');
 const PUBLIC = Symbol('project-read-fault');
 const fault = (code, status = 400) => Object.assign(Error(code), { code, status, [PUBLIC]: true });
+const manualHistory = createManualHistoryRead({ fault, plain, validId, version });
 const projectReadsEnabled = env => env.BOM_SCOPED_READS_ENABLED === 'true';
 const fullAccess = actor => actor.customClaims.role === 'admin' || /@qualitastech\.com$/i.test(actor.email.trim());
 const actorIdentity = actor => JSON.stringify([actor.uid, actor.email.trim().toLowerCase(), actor.customClaims.role]);
@@ -20,10 +22,13 @@ function requestData(data) {
     list: ['operation', 'limit', 'cursor'],
     documents: ['operation', 'project_id', 'limit', 'cursor'],
     gallery_invoice: ['operation', 'project_id', 'item_id'],
+    activities: ['operation', 'project_id', 'limit', 'cursor'],
+    transcript: ['operation', 'project_id', 'transcript_id'],
   };
   if (!Object.hasOwn(fields, data.operation) || Object.keys(data).some(key => !fields[data.operation].includes(key))
     || data.operation !== 'list' && !validId(data.project_id)
     || data.operation === 'gallery_invoice' && !validId(data.item_id)
+    || data.operation === 'transcript' && !validId(data.transcript_id)
     || Object.hasOwn(data, 'limit') && (!Number.isInteger(data.limit) || data.limit < 1 || data.limit > 100)
     || Object.hasOwn(data, 'cursor') && data.cursor !== null && (typeof data.cursor !== 'string' || !data.cursor || data.cursor.length > 4096)) {
     throw fault('invalid_project_read_request');
@@ -127,6 +132,15 @@ function createNativeProjectReads({ db, auth, bucket, enabled = false, getCursor
         if (data.operation === 'get') {
           const projected = projectReadView(data.project_id, raw, actor); await finish();
           return { ok: true, project_id: data.project_id, actor_uid: actor.uid, version: version(project), project: projected };
+        }
+        if (data.operation === 'activities' || data.operation === 'transcript') {
+          // Same capability as the Communications/Milestones tabs: admin or internal, plus current membership (checked above).
+          if (!fullAccess(actor)) throw fault('manual_history_forbidden', 403);
+          const body = data.operation === 'activities'
+            ? await manualHistory.activitiesPage({ transaction, db, projectId: data.project_id, start, limit, encode: codec.encode })
+            : await manualHistory.transcript({ transaction, db, projectId: data.project_id, transcriptId: data.transcript_id });
+          await finish();
+          return { ok: true, project_id: data.project_id, actor_uid: actor.uid, project_version: opening.project_version, ...body };
         }
         const bom = await transaction.get(projectRef.collection('bom').doc('data'));
         const visible = visibleItems(bom.exists ? bom.data() : undefined, raw, actor);
