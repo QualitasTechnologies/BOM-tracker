@@ -7614,7 +7614,7 @@ exports.nativeProcurementOperations = onCall(
 // Native project metadata, archive and membership controls; default-off write gates.
 const { createNativeProjectOperations, projectMutationsEnabled, supportProfileMutationsEnabled } = require('./nativeProjectOperations.cjs');
 exports.nativeProjectOperations = onCall(
-  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5, memory: '256MiB', concurrency: 1 },
   createNativeProjectOperations({
     db: admin.firestore(), auth: admin.auth(), enabled: () => projectMutationsEnabled(process.env),
     supportProfileEnabled: () => supportProfileMutationsEnabled(process.env),
