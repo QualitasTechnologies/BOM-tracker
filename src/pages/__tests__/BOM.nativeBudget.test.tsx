@@ -10,7 +10,7 @@ const h = vi.hoisted(() => ({
 vi.mock('react-router-dom', () => ({ useParams: () => ({ projectId: 'P' }), useSearchParams: () => [new URLSearchParams()] }));
 vi.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ user: { uid: h.uid }, isAdmin: true }) }));
 vi.mock('@/firebase', () => ({ db: {}, auth: {}, storage: {}, functions: {} }));
-vi.mock('@/utils/nativeMaterialCommands', () => ({ isNativeMaterialCommandEnabled: () => false, loadNativeMaterialSnapshot: vi.fn(), submitNativeMaterialCommand: vi.fn(), submitNativeMaterialFulfillment: vi.fn() }));
+vi.mock('@/utils/nativeMaterialCommands', () => ({ getPendingNativeMaterialRequest: async () => ({ kind: 'absent' }), resolveNativeMaterialRequest: vi.fn(), acknowledgeNativeMaterialRequest: vi.fn(), isNativeMaterialCommandEnabled: () => false, loadNativeMaterialSnapshot: vi.fn(), submitNativeMaterialCommand: vi.fn(), submitNativeMaterialFulfillment: vi.fn() }));
 vi.mock('@/utils/projectFirestore', () => ({
   getProject: (...args: unknown[]) => h.getProject(...args), getBOMData: (...args: unknown[]) => h.getBOMData(...args),
   subscribeToBOM: (_id: string, onValue: (value: unknown[]) => void, onError: (error: Error) => void) => { h.subscriptionError = onError; h.refresh = () => onValue([]); return vi.fn(); },

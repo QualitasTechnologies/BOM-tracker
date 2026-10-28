@@ -18,7 +18,7 @@ vi.mock('@/utils/nativeProjectOperations', () => ({
   }),
 }));
 vi.mock('@/utils/projectReadMode', () => ({ isScopedProjectReadEnabled: () => true }));
-vi.mock('@/utils/nativeMaterialCommands', () => ({ isNativeMaterialCommandEnabled: () => false, loadNativeMaterialSnapshot: vi.fn(), submitNativeMaterialCommand: vi.fn(), submitNativeMaterialFulfillment: vi.fn() }));
+vi.mock('@/utils/nativeMaterialCommands', () => ({ getPendingNativeMaterialRequest: async () => ({ kind: 'absent' }), resolveNativeMaterialRequest: vi.fn(), acknowledgeNativeMaterialRequest: vi.fn(), isNativeMaterialCommandEnabled: () => false, loadNativeMaterialSnapshot: vi.fn(), submitNativeMaterialCommand: vi.fn(), submitNativeMaterialFulfillment: vi.fn() }));
 vi.mock('@/utils/projectFirestore', () => ({
   getProject: (...args: unknown[]) => h.getProject(...args), getBOMData: (...args: unknown[]) => h.getBOMData(...args),
   subscribeToBOM: (_id: string, _onValue: (value: unknown[]) => void, onError: (error: Error) => void) => { h.subscriptionError = onError; return vi.fn(); },

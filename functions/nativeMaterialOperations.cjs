@@ -36,14 +36,16 @@ function createNativeMaterialOperations({ db, auth, mutationsEnabled = false, ge
         : data.operation === 'create_project' ? ['operation', 'project_id', 'operation_id', 'project']
         : data.operation === 'command' ? ['operation', 'project_id', 'expected_version', 'operation_id', 'command']
         : ['operation', 'project_id', 'item_id', 'expected_version', 'operation_id', data.operation === 'fulfill' ? 'fulfillment' : 'patch'];
-      if (data.operation !== 'get') allowed.push('expected_actor_uid');
+      if (data.operation !== 'get') allowed.push('expected_actor_uid', 'resolve_only');
       if (Object.keys(data).some(key => !allowed.includes(key))) throw fault('invalid_material_request', 400);
       if (data.operation === 'create_project' && !Object.hasOwn(data, 'expected_actor_uid')) throw fault('invalid_material_request', 400);
       // A session assertion never selects identity: the freshly verified bearer does.
       if (data.operation !== 'get' && Object.hasOwn(data, 'expected_actor_uid')
         && (typeof data.expected_actor_uid !== 'string' || data.expected_actor_uid !== actor.uid)) throw fault('actor_session_changed', 403);
       const { operation, project_id: projectId, expected_actor_uid: _expectedActorUid, ...body } = data;
-      const handler = createProjectOperationsHandler({ db, auth, mutationsEnabled, getServerTimestamp, resolveActor: async () => actor });
+      // Server-selected channel: native may write in pulse_only, may settle receipts, and re-verifies the live actor in each transaction.
+      const handler = createProjectOperationsHandler({ db, auth, mutationsEnabled, getServerTimestamp, resolveActor: async () => actor,
+        writeModes: ['coexist', 'pulse_only'], allowResolve: true, recheckActor: () => currentNativeActor(auth, request) });
       let result;
       const res = { set() {}, status() { return this; }, json(value) { result = value; return this; } };
       await handler({ method: operation === 'get' ? 'GET' : ['fulfill', 'command', 'create_project'].includes(operation) ? 'POST' : 'PATCH', query: { project_id: projectId, ...(operation === 'create_project' ? { resource: 'project_create' } : operation === 'fulfill' ? { resource: 'fulfillment' } : operation === 'command' ? { resource: 'commands' } : {}) }, body }, res);

@@ -27,7 +27,7 @@ vi.mock('@/utils/nativeProjectOperations', () => ({
 }));
 vi.mock('@/utils/projectReadMode', () => ({ isScopedProjectReadEnabled: () => h.scopedReads }));
 vi.mock('@/utils/nativeMaterialCommands', () => ({
-  isNativeMaterialCommandEnabled: () => h.native, loadNativeMaterialSnapshot: (...a: unknown[]) => h.load(...a),
+  getPendingNativeMaterialRequest: async () => ({ kind: 'absent' }), resolveNativeMaterialRequest: vi.fn(), acknowledgeNativeMaterialRequest: vi.fn(), isNativeMaterialCommandEnabled: () => h.native, loadNativeMaterialSnapshot: (...a: unknown[]) => h.load(...a),
   submitNativeMaterialCommand: (...a: unknown[]) => h.submitLive(...a), submitNativeMaterialFulfillment: vi.fn(),
 }));
 vi.mock('@/utils/nativeMaterialOperations', async importOriginal => ({

@@ -47,6 +47,7 @@ import { isNativeProjectLifecycleEnabled } from '@/utils/projectLifecycleAccess'
 import { createNativeProjectWorkspace } from '@/utils/nativeProjectOperations';
 import { createDocumentLinkAction, isDefinitiveDocumentLinkFailure, type DocumentLinkAction } from '@/utils/documentLinkAction';
 import OverheadsTab from '@/components/BOM/OverheadsTab';
+import MaterialRecoveryBanner from '@/components/BOM/MaterialRecoveryBanner';
 import ProjectCostBar from '@/components/BOM/ProjectCostBar';
 import { fetchAllUsers } from '@/utils/userService';
 import { getVendors, getBOMSettings } from '@/utils/settingsFirestore';
@@ -959,6 +960,7 @@ const BOMContent = () => {
 
   return (
     <div className="min-h-screen bg-background">
+      {projectId && user?.uid && <MaterialRecoveryBanner key={`${user.uid}:${projectId}`} projectId={projectId} onRefresh={() => refreshMaterialRef.current?.()} />}
       {materialActionError && <div role="alert" className="mx-4 mt-4 rounded border border-destructive bg-destructive/10 p-3 text-sm text-destructive">{materialActionError}</div>}
       {legacyWritesDisabled && <div role="status" className="mx-4 mt-2 rounded border bg-muted p-3 text-sm">Material changes are currently read only.</div>}
       <main className="p-4">

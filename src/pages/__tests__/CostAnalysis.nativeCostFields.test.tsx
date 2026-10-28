@@ -62,7 +62,10 @@ const handle = async (payload: Payload): Promise<{ data: unknown }> => {
 const seed = (id = 'P', extra: Record<string, unknown> = {}) => { server.projects.set(id, { projectName: `Project ${id}`, clientName: 'Acme', status: 'Ongoing', deadline: '2026-12-01', costPerHour: 100, miscCost: 99, poValue: 5000, bomSnapshot: [{ snapshotCost: 7 }], ...extra }); server.version.set(id, 1); };
 const KEY = (uid = 'alice', project = 'P') => `pulse.project-cost-fields.v1:${JSON.stringify([uid, project])}`;
 const editButton = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
-const ready = async (name = 'Edit hourly rate') => { await waitFor(() => expect(editButton(name)).toBeEnabled()); };
+// Match the readiness allowance already verified in Pulse for cold Windows renders.
+// The enabled assertion and Vitest's per-test deadline remain unchanged.
+const READY_TIMEOUT_MS = 15_000;
+const ready = async (name = 'Edit hourly rate') => { await waitFor(() => expect(editButton(name)).toBeEnabled(), { timeout: READY_TIMEOUT_MS }); };
 const type = (value: string) => { const input = screen.getByRole('spinbutton'); fireEvent.change(input, { target: { value } }); return input; };
 const nativeCommands = () => server.commands.filter(call => !call.resolve_only).map(call => call.command);
 
