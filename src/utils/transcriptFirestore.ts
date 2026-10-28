@@ -1,4 +1,6 @@
-import { db } from "@/firebase";
+import { auth, db } from "@/firebase";
+import { isScopedProjectReadEnabled } from "./projectReadMode";
+import { nativeProjectReads } from "./nativeProjectReads";
 import {
   collection,
   doc,
@@ -481,3 +483,105 @@ export const getProjectStatusUpdates = async (
   const snapshot = await getDocs(q);
   return snapshot.docs.map(docToStatusUpdate);
 };
+
+// ============================================
+// Manual history reads (activity -> source transcript)
+// ============================================
+
+export interface ManualHistoryOptions {
+  isCurrent?: () => boolean;
+}
+
+const MANUAL_PAGE_LIMIT = 100;
+const MANUAL_MAX_PAGES = 1000;
+const MAX_TRANSCRIPT_BYTES = 1048576;
+const manualError = (code: string, message: string) => Object.assign(new Error(message), { code });
+const manualIntegrity = () => manualError('integrity', 'Meeting history failed an integrity check. Refresh and try again.');
+
+// Captures the signed-in account once; every later step proves it is still the same account and context.
+function manualContext(options?: ManualHistoryOptions) {
+  const uid = auth.currentUser?.uid || '';
+  const isCurrent = options?.isCurrent ?? (() => true);
+  const assertContext = () => {
+    if (!isCurrent() || (auth.currentUser?.uid || '') !== uid) {
+      throw manualError('identity_changed', 'Your signed-in account or project context changed. Refresh and try again.');
+    }
+  };
+  assertContext();
+  if (!uid) throw manualError('sign_in_required', 'Sign in again to read meeting history.');
+  return { uid, assertContext };
+}
+
+/**
+ * Every activity of one project through the authorized server read (no SDK fallback).
+ * Ordered like the original timeline: newest meeting first.
+ */
+export async function readScopedProjectActivities(
+  projectId: string,
+  options?: ManualHistoryOptions
+): Promise<TranscriptActivity[]> {
+  const { uid, assertContext } = manualContext(options);
+  const rows: TranscriptActivity[] = [];
+  const ids = new Set<string>();
+  const cursors = new Set<string>();
+  let cursor: string | null = null;
+  for (let pages = 0; pages < MANUAL_MAX_PAGES; pages++) {
+    const result = await nativeProjectReads.activities(projectId, cursor ? { limit: MANUAL_PAGE_LIMIT, cursor } : { limit: MANUAL_PAGE_LIMIT }, uid, assertContext);
+    assertContext();
+    for (const row of result.activities) {
+      if (ids.has(row.id)) throw manualIntegrity();
+      ids.add(row.id);
+      rows.push(row as unknown as TranscriptActivity);
+    }
+    if (result.next_cursor === null) {
+      return rows.sort((a, b) => (a.meetingDate < b.meetingDate ? 1 : a.meetingDate > b.meetingDate ? -1 : 0));
+    }
+    if (cursors.has(result.next_cursor)) throw manualIntegrity();
+    cursors.add(result.next_cursor);
+    cursor = result.next_cursor;
+  }
+  throw manualIntegrity();
+}
+
+export interface SourceTranscript {
+  transcript: Transcript;
+  /** How many projects have activities extracted from this transcript; never which ones. */
+  linkedProjectCount: number;
+}
+
+/**
+ * The full stored transcript behind an activity of this project. Available only when a stored
+ * activity names both the project and the transcript. Scoped reads use the server exclusively.
+ */
+export async function getProjectSourceTranscript(
+  projectId: string,
+  transcriptId: string,
+  options?: ManualHistoryOptions
+): Promise<SourceTranscript> {
+  const { uid, assertContext } = manualContext(options);
+  if (isScopedProjectReadEnabled()) {
+    const result = await nativeProjectReads.transcript(projectId, transcriptId, uid, assertContext);
+    assertContext();
+    const transcript = result.transcript as unknown as Transcript;
+    if (transcript.id !== transcriptId || typeof transcript.rawText !== "string"
+      || new TextEncoder().encode(transcript.rawText).length > MAX_TRANSCRIPT_BYTES) throw manualIntegrity();
+    return { transcript, linkedProjectCount: result.linked_project_count };
+  }
+  const links = await getDocs(query(getActivitiesCol(), where("transcriptId", "==", transcriptId)));
+  assertContext();
+  const projects = new Set<string>();
+  for (const row of links.docs) {
+    const linked = row.data().projectId;
+    if (typeof linked !== "string" || !linked) throw manualIntegrity();
+    projects.add(linked);
+  }
+  const notFound = () => manualError('not_found', 'The source transcript is not available for this project.');
+  if (!projects.has(projectId)) throw notFound();
+  const snapshot = await getDoc(doc(getTranscriptsCol(), transcriptId));
+  assertContext();
+  if (!snapshot.exists()) throw notFound();
+  const data = snapshot.data();
+  if (typeof data.rawText !== "string" || typeof data.meetingDate !== "string" || !data.meetingDate
+    || new TextEncoder().encode(data.rawText).length > MAX_TRANSCRIPT_BYTES) throw manualIntegrity();
+  return { transcript: docToTranscript(snapshot), linkedProjectCount: projects.size };
+}

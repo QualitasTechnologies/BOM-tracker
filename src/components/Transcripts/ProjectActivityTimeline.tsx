@@ -15,6 +15,7 @@ import {
   Trash2,
   Check,
   X,
+  ScrollText,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -43,7 +44,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { subscribeToProjectActivities, updateActivity, deleteActivity } from '@/utils/transcriptFirestore';
+import { subscribeToProjectActivities, readScopedProjectActivities, updateActivity, deleteActivity } from '@/utils/transcriptFirestore';
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
+import { useAuth } from '@/hooks/useAuth';
+import TranscriptSourceDialog from './TranscriptSourceDialog';
 import { generateStatusUpdate } from '@/utils/transcriptService';
 import type { TranscriptActivity, ActivityType } from '@/types/transcript';
 import {
@@ -59,7 +63,7 @@ interface ProjectActivityTimelineProps {
   projectName: string;
 }
 
-const ProjectActivityTimeline = ({
+const ProjectActivityTimelineContent = ({
   projectId,
   projectName,
 }: ProjectActivityTimelineProps) => {
@@ -90,14 +94,37 @@ const ProjectActivityTimeline = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
 
-  // Subscribe to activities
+  // Source transcript dialog state (read-only)
+  const [sourceTranscriptId, setSourceTranscriptId] = useState<string | null>(null);
+
+  // Scoped reads go through the authorized server read; the live SDK listener is the flag-off path.
+  const scoped = isScopedProjectReadEnabled();
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const refresh = () => setReloadKey((n) => n + 1);
+
+  // Load activities
   useEffect(() => {
+    setSourceTranscriptId(null);
+    if (scoped) {
+      let cancelled = false;
+      setLoadError(null);
+      readScopedProjectActivities(projectId, { isCurrent: () => !cancelled })
+        .then((data) => { if (!cancelled) setActivities(data); })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          setActivities([]);
+          setLoadError(err instanceof Error && err.message ? err.message : 'Could not load activities.');
+        });
+      return () => { cancelled = true; };
+    }
+    let active = true;
     const unsubscribe = subscribeToProjectActivities(projectId, (data) => {
-      setActivities(data);
+      if (active) setActivities(data);
     });
 
-    return () => unsubscribe();
-  }, [projectId]);
+    return () => { active = false; unsubscribe(); };
+  }, [projectId, scoped, reloadKey]);
 
   // Filter activities
   const filteredActivities = useMemo(() => {
@@ -156,6 +183,7 @@ const ProjectActivityTimeline = ({
       });
       setEditingId(null);
       setEditSummary('');
+      if (scoped) refresh();
     } catch (err) {
       console.error('Failed to update activity:', err);
     } finally {
@@ -175,6 +203,7 @@ const ProjectActivityTimeline = ({
 
     try {
       await deleteActivity(activityId);
+      if (scoped) refresh();
     } catch (err) {
       console.error('Failed to delete activity:', err);
     }
@@ -235,6 +264,20 @@ const ProjectActivityTimeline = ({
   const handleCopyToClipboard = () => {
     navigator.clipboard.writeText(generatedUpdate);
   };
+
+  if (loadError) {
+    return (
+      <Alert variant="destructive">
+        <AlertCircle className="h-4 w-4" />
+        <AlertDescription className="flex items-center justify-between gap-2">
+          <span>{loadError}</span>
+          <Button variant="outline" size="sm" onClick={refresh}>
+            Retry
+          </Button>
+        </AlertDescription>
+      </Alert>
+    );
+  }
 
   if (activities.length === 0) {
     return null; // Don't show if no activities
@@ -452,6 +495,18 @@ const ProjectActivityTimeline = ({
                                     <p className="text-gray-900">{activity.summary}</p>
                                   </div>
                                   <div className="flex items-center gap-1">
+                                    {activity.transcriptId && (
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        aria-label="View source transcript"
+                                        title="View source transcript"
+                                        onClick={() => setSourceTranscriptId(activity.transcriptId!)}
+                                        className="h-6 w-6 p-0 text-gray-400 hover:text-gray-600"
+                                      >
+                                        <ScrollText className="h-3 w-3" />
+                                      </Button>
+                                    )}
                                     <Button
                                       variant="ghost"
                                       size="sm"
@@ -489,6 +544,15 @@ const ProjectActivityTimeline = ({
           </CollapsibleContent>
         </Card>
       </Collapsible>
+
+      {sourceTranscriptId && (
+        <TranscriptSourceDialog
+          open
+          onOpenChange={(next) => { if (!next) setSourceTranscriptId(null); }}
+          projectId={projectId}
+          transcriptId={sourceTranscriptId}
+        />
+      )}
 
       {/* Generate Status Update Dialog */}
       <Dialog open={statusDialogOpen} onOpenChange={setStatusDialogOpen}>
@@ -596,6 +660,14 @@ const ProjectActivityTimeline = ({
       </Dialog>
     </>
   );
+};
+
+// Remount the complete view on an authority/context change, so cached activities,
+// edits, generated text and open source dialogs never render for the next account/project.
+const ProjectActivityTimeline = (props: ProjectActivityTimelineProps) => {
+  const { user } = useAuth();
+  if (!user?.uid) return null;
+  return <ProjectActivityTimelineContent key={JSON.stringify([user.uid, props.projectId])} {...props} />;
 };
 
 export default ProjectActivityTimeline;
