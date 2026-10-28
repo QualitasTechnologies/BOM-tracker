@@ -19,6 +19,26 @@ actions. It does not enable material writes or retire standalone BOM.
 - A cancelled patch/fulfillment response contains `item_id` but no `item`.
   Committed responses carry the stored result; a fresh read supplies current state.
 
+## Native purchase-order send fence
+
+Native procurement keeps its existing environment gate and also reads
+`pulseRuntimeControl/cutover` inside each send, dispatch, recovery lease,
+finalization, reconciliation, or cancellation transaction that can reserve or
+lease work, start a provider call, or change purchase-order, BOM, or project
+document data. A missing control document defaults to `coexist`; only `coexist`
+and `pulse_only` permit those actions. `read_only` and malformed modes deny
+them. `open` remains available and reports send permission as false while
+paused.
+
+An already-held lease may still write its internal attempt journal while paused
+to retain an artifact reference, a provider acceptance (`provider_id` and
+`accepted_ms`), or a failure outcome. These journal and receipt updates do not
+change purchase-order, BOM, or project-document data and do not start provider
+work. If a pause races with a provider call already authorized in the dispatch
+transaction, the call cannot be recalled; its outcome is journaled, while
+business finalization waits for a writable mode. Operational shutdown still
+needs to drain calls already in flight.
+
 ## Browser contract and homes
 
 - Both typed and direct command clients persist the exact request before sending.
