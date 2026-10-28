@@ -3,6 +3,87 @@ const assert = require('node:assert/strict');
 
 const { fixture } = require('./nativeProcurementFixture.cjs');
 
+test('global runtime mode permits only coexist and pulse_only for new native sends', async () => {
+  for (const mode of ['coexist', 'pulse_only']) {
+    const f = fixture();
+    f.docs.set('pulseRuntimeControl/cutover', { mode });
+    assert.equal((await f.send()).phase, 'complete', mode);
+    assert.equal(f.calls.length, 1, mode);
+  }
+  const missing = fixture();
+  assert.equal((await missing.send()).phase, 'complete');
+});
+
+test('read_only, unknown, null and malformed global runtime modes fail closed without new PO or BOM writes', async () => {
+  for (const control of [{ mode: 'read_only' }, { mode: 'unknown' }, { mode: null }, {}]) {
+    const f = fixture();
+    f.docs.set('pulseRuntimeControl/cutover', control);
+    const beforePo = structuredClone(f.docs.get('projects/P/purchaseOrders/PO'));
+    const beforeBom = structuredClone(f.docs.get('projects/P/bom/data'));
+    const opening = await f.call({ operation: 'open' });
+    assert.equal(opening.permissions.send, false);
+    assert.equal((await f.send()).error, control.mode === 'read_only' ? 'procurement_mutations_disabled' : 'procurement_control_unavailable');
+    assert.equal(f.calls.length, 0);
+    assert.deepEqual(f.docs.get('projects/P/purchaseOrders/PO'), beforePo);
+    assert.deepEqual(f.docs.get('projects/P/bom/data'), beforeBom);
+    assert.equal([...f.docs.keys()].some(path => path.startsWith('pulseProcurementOperations/')), false);
+  }
+});
+
+test('a runtime pause after reservation prevents dispatching the frozen send', async () => {
+  let f;
+  f = fixture({ prepare: () => f.docs.set('pulseRuntimeControl/cutover', { mode: 'read_only' }) });
+  const beforeBom = structuredClone(f.docs.get('projects/P/bom/data'));
+  const result = await f.send();
+  assert.notEqual(result.phase, 'complete');
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.docs.get('projects/P/purchaseOrders/PO').status, 'pending-approval');
+  assert.deepEqual(f.docs.get('projects/P/bom/data'), beforeBom);
+  assert.equal(f.docs.get('pulseProcurementOperations/P/attempts/attempt-1').phase, 'prepared');
+});
+
+test('a runtime pause after provider acceptance prevents PO and BOM finalization without resending', async () => {
+  let f;
+  f = fixture({ provider: () => f.docs.set('pulseRuntimeControl/cutover', { mode: 'read_only' }) });
+  const result = await f.send();
+  assert.equal(result.phase, 'metadata_pending');
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.docs.get('projects/P/purchaseOrders/PO').status, 'pending-approval');
+  assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].status, 'not-ordered');
+  const accepted = f.docs.get('pulseProcurementOperations/P/attempts/attempt-1');
+  assert.equal(accepted.phase, 'metadata_pending');
+  assert.equal(accepted.provider_id, 'provider-id');
+  assert.equal(Number.isSafeInteger(accepted.accepted_ms), true);
+  assert.equal([...f.docs.keys()].some(path => path.startsWith('projectDocuments/')), false);
+  assert.equal([...f.docs.entries()].some(([path, value]) => path.endsWith('-accepted') && value.operation === 'po_send_accepted'), true);
+  assert.equal([...f.docs.entries()].some(([path, value]) => path.endsWith('-finalized') || value.operation === 'reconcile_po_materials'), false);
+  f.docs.set('pulseRuntimeControl/cutover', { mode: 'pulse_only' });
+  assert.equal((await f.call({ operation: 'recover' })).phase, 'complete');
+  assert.equal(f.calls.length, 1);
+});
+
+test('paused recovery, reconciliation and cancellation do not claim or mutate an existing attempt', async () => {
+  const prepared = fixture({ prepare: () => { throw new Error('interrupted before dispatch'); } });
+  assert.equal((await prepared.send()).phase, 'prepared');
+  prepared.docs.set('pulseRuntimeControl/cutover', { mode: 'read_only' });
+  const beforePrepared = new Map([...prepared.docs].map(([key, value]) => [key, structuredClone(value)]));
+  assert.equal((await prepared.call({ operation: 'recover' })).error, 'procurement_mutations_disabled');
+  assert.equal((await prepared.call({ operation: 'cancel', attempt_id: 'attempt-1' })).error, 'procurement_mutations_disabled');
+  assert.equal(prepared.calls.length, 0);
+  assert.deepEqual([...prepared.docs], [...beforePrepared]);
+
+  let accepted;
+  accepted = fixture({ provider: () => accepted.changeMaterials() });
+  assert.equal((await accepted.send()).phase, 'material_pending');
+  accepted.docs.set('pulseRuntimeControl/cutover', { mode: 'unknown' });
+  const beforePo = structuredClone(accepted.docs.get('projects/P/purchaseOrders/PO'));
+  const beforeBom = structuredClone(accepted.docs.get('projects/P/bom/data'));
+  assert.equal((await accepted.call({ operation: 'reconcile', expected_material_version: '10:2' })).error, 'procurement_control_unavailable');
+  assert.deepEqual(accepted.docs.get('projects/P/purchaseOrders/PO'), beforePo);
+  assert.deepEqual(accepted.docs.get('projects/P/bom/data'), beforeBom);
+  assert.equal(accepted.calls.length, 1);
+});
+
 test('accepted email finalizes original PO and BOM with one attributable send and retry receipt', async () => {
   const f = fixture(); const result = await f.send(); assert.equal(result.phase, 'complete');
   assert.equal(f.calls.length, 1); assert.equal(f.docs.get('projects/P/purchaseOrders/PO').status, 'sent');

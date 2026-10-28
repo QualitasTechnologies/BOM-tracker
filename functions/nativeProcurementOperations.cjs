@@ -36,6 +36,21 @@ const markDay = record => record?.mode !== 'mark' ? null
 // The provider and artifact seams must be server-only and preserve immutable bytes.
 function createNativeProcurementOperations({ db, auth, enabled = false, now = Date.now, getServerTimestamp, resolveBilling, prepareArtifact, sendEmail }) {
   const writesOn = () => (typeof enabled === 'function' ? enabled() : enabled) === true;
+  const cutoverRef = db.collection('pulseRuntimeControl').doc('cutover');
+  const runtimeMode = async transaction => {
+    const snapshot = await transaction.get(cutoverRef);
+    if (!snapshot.exists) return 'coexist';
+    return snapshot.data()?.mode;
+  };
+  const assertWritableMode = mode => {
+    if (mode === 'read_only') throw fault('procurement_mutations_disabled', 503);
+    if (!['coexist', 'pulse_only'].includes(mode)) throw fault('procurement_control_unavailable', 503);
+  };
+  const assertWritable = async transaction => {
+    const mode = await runtimeMode(transaction);
+    assertWritableMode(mode);
+    return mode;
+  };
   return async request => {
     try {
       const actor = await currentNativeActor(auth, request);
@@ -64,13 +79,13 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
         ...(markDay(attempt) ? { actual_sent_date: markDay(attempt) } : {}),
         ...(attempt.problem ? { problem: attempt.problem } : {}) });
       if (data.operation === 'open') return await db.runTransaction(async transaction => {
-        const state = await read(transaction);
+        const state = await read(transaction), mode = await runtimeMode(transaction);
         const attemptId = state.po.data().nativeSendAttemptId;
         const attempt = attemptId ? await transaction.get(attempts.doc(attemptId)) : null;
         return { ok: true, project_id: data.project_id, po_id: data.po_id, po_version: version(state.po), material_version: version(state.bom),
           purchase_order: { ...freeze(state.po.data()), id: data.po_id, projectId: data.project_id },
           material_items: (Array.isArray(state.bom.data()?.categories) ? state.bom.data().categories : []).flatMap(category => (Array.isArray(category.items) ? category.items : []).filter(item => state.po.data().items?.some(row => row.bomItemId === item.id)).map(item => ({ id: item.id, name: item.name ?? '', status: item.status ?? '', quantity: item.quantity ?? 0, category: category.name }))),
-          permissions: { send: writesOn() }, attempt: attempt?.exists ? publicAttempt(attempt.data()) : null };
+          permissions: { send: writesOn() && ['coexist', 'pulse_only'].includes(mode) }, attempt: attempt?.exists ? publicAttempt(attempt.data()) : null };
       });
       if (!writesOn()) throw fault('procurement_mutations_disabled', 503);
       let attemptId = data.attempt_id;
@@ -84,6 +99,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
           mode: data.mode, ...(data.mode === 'mark' ? { actual_sent_date: data.actual_sent_date } : {}), recipient_email: data.recipient_email.trim().toLowerCase(), cc_emails: [...new Set([...data.cc_emails.map(value => value.trim().toLowerCase()), actor.email])].filter(value => value !== data.recipient_email.trim().toLowerCase()).sort() };
         await db.runTransaction(async transaction => {
           const state = await read(transaction), previous = await transaction.get(attempts.doc(attemptId));
+          await assertWritable(transaction);
           if (previous.exists) {
             const record = previous.data();
             if (record.po_id !== data.po_id || record.actor_uid !== actor.uid || record.intent_hash !== hash(intent)) throw fault('operation_conflict', 409);
@@ -110,9 +126,11 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
       const attemptRef = attempts.doc(attemptId);
       if (data.operation === 'cancel') return await db.runTransaction(async transaction => {
         const state = await read(transaction), stored = await transaction.get(attemptRef);
+        const mode = await runtimeMode(transaction);
         if (!stored.exists || stored.data().po_id !== data.po_id) throw fault('procurement_attempt_not_found', 404);
         const record = stored.data();
         if (record.phase === 'cancelled') return publicAttempt(record);
+        assertWritableMode(mode);
         if (state.po.data().nativeSendAttemptId !== attemptId || record.phase !== 'prepared' || record.dispatched_ms !== undefined || record.lease_until > now()) throw fault('send_cannot_be_cancelled', 409);
         transaction.update(attemptRef, { phase: 'cancelled', lease_until: 0 });
         transaction.update(poRef, { nativeSendAttemptId: null, nativeSendPhase: 'cancelled' });
@@ -122,6 +140,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
       const claim = randomUUID();
       const attempt = await db.runTransaction(async transaction => {
         const state = await read(transaction), stored = await transaction.get(attemptRef);
+        const mode = await runtimeMode(transaction);
         if (!stored.exists || stored.data().po_id !== data.po_id || state.po.data().nativeSendAttemptId !== attemptId) throw fault('procurement_attempt_not_found', 404);
         const record = stored.data();
         if (record.phase === 'complete') return record;
@@ -133,6 +152,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
         if (data.operation === 'reconcile' && !['accepted', 'material_pending', 'metadata_pending'].includes(record.phase)) throw fault('send_outcome_unconfirmed', 409);
         if (hash(business({ ...state.po.data(), id: data.po_id, projectId: data.project_id })) !== record.po_hash) throw fault('purchase_order_changed', 409);
         if (!['pending-approval', 'sent'].includes(state.po.data().status)) throw fault('purchase_order_not_approved', 409);
+        assertWritableMode(mode);
         transaction.update(attemptRef, { lease_owner: claim, lease_until: now() + LEASE });
         return { ...record, lease_owner: claim };
       });
@@ -159,6 +179,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
           if (dispatchActor.customClaims.role !== 'admin') throw fault('procurement_forbidden', 403);
           await db.runTransaction(async transaction => {
             const state = await read(transaction), stored = await transaction.get(attemptRef);
+            await assertWritable(transaction);
             if (stored.data().lease_owner !== claim) throw fault('procurement_lease_lost', 409);
             if (state.po.data().status !== 'pending-approval' || hash(business({ ...state.po.data(), id: data.po_id, projectId: data.project_id })) !== attempt.po_hash) throw fault('purchase_order_changed', 409);
             transaction.update(attemptRef, { dispatched_ms: attempt.dispatched_ms ?? now(), phase: 'dispatching' });
@@ -178,8 +199,10 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
         if (finalActor.customClaims.role !== 'admin') throw fault('procurement_forbidden', 403);
         const result = await db.runTransaction(async transaction => {
           const state = await read(transaction), stored = await transaction.get(attemptRef);
+          const mode = await runtimeMode(transaction);
           if (!stored.exists || stored.data().lease_owner !== claim || !['accepted', 'material_pending', 'metadata_pending'].includes(stored.data().phase)) throw fault('procurement_lease_lost', 409);
           const record = stored.data();
+          assertWritableMode(mode);
           if (!['pending-approval', 'sent'].includes(state.po.data().status) || hash(business({ ...state.po.data(), id: data.po_id, projectId: data.project_id })) !== record.po_hash) {
             transaction.update(attemptRef, { phase: 'metadata_pending', lease_until: 0, problem: 'purchase_order_changed' });
             return publicAttempt({ ...record, phase: 'metadata_pending', problem: 'purchase_order_changed' });
