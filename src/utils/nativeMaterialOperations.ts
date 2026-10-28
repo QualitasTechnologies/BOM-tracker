@@ -1,6 +1,11 @@
 // Native Firebase client for the `nativeMaterialOperations` callable.
 // Transport only: callers carry the displayed expected_version and a stable operation_id,
 // and a failure is never retried or replayed through a direct Firestore write.
+import {
+  acknowledgeMaterialRequest, beginMaterialWrite, isDefiniteMaterialRejection, MATERIAL_JOURNAL_OPERATIONS,
+  probeNativeMaterialRecovery, resolveMaterialRequest, settleMaterialWrite,
+  type MaterialResolution, type MaterialWriteTicket, type PendingNativeMaterialRecovery,
+} from './nativeMaterialRecovery';
 
 export const NATIVE_MATERIAL_PATCH_FIELDS = ['name', 'description', 'make', 'sku', 'unit', 'quantity', 'price', 'itemType', 'category', 'finalizedVendor'] as const;
 export type NativeMaterialPatchField = (typeof NATIVE_MATERIAL_PATCH_FIELDS)[number];
@@ -86,6 +91,15 @@ export interface NativeProjectMetadata {
   projectName: string; clientName: string; description: string;
   status: 'Planning' | 'Procurement' | 'Ongoing' | 'Delayed' | 'Completed' | 'Archived';
   deadline: string; poValue: number; clientId?: string; billingEntityId?: string;
+}
+
+export interface NativeMaterialRecoveryClient {
+  /** Non-throwing: is an unconfirmed write saved for the signed-in user and this project? */
+  pending: (projectId: string) => Promise<PendingNativeMaterialRecovery>;
+  /** Ask the server what happened to the saved write (never re-applies it). Works with editing disabled. */
+  resolve: (projectId: string) => Promise<{ resolution: MaterialResolution; result: Record<string, unknown> }>;
+  /** Clear a resolved write after a fresh authoritative read. */
+  acknowledge: (projectId: string) => Promise<NativeMaterialGetResult | null>;
 }
 
 export interface NativeMaterialOperationsClient {
@@ -287,9 +301,17 @@ const providerCode = (error: unknown): string => {
   return typeof code === 'string' && code.length <= 64 && SAFE_PROVIDER_CODE.test(code) ? code : 'native-material/request-failed';
 };
 
-const run = async (deps: NativeMaterialOperationsDeps, payload: Record<string, unknown>, expectedUid?: string): Promise<unknown> => {
+const run = async (deps: NativeMaterialOperationsDeps, payload: Record<string, unknown>, expectedUid?: string, validate?: (data: unknown) => unknown): Promise<unknown> => {
   const uid = await requireUid(deps);
   if (expectedUid !== undefined && uid !== expectedUid) throw new NativeMaterialError('native-material/identity-changed', 'The signed-in account changed; reopen before continuing');
+  // Writes are journaled (exact payload, per user + project) before anything leaves the browser.
+  const journal = MATERIAL_JOURNAL_OPERATIONS.some(operation => operation === payload.operation) && payload.resolve_only === undefined;
+  let ticket: MaterialWriteTicket | undefined;
+  if (journal) {
+    try { ({ payload, ticket } = beginMaterialWrite(uid, payload)); }
+    catch (error) { throw error instanceof NativeMaterialError ? error : new NativeMaterialError((error as { code?: string }).code ?? 'native-material/storage-unavailable', (error as Error).message); }
+  }
+  const settle = (outcome: 'success' | 'rejected' | 'ambiguous') => { if (ticket) settleMaterialWrite(ticket, outcome); };
   let data: unknown;
   let failure: unknown;
   let failed = false;
@@ -306,16 +328,21 @@ const run = async (deps: NativeMaterialOperationsDeps, payload: Record<string, u
   }
   if (failed) {
     const message = failure instanceof Error && failure.message ? failure.message.slice(0, ERROR_MESSAGE_MAX) : 'Material request failed';
-    throw new NativeMaterialError(providerCode(failure), message);
+    const code = providerCode(failure);
+    settle(isDefiniteMaterialRejection(code) ? 'rejected' : 'ambiguous');
+    throw new NativeMaterialError(code, message);
   }
   if (isRecord(data) && data.ok === false && typeof data.error === 'string' && data.error.trim()) {
     if (data.error.length > 64 || !SAFE_PROVIDER_CODE.test(data.error)) throw invalidResponse();
+    settle(isDefiniteMaterialRejection(data.error) ? 'rejected' : 'ambiguous');
     throw new NativeMaterialError(data.error, data.error);
   }
+  if (validate) data = validate(data);
+  settle('success');
   return data;
 };
 
-export const createNativeMaterialOperationsClient = (deps: NativeMaterialOperationsDeps): NativeMaterialOperationsClient => ({
+export const createNativeMaterialOperationsClient = (deps: NativeMaterialOperationsDeps): NativeMaterialOperationsClient & NativeMaterialRecoveryClient => ({
   async createProject(projectId, input, expectedUid) {
     const project_id = requireProjectId(projectId);
     if (!isRecord(input) || Object.keys(input).some(key => !['operation_id', 'project'].includes(key))) throw invalidInput('creation request');
@@ -330,11 +357,38 @@ export const createNativeMaterialOperationsClient = (deps: NativeMaterialOperati
       || typeof project.poValue !== 'number' || !Number.isFinite(project.poValue) || project.poValue < 0
       || ['clientId', 'billingEntityId'].some(key => Object.prototype.hasOwnProperty.call(project, key) && (typeof project[key] !== 'string' || !project[key].trim() || project[key].length > 512 || /[\/\x00-\x1f]/.test(project[key])))
       || typeof expectedUid !== 'string' || !expectedUid || expectedUid.length > 128) throw invalidInput('project metadata');
-    const data = await run(deps, { operation: 'create_project', project_id, operation_id, project: { ...project }, expected_actor_uid: expectedUid }, expectedUid);
-    if (!isRecord(data) || data.ok !== true || data.project_id !== project_id || data.operation_id !== operation_id) throw invalidResponse();
+    const data = await run(deps, { operation: 'create_project', project_id, operation_id, project: { ...project }, expected_actor_uid: expectedUid }, expectedUid, data => {
+      if (!isRecord(data) || data.ok !== true || data.project_id !== project_id || data.operation_id !== operation_id) throw invalidResponse();
+      return data;
+    });
     return { ok: true, project_id, operation_id };
   },
   currentUid: () => requireUid(deps),
+  async pending(projectId) {
+    const user = await deps.getCurrentUser();
+    return probeNativeMaterialRecovery(user && !user.isAnonymous ? user.uid : undefined, projectId);
+  },
+  async resolve(projectId) {
+    const project_id = requireProjectId(projectId);
+    const toError = (error: unknown) => error instanceof NativeMaterialError ? error : new NativeMaterialError((error as { code?: string }).code ?? 'native-material/request-failed', (error as Error).message);
+    try {
+      return await resolveMaterialRequest({
+        currentUid: () => requireUid(deps),
+        send: async payload => {
+          try { return (await deps.callable(payload)).data; }
+          catch (error) { throw new NativeMaterialError(providerCode(error), error instanceof Error && error.message ? error.message.slice(0, ERROR_MESSAGE_MAX) : 'Material request failed'); }
+        },
+      }, project_id);
+    } catch (error) { throw toError(error); }
+  },
+  async acknowledge(projectId) {
+    const project_id = requireProjectId(projectId);
+    try {
+      return await acknowledgeMaterialRequest({ currentUid: () => requireUid(deps), read: () => this.get(project_id) }, project_id);
+    } catch (error) {
+      throw error instanceof NativeMaterialError ? error : new NativeMaterialError((error as { code?: string }).code ?? 'native-material/request-failed', (error as Error).message);
+    }
+  },
   async get(projectId) {
     const project_id = requireProjectId(projectId);
     const data = await run(deps, { operation: 'get', project_id });
@@ -363,11 +417,11 @@ export const createNativeMaterialOperationsClient = (deps: NativeMaterialOperati
     const expected_version = input.expected_version;
     if (expectedUid !== undefined && (typeof expectedUid !== 'string' || !expectedUid || expectedUid.length > 128)) throw invalidInput('opening account');
     const data = await run(deps, { operation: 'patch', project_id, item_id, expected_version, operation_id, patch,
-      ...(expectedUid !== undefined ? { expected_actor_uid: expectedUid } : {}) }, expectedUid);
-    if (
-      !isRecord(data) || data.ok !== true || data.project_id !== project_id || data.item_id !== item_id || data.operation_id !== operation_id ||
-      !isRecord(data.item) || data.item.id !== item_id
-    ) throw invalidResponse();
+      ...(expectedUid !== undefined ? { expected_actor_uid: expectedUid } : {}) }, expectedUid, data => {
+      if (!isRecord(data) || data.ok !== true || data.project_id !== project_id || data.item_id !== item_id || data.operation_id !== operation_id
+        || !isRecord(data.item) || data.item.id !== item_id) throw invalidResponse();
+      return data;
+    }) as { item: Record<string, unknown> };
     return { ok: true, project_id, item_id, operation_id, item: data.item };
   },
 
@@ -380,9 +434,11 @@ export const createNativeMaterialOperationsClient = (deps: NativeMaterialOperati
     const fulfillment = requireFulfillment(input.fulfillment);
     if (expectedUid !== undefined && (typeof expectedUid !== 'string' || !expectedUid || expectedUid.length > 128)) throw invalidInput('opening account');
     const data = await run(deps, { operation: 'fulfill', project_id, item_id, operation_id, expected_version: input.expected_version, fulfillment,
-      ...(expectedUid !== undefined ? { expected_actor_uid: expectedUid } : {}) }, expectedUid);
-    if (!isRecord(data) || data.ok !== true || data.project_id !== project_id || data.item_id !== item_id || data.operation_id !== operation_id
-      || !isRecord(data.item) || data.item.id !== item_id) throw invalidResponse();
+      ...(expectedUid !== undefined ? { expected_actor_uid: expectedUid } : {}) }, expectedUid, data => {
+      if (!isRecord(data) || data.ok !== true || data.project_id !== project_id || data.item_id !== item_id || data.operation_id !== operation_id
+        || !isRecord(data.item) || data.item.id !== item_id) throw invalidResponse();
+      return data;
+    }) as { item: Record<string, unknown> };
     return { ok: true, project_id, item_id, operation_id, item: data.item };
   },
 
@@ -397,14 +453,16 @@ export const createNativeMaterialOperationsClient = (deps: NativeMaterialOperati
     let json: string;
     try { json = JSON.stringify(payload); } catch { throw commandFault(); }
     if (new TextEncoder().encode(json).length > 256 * 1024) throw commandFault();
-    const data = await run(deps, payload, expectedUid);
-    if (!isRecord(data) || data.ok !== true || data.project_id !== project_id || data.operation_id !== operation_id || data.command_kind !== command.kind) throw invalidResponse();
+    await run(deps, payload, expectedUid, data => {
+      if (!isRecord(data) || data.ok !== true || data.project_id !== project_id || data.operation_id !== operation_id || data.command_kind !== command.kind) throw invalidResponse();
+      return data;
+    });
     return { ok: true, project_id, operation_id, command_kind: command.kind };
   },
 });
 
 // Firebase is loaded lazily so importing this module never initializes the app (or analytics) on its own.
-export const nativeMaterialOperations: NativeMaterialOperationsClient = createNativeMaterialOperationsClient({
+export const nativeMaterialOperations: NativeMaterialOperationsClient & NativeMaterialRecoveryClient = createNativeMaterialOperationsClient({
   getCurrentUser: async () => (await import('@/firebase')).auth.currentUser,
   callable: async (payload) => {
     const [{ functions }, { httpsCallable }] = await Promise.all([import('@/firebase'), import('firebase/functions')]);

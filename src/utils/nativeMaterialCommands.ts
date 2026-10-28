@@ -1,5 +1,9 @@
 import { httpsCallable } from 'firebase/functions';
 import { auth, functions } from '@/firebase';
+import {
+  acknowledgeMaterialRequest, beginMaterialWrite, isDefiniteMaterialRejection, probeNativeMaterialRecovery,
+  listPendingNativeMaterialProjects, resolveMaterialRequest, reuseFrozenMaterialRequest, settleMaterialWrite,
+} from './nativeMaterialRecovery';
 
 export type NativeMaterialCommand =
   | { kind: 'add_items'; items: Array<Record<string, unknown>>; initialize?: boolean }
@@ -41,7 +45,40 @@ export function createNativeMaterialCommandClient({
   call: (input: Record<string, unknown>) => Promise<NativeResponse>;
   operationId?: () => string;
 }) {
-  return {
+  const currentUid = () => {
+    const actorUid = uid();
+    if (!actorUid) throw failure('Sign in again before continuing with this BOM.');
+    return actorUid;
+  };
+  // Journaled write: the exact payload is saved before sending; an unresolved request is only ever resent as-is.
+  const write = async (projectId: string, actorUid: string, candidate: Record<string, unknown>, expectedOperation: string) => {
+    const reused = reuseFrozenMaterialRequest(actorUid, projectId, candidate);
+    const { payload, ticket } = beginMaterialWrite(actorUid, reused ?? candidate);
+    let result: NativeResponse;
+    try {
+      result = await call(payload);
+    } catch (error) {
+      const code = record(error) ? error.code : undefined;
+      settleMaterialWrite(ticket, isDefiniteMaterialRejection(code) ? 'rejected' : 'ambiguous');
+      throw error;
+    }
+    if (uid() !== actorUid) throw failure('The signed-in account changed. Reopen this BOM before continuing.');
+    if (record(result) && result.ok === false && typeof result.error === 'string') {
+      settleMaterialWrite(ticket, isDefiniteMaterialRejection(result.error) ? 'rejected' : 'ambiguous');
+      throw failure(result.error);
+    }
+    if (!record(result) || result.ok !== true || result.project_id !== projectId || result.operation_id !== payload.operation_id
+      || payload.operation !== expectedOperation) {
+      throw failure(`The BOM ${expectedOperation === 'fulfill' ? 'fulfillment' : 'command'} returned an unexpected result.`);
+    }
+    settleMaterialWrite(ticket, 'success');
+    return result;
+  };
+  const api = {
+    pending: (projectId: string) => probeNativeMaterialRecovery(uid(), projectId),
+    // Recovery never needs editing flags or command permission: it only asks what happened to the saved request.
+    resolve: (projectId: string) => resolveMaterialRequest({ currentUid, send: input => call(input) }, projectId),
+    acknowledge: (projectId: string) => acknowledgeMaterialRequest({ currentUid, read: () => api.read(projectId) }, projectId),
     async read(projectId: string) {
       const actorUid = uid();
       if (!actorUid) throw failure('Sign in again before opening this BOM.');
@@ -64,14 +101,10 @@ export function createNativeMaterialCommandClient({
       if (!isVersion(version)) throw failure('The displayed BOM version is unavailable. Refresh the page and try again.');
       const id = operationId();
       if (!/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw failure('Unable to create a safe BOM operation ID.');
-      const result = await call({
+      return write(projectId, actorUid, {
         operation: 'command', project_id: projectId, expected_version: version,
         expected_actor_uid: actorUid, operation_id: id, command: cleanUndefined(command),
-      });
-      if (!record(result) || result.ok !== true || result.project_id !== projectId || result.operation_id !== id) {
-        throw failure(record(result) && typeof result.error === 'string' ? result.error : 'The BOM command returned an unexpected result.');
-      }
-      return result;
+      }, 'command');
     },
     async fulfill(projectId: string, itemId: string, fulfillment: Record<string, unknown>, displayedVersion?: string) {
       const { actorUid, version: currentVersion } = await this.snapshot(projectId);
@@ -79,13 +112,10 @@ export function createNativeMaterialCommandClient({
       if (!isVersion(version)) throw failure('The displayed BOM version is unavailable. Refresh the page and try again.');
       const id = operationId();
       if (!/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw failure('Unable to create a safe BOM operation ID.');
-      const result = await call({ operation: 'fulfill', project_id: projectId, item_id: itemId, expected_version: version, expected_actor_uid: actorUid, operation_id: id, fulfillment });
-      if (!record(result) || result.ok !== true || result.project_id !== projectId || result.operation_id !== id) {
-        throw failure(record(result) && typeof result.error === 'string' ? result.error : 'The BOM fulfillment returned an unexpected result.');
-      }
-      return result;
+      return write(projectId, actorUid, { operation: 'fulfill', project_id: projectId, item_id: itemId, expected_version: version, expected_actor_uid: actorUid, operation_id: id, fulfillment }, 'fulfill');
     },
   };
+  return api;
 }
 
 const callable: Callable = async input => {
@@ -96,6 +126,11 @@ const nativeClient = createNativeMaterialCommandClient({
   uid: () => auth.currentUser?.uid,
   call: async input => (await callable(input)).data,
 });
+// Explicit recovery for an unconfirmed BOM change. Deliberately not gated by the editing flag or permission.
+export const listPendingNativeMaterialRequests = () => listPendingNativeMaterialProjects(auth.currentUser?.uid);
+export const getPendingNativeMaterialRequest = (projectId: string) => nativeClient.pending(projectId);
+export const resolveNativeMaterialRequest = (projectId: string) => nativeClient.resolve(projectId);
+export const acknowledgeNativeMaterialRequest = (projectId: string) => nativeClient.acknowledge(projectId);
 export const loadNativeMaterialSnapshot = (projectId: string) => nativeClient.read(projectId);
 
 // Both app and server gates remain default-off. Once enabled, failures are surfaced to the user;

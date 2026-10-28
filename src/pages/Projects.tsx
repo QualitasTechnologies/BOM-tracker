@@ -22,6 +22,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { isInternalUser } from "@/utils/accessControl";
 import { nativeMaterialOperations } from '@/utils/nativeMaterialOperations';
 import { createProjectTemplateInitialization } from '@/utils/projectTemplateInitialization';
+import PendingProjectCreations from '@/components/BOM/PendingProjectCreations';
 import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
 import { isNativeProjectLifecycleEnabled } from '@/utils/projectLifecycleAccess';
 
@@ -411,6 +412,7 @@ const ProjectsContent = () => {
         {projectsError && <div role="alert" className="mx-6 mt-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900">{projectsError}</div>}
         {readOnlyProjects && !nativeLifecycleEnabled && <div role="status" className="mx-6 mt-4 rounded-md border bg-muted px-4 py-3 text-sm">Project details are currently read only.</div>}
         {readOnlyProjects && nativeLifecycleEnabled && <div role="status" className="mx-6 mt-4 rounded-md border bg-muted px-4 py-3 text-sm">Project details use the native edit flow. Archive is unavailable until its recovery action is paired.</div>}
+        <PendingProjectCreations uid={user?.uid} refreshKey={templateRecovery?.projectId} />
         {/* Header */}
         <div className="bg-card border-b">
           <div className="container mx-auto px-6 py-6">

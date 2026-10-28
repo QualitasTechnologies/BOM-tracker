@@ -157,9 +157,54 @@ function documentOf(id, data, visibleItemIds) {
 
 const newestFirst = field => (a, b) => (b[field] || '').localeCompare(a[field] || '') || a.id.localeCompare(b.id);
 
-/** Admin SDK writes require both trusted-channel identity and current project/category access. */
-function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor, mutationsEnabled = false, getServerTimestamp, procurementLimits = DEFAULT_PROCUREMENT_LIMITS }) {
+const WRITE_MODES = ['coexist', 'pulse_only'];
+// A missing document or an absent mode is coexist (as in native project operations); any present value that is not a
+// permitted mode, including an explicit null, fails closed.
+const modeOf = snapshot => { const data = snapshot.exists ? snapshot.data() : undefined; return data !== null && typeof data === 'object' && Object.hasOwn(data, 'mode') && data.mode !== undefined ? data.mode : 'coexist'; };
+const sameActor = (recorded, actor, actorEmail, payloadHash) => plain(recorded) && recorded.actor_uid === actor.uid && recorded.actor_email === actorEmail
+  && recorded.payload_hash === payloadHash && (recorded.cancelled === undefined || typeof recorded.cancelled === 'boolean');
+
+/**
+ * Admin SDK writes require both trusted-channel identity and current project/category access.
+ * Server-only seams (never request-selected): `writeModes` are the global cutover modes in which business writes
+ * may commit (legacy default: coexist only; native opts in pulse_only), `allowResolve` enables `resolve_only`
+ * receipt settlement, and `recheckActor` re-verifies the live actor inside each transaction.
+ */
+function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor, mutationsEnabled = false, getServerTimestamp, procurementLimits = DEFAULT_PROCUREMENT_LIMITS,
+  writeModes = ['coexist'], allowResolve = false, recheckActor }) {
+  if (!Array.isArray(writeModes) || !writeModes.length || writeModes.some(mode => !WRITE_MODES.includes(mode))) throw new Error('invalid material write modes');
   const limits = { ...DEFAULT_PROCUREMENT_LIMITS, ...procurementLimits };
+  const cutoverRef = () => db.collection('pulseRuntimeControl').doc('cutover');
+  const modeAllowsWrites = snapshot => writeModes.includes(modeOf(snapshot));
+  // A paused or read-only runtime still replays and cancels receipts; it never commits a new business write.
+  const assertWritable = snapshot => { if (!modeAllowsWrites(snapshot)) throw fault('material_read_only', 503); };
+  const splitResolve = (body, code) => {
+    if (!plain(body) || !Object.hasOwn(body, 'resolve_only')) return { body, resolving: false };
+    if (!allowResolve || body.resolve_only !== true) throw fault(code, 400);
+    const { resolve_only: _resolve, ...rest } = body;
+    return { body: rest, resolving: true };
+  };
+  const recheck = async actor => {
+    if (!recheckActor) return;
+    const current = await recheckActor();
+    if (current?.uid !== actor.uid || typeof current.email !== 'string' || current.email.trim().toLowerCase() !== actor.email.trim().toLowerCase()
+      || current.customClaims?.role !== actor.customClaims.role) throw fault('actor_session_changed', 403);
+  };
+  const settledResult = (recorded, resolving) => {
+    const result = materialValueView(recorded.result);
+    if (resolving) return { ...result, resolution: recorded.cancelled === true ? 'cancelled' : 'committed' };
+    if (recorded.cancelled === true) throw fault('material_request_cancelled', 409);
+    return result;
+  };
+  // Cancellation is the only write a resolve may make: an actor-bound tombstone at the nonce's own receipt path.
+  const cancelOperation = (transaction, { projectId, operationId, operation, actor, actorEmail, payloadHash, result, receiptRef, auditRef, receiptExtra }) => {
+    const createdAt = getServerTimestamp();
+    const recorded = { actor_uid: actor.uid, actor_email: actorEmail, payload_hash: payloadHash, result, cancelled: true, ...receiptExtra, created_at: createdAt };
+    const audit = { actor_uid: actor.uid, actor_email: actorEmail, project_id: projectId, operation_id: operationId, operation: `${operation}_cancelled`, payload_hash: payloadHash, created_at: createdAt };
+    assertDocumentBudget([{ path: receiptRef.path, data: recorded }, { path: auditRef.path, data: audit }]);
+    transaction.create(receiptRef, recorded); transaction.create(auditRef, audit);
+    return { ...result, resolution: 'cancelled' };
+  };
   // Server-only dependency seam. HTTP callers still use the trusted-channel factory by default.
   const actorFor = resolveActor || createProjectActorFactory({ auth, getServiceKey, serviceKeyHeader: 'X-Project-Operations-Key', unavailableCode: 'project_operations_unavailable' });
   const writesOn = () => typeof mutationsEnabled === 'function' ? mutationsEnabled() === true : mutationsEnabled === true;
@@ -176,9 +221,9 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
       const resource = req.query?.resource;
       if (resource === 'project_create') {
         if (req.method !== 'POST') throw fault('method_not_allowed', 405);
-        if (!writesOn()) throw fault('material_mutations_disabled', 503);
+        const { body, resolving } = splitResolve(req.body, 'invalid_project_create');
+        if (!writesOn() && !resolving) throw fault('material_mutations_disabled', 503);
         if (actor.customClaims.role !== 'admin' && !actor.email.trim().toLowerCase().endsWith('@qualitastech.com')) throw fault('project_creation_forbidden', 403);
-        const body = req.body;
         if (!plain(body) || Object.keys(body).some(key => !['operation_id', 'project'].includes(key))) throw fault('invalid_project_create', 400);
         validateBody({ item_id: 'create', operation_id: body.operation_id, expected_version: 'missing', patch: { name: 'validation' } });
         const data = body.project;
@@ -201,11 +246,21 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           const project = await transaction.get(projectRef);
           if (receipt.exists) {
             const recorded = receipt.data();
-            if (recorded.operation !== 'create_project' || recorded.actor_uid !== actor.uid || recorded.actor_email !== actorEmail || recorded.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
-            if (!project.exists) throw fault('project_not_found', 404);
-            scopeFor(project.data(), actor);
-            return materialValueView(recorded.result);
+            if (recorded.operation !== 'create_project' || !sameActor(recorded, actor, actorEmail, payloadHash)) throw fault('operation_conflict', 409);
+            await recheck(actor);
+            // Whenever the target project exists, the actor needs current access to it. Only a cancelled creation may settle without one.
+            if (project.exists) scopeFor(project.data(), actor);
+            else if (recorded.cancelled !== true) throw fault('project_not_found', 404);
+            return settledResult(recorded, resolving);
           }
+          if (resolving) {
+            // A cancellation tombstone and audit row must never be written into a project the actor cannot access.
+            if (project.exists) scopeFor(project.data(), actor);
+            await recheck(actor);
+            return cancelOperation(transaction, { projectId: id, operationId: body.operation_id, operation: 'create_project', actor, actorEmail, payloadHash, receiptRef, auditRef,
+              result: { ok: true, project_id: id, operation_id: body.operation_id }, receiptExtra: { operation: 'create_project' } });
+          }
+          assertWritable(await transaction.get(cutoverRef()));
           if (project.exists) throw fault('project_id_conflict', 409);
           const createdAt = getServerTimestamp();
           const after = { ...data, projectId: id, memberIds: [actor.uid], members: [{ userId: actor.uid, email: actorEmail, displayName: typeof actor.displayName === 'string' && actor.displayName.trim() ? actor.displayName : actorEmail, addedAt: new Date().toISOString().slice(0, 10), addedBy: actor.uid, notificationsEnabled: true }], createdAt };
@@ -213,6 +268,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           const audit = { actor_uid: actor.uid, actor_email: actorEmail, operation: 'create_project', project_id: id, operation_id: body.operation_id, before: null, after, created_at: createdAt };
           const recorded = { operation: 'create_project', actor_uid: actor.uid, actor_email: actorEmail, payload_hash: payloadHash, result, created_at: createdAt };
           assertDocumentBudget([{ path: projectRef.path, data: after }, { path: auditRef.path, data: audit }, { path: receiptRef.path, data: recorded }]);
+          await recheck(actor);
           transaction.create(projectRef, after); transaction.create(auditRef, audit); transaction.create(receiptRef, recorded);
           return result;
         }));
@@ -253,18 +309,23 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           if (!project.exists) throw fault('project_not_found', 404);
           const scope = scopeFor(project.data(), actor);
           const bom = await transaction.get(bomRef);
+          const control = await transaction.get(cutoverRef());
           const rawCategories = bom.exists ? bom.data()?.categories : undefined;
           if (rawCategories !== undefined && !Array.isArray(rawCategories)) throw fault('materials_data_integrity', 409);
           const scopedCategories = scope === null ? rawCategories || []
             : (rawCategories || []).filter(category => plain(category) && typeof category.name === 'string' && scope.includes(category.name));
           const categories = materialReadView(scopedCategories);
-          return { ok: true, project_id: id, categories, version: versionOf(bom), permissions: { review: true, edit: writesOn() && (scope === null || categories.length > 0), command: writesOn() && (scope === null || scope.length > 0) } };
+          return { ok: true, project_id: id, categories, version: versionOf(bom), permissions: { review: true, edit: writesOn() && modeAllowsWrites(control) && (scope === null || categories.length > 0), command: writesOn() && modeAllowsWrites(control) && (scope === null || scope.length > 0),
+            ...(allowResolve ? { resolve: true } : {}) } };
         });
         return res.json(response);
       }
-      if (!writesOn()) throw fault('material_mutations_disabled', 503);
+      const { body: writeBody, resolving } = splitResolve(req.body, commanding ? 'invalid_material_command' : fulfilling ? 'invalid_material_fulfillment' : 'invalid_material_patch');
+      // Ordinary writes are rejected before any Firestore access when the environment is closed; only an
+      // explicit resolve may proceed, and it can do nothing but replay or cancel an actor-bound receipt.
+      if (!writesOn() && !resolving) throw fault('material_mutations_disabled', 503);
       if (commanding) {
-        const body = req.body;
+        const body = writeBody;
         if (!plain(body) || Object.keys(body).some(key => !['expected_version', 'operation_id', 'command'].includes(key))) throw fault('invalid_material_command', 400);
         validateBody({ item_id: 'command', expected_version: body.expected_version, operation_id: body.operation_id, patch: { name: 'validation' } });
         if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_INPUT_BYTES) throw fault('material_command_too_large', 400);
@@ -283,15 +344,25 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           const actorEmail = actor.email.trim().toLowerCase();
           if (receipt.exists) {
             const recorded = receipt.data();
-            if (recorded.actor_uid !== actor.uid || recorded.actor_email !== actorEmail || recorded.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
+            if (!sameActor(recorded, actor, actorEmail, payloadHash)) throw fault('operation_conflict', 409);
             if (!Array.isArray(recorded.affected_categories) || scope !== null && recorded.affected_categories.some(category => !scope.includes(category))) throw fault('material_forbidden', 403);
             for (const documentId of recorded.document_ids || []) {
               const document = await transaction.get(db.collection('projectDocuments').doc(documentId));
-              if (!document.exists || document.data().projectId !== id || document.data().type !== recorded.document_types?.[documentId]
-                || document.data().type === 'customer-po' && actor.customClaims.role !== 'admin') throw fault('document_forbidden', 403);
+              // A deleted document cannot invalidate a committed receipt; its recorded type still gates customer POs.
+              const type = document.exists ? document.data().type : recorded.document_types?.[documentId];
+              if (document.exists && (document.data().projectId !== id || type !== recorded.document_types?.[documentId])
+                || type === 'customer-po' && actor.customClaims.role !== 'admin') throw fault('document_forbidden', 403);
             }
-            return materialValueView(recorded.result);
+            await recheck(actor);
+            return settledResult(recorded, resolving);
           }
+          if (resolving) {
+            if (scope !== null && !scope.length) throw fault('material_forbidden', 403);
+            await recheck(actor);
+            return cancelOperation(transaction, { projectId: id, operationId: body.operation_id, operation: 'material_command', actor, actorEmail, payloadHash, receiptRef, auditRef,
+              result: { ok: true, project_id: id, operation_id: body.operation_id, command_kind: command.kind }, receiptExtra: { affected_categories: [], document_ids: [], document_types: {} } });
+          }
+          assertWritable(await transaction.get(cutoverRef()));
           const bom = await transaction.get(bomRef);
           if (versionOf(bom) !== body.expected_version) throw fault('material_version_conflict', 409);
           if (!bom.exists && command.kind !== 'add_items') throw fault('material_not_found', 404);
@@ -345,6 +416,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
             ...[...changes.documentUpdates].map(([documentId, fields]) => ({ path: `projectDocuments/${documentId}`, data: { ...documents.get(documentId), ...fields } }))]);
           materialReadView(scope === null ? changes.categories : changes.categories.filter(category => plain(category) && scope.includes(category.name)));
           // All reads and budget checks above precede the first staged write.
+          await recheck(actor);
           if (bom.exists) transaction.update(bomRef, { categories: changes.categories }); else transaction.create(bomRef, mergedBom);
           for (const [documentId, fields] of changes.documentUpdates) transaction.update(db.collection('projectDocuments').doc(documentId), fields);
           transaction.create(auditRef, audit);
@@ -353,9 +425,9 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         });
         return res.json(response);
       }
-      const payloadHash = fulfilling ? validateFulfillment(req.body, id) : validateBody(req.body);
-      const { item_id: itemId, expected_version: expectedVersion, operation_id: operationId, fulfillment } = req.body;
-      const patch = fulfilling ? {} : req.body.patch;
+      const payloadHash = fulfilling ? validateFulfillment(writeBody, id) : validateBody(writeBody);
+      const { item_id: itemId, expected_version: expectedVersion, operation_id: operationId, fulfillment } = writeBody;
+      const patch = fulfilling ? {} : writeBody.patch;
       // Keep deduplication and immutable audit outside the legacy project wildcard,
       // which permits approved BOM clients to write project subcollections.
       const operationsRef = db.collection('pulseProjectMaterialOperations').doc(id);
@@ -367,9 +439,31 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         const scope = scopeFor(project.data(), actor);
         const bom = await transaction.get(bomRef);
         const receipt = await transaction.get(receiptRef);
+        const actorEmail = actor.email.trim().toLowerCase();
+        // Receipt first: a committed or cancelled nonce settles without depending on the item or photo still existing.
+        // Current project/category authority still applies, using the categories the receipt recorded.
+        if (receipt.exists) {
+          const recorded = receipt.data();
+          if (!sameActor(recorded, actor, actorEmail, payloadHash)) throw fault('operation_conflict', 409);
+          if (scope !== null && (!Array.isArray(recorded.affected_categories) || recorded.affected_categories.some(category => !scope.includes(category)))) throw fault('material_forbidden', 403);
+          if (fulfilling && recorded.cancelled !== true && fulfillment.invoiceDocId !== undefined) {
+            // Ownership of a still-existing invoice is current authority; a deleted invoice cannot undo a committed receipt.
+            const invoice = await transaction.get(db.collection('projectDocuments').doc(fulfillment.invoiceDocId));
+            if (invoice.exists && (invoice.data()?.projectId !== id || invoice.data().type !== 'vendor-invoice')) throw fault('invoice_forbidden', 403);
+          }
+          await recheck(actor);
+          return settledResult(recorded, resolving);
+        }
         const categories = Array.isArray(bom.data()?.categories) ? bom.data().categories : [];
         const matches = [];
         categories.forEach((category, categoryIndex) => (Array.isArray(category.items) ? category.items : []).forEach((item, itemIndex) => { if (item.id === itemId) matches.push({ item, category, categoryIndex, itemIndex }); }));
+        if (resolving) {
+          if (scope !== null && (!scope.length || matches.some(match => !scope.includes(match.category.name)))) throw fault('material_forbidden', 403);
+          await recheck(actor);
+          return cancelOperation(transaction, { projectId: id, operationId, operation: fulfilling ? 'fulfill_material' : 'patch_material', actor, actorEmail, payloadHash, receiptRef, auditRef,
+            result: { ok: true, project_id: id, item_id: itemId, operation_id: operationId }, receiptExtra: { affected_categories: [] } });
+        }
+        assertWritable(await transaction.get(cutoverRef()));
         if (matches.length > 1) throw fault('duplicate_material_id', 409);
         if (!matches.length) throw fault('material_not_found', 404);
         const match = matches[0];
@@ -403,11 +497,6 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
               || uploaded.actor_email !== actor.email.trim().toLowerCase() || uploaded.finalized?.photo_url !== fulfillment.photoUrl
               || uploaded.finalized.generation !== intent.generation) throw fault('receipt_photo_unverified', 409);
           }
-        }
-        if (receipt.exists) {
-          const recorded = receipt.data();
-          if (recorded.actor_uid !== actor.uid || recorded.actor_email !== actor.email.trim().toLowerCase() || recorded.payload_hash !== payloadHash) throw fault('operation_conflict', 409);
-          return materialValueView(recorded.result);
         }
         if (versionOf(bom) !== expectedVersion) throw fault('material_version_conflict', 409);
         const updated = fulfilling ? appendFulfillment(match.item, fulfillment, operationId) : { ...match.item, ...patch };
@@ -449,11 +538,11 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           before[key] = match.item[key] ?? null; after[key] = updated[key] ?? null;
         }
         const result = materialValueView({ ok: true, project_id: id, item_id: itemId, operation_id: operationId, item: updated });
-        const actorEmail = actor.email.trim().toLowerCase();
         const createdAt = getServerTimestamp();
+        await recheck(actor);
         transaction.update(bomRef, { categories: nextCategories });
         transaction.create(auditRef, { actor_uid: actor.uid, actor_email: actorEmail, project_id: id, item_id: itemId, operation_id: operationId, operation: fulfilling ? 'fulfill_material' : 'patch_material', previous_version: expectedVersion, permission: { role: actor.customClaims.role, category: match.category.name, scope }, before, after, ...(destination !== match.category.name ? { category_transition: { from: match.category.name, to: destination } } : {}), created_at: createdAt });
-        transaction.create(receiptRef, { actor_uid: actor.uid, actor_email: actorEmail, payload_hash: payloadHash, result, created_at: createdAt });
+        transaction.create(receiptRef, { actor_uid: actor.uid, actor_email: actorEmail, payload_hash: payloadHash, result, affected_categories: [...new Set([match.category.name, destination])], created_at: createdAt });
         return result;
       });
       return res.json(response);
