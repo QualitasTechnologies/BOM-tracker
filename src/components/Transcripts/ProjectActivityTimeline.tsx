@@ -44,7 +44,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { subscribeToProjectActivities, readScopedProjectActivities, updateActivity, deleteActivity } from '@/utils/transcriptFirestore';
+import { subscribeToProjectActivities, subscribeScopedProjectActivities, updateActivity, deleteActivity } from '@/utils/transcriptFirestore';
 import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
 import { useAuth } from '@/hooks/useAuth';
 import TranscriptSourceDialog from './TranscriptSourceDialog';
@@ -67,6 +67,8 @@ const ProjectActivityTimelineContent = ({
   projectId,
   projectName,
 }: ProjectActivityTimelineProps) => {
+  const { user } = useAuth();
+  const userId = user?.uid ?? '';
   const [activities, setActivities] = useState<TranscriptActivity[]>([]);
   const [isOpen, setIsOpen] = useState(true);
   const [filterType, setFilterType] = useState<ActivityType | 'all'>('all');
@@ -107,16 +109,15 @@ const ProjectActivityTimelineContent = ({
   useEffect(() => {
     setSourceTranscriptId(null);
     if (scoped) {
-      let cancelled = false;
       setLoadError(null);
-      readScopedProjectActivities(projectId, { isCurrent: () => !cancelled })
-        .then((data) => { if (!cancelled) setActivities(data); })
-        .catch((err: unknown) => {
-          if (cancelled) return;
-          setActivities([]);
-          setLoadError(err instanceof Error && err.message ? err.message : 'Could not load activities.');
-        });
-      return () => { cancelled = true; };
+      const unsubscribe = subscribeScopedProjectActivities(projectId, userId, (data) => {
+        setActivities(data);
+        setLoadError(null);
+      }, (err) => {
+        setActivities([]);
+        setLoadError(err instanceof Error && err.message ? err.message : 'Could not load activities.');
+      });
+      return unsubscribe;
     }
     let active = true;
     const unsubscribe = subscribeToProjectActivities(projectId, (data) => {
@@ -124,7 +125,7 @@ const ProjectActivityTimelineContent = ({
     });
 
     return () => { active = false; unsubscribe(); };
-  }, [projectId, scoped, reloadKey]);
+  }, [projectId, scoped, reloadKey, userId]);
 
   // Filter activities
   const filteredActivities = useMemo(() => {

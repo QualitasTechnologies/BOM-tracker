@@ -91,6 +91,52 @@ test('deleted, moved and unlinked documents invalidate old and new projects, nat
   for (const bad of [{}, { projectId: 7 }, { projectId: '' }, { projectId: 'a/b' }, null]) assert.deepEqual(planSignals('document', documentEvent(bad, bad)).projects, []);
 });
 
+test('activity create, move, project unlink and delete invalidate before and after project links', () => {
+  assert.deepEqual(planSignals('transcriptActivity', rootEvent(undefined, { projectId: 'NEW' })).projects, ['NEW']);
+  assert.deepEqual(planSignals('transcriptActivity', rootEvent({ projectId: 'OLD' }, { projectId: 'NEW' })).projects.sort(), ['NEW', 'OLD']);
+  assert.deepEqual(planSignals('transcriptActivity', rootEvent({ projectId: 'OLD' }, undefined)).projects, ['OLD']);
+  assert.deepEqual(planSignals('transcriptActivity', rootEvent({ projectId: 'P' }, { projectId: 'P', summary: 'changed' })).projects, ['P']);
+  assert.deepEqual(planSignals('transcriptActivity', rootEvent({ projectId: 'bad/id' }, { projectId: 7 })).projects, []);
+});
+
+test('transcript writes page through every linked activity and bump only opaque project notices', async () => {
+  let rows = Array.from({ length: 805 }, (_, i) => ({ id: `a${i}`, data: () => ({ projectId: i % 3 === 0 ? 'P1' : i % 3 === 1 ? 'P2' : 'P3' }) }));
+  const queried = [];
+  const fake = fakeDb();
+  fake.db.collection = name => ({
+    doc: id => ({ path: `${name}/${id}` }),
+    where: (field, op, value) => ({ orderBy(fieldName) { assert.equal(fieldName, '__name__'); return this; }, limit(n) { this.n = n; return this; }, startAfter(cursor) { this.cursor = cursor; return this; }, async get() { queried.push({ field, op, value, cursor: this.cursor }); const index = this.cursor ? rows.indexOf(this.cursor) + 1 : 0; const docs = rows.slice(index, index + this.n); return { docs }; } }),
+  });
+  const signals = createProjectReadSignals({ db: fake.db, enabled: () => true, chunkSize: 2 });
+  await signals.onTranscript({ params: { transcriptId: 'T1' } });
+  assert.ok(queried.length >= 3, 'all bounded query pages are read');
+  assert.deepEqual(paths(fake.log), ['pulseReadSignals/P1', 'pulseReadSignals/P2', 'pulseReadSignals/P3']);
+  for (const item of fake.log.committed) assert.deepEqual(Object.keys(item.data), ['version', 'nonce']);
+});
+
+test('transcript paging fails closed when a cursor does not advance, even with fresh snapshot objects', async () => {
+  const fake = fakeDb();
+  let calls = 0;
+  fake.db.collection = name => ({
+    doc: id => ({ path: `${name}/${id}` }),
+    where: () => ({ orderBy() { return this; }, limit() { return this; }, startAfter() { return this; },
+      async get() { if (++calls > 5) throw new Error('runaway_paging'); return { docs: Array.from({ length: 400 }, (_, i) => ({ id: `a${i}`, data: () => ({ projectId: 'P1' }) })) }; } }),
+  });
+  const signals = createProjectReadSignals({ db: fake.db, enabled: () => true });
+  await assert.rejects(signals.onTranscript({ params: { transcriptId: 'T1' } }), /signal_link_pagination_stalled/);
+  assert.equal(fake.log.committed.length, 0, 'no notice is written from an incomplete scan');
+});
+
+test('transcript writes are inert when disabled and for invalid ids', async () => {
+  const fake = fakeDb();
+  fake.db.collection = () => { throw new Error('must not query'); };
+  assert.deepEqual(await createProjectReadSignals({ db: fake.db, enabled: () => false }).onTranscript({ params: { transcriptId: 'T1' } }), { skipped: 'disabled' });
+  const on = fakeDb();
+  on.db.collection = name => ({ doc: id => ({ path: `${name}/${id}` }) });
+  await createProjectReadSignals({ db: on.db, enabled: () => true }).onTranscript({ params: { transcriptId: 'a/b' } });
+  assert.equal(on.log.committed.length, 0);
+});
+
 test('membership changes notify the union of old and new member UIDs, once each', () => {
   const plan = planSignals('project', rootEvent(
     sourceRecord({ memberIds: ['alice', 'bob'], members: [{ userId: 'alice' }, { userId: 'bob' }] }),

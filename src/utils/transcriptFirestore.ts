@@ -1,6 +1,7 @@
 import { auth, db } from "@/firebase";
 import { isScopedProjectReadEnabled } from "./projectReadMode";
 import { nativeProjectReads } from "./nativeProjectReads";
+import { subscribeProjectRead } from "./projectReadSubscriptions";
 import {
   collection,
   doc,
@@ -541,6 +542,38 @@ export async function readScopedProjectActivities(
     cursor = result.next_cursor;
   }
   throw manualIntegrity();
+}
+
+// subscribeProjectRead's assertContext throws when stale; manual reads want a boolean.
+const asIsCurrent = (assertContext: () => void) => () => { assertContext(); return true; };
+
+/** Live invalidation for the server-only manual-history projection. */
+export function subscribeScopedProjectActivities(
+  projectId: string,
+  uid: string,
+  onValue: (activities: TranscriptActivity[]) => void,
+  onError: (error: Error) => void,
+): Unsubscribe {
+  return subscribeProjectRead({
+    projectId, uid,
+    read: assertContext => readScopedProjectActivities(projectId, { isCurrent: asIsCurrent(assertContext) }),
+    onValue, onError,
+  });
+}
+
+/** Live invalidation for an open source transcript; every notice reauthorizes and rereads it. */
+export function subscribeScopedSourceTranscript(
+  projectId: string,
+  transcriptId: string,
+  uid: string,
+  onValue: (source: SourceTranscript) => void,
+  onError: (error: Error) => void,
+): Unsubscribe {
+  return subscribeProjectRead({
+    projectId, uid,
+    read: assertContext => getProjectSourceTranscript(projectId, transcriptId, { isCurrent: asIsCurrent(assertContext) }),
+    onValue, onError,
+  });
 }
 
 export interface SourceTranscript {

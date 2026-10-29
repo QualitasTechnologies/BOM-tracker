@@ -20,7 +20,8 @@ function load(env = {}) {
   const fakeFirestoreModule = { onDocumentWritten: (options, handler) => { registrations.push({ options, handler }); return handler; } };
   const context = {
     exports: {}, process: { env }, console,
-    require: id => id === 'firebase-functions/v2/firestore' ? fakeFirestoreModule : require(id),
+    require: id => id === 'firebase-functions/v2/firestore' ? fakeFirestoreModule
+      : id === 'firebase-functions/logger' ? { error() {} } : require(id),
     admin: { firestore: () => db },
   };
   vm.runInNewContext(source.slice(start), context);
@@ -32,13 +33,13 @@ const eventOf = (params, before, after) => ({ params, data: { before: snap(befor
 test('three real Firestore triggers bind the exact source paths with bounded retrying options', () => {
   const { context, registrations } = load();
   assert.deepEqual(registrations.map(entry => entry.options.document).sort(),
-    ['projectDocuments/{documentId}', 'projects/{projectId}', 'projects/{projectId}/bom/data']);
+    ['projectDocuments/{documentId}', 'projects/{projectId}', 'projects/{projectId}/bom/data', 'transcriptActivities/{activityId}', 'transcripts/{transcriptId}']);
   for (const { options } of registrations) {
     assert.equal(options.region, 'us-central1'); assert.equal(options.retry, true);
     assert.ok(options.maxInstances > 0 && options.maxInstances <= 10); assert.ok(options.timeoutSeconds <= 120);
     assert.equal(options.secrets, undefined, 'notices need no secrets');
   }
-  assert.deepEqual(Object.keys(context.exports).sort(), ['pulseReadSignalBom', 'pulseReadSignalDocument', 'pulseReadSignalProject']);
+  assert.deepEqual(Object.keys(context.exports).sort(), ['pulseReadSignalBom', 'pulseReadSignalDocument', 'pulseReadSignalProject', 'pulseReadSignalTranscript', 'pulseReadSignalTranscriptActivity']);
 });
 
 test('triggers are default-off under the exact server read gate and write only content-free notices', async () => {
@@ -57,8 +58,9 @@ test('triggers are default-off under the exact server read gate and write only c
   await handlers['projects/{projectId}'](eventOf({ projectId: 'P' }, undefined, project));
   await handlers['projects/{projectId}/bom/data'](eventOf({ projectId: 'P' }, { categories: [] }, { categories: [{ name: 'Mech' }] }));
   await handlers['projectDocuments/{documentId}'](eventOf({ documentId: 'd' }, { projectId: 'P' }, undefined));
+  await handlers['transcriptActivities/{activityId}'](eventOf({ activityId: 'a' }, { projectId: 'OLD' }, { projectId: 'NEW' }));
   assert.deepEqual(on.committed.map(op => op.path).sort(), [
-    'pulseReadCatalog/admin', 'pulseReadSignals/P', 'pulseReadSignals/P', 'pulseReadSignals/P', 'pulseUserReadSignals/alice',
+    'pulseReadCatalog/admin', 'pulseReadSignals/NEW', 'pulseReadSignals/OLD', 'pulseReadSignals/P', 'pulseReadSignals/P', 'pulseReadSignals/P', 'pulseUserReadSignals/alice',
   ]);
   const bytes = JSON.stringify(on.committed.map(op => op.data));
   assert.ok(!bytes.includes('Secret Project Name') && !bytes.includes('Mech'));

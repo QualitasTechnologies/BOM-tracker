@@ -7802,3 +7802,5 @@ const readSignalOptions=document=>({document,region:'us-central1',timeoutSeconds
 exports.pulseReadSignalProject=onReadSignalWritten(readSignalOptions('projects/{projectId}'),event=>readSignals.onProject(event));
 exports.pulseReadSignalBom=onReadSignalWritten(readSignalOptions('projects/{projectId}/bom/data'),event=>readSignals.onBom(event));
 exports.pulseReadSignalDocument=onReadSignalWritten(readSignalOptions('projectDocuments/{documentId}'),event=>readSignals.onDocument(event));
+exports.pulseReadSignalTranscriptActivity=onReadSignalWritten(readSignalOptions('transcriptActivities/{activityId}'),event=>readSignals.onTranscriptActivity(event));
+exports.pulseReadSignalTranscript=onReadSignalWritten(readSignalOptions('transcripts/{transcriptId}'),event=>readSignals.onTranscript(event));
