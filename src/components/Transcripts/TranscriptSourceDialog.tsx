@@ -10,7 +10,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { useAuth } from '@/hooks/useAuth';
-import { getProjectSourceTranscript, type SourceTranscript } from '@/utils/transcriptFirestore';
+import { getProjectSourceTranscript, subscribeScopedSourceTranscript, type SourceTranscript } from '@/utils/transcriptFirestore';
+import { isScopedProjectReadEnabled } from '@/utils/projectReadMode';
 
 interface TranscriptSourceDialogProps {
   open: boolean;
@@ -43,6 +44,15 @@ const TranscriptSourceDialog = ({ open, onOpenChange, projectId, transcriptId }:
     let cancelled = false;
     const isCurrent = () => !cancelled && currentContext.current === contextKey;
     setBoundState({ contextKey, state: { status: 'loading' } });
+    if (isScopedProjectReadEnabled()) {
+      return subscribeScopedSourceTranscript(projectId, transcriptId, uid || '',
+        source => { if (isCurrent()) setBoundState({ contextKey, state: { status: 'ready', source } }); },
+        err => {
+          if (!isCurrent()) return;
+          const message = err instanceof Error && err.message ? err.message : 'Could not load the transcript.';
+          setBoundState({ contextKey, state: { status: 'error', message } });
+        });
+    }
     getProjectSourceTranscript(projectId, transcriptId, { isCurrent })
       .then((source) => { if (isCurrent()) setBoundState({ contextKey, state: { status: 'ready', source } }); })
       .catch((err: unknown) => {

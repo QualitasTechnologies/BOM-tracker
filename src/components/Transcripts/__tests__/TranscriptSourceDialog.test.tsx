@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-const h = vi.hoisted(() => ({ read: vi.fn(), uid: 'alice' }));
+const h = vi.hoisted(() => ({ read: vi.fn(), live: vi.fn(), scoped: false, uid: 'alice' }));
 vi.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ user: h.uid ? { uid: h.uid } : null }) }));
-vi.mock('@/utils/transcriptFirestore', () => ({ getProjectSourceTranscript: (...a: unknown[]) => h.read(...a) }));
+vi.mock('@/utils/projectReadMode', () => ({ isScopedProjectReadEnabled: () => h.scoped }));
+vi.mock('@/utils/transcriptFirestore', () => ({
+  getProjectSourceTranscript: (...a: unknown[]) => h.read(...a),
+  subscribeScopedSourceTranscript: (projectId: string, transcriptId: string, uid: string, onValue: (v: unknown) => void, onError: (e: Error) => void) => {
+    h.live(projectId, transcriptId, uid, onValue, onError);
+    return () => {};
+  },
+}));
 
 import TranscriptSourceDialog from '../TranscriptSourceDialog';
 
@@ -11,13 +18,34 @@ const RAW = '<img src=x onerror=alert(1)> List<String>\n  indented <john@acme.co
 const transcript = { id: 'T1', rawText: RAW, meetingDate: '2026-10-01', meetingTitle: 'Weekly sync', fileName: 'sync.txt', processed: true, createdAt: '2026-10-02T00:00:00.000Z', createdBy: 'u9', createdByName: 'Bob' };
 const source = (rawText = RAW, id = 'T1') => ({ transcript: { ...transcript, id, rawText }, linkedProjectCount: 1 });
 
-beforeEach(() => { h.uid = 'alice'; });
+beforeEach(() => { h.uid = 'alice'; h.scoped = false; });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('TranscriptSourceDialog', () => {
   it('does nothing while closed', () => {
     render(<TranscriptSourceDialog open={false} onOpenChange={() => {}} projectId="P" transcriptId="T1" />);
     expect(h.read).not.toHaveBeenCalled();
+  });
+
+  it('replaces open source text after a scoped notice triggers a fresh authorized read', async () => {
+    h.scoped = true;
+    render(<TranscriptSourceDialog open onOpenChange={() => {}} projectId="P" transcriptId="T1" />);
+    await waitFor(() => expect(h.live).toHaveBeenCalledWith('P', 'T1', 'alice', expect.any(Function), expect.any(Function)));
+    const onValue = h.live.mock.calls[0][3] as (v: unknown) => void;
+    act(() => onValue(source('Changed by another user')));
+    expect(await screen.findByText('Changed by another user')).toBeTruthy();
+  });
+
+  it('clears shown source text when a later scoped refresh is denied', async () => {
+    h.scoped = true;
+    render(<TranscriptSourceDialog open onOpenChange={() => {}} projectId="P" transcriptId="T1" />);
+    await waitFor(() => expect(h.live).toHaveBeenCalled());
+    const [, , , onValue, onError] = h.live.mock.calls[0] as [string, string, string, (v: unknown) => void, (e: Error) => void];
+    act(() => onValue(source('Sensitive body')));
+    expect(await screen.findByText('Sensitive body')).toBeTruthy();
+    act(() => onError(new Error('Access removed')));
+    await waitFor(() => expect(screen.queryByText('Sensitive body')).toBeNull());
+    expect(screen.getByText('Access removed')).toBeTruthy();
   });
 
   it('reads fresh on open and shows the stored text as inert text with provenance', async () => {

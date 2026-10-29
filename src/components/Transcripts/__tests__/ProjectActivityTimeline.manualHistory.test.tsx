@@ -1,14 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const h = vi.hoisted(() => ({
-  uid: 'alice', scoped: false, subscribe: vi.fn(), read: vi.fn(), update: vi.fn(), remove: vi.fn(), dialog: vi.fn(),
+  uid: 'alice', scoped: false, subscribe: vi.fn(), read: vi.fn(), live: vi.fn(), update: vi.fn(), remove: vi.fn(), dialog: vi.fn(),
 }));
 vi.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ user: h.uid ? { uid: h.uid } : null }) }));
 vi.mock('@/utils/projectReadMode', () => ({ isScopedProjectReadEnabled: () => h.scoped }));
 vi.mock('@/utils/transcriptFirestore', () => ({
   subscribeToProjectActivities: (...a: unknown[]) => h.subscribe(...a),
   readScopedProjectActivities: (...a: unknown[]) => h.read(...a),
+  subscribeScopedProjectActivities: (id: string, uid: string, onValue: (rows: unknown[]) => void, onError: (error: Error) => void) => {
+    h.live(id, uid, onValue, onError);
+    h.read(id).then(onValue, onError);
+    return () => {};
+  },
   updateActivity: (...a: unknown[]) => h.update(...a),
   deleteActivity: (...a: unknown[]) => h.remove(...a),
 }));
@@ -61,6 +66,17 @@ describe('ProjectActivityTimeline source transcript access', () => {
     expect(screen.getByTestId('source-dialog').textContent).toBe('P:T1');
   });
 
+  it('uses scoped live invalidation with the current account for history refreshes', async () => {
+    h.scoped = true;
+    render(<ProjectActivityTimeline projectId="P" projectName="Build" />);
+    await waitFor(() => expect(screen.getByText('(2)')).toBeTruthy());
+    expect(h.live).toHaveBeenCalledWith('P', 'alice', expect.any(Function), expect.any(Function));
+    const refresh = h.live.mock.calls[0][2] as (rows: unknown[]) => void;
+    act(() => refresh([{ ...linked, id: 'a3', summary: 'server refresh' }]));
+    fireEvent.click(screen.getByText('(1)'));
+    expect(await screen.findByText('server refresh')).toBeTruthy();
+  });
+
   it('keeps inline edit working after the new button was added', async () => {
     render(<ProjectActivityTimeline projectId="P" projectName="Build" />);
     open();
@@ -75,12 +91,12 @@ describe('ProjectActivityTimeline source transcript access', () => {
     render(<ProjectActivityTimeline projectId="P" projectName="Build" />);
     await waitFor(() => expect(screen.getByText('(2)')).toBeTruthy());
     expect(h.subscribe).not.toHaveBeenCalled();
-    expect(h.read).toHaveBeenCalledWith('P', expect.objectContaining({ isCurrent: expect.any(Function) }));
+    expect(h.live).toHaveBeenCalledWith('P', 'alice', expect.any(Function), expect.any(Function));
     open();
     fireEvent.click(screen.getAllByRole('button').find(b => b.querySelector('svg.lucide-pencil'))!);
     fireEvent.change(screen.getByPlaceholderText('Activity summary'), { target: { value: 'edited' } });
     fireEvent.click(screen.getByRole('button', { name: /save/i }));
-    await waitFor(() => expect(h.read).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(h.live).toHaveBeenCalledTimes(2));
     expect(h.update).toHaveBeenCalledTimes(1);
   });
 

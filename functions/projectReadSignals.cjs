@@ -64,9 +64,16 @@ function membershipChanged(before, after) {
 // extracted; no other source value is read, so a stale, duplicate or reordered
 // event can do nothing but name the same records to invalidate.
 function planSignals(kind, event) {
-  if (!['project', 'bom', 'document'].includes(kind)) throw new Error('unknown_signal_kind');
+  if (!['project', 'bom', 'document', 'transcriptActivity'].includes(kind)) throw new Error('unknown_signal_kind');
   const plan = { projects: [], users: [], catalog: false };
   if (kind === 'document') {
+    const { before, after } = sides(event);
+    const ids = new Set();
+    for (const data of [before, after]) if (plain(data) && validProjectSignalId(data.projectId)) ids.add(data.projectId);
+    plan.projects = [...ids];
+    return plan;
+  }
+  if (kind === 'transcriptActivity') {
     const { before, after } = sides(event);
     const ids = new Set();
     for (const data of [before, after]) if (plain(data) && validProjectSignalId(data.projectId)) ids.add(data.projectId);
@@ -123,7 +130,30 @@ function createProjectReadSignals({ db, enabled, randomBytes = nodeRandomBytes, 
     if (!enabled()) return { skipped: 'disabled' };
     return write(planSignals(kind, event));
   };
-  return { onProject: handler('project'), onBom: handler('bom'), onDocument: handler('document') };
+  async function onTranscript(event) {
+    if (!enabled()) return { skipped: 'disabled' };
+    const transcriptId = event?.params?.transcriptId;
+    if (!validProjectSignalId(transcriptId)) return write({ projects: [], users: [], catalog: false });
+    const projects = new Set();
+    let cursor = undefined;
+    for (;;) {
+      let query = db.collection('transcriptActivities').where('transcriptId', '==', transcriptId)
+        .orderBy('__name__').limit(MAX_CHUNK_SIZE);
+      if (cursor) query = query.startAfter(cursor);
+      const page = await query.get();
+      for (const row of page.docs || []) {
+        const data = row.data();
+        if (plain(data) && validProjectSignalId(data.projectId)) projects.add(data.projectId);
+      }
+      if (!page.docs || page.docs.length < MAX_CHUNK_SIZE) break;
+      const next = page.docs[page.docs.length - 1];
+      // Compare actual document ids: a fresh snapshot object proves nothing about progress.
+      if (cursor && next.id === cursor.id) throw new Error('signal_link_pagination_stalled');
+      cursor = next;
+    }
+    return write({ projects: [...projects], users: [], catalog: false });
+  }
+  return { onProject: handler('project'), onBom: handler('bom'), onDocument: handler('document'), onTranscriptActivity: handler('transcriptActivity'), onTranscript };
 }
 
 module.exports = {
