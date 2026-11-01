@@ -12,7 +12,7 @@ const sort=value=>Array.isArray(value)?value.map(sort):plain(value)?Object.fromE
 const hash=value=>createHash('sha256').update(JSON.stringify(sort(value))).digest('hex');
 const version=snapshot=>snapshot.exists?`${snapshot.updateTime.seconds}:${snapshot.updateTime.nanoseconds}`:'missing';
 const validVersion=value=>typeof value==='string'&&/^(0|[1-9]\d*):(0|[1-9]\d*)$/.test(value)&&Number.isSafeInteger(Number(value.split(':')[0]))&&Number(value.split(':')[1])<1e9;
-const access=(project,actor)=>{if(actor.customClaims.role!=='admin'&&project.memberIds!=null&&(!Array.isArray(project.memberIds)||!project.memberIds.includes(actor.uid)))throw fault('overhead_forbidden',403);};
+const access=(project,actor)=>{if(actor.customClaims.role!=='admin'&&(!Object.hasOwn(project,'memberIds')||project.memberIds!=null&&(!Array.isArray(project.memberIds)||!project.memberIds.includes(actor.uid))))throw fault('overhead_forbidden',403);};
 const overheadMutationsEnabled=env=>['BOM_MATERIAL_MUTATIONS_ENABLED','BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED','BOM_NATIVE_OVERHEAD_MUTATIONS_ENABLED'].every(key=>env[key]==='true');
 // Only transport output and size estimates are converted. All writes/archive originals retain SDK types.
 const transport=value=>{

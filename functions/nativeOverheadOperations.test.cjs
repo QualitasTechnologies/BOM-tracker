@@ -3,7 +3,24 @@ const {fixture}=require('./nativeOverheadFixture.cjs');
 const entry={kind:'add_entry',record_id:'new',input:{date:'2026-10-15',category:'Other',description:'Permit',amount:12}};
 test('atomic opening exposes original access and independent overhead/project revisions',async()=>{
   for(const uid of ['alice','admin','partner']){const f=fixture({uid});const result=await f.call();assert.equal(result.ok,true);assert.equal(result.permissions.edit,true);assert.equal(result.permissions.review,uid==='admin');assert.equal(result.version,'10:1');assert.equal(result.project_version,'10:1');assert.deepEqual(result.project,{projectId:'P',projectName:'Project'});}
-  const f=fixture({uid:'outsider'});assert.equal((await f.call()).error,'overhead_forbidden');delete f.docs.get('projects/P').memberIds;assert.equal((await f.call()).ok,true);
+  const f=fixture({uid:'outsider'});assert.equal((await f.call()).error,'overhead_forbidden');
+});
+test('project without a memberIds field matches deployed Rules: non-admin read and command are denied with no writes, flags on or off',async()=>{
+  for(const enabled of [true,false])for(const uid of ['alice','partner','outsider']){
+    const f=fixture({uid,enabled});const opening=await f.call();
+    delete f.docs.get('projects/P').memberIds;const before=structuredClone([...f.docs]);
+    assert.equal((await f.call()).error,'overhead_forbidden',`get ${uid} enabled=${enabled}`);
+    const payload={operation:'command',expected_version:opening.version||'10:1',expected_project_version:'10:1',operation_id:'absent',command:entry};
+    assert.equal((await f.call(payload)).error,'overhead_forbidden',`command ${uid} enabled=${enabled}`);
+    assert.equal((await f.call({...payload,resolve_only:true})).error,'overhead_forbidden',`resolve ${uid} enabled=${enabled}`);
+    assert.deepEqual([...f.docs],before);
+  }
+});
+test('explicit null memberIds keeps every approved user allowed (Rules parity)',async()=>{
+  for(const uid of ['alice','partner','outsider']){const f=fixture({uid});f.docs.get('projects/P').memberIds=null;const r=await f.call();assert.equal(r.ok,true);assert.equal(r.permissions.edit,true);assert.equal((await f.issue(entry)).ok,true);}
+});
+test('admin bypasses membership for absent, null and non-listing memberIds',async()=>{
+  for(const set of [f=>delete f.docs.get('projects/P').memberIds,f=>{f.docs.get('projects/P').memberIds=null;},f=>{f.docs.get('projects/P').memberIds=['alice'];}]){const f=fixture({uid:'admin'});set(f);assert.equal((await f.call()).ok,true);assert.equal((await f.issue(entry)).ok,true);}
 });
 test('command preserves full legacy document and stale versions prevent lost updates',async()=>{
   const f=fixture(),opening=await f.call();assert.equal((await f.issue(entry)).ok,true);assert.deepEqual(f.docs.get('projects/P/overheads/data').legacy,{keep:true});assert.equal(f.docs.get('projects/P/overheads/data').travelVisits[0].date,'2026-10-01');
