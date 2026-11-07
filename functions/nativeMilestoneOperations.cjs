@@ -1,6 +1,7 @@
 const {createHash}=require('node:crypto');
 const {currentNativeActor}=require('./nativeMaterialOperations.cjs');
 const {assertDocumentBudget,MAX_INPUT_BYTES}=require('./materialCommands.cjs');
+const {createFreeze}=require('./nativePoSerialization.cjs');
 const {applyMilestoneCommand,isMilestoneFault,validateMilestoneCommand}=require('./milestoneCommands.cjs');
 const PUBLIC=Symbol('milestone-operation');
 const fault=(code,status=400)=>Object.assign(Error(code),{code,status,[PUBLIC]:true});
@@ -10,7 +11,7 @@ const sort=value=>Array.isArray(value)?value.map(sort):plain(value)?Object.fromE
 const hash=value=>createHash('sha256').update(JSON.stringify(sort(value))).digest('hex');
 const version=snapshot=>snapshot.exists?`${snapshot.updateTime.seconds}:${snapshot.updateTime.nanoseconds}`:'missing';
 const validVersion=value=>typeof value==='string'&&/^(0|[1-9]\d*):(0|[1-9]\d*)$/.test(value)&&Number.isSafeInteger(Number(value.split(':')[0]))&&Number(value.split(':')[1])<1e9;
-const freeze=value=>value instanceof Date?value.toISOString():value&&typeof value.toDate==='function'?value.toDate().toISOString():Array.isArray(value)?value.map(freeze):plain(value)?Object.fromEntries(Object.entries(value).map(([key,row])=>[key,freeze(row)])):value;
+const freeze=createFreeze((code,status)=>fault(code==='invalid_po_state'?'invalid_milestone_state':code,status));
 const access=(project,actor,scoped)=>{
   if(actor.customClaims.role==='admin')return;
   if(scoped ? !Object.hasOwn(project,'memberIds') || project.memberIds!==null&&(!Array.isArray(project.memberIds)||!project.memberIds.includes(actor.uid))
