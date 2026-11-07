@@ -1,4 +1,5 @@
 const { createHash, randomUUID } = require('node:crypto');
+const { createFreeze } = require('./nativePoSerialization.cjs');
 const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
 const { applyCommand, assertDocumentBudget } = require('./materialCommands.cjs');
 const fault = (code, status = 400) => Object.assign(new Error(code), { code, status });
@@ -6,8 +7,7 @@ const plain = value => value && typeof value === 'object' && !Array.isArray(valu
 const id = value => typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\/\x00-\x1f]/.test(value) && !['.', '..'].includes(value) && !/^__.*__$/.test(value);
 const version = snapshot => snapshot.exists ? `${snapshot.updateTime.seconds}:${snapshot.updateTime.nanoseconds}` : 'missing';
 const versionValid = value => value === 'missing' || typeof value === 'string' && /^(0|[1-9]\d*):(0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value.split(':')[0])) && Number(value.split(':')[1]) < 1e9;
-const freeze = value => value instanceof Date ? value.toISOString() : value && typeof value.toDate === 'function' ? value.toDate().toISOString()
-  : Array.isArray(value) ? value.map(freeze) : plain(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, freeze(value[key])])) : value;
+const freeze = createFreeze(fault);
 const hash = value => createHash('sha256').update(JSON.stringify(freeze(value))).digest('hex');
 const business = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['status', 'updatedAt', 'sentAt', 'sentBy', 'sentToEmail', 'actualSentDate', 'pdfUrl', 'nativeSendAttemptId', 'nativeSendPhase'].includes(key)));
 const mail = value => typeof value === 'string' && value.length <= 254 && /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(value);
@@ -84,7 +84,7 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
         const attempt = attemptId ? await transaction.get(attempts.doc(attemptId)) : null;
         return { ok: true, project_id: data.project_id, po_id: data.po_id, po_version: version(state.po), material_version: version(state.bom),
           purchase_order: { ...freeze(state.po.data()), id: data.po_id, projectId: data.project_id },
-          material_items: (Array.isArray(state.bom.data()?.categories) ? state.bom.data().categories : []).flatMap(category => (Array.isArray(category.items) ? category.items : []).filter(item => state.po.data().items?.some(row => row.bomItemId === item.id)).map(item => ({ id: item.id, name: item.name ?? '', status: item.status ?? '', quantity: item.quantity ?? 0, category: category.name }))),
+          material_items: freeze((Array.isArray(state.bom.data()?.categories) ? state.bom.data().categories : []).flatMap(category => (Array.isArray(category.items) ? category.items : []).filter(item => state.po.data().items?.some(row => row.bomItemId === item.id)).map(item => ({ id: item.id, name: item.name ?? '', status: item.status ?? '', quantity: item.quantity ?? 0, category: category.name })))),
           permissions: { send: writesOn() && ['coexist', 'pulse_only'].includes(mode) }, attempt: attempt?.exists ? publicAttempt(attempt.data()) : null };
       });
       if (!writesOn()) throw fault('procurement_mutations_disabled', 503);
