@@ -25,6 +25,6 @@ function fixture(options = {}) {
     sendEmail: async (frozen, key) => { calls.push({ frozen, key }); await options.provider?.(); if (failProvider) throw new Error('Timeout'); return { id: 'provider-id' }; } });
   const call = data => native({ data: { project_id: 'P', po_id: 'PO', expected_actor_uid: actorUid, ...data }, auth: { uid: actorUid }, rawRequest: { get: () => 'Bearer fixture' } });
   const send = async () => { const opening = await call({ operation: 'open' }); return call({ operation: 'send', attempt_id: 'attempt-1', expected_po_version: opening.po_version, expected_material_version: opening.material_version, mode: 'email', recipient_email: 'vendor@example.com', cc_emails: [] }); };
-  return { call, send, docs, calls, switchActor: () => { actorUid = 'other'; }, timeout: value => { failProvider = value; }, advance: value => { time += value; }, changeMaterials: () => { versions.set('projects/P/bom/data', ++revision); }, revoke: () => { actor.customClaims.role = 'viewer'; } };
+  return { db, call, send, docs, calls, switchActor: () => { actorUid = 'other'; }, timeout: value => { failProvider = value; }, advance: value => { time += value; }, changeMaterials: () => { versions.set('projects/P/bom/data', ++revision); }, revoke: () => { actor.customClaims.role = 'viewer'; } };
 }
 module.exports = { fixture };

@@ -1,4 +1,5 @@
 const { createHash } = require('node:crypto');
+const { createFreeze } = require('./nativePoSerialization.cjs');
 const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
 const { assertDocumentBudget, MAX_INPUT_BYTES } = require('./materialCommands.cjs');
 const { calculatePOTotals, generatePONumber, determineTaxType, getStateName } = require('./poDomain.generated.cjs');
@@ -10,8 +11,7 @@ const id = value => typeof value === 'string' && value.length > 0 && value.lengt
 const nonce = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 const version = snapshot => snapshot.exists ? `${snapshot.updateTime.seconds}:${snapshot.updateTime.nanoseconds}` : 'missing';
 const validVersion = value => value === 'missing' || typeof value === 'string' && /^(0|[1-9]\d*):(0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value.split(':')[0])) && Number(value.split(':')[1]) < 1e9;
-const freeze = value => value instanceof Date ? value.toISOString() : value && typeof value.toDate === 'function' ? value.toDate().toISOString()
-  : Array.isArray(value) ? value.map(freeze) : plain(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, freeze(value[key])])) : value;
+const freeze = createFreeze(fault);
 const digest = value => createHash('sha256').update(JSON.stringify(freeze(value))).digest('hex');
 const text = (value, max = 4000) => typeof value === 'string' && value.length <= max;
 function date(value) {
