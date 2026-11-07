@@ -3,9 +3,11 @@ const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
 const { assertDocumentBudget, MAX_INPUT_BYTES } = require('./materialCommands.cjs');
 const { supportTicketProjectAccess } = require('./nativeSupportTicketCreate.cjs');
 const { resolveSupportTicketAssignee } = require('./nativeSupportTicketAssignee.cjs');
+const { createStoredViews } = require('./nativeSupportTicketStoredView.cjs');
 
 const PUBLIC = Symbol('native-support-ticket-assignment');
 const fault = (code, status = 400, details = {}) => Object.assign(new Error(code), { code, status, details, [PUBLIC]: true });
+const { assigneeView } = createStoredViews(fault);
 const plain = value => value && typeof value === 'object' && !Array.isArray(value)
   && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const validId = value => typeof value === 'string' && !!value.trim() && value.length <= 128
@@ -87,7 +89,7 @@ function createNativeSupportTicketAssignment({ db, auth, enabled = false, getSer
           if (!ticketSnapshot.exists) throw fault('support_ticket_not_found', 404);
           const before = ticketSnapshot.data();
           if (before.projectId && before.projectId !== projectId) throw fault('support_ticket_identity_conflict', 409);
-          return { ok: true, project_id: projectId, ticket_id: ticketId, version: revision(ticketSnapshot), assignee: before.assignee || null };
+          return { ok: true, project_id: projectId, ticket_id: ticketId, version: revision(ticketSnapshot), assignee: assigneeView(before.assignee) };
         });
       }
 
@@ -119,7 +121,7 @@ function createNativeSupportTicketAssignment({ db, auth, enabled = false, getSer
           if (old.actor_uid !== actor.uid || old.actor_email !== normalizeEmail(actor.email) || old.payload_hash !== payloadHash) {
             throw fault('operation_conflict', 409);
           }
-          return { ...old.result, resolution: 'replayed' };
+          return { ...old.result, ...(old.result && Object.hasOwn(old.result, 'assignee') ? { assignee: assigneeView(old.result.assignee) } : {}), resolution: 'replayed' };
         }
         if (!writesOn()) throw fault('support_ticket_assignment_disabled', 503);
         const control = await transaction.get(db.collection('pulseRuntimeControl').doc('cutover'));
@@ -132,7 +134,7 @@ function createNativeSupportTicketAssignment({ db, auth, enabled = false, getSer
         if (revision(ticketSnapshot) !== expectedVersion) throw fault('support_ticket_version_conflict', 409);
         const before = ticketSnapshot.data();
         if (before.projectId && before.projectId !== projectId) throw fault('support_ticket_identity_conflict', 409);
-        const oldAssignee = before.assignee || null;
+        const oldAssignee = assigneeView(before.assignee);
         const unchanged = command.assignee_user_id === null
           ? oldAssignee === null
           : oldAssignee?.userId === command.assignee_user_id;
