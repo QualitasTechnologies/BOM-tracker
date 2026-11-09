@@ -2,9 +2,11 @@ const { createHash } = require('node:crypto');
 const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
 const { assertDocumentBudget, MAX_INPUT_BYTES } = require('./materialCommands.cjs');
 const { supportTicketProjectAccess } = require('./nativeSupportTicketCreate.cjs');
+const { createStoredViews } = require('./nativeSupportTicketStoredView.cjs');
 
 const PUBLIC = Symbol('native-support-ticket-status');
 const fault = (code, status = 400, details = {}) => Object.assign(new Error(code), { code, status, details, [PUBLIC]: true });
+const { statusView } = createStoredViews(fault);
 const plain = value => value && typeof value === 'object' && !Array.isArray(value)
   && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const validId = value => typeof value === 'string' && !!value.trim() && value.length <= 128
@@ -90,7 +92,7 @@ function createNativeSupportTicketStatus({ db, auth, enabled = false, getServerT
           assertTicketAccess(project, actor);
           const ticketSnapshot = await transaction.get(ticketRef);
           if (!ticketSnapshot.exists) throw fault('support_ticket_not_found', 404);
-          return { ok: true, project_id: projectId, ticket_id: ticketId, version: revision(ticketSnapshot), status: ticketSnapshot.data().status };
+          return { ok: true, project_id: projectId, ticket_id: ticketId, version: revision(ticketSnapshot), status: statusView(ticketSnapshot.data().status) };
         });
       }
 
@@ -122,7 +124,7 @@ function createNativeSupportTicketStatus({ db, auth, enabled = false, getServerT
           if (old.actor_uid !== actor.uid || old.actor_email !== normalizeEmail(actor.email) || old.payload_hash !== payloadHash) {
             throw fault('operation_conflict', 409);
           }
-          return { ...old.result, resolution: 'replayed' };
+          return { ...old.result, ...(old.result && Object.hasOwn(old.result, 'status') ? { status: statusView(old.result.status) } : {}), resolution: 'replayed' };
         }
         if (!writesOn()) throw fault('support_ticket_status_disabled', 503);
         const control = await transaction.get(db.collection('pulseRuntimeControl').doc('cutover'));
