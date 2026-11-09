@@ -99,11 +99,25 @@ test('revocation or cancellation during publication cannot make document metadat
  }
 });
 test('mixed external category links cannot be deleted and no archive is written',async()=>{
- const f=fixture();await uploaded(f);f.actor.email='alice@customer.test';f.docs.get('projects/P').members=[{userId:'alice',categoryScope:['Parts']}];
+ const f=fixture();await uploaded(f);const [row]=(await f.get()).documents;f.actor.email='alice@customer.test';f.docs.get('projects/P').members=[{userId:'alice',categoryScope:['Parts']}];
  f.docs.get('projects/P/bom/data').categories.push({name:'Other',items:[{id:'other',status:'not-ordered'}]});
  f.docs.get('projectDocuments/document-1').linkedBOMItems=['bolt','other'];
- const [row]=(await f.get()).documents;const result=await f.call({operation:'delete',operation_id:'delete-1',...opening(row)});
+ const result=await f.call({operation:'delete',operation_id:'delete-1',...opening(row)});
  assert.equal(result.error,'project_document_forbidden');assert.equal(f.docs.has('projectDocuments/document-1'),true);assert.equal(f.docs.has('pulseDeletedProjectDocuments/P/documents/document-1'),false);
+});
+
+test('current document listing hides out-of-scope explicit and item-side links before hydrating private file URLs',async()=>{
+ const f=fixture();await uploaded(f);
+ f.docs.get('projects/P').members=[{userId:'alice',categoryScope:['Parts']}];
+ f.docs.get('projects/P/bom/data').categories.push({name:'Other',items:[{id:'other',status:'not-ordered',linkedQuoteDocumentId:'document-1'}]});
+ f.actor.email='alice@customer.test';
+ const proofReads=[];f.options.onRead=path=>{if(path.startsWith('pulseProjectDocumentUploads/'))proofReads.push(path);};
+ const itemSide=await f.get();assert.equal(itemSide.ok,true);assert.deepEqual(itemSide.documents,[]);assert.deepEqual(proofReads,[]);
+ delete f.docs.get('projects/P/bom/data').categories[1].items[0].linkedQuoteDocumentId;
+ f.docs.get('projectDocuments/document-1').linkedBOMItems=['other'];
+ assert.deepEqual((await f.get()).documents,[]);assert.deepEqual(proofReads,[]);
+ f.docs.get('projectDocuments/document-1').linkedBOMItems=['bolt'];
+ assert.equal((await f.get()).documents.length,1);assert.equal(proofReads.length,1);
 });
 test('malformed material state cannot be interpreted as an empty BOM when authorizing deletion',async()=>{
  for(const bom of [{categories:{}},{categories:[{name:'Parts',items:{}}]},{categories:[{name:'Parts',items:[null]}]}]){

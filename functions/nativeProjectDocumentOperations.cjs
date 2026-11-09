@@ -76,6 +76,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
     const documents=[];
     for(const row of page){
      const raw=row.data();if(current.customClaims.role!=='admin'&&raw.type==='customer-po')continue;
+     if(!categoryVisible(raw,bom,project.snapshot.data(),current,row.id))continue;
      const projected=await readProjectDocumentView({transaction:tx,db,bucket,projectId:data.project_id,id:row.id,raw});
      documents.push({...projected,nativeOpening:{project_id:data.project_id,actor_uid:actor.uid,project_version:version(project.snapshot),bom_version:version(bom),document_version:version(row)}});
     }
