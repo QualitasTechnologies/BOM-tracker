@@ -57,7 +57,9 @@ function validateCreate(input, billing) {
   }
 }
 function access(project, actor) {
-  if (actor.customClaims.role !== 'admin' && (!Array.isArray(project.memberIds) || !project.memberIds.includes(actor.uid))) throw fault('project_forbidden',403);
+  // Match projectSubcollectionAccess: explicit null is the legacy fallback;
+  // missing or malformed membership does not grant project access.
+  if (actor.customClaims.role !== 'admin' && project.memberIds !== null && (!Array.isArray(project.memberIds) || !project.memberIds.includes(actor.uid))) throw fault('project_forbidden',403);
   return { create: actor.customClaims.role === 'admin' || actor.email.trim().toLowerCase().endsWith('@qualitastech.com'), admin: actor.customClaims.role === 'admin' };
 }
 function writableControl(snapshot, replay = false) {
