@@ -1,6 +1,44 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { fixture } = require('./nativePOAuthoringFixture.cjs');
+
+test('explicit-null legacy membership retains PO access, including partner edits but not partner creation', async () => {
+  for (const uid of ['alice', 'partner']) {
+    const f = fixture({ uid }); f.docs.get('projects/P').memberIds = null;
+    assert.equal((await f.call({ operation: 'open', po_id: 'existing' })).ok, true);
+    assert.equal((await f.command()).ok, true);
+    const g = fixture({ uid }); g.docs.get('projects/P').memberIds = null;
+    const result = await g.create();
+    assert.equal(uid === 'alice' ? result.ok : result.error, uid === 'alice' ? true : 'procurement_forbidden');
+  }
+});
+
+test('missing, malformed, empty and nonmatching membership remains denied before reads, writes and replay', async () => {
+  for (const membership of [undefined, {}, 'alice', [], ['bob']]) {
+    const f = fixture();
+    const first = await f.command(); assert.equal(first.ok, true);
+    if (membership === undefined) delete f.docs.get('projects/P').memberIds;
+    else f.docs.get('projects/P').memberIds = membership;
+    const before = structuredClone([...f.docs]);
+    assert.equal((await f.call({ operation: 'open', po_id: 'existing' })).error, 'project_forbidden');
+    assert.equal((await f.command()).error, 'project_forbidden');
+    assert.equal((await f.create()).error, 'project_forbidden');
+    assert.deepEqual([...f.docs], before);
+  }
+});
+
+test('null membership fallback is revoked on receipt replay and when the project changes during authorization', async () => {
+  const f = fixture(); f.docs.get('projects/P').memberIds = null;
+  assert.equal((await f.command()).ok, true);
+  f.docs.get('projects/P').memberIds = [];
+  assert.equal((await f.command()).error, 'project_forbidden');
+  const g = fixture({ onRead: (path, users, docs) => {
+    if (path === 'pulseRuntimeControl/cutover') docs.get('projects/P').memberIds = [];
+  } });
+  g.docs.get('projects/P').memberIds = null;
+  assert.equal((await g.command()).error, 'project_forbidden');
+  assert.equal(g.docs.get('projects/P/purchaseOrders/existing').status, 'draft');
+});
 test('internal viewers create with an atomic legal-entity number, derived totals and immutable replay', async () => {
   const f = fixture(), result = await f.create(); assert.equal(result.ok, true);
   const po = f.docs.get('projects/P/purchaseOrders/created');

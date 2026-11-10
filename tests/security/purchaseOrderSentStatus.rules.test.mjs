@@ -2,6 +2,7 @@ import { after, before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { deleteDoc, deleteField, doc, getDoc, setDoc, Timestamp, updateDoc } from 'firebase/firestore';
 
@@ -10,6 +11,39 @@ assert.equal(new URL(`http://${process.env.FIRESTORE_EMULATOR_HOST}`).hostname, 
 let env;
 const memberClaims = { status: 'approved', role: 'viewer' };
 const member = (uid = 'alice', extra = {}) => env.authenticatedContext(uid, { ...memberClaims, ...extra });
+
+test('native PO access matches actual legacy Rules for explicit-null, missing and malformed membership', async () => {
+  const require = createRequire(new URL('../../functions/package.json', import.meta.url));
+  const { Firestore, FieldValue } = require('@google-cloud/firestore');
+  const { fixture } = require('./nativePOAuthoringFixture.cjs');
+  const { createNativePOAuthoringOperations } = require('./nativePOAuthoringOperations.cjs');
+  const db = new Firestore({ projectId: 'demo-bom-native-security', host: '127.0.0.1:18080', ssl: false });
+  try {
+    for (const uid of ['alice', 'partner', 'admin']) {
+      for (const membership of [null, undefined, {}, [], ['alice', 'partner'], ['other']]) {
+        const f = fixture({ uid });
+        const project = f.docs.get('projects/P');
+        if (membership === undefined) delete project.memberIds;
+        else project.memberIds = membership;
+        const batch = db.batch();
+        for (const [path, value] of f.docs) batch.set(db.doc(path), value);
+        await batch.commit();
+        const actor = f.users.get(uid);
+        const context = member(uid, { ...actor.customClaims, email: actor.email, email_verified: true });
+        const po = doc(context.firestore(), 'projects/P/purchaseOrders/existing');
+        const allowed = uid === 'admin' || membership === null || Array.isArray(membership) && membership.includes(uid);
+        await (allowed ? assertSucceeds : assertFails)(getDoc(po));
+        await (allowed ? assertSucceeds : assertFails)(updateDoc(po, { paymentTerms: 'Rules parity' }));
+        const handler = createNativePOAuthoringOperations({ db, auth: f.auth, enabled: true, getServerTimestamp: () => FieldValue.serverTimestamp() });
+        const opened = await handler({ auth: { uid }, rawRequest: { get: () => 'Bearer synthetic' }, data: { operation: 'open', project_id: 'P', po_id: 'existing', expected_actor_uid: uid } });
+        assert.equal(opened.ok, allowed, `${uid}, ${JSON.stringify(membership)}`);
+        if (!allowed) assert.equal(opened.error, 'project_forbidden');
+      }
+    }
+  } finally {
+    await db.terminate();
+  }
+});
 
 before(async () => {
   env = await initializeTestEnvironment({
