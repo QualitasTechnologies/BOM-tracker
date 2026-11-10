@@ -4,10 +4,10 @@ import { MemoryRouter } from 'react-router-dom';
 import KPI from '../Index';
 
 const h = vi.hoisted(() => ({
-  user: { uid: 'alice', isAdmin: true }, getProjects: vi.fn(), getBOMData: vi.fn(), getDocs: vi.fn(),
+  user: { uid: 'alice', isAdmin: true }, scoped: true, getProjects: vi.fn(), getBOMData: vi.fn(), getDocs: vi.fn(),
 }));
 vi.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ user: h.user }) }));
-vi.mock('@/utils/projectReadMode', () => ({ isScopedProjectReadEnabled: () => true }));
+vi.mock('@/utils/projectReadMode', () => ({ isScopedProjectReadEnabled: () => h.scoped }));
 vi.mock('@/utils/projectFirestore', () => ({ getProjects: (...args: unknown[]) => h.getProjects(...args), getBOMData: (...args: unknown[]) => h.getBOMData(...args) }));
 vi.mock('@/firebase', () => ({ db: {} }));
 vi.mock('firebase/firestore', () => ({ collection: vi.fn((...args) => args), query: vi.fn((...args) => args), orderBy: vi.fn(), limit: vi.fn(), getDocs: (...args: unknown[]) => h.getDocs(...args), doc: vi.fn(), getDoc: vi.fn() }));
@@ -20,10 +20,20 @@ vi.mock('@/utils/emailFirestore', () => ({ getUnassignedEmails: vi.fn().mockReso
 
 describe('KPI scoped project reads', () => {
   beforeEach(() => {
+    h.scoped = true; h.user = { uid: 'alice', isAdmin: true };
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
     h.getProjects.mockReset().mockResolvedValue([{ id: 'P1', projectName: 'Scoped Project', status: 'Ongoing', members: [] }]);
     h.getBOMData.mockReset().mockResolvedValue([{ id: 'c', items: [{ id: 'one' }, { id: 'two' }] }]);
-    h.getDocs.mockReset().mockResolvedValue({ size: 0 });
+    h.getDocs.mockReset().mockResolvedValue({ size: 0, docs: [] });
+  });
+
+  it.each([true, false])('includes legacy projects without createdAt through the existing catalog, admin=%s', async isAdmin => {
+    h.scoped = false; h.user = { uid: 'alice', isAdmin };
+    render(<MemoryRouter><KPI /></MemoryRouter>);
+    await vi.waitFor(() => expect(h.getProjects).toHaveBeenCalledWith({ uid: 'alice', isAdmin }, expect.any(Function)));
+    await vi.waitFor(() => expect(h.getBOMData).toHaveBeenCalledWith('P1', 'alice', expect.any(Function)));
+    if (isAdmin) await vi.waitFor(() => expect(screen.getByText('Total Parts').parentElement?.parentElement).toHaveTextContent('2'));
+    await vi.waitFor(() => expect(h.getDocs).toHaveBeenCalledTimes(1)); // vendors only; no separate timestamp-ordered project query
   });
 
   it('loads the scoped catalog and BOM data without issuing a raw projects catalog query', async () => {

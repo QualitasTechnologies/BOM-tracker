@@ -28,7 +28,7 @@ import {
   Video,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { doc, getDoc, collection, getDocs, query, orderBy, limit } from "firebase/firestore";
+import { doc, getDoc, collection, getDocs } from "firebase/firestore";
 import { db } from "@/firebase";
 import { getBOMData, getProjects, type Project, type ProjectMember } from "@/utils/projectFirestore";
 import { isScopedProjectReadEnabled } from "@/utils/projectReadMode";
@@ -93,14 +93,12 @@ const KPIContent = () => {
 
       try {
         // Fetch projects
-        const projectsData: Array<Partial<Project> & { id: string }> = isScopedProjectReadEnabled()
-          ? await getProjects({ uid, isAdmin: !!user.isAdmin }, () => { if (!isCurrent()) throw new Error('Account changed. Reload the dashboard.'); })
-          : await (async () => {
-              const projectsRef = collection(db, 'projects');
-              const projectsQuery = query(projectsRef, orderBy('createdAt', 'desc'));
-              const projectsSnapshot = await getDocs(projectsQuery);
-              return projectsSnapshot.docs.map(projectDoc => ({ id: projectDoc.id, ...projectDoc.data() }));
-            })();
+        // Use the same authorized catalog as Projects. Legacy records need not
+        // have createdAt; ordering a Firestore query by it silently excludes them.
+        const projectsData: Array<Partial<Project> & { id: string }> = await getProjects(
+          { uid, isAdmin: !!user.isAdmin },
+          () => { if (!isCurrent()) throw new Error('Account changed. Reload the dashboard.'); }
+        );
         if (!isCurrent()) return;
 
         let totalBOMParts = 0;
