@@ -102,6 +102,10 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
       const { resolve_only: resolving, ...originalRequest } = data;
       const payloadHash = digest(originalRequest);
       const activeSend = async (transaction,po) => {
+        // Match the legacy Rules lock, including malformed non-null ownership.
+        // A provider outcome may still be uncertain; native authoring cannot
+        // change or delete its recovery record underneath the legacy sender.
+        if (po?.exists && po.data().legacySendAttemptId != null) return true;
         const pointer=po?.exists ? po.data().nativeSendAttemptId : null;
         if (!pointer) return false;
         if (!id(pointer)) return true;
@@ -125,12 +129,12 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
           if (poRef && !po.exists) throw fault('purchase_order_not_found',404);
           const bom = await transaction.get(bomRef);
           let enabledHere = on(); try { writableControl(control); } catch { enabledHere = false; }
-          const draft = po?.data()?.status === 'draft' && !po.data().nativeSendAttemptId;
+          const draft = po?.data()?.status === 'draft' && !po.data().nativeSendAttemptId && po.data().legacySendAttemptId == null;
           const deletable = po?.exists && !(await activeSend(transaction,po));
           const final = await latest(transaction);
           return { ok:true, project_id:data.project_id, po_id:data.po_id || null, po_version:po ? version(po) : 'missing', material_version:version(bom), purchase_order:po?.exists ? freeze({ ...po.data(),id:data.po_id,projectId:data.project_id }) : null,
             ...(!poRef ? {categories:final.permissions.create ? freeze(bom.data()?.categories || []) : []} : {}),
-            permissions:{ create:enabledHere && final.permissions.create, edit:enabledHere && !!draft, submit:enabledHere && !!draft, request_changes:enabledHere && final.permissions.admin && po?.data()?.status === 'pending-approval' && !po.data().nativeSendAttemptId, delete:enabledHere && !!deletable } };
+            permissions:{ create:enabledHere && final.permissions.create, edit:enabledHere && !!draft, submit:enabledHere && !!draft, request_changes:enabledHere && final.permissions.admin && po?.data()?.status === 'pending-approval' && !po.data().nativeSendAttemptId && po.data().legacySendAttemptId == null, delete:enabledHere && !!deletable } };
         }
         if (data.operation === 'create' && !first.permissions.create || command?.kind === 'request_changes' && !first.permissions.admin) throw fault('procurement_forbidden',403);
         const receipt = await transaction.get(receiptRef);
@@ -198,7 +202,7 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
         } else {
           if (!po.exists) throw fault('purchase_order_not_found',404);
           if (version(po) !== data.expected_po_version) throw fault('po_version_conflict',409);
-          if (before.nativeSendAttemptId && (kind !== 'delete' || await activeSend(transaction,po))) throw fault('purchase_order_attempt_active',409);
+          if (before.legacySendAttemptId != null || (before.nativeSendAttemptId && (kind !== 'delete' || await activeSend(transaction,po)))) throw fault('purchase_order_attempt_active',409);
           if (kind !== 'delete' && before.status !== (kind === 'request_changes' ? 'pending-approval' : 'draft')) throw fault('purchase_order_state_conflict',409);
           if (kind === 'delete') {
             if ((await transaction.get(archiveRef)).exists) throw fault('purchase_order_identity_reused',409);
