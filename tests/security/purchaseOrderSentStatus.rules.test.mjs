@@ -12,6 +12,36 @@ let env;
 const memberClaims = { status: 'approved', role: 'viewer' };
 const member = (uid = 'alice', extra = {}) => env.authenticatedContext(uid, { ...memberClaims, ...extra });
 
+test('actual legacy send locks block both browser updates and native approval/deletion without changing recovery data', async () => {
+  const require = createRequire(new URL('../../functions/package.json', import.meta.url));
+  const { Firestore, FieldValue } = require('@google-cloud/firestore');
+  const { fixture } = require('./nativePOAuthoringFixture.cjs');
+  const { createNativePOAuthoringOperations } = require('./nativePOAuthoringOperations.cjs');
+  const db = new Firestore({ projectId: 'demo-bom-native-security', host: '127.0.0.1:18080', ssl: false });
+  try {
+    for (const legacySendAttemptId of ['legacy-send', '', 0, {}]) {
+      const f = fixture({ uid: 'admin' });
+      Object.assign(f.docs.get('projects/P/purchaseOrders/existing'), { status: 'pending-approval', legacySendAttemptId, legacySendPhase: 'uncertain' });
+      const batch = db.batch(); for (const [path, value] of f.docs) batch.set(db.doc(path), value); await batch.commit();
+      const ref = db.doc('projects/P/purchaseOrders/existing'), before = await ref.get();
+      const actor = f.users.get('admin');
+      const context = member('admin', { ...actor.customClaims, email: actor.email, email_verified: true });
+      await assertFails(updateDoc(doc(context.firestore(), ref.path), { status: 'draft' }));
+      const handler = createNativePOAuthoringOperations({ db, auth: f.auth, enabled: true, getServerTimestamp: () => FieldValue.serverTimestamp() });
+      const call = data => handler({ auth: { uid: 'admin' }, rawRequest: { get: () => 'Bearer synthetic' }, data: { project_id: 'P', po_id: 'existing', expected_actor_uid: 'admin', ...data } });
+      const opening = await call({ operation: 'open' }); assert.equal(opening.ok, true);
+      assert.equal(opening.permissions.request_changes, false); assert.equal(opening.permissions.delete, false);
+      for (const kind of ['request_changes', 'delete']) {
+        const result = await call({ operation: 'command', operation_id: kind, expected_po_version: opening.po_version, command: { kind } });
+        assert.equal(result.error, 'purchase_order_attempt_active');
+      }
+      const after = await ref.get(); assert.deepEqual(after.data(), before.data()); assert.ok(after.updateTime.isEqual(before.updateTime));
+      assert.equal((await db.collection('pulsePOAuthoringOperations/P/audit').get()).size, 0);
+      assert.equal((await db.collection('pulsePOAuthoringOperations/P/receipts').get()).size, 0);
+    }
+  } finally { await db.terminate(); }
+});
+
 test('native PO access matches actual legacy Rules for explicit-null, missing and malformed membership', async () => {
   const require = createRequire(new URL('../../functions/package.json', import.meta.url));
   const { Firestore, FieldValue } = require('@google-cloud/firestore');

@@ -2,6 +2,53 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { fixture } = require('./nativePOAuthoringFixture.cjs');
 
+test('legacy send ownership suppresses native edit, approval and deletion permissions', async () => {
+  for (const lock of ['legacy-send', '', 0, {}]) for (const status of ['draft', 'pending-approval']) {
+    const f = fixture({ uid: 'admin' });
+    Object.assign(f.docs.get('projects/P/purchaseOrders/existing'), { status, legacySendAttemptId: lock });
+    const opened = await f.call({ operation: 'open', po_id: 'existing' });
+    assert.equal(opened.ok, true);
+    for (const action of ['edit', 'submit', 'request_changes', 'delete']) assert.equal(opened.permissions[action], false, `${status}: ${action}`);
+  }
+});
+
+test('native commands cannot alter or delete a PO owned by a legacy send attempt', async () => {
+  for (const lock of ['legacy-send', '', 0, {}]) for (const kind of ['edit', 'submit', 'request_changes', 'delete']) {
+    const f = fixture({ uid: 'admin' });
+    Object.assign(f.docs.get('projects/P/purchaseOrders/existing'), { status: kind === 'request_changes' || kind === 'delete' ? 'pending-approval' : 'draft', legacySendAttemptId: lock, legacySendPhase: 'uncertain' });
+    const before = structuredClone([...f.docs]);
+    const command = kind === 'edit' ? { kind, patch: { paymentTerms: 'Changed' } } : { kind };
+    assert.equal((await f.command(command)).error, 'purchase_order_attempt_active');
+    assert.deepEqual([...f.docs], before);
+  }
+});
+
+test('cleared legacy ownership permits edits and an existing receipt remains recoverable while a later legacy send is active', async () => {
+  const f = fixture(); f.docs.get('projects/P/purchaseOrders/existing').legacySendAttemptId = null;
+  const result = await f.command({ kind: 'edit', patch: { paymentTerms: 'Changed' } }); assert.equal(result.ok, true);
+  f.docs.get('projects/P/purchaseOrders/existing').legacySendAttemptId = 'later-send';
+  const before = structuredClone([...f.docs]);
+  assert.deepEqual(await f.command({ kind: 'edit', patch: { paymentTerms: 'Changed' } }), result);
+  assert.equal((await f.command({ kind: 'edit', patch: { paymentTerms: 'Changed' } }, { resolve_only: true })).resolution, 'committed');
+  assert.deepEqual([...f.docs], before);
+});
+
+test('a legacy lock arriving during a native transaction invalidates its opening rather than overwriting recovery state', async () => {
+  const options = {}, f = fixture(options);
+  const opening = await f.call({ operation: 'open', po_id: 'existing' });
+  let lockArrived = false;
+  options.beforeCommit = (docs, versions) => {
+    lockArrived = true;
+    docs.get('projects/P/purchaseOrders/existing').legacySendAttemptId = 'arriving-send';
+    versions.set('projects/P/purchaseOrders/existing', 2);
+  };
+  assert.equal((await f.command({ kind: 'edit', patch: { paymentTerms: 'Changed' } }, { expected_po_version: opening.po_version })).error, 'po_version_conflict');
+  assert.equal(lockArrived, true);
+  assert.equal(f.docs.get('projects/P/purchaseOrders/existing').paymentTerms, 'Old');
+  assert.equal(f.docs.get('projects/P/purchaseOrders/existing').legacySendAttemptId, 'arriving-send');
+  assert.equal([...f.docs.keys()].some(path => path.startsWith('pulsePOAuthoringOperations/')), false);
+});
+
 test('explicit-null legacy membership retains PO access, including partner edits but not partner creation', async () => {
   for (const uid of ['alice', 'partner']) {
     const f = fixture({ uid }); f.docs.get('projects/P').memberIds = null;
