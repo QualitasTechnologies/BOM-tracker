@@ -509,7 +509,7 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
       setError(err.message || 'Failed to create purchase order');
       toast({
         title: 'Error',
-        description: 'Failed to create purchase order. Please try again.',
+        description: err.message || 'Failed to create purchase order. Please try again.',
         variant: 'destructive',
       });
     } finally {

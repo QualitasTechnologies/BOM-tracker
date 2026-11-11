@@ -76,8 +76,19 @@ function writableControl(snapshot, replay = false) {
   if (!replay && (snapshot.data().poClientWritesFenced !== true || snapshot.data().poCounterClientWritesFenced !== true)) throw fault('po_authoring_cutover_required',503);
 }
 const authoringEnabled = env => ['BOM_MATERIAL_MUTATIONS_ENABLED','BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED','BOM_NATIVE_PO_AUTHORING_ENABLED'].every(key => env[key] === 'true');
-function createNativePOAuthoringOperations({ db, auth, enabled = false, getServerTimestamp, now = () => new Date() }) {
+function createNativePOAuthoringOperations({ db, auth, enabled = false, getServerTimestamp, now = () => new Date(), legacyCreateOnly = false }) {
   const on = () => (typeof enabled === 'function' ? enabled() : enabled) === true;
+  // The existing application's create-only repair owns no native edit/send lane.
+  // It may allocate a counter only while legacy authoring still owns writes.
+  const checkControl = (snapshot, replay = false) => {
+    if (!legacyCreateOnly) return writableControl(snapshot, replay);
+    if (replay) return;
+    if (!snapshot.exists) return;
+    const control = snapshot.data();
+    if (!['legacy', 'coexist'].includes(control.mode)
+      || control.poClientWritesFenced === true || control.poCounterClientWritesFenced === true
+      || control.billingEntityClientWritesFenced === true) throw fault('legacy_po_creation_fenced',503);
+  };
   const verifiedActor = async request => {
     try { return await currentNativeActor(auth,request); }
     catch (error) {
@@ -89,6 +100,8 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
   return async request => {
     try {
       const actor = await verifiedActor(request), data = request.data;
+      if (legacyCreateOnly && (!plain(data) || !['open','create'].includes(data.operation)
+        || data.operation === 'open' && data.po_id !== undefined)) throw fault('invalid_po_request');
       if (!plain(data) || !['open','command','create'].includes(data.operation) || !id(data.project_id) || data.po_id !== undefined && !id(data.po_id)) throw fault('invalid_po_request');
       const allowed = ['operation','project_id','po_id','expected_actor_uid', ...(data.operation === 'command' ? ['expected_po_version','operation_id','command','resolve_only'] : data.operation === 'create' ? ['operation_id','expected_material_version','input','billing_snapshot','resolve_only'] : [])];
       if (Object.keys(data).some(key => !allowed.includes(key))) throw fault('invalid_po_request');
@@ -126,7 +139,11 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
         if (project.data().projectId && project.data().projectId !== data.project_id) throw fault('project_identity_conflict',409);
         const current = await verifiedActor(request);
         if (current.uid !== actor.uid || current.email !== actor.email) throw fault('actor_session_changed',403);
-        return { current, permissions: access(project.data(),current), project:project.data() };
+        const permissions = access(project.data(),current);
+        // Preserve the original approved project-member create grant; never
+        // grant a member edit access to billing-entity metadata.
+        if (legacyCreateOnly) permissions.create = true;
+        return { current, permissions, project:project.data() };
       };
       return await db.runTransaction(async transaction => {
         const first = await latest(transaction), po = poRef ? await transaction.get(poRef) : null, control = await transaction.get(controlRef);
@@ -134,7 +151,7 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
         if (data.operation === 'open') {
           if (poRef && !po.exists) throw fault('purchase_order_not_found',404);
           const bom = await transaction.get(bomRef);
-          let enabledHere = on(); try { writableControl(control); } catch { enabledHere = false; }
+          let enabledHere = on(); try { checkControl(control); } catch { enabledHere = false; }
           const draft = po?.data()?.status === 'draft' && !po.data().nativeSendAttemptId && po.data().legacySendAttemptId == null;
           const deletable = po?.exists && !(await activeSend(transaction,po));
           const final = await latest(transaction);
@@ -148,11 +165,11 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
           const final = await latest(transaction), old = receipt.data();
           if (data.operation === 'create' && !final.permissions.create || command?.kind === 'request_changes' && !final.permissions.admin) throw fault('procurement_forbidden',403);
           if (old.actor_uid !== actor.uid || old.actor_email !== actor.email || old.payload_hash !== payloadHash) throw fault('operation_conflict',409);
-          writableControl(control,true);
+          checkControl(control,true);
           return resolving ? { ok:true,project_id:data.project_id,po_id:data.po_id,operation_id:data.operation_id,kind:data.operation === 'create' ? 'create' : command.kind,resolution:old.cancelled === true ? 'cancelled' : 'committed',...(!old.cancelled&&old.result.notification_id?{notification_id:old.result.notification_id}:{}) } : old.result;
         }
         if (resolving) {
-          writableControl(control,true);
+          checkControl(control,true);
           const final = await latest(transaction);
           if (data.operation === 'create' && !final.permissions.create || command?.kind === 'request_changes' && !final.permissions.admin) throw fault('procurement_forbidden',403);
           const at = getServerTimestamp(), kind = data.operation === 'create' ? 'create' : command.kind;
@@ -165,7 +182,7 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
           return {ok:true,project_id:data.project_id,po_id:data.po_id,operation_id:data.operation_id,kind,resolution:'cancelled'};
         }
         if (!on()) throw fault('po_authoring_disabled',503);
-        writableControl(control);
+        checkControl(control);
         const kind = data.operation === 'create' ? 'create' : command.kind;
         const result = { ok:true, project_id:data.project_id, po_id:data.po_id, operation_id:data.operation_id, kind };
         let after, before = po?.exists ? po.data() : null, counter, archived;

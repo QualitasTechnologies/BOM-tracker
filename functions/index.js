@@ -7648,6 +7648,15 @@ exports.nativeUploadOperations = onCall(
 
 // Native PO authoring: atomic numbering, draft edits and approval transitions; off by default.
 const { createNativePOAuthoringOperations, authoringEnabled } = require('./nativePOAuthoringOperations.cjs');
+// Existing UI creation: reserve the legal-entity number and save the draft in
+// one server transaction. Project members never write billing master data.
+exports.legacyPOCreation = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativePOAuthoringOperations({
+    db: admin.firestore(), auth: admin.auth(), enabled: true, legacyCreateOnly: true,
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
 exports.nativePOAuthoringOperations = onCall(
   { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
   createNativePOAuthoringOperations({
