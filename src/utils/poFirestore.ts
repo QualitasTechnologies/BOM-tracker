@@ -1,7 +1,6 @@
 import { db, functions } from "@/firebase";
 import {
   collection,
-  addDoc,
   doc,
   getDocs,
   getDoc,
@@ -17,6 +16,7 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
+import { createServerPurchaseOrder } from './serverPOCreation';
 import {
   PurchaseOrder,
   POStatus,
@@ -24,14 +24,11 @@ import {
   POWarning,
   TaxType,
   calculatePOTotals,
-  generatePONumber,
-  determineTaxType,
   numberToWords,
 } from "@/types/purchaseOrder";
 import {
   billingEntityToCompanySettings,
   getBillingEntity,
-  incrementBillingEntityPONumber,
 } from "./settingsFirestore";
 
 // Re-export types for convenience
@@ -165,136 +162,10 @@ export interface CreatePOInput {
 }
 
 export const createPurchaseOrder = async (input: CreatePOInput): Promise<string> => {
-  // Resolve the entity issuing this PO and snapshot its legal details on the PO.
-  const billingEntity = await getBillingEntity(input.billingEntityId);
-  const companySettings = billingEntity
-    ? billingEntityToCompanySettings(billingEntity)
-    : null;
-
-  if (!companySettings) {
-    throw new Error("Billing entity not configured. Please complete it in Settings.");
-  }
-
-  // Validate company settings
-  if (!companySettings.gstin || !companySettings.stateCode) {
-    throw new Error("Company GSTIN and State Code must be configured in Settings.");
-  }
-
-  // Generate PO number
-  const poNumber = generatePONumber(
-    companySettings.poNumberPrefix,
-    companySettings.poNumberFormat,
-    companySettings.nextPoNumber
-  );
-
-  // Determine tax type based on states
-  const taxType = determineTaxType(companySettings.stateCode, input.vendorStateCode);
-  const taxPercentage = 18; // Standard GST rate
-
-  // Add serial numbers to items
-  const itemsWithSlNo: POItem[] = input.items.map((item, index) => ({
-    ...item,
-    slNo: index + 1,
-  }));
-
-  // Calculate totals
-  const totals = calculatePOTotals(itemsWithSlNo, taxType, taxPercentage);
-
-  // Create PO object
-  const now = new Date();
-  const po: Omit<PurchaseOrder, 'id'> = {
-    projectId: input.projectId,
-    billingEntityId: input.billingEntityId,
-    poNumber,
-
-    // Vendor
-    vendorId: input.vendorId,
-    vendorName: input.vendorName,
-    vendorAddress: input.vendorAddress,
-    vendorGstin: input.vendorGstin,
-    vendorStateCode: input.vendorStateCode,
-    vendorStateName: input.vendorStateName,
-    vendorEmail: input.vendorEmail,
-    vendorPhone: input.vendorPhone,
-
-    // Reference
-    projectReference: input.projectReference,
-    vendorQuoteReference: input.vendorQuoteReference,
-
-    // Invoice To (from company settings)
-    invoiceToCompany: companySettings.companyName,
-    invoiceToAddress: companySettings.companyAddress,
-    invoiceToGstin: companySettings.gstin,
-    invoiceToStateCode: companySettings.stateCode,
-    invoiceToStateName: companySettings.stateName,
-
-    // Ship To (use provided values or default to company address)
-    shipToAddress: input.shipToAddress || companySettings.companyAddress,
-    shipToGstin: input.shipToGstin || companySettings.gstin,
-    shipToStateCode: input.shipToStateCode || companySettings.stateCode,
-    shipToStateName: input.shipToStateName || companySettings.stateName,
-
-    // Items
-    items: itemsWithSlNo,
-
-    // Financials
-    subtotal: totals.subtotal,
-    taxType,
-    taxPercentage,
-    igstAmount: totals.igstAmount,
-    cgstAmount: totals.cgstAmount,
-    sgstAmount: totals.sgstAmount,
-    totalAmount: totals.totalAmount,
-    amountInWords: totals.amountInWords,
-    currency: 'INR',
-
-    // Terms
-    paymentTerms: input.paymentTerms,
-    deliveryTerms: input.deliveryTerms,
-    dispatchedThrough: input.dispatchedThrough,
-    destination: input.destination,
-    termsAndConditions: input.termsAndConditions,
-    includeAnnexure: input.includeAnnexure,
-
-    // Dates
-    poDate: now,
-    expectedDeliveryDate: input.expectedDeliveryDate,
-
-    // Status - always starts as draft
-    status: 'draft',
-
-    // Warnings - empty for now, can be populated later
-    warnings: [],
-
-    // Tracking
-    createdAt: now,
-    createdBy: input.createdBy,
-    updatedAt: now,
-  };
-
-  // Clean undefined values
-  const cleanedPO = cleanFirestoreData(po);
-
-  // Convert dates to Timestamps
-  const firestorePO = {
-    ...cleanedPO,
-    poDate: Timestamp.fromDate(now),
-    createdAt: Timestamp.fromDate(now),
-    updatedAt: Timestamp.fromDate(now),
-    expectedDeliveryDate: input.expectedDeliveryDate ? Timestamp.fromDate(input.expectedDeliveryDate) : null,
-  };
-
-  // Add to Firestore
-  const collectionRef = getPOCollectionRef(input.projectId);
-  const docRef = await addDoc(collectionRef, firestorePO);
-
-  // Keep independent PO sequences for each legal entity.
-  await incrementBillingEntityPONumber(
-    input.billingEntityId,
-    companySettings.nextPoNumber + 1,
-  );
-
-  return docRef.id;
+  const entity = await getBillingEntity(input.billingEntityId);
+  const billing = entity ? billingEntityToCompanySettings(entity) : null;
+  if (!billing?.gstin || !billing.stateCode) throw new Error('Billing entity GSTIN and State Code must be configured in Settings.');
+  return createServerPurchaseOrder(input, billing);
 };
 
 // ============================================
