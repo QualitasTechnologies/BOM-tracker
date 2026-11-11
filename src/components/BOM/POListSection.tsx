@@ -850,6 +850,9 @@ const POListSection = ({ projectId, onNativeSaved }: POListSectionProps) => {
                     {po.poNumber}
                   </span>
                   {getStatusBadge(po.status)}
+                  {po.warnings?.filter(warning => warning.field === 'poNumber').map(warning => (
+                    <span key={warning.message} className="text-xs text-amber-800" role="status">{warning.message}</span>
+                  ))}
                   {po.status === 'sent' && po.actualSentDate && (
                     <span className="text-xs text-blue-700">Actual sent: {formatDateOnly(po.actualSentDate)}</span>
                   )}
