@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Building2, Edit, Image as ImageIcon, Loader2, Plus, Star, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -16,6 +16,8 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/hooks/useAuth';
+import { createNativeBillingEntitySession, hasPendingNativeBillingEntityRequest, isNativeBillingEntityEnabled } from '@/utils/nativeBillingEntityOperations';
 import { uploadCompanyLogo } from '@/utils/imageUpload';
 import {
   addBillingEntity,
@@ -65,24 +67,105 @@ const emptyEntity = (): Omit<BillingEntity, 'id' | 'updatedAt'> => ({
 
 export default function BillingEntitiesTab() {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const nativeEnabled = isNativeBillingEntityEnabled() || hasPendingNativeBillingEntityRequest(user?.uid);
+  const context = useRef({ uid: user?.uid, mounted: true });
+  context.current.uid = user?.uid;
+  const native = useMemo(() => {
+    const uid = user?.uid;
+    return nativeEnabled && uid ? createNativeBillingEntitySession(uid, () => context.current.mounted && context.current.uid === uid) : null;
+  }, [nativeEnabled, user?.uid]);
   const [entities, setEntities] = useState<BillingEntity[]>([]);
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyEntity());
   const [saving, setSaving] = useState(false);
   const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [nativePending, setNativePending] = useState(false);
+  const [nativeLoading, setNativeLoading] = useState(nativeEnabled);
+  const [nativeOpening, setNativeOpening] = useState<{ id: string; version: string } | null>(null);
+  const [nativeEditable, setNativeEditable] = useState(false);
+  const [catalogVersion, setCatalogVersion] = useState('');
+  const [catalogPermissions, setCatalogPermissions] = useState({ create: false, set_default: false });
   const defaultEntity = getDefaultBillingEntity(entities);
 
-  useEffect(() => subscribeToBillingEntities(setEntities), []);
+  const applyCatalog = (page: Awaited<ReturnType<NonNullable<typeof native>['catalog']>>) => {
+    setEntities(page.entities); setCatalogVersion(page.catalog_version); setCatalogPermissions(page.permissions);
+  };
+  useEffect(() => {
+    context.current.mounted = true;
+    let active = true;
+    if (!nativeEnabled) return subscribeToBillingEntities(setEntities);
+    setEntities([]); setOpen(false); setNativeOpening(null); setNativeLoading(true);
+    setNativePending(native?.pending() ?? false);
+    native?.catalog().then(page => { if (active) applyCatalog(page); }).catch(error => {
+      if (active) toast({ title: 'Could not load billing entities', description: error.message, variant: 'destructive' });
+    }).finally(() => { if (active) setNativeLoading(false); });
+    return () => { active = false; context.current.mounted = false; };
+  }, [native, nativeEnabled]);
+
+  // Keep the original automatically updating catalog without reading raw SDK
+  // payloads. An open or unconfirmed form keeps its original pinned revision.
+  useEffect(() => {
+    if (!native || saving || open || nativePending || nativeLoading) return;
+    let active = true, refreshing = false;
+    const refresh = async () => {
+      if (refreshing || document.visibilityState === 'hidden') return;
+      refreshing = true;
+      try { const page = await native.catalog(); if (active) applyCatalog(page); }
+      catch { if (active) setCatalogPermissions({ create: false, set_default: false }); }
+      finally { refreshing = false; }
+    };
+    const timer = window.setInterval(refresh, 30000);
+    window.addEventListener('focus', refresh);
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener('focus', refresh); };
+  }, [native, saving, open, nativePending, nativeLoading]);
+
+  const finishNative = async () => {
+    if (!native) throw Error('Reopen Settings with your signed-in account.');
+    applyCatalog(await native.acknowledge());
+    setNativePending(native.pending());
+  };
+  const recoverNative = async (retry: boolean) => {
+    if (!native || saving) return;
+    setSaving(true);
+    try {
+      const result = retry ? await native.retry() : await native.resolve();
+      await finishNative(); setOpen(false);
+      toast({ title: result === 'committed' ? 'Saved billing change confirmed' : 'Uncommitted billing change cancelled. Reopen the entity to edit.' });
+    } catch (error) {
+      toast({ title: 'Could not confirm saved change', description: error instanceof Error ? error.message : 'Keep the saved request.', variant: 'destructive' });
+    } finally { setNativePending(native.pending()); setSaving(false); }
+  };
+  const recoveryControls = nativePending ? <div role="status" className="space-y-2 rounded-md border p-3">
+    <p>A billing change is saved in this browser. Confirm it before another change.</p>
+    <Button variant="outline" disabled={saving} onClick={() => recoverNative(false)}>Check saved change</Button>{' '}
+    <Button variant="outline" disabled={saving} onClick={() => recoverNative(true)}>Retry saved change</Button>
+  </div> : null;
 
   const startAdd = () => {
+    if (nativeEnabled) {
+      if (!native || native.pending() || !catalogPermissions.create) return;
+      setNativeOpening({ id: crypto.randomUUID(), version: 'missing' }); setNativeEditable(true);
+    }
     setEditingId(null);
     setForm(emptyEntity());
     setLogoFile(null);
     setOpen(true);
   };
 
-  const startEdit = (entity: BillingEntity) => {
+  const startEdit = async (listed: BillingEntity) => {
+    let entity = listed;
+    if (nativeEnabled) {
+      if (!native || native.pending() || saving) return;
+      setSaving(true);
+      try {
+        const opening = await native.open(entity.id); entity = opening.entity;
+        setNativeOpening({ id: entity.id, version: opening.entity_version }); setNativeEditable(opening.permissions.edit);
+      } catch (error) {
+        toast({ title: 'Could not open billing entity', description: error instanceof Error ? error.message : 'Please retry.', variant: 'destructive' }); return;
+      } finally { setSaving(false); }
+    }
     const { id: _id, updatedAt: _updatedAt, ...editable } = entity;
     setEditingId(entity.id);
     setForm({ ...emptyEntity(), ...editable });
@@ -94,6 +177,8 @@ export default function BillingEntitiesTab() {
     setForm((current) => ({ ...current, [key]: value }));
 
   const handleSave = async () => {
+    if (saving || nativeEnabled && (!native || native.pending() || !nativeOpening || !nativeEditable)) return;
+    const openingUid = user?.uid;
     if (!form.legalName.trim() || !form.companyAddress.trim() || !form.gstin.trim()) {
       toast({ title: 'Legal name, address and GSTIN are required', variant: 'destructive' });
       return;
@@ -116,8 +201,10 @@ export default function BillingEntitiesTab() {
       let logoPath = form.logoPath;
       if (logoFile) {
         const uploaded = await uploadCompanyLogo(logoFile);
+        if (nativeEnabled && (!context.current.mounted || context.current.uid !== openingUid)) throw Error('The signed-in account changed. Reopen Settings.');
         logo = uploaded.url;
         logoPath = uploaded.path;
+        setForm(current => ({ ...current, logo, logoPath })); setLogoFile(null);
       }
       const payload = {
         ...form,
@@ -127,7 +214,14 @@ export default function BillingEntitiesTab() {
         logo,
         logoPath,
       };
-      if (editingId) await updateBillingEntity(editingId, payload);
+      if (nativeEnabled) {
+        if (!native || !nativeOpening) throw Error('Reopen the billing entity before saving.');
+        await native.mutate(editingId
+          ? { operation: 'update', entity_id: nativeOpening.id, expected_version: nativeOpening.version, patch: payload }
+          : { operation: 'create', entity_id: nativeOpening.id, expected_version: 'missing', entity: payload });
+        await finishNative();
+      }
+      else if (editingId) await updateBillingEntity(editingId, payload);
       else await addBillingEntity(payload);
       toast({ title: editingId ? 'Billing entity updated' : 'Billing entity added' });
       setOpen(false);
@@ -138,14 +232,24 @@ export default function BillingEntitiesTab() {
         variant: 'destructive',
       });
     } finally {
+      if (nativeEnabled) setNativePending(native?.pending() ?? false);
       setSaving(false);
     }
   };
 
   const handleDelete = async (entity: BillingEntity) => {
-    if (!window.confirm(`Delete ${entity.displayName}? Projects using it must be reassigned.`)) return;
+    if (saving || nativeEnabled && (!native || native.pending())) return;
+    setSaving(true);
     try {
-      await deleteBillingEntity(entity.id);
+      if (nativeEnabled) {
+        const opening = await native!.open(entity.id);
+        if (!opening.permissions.delete) throw Error('Billing deletion is paused or unavailable with your current access.');
+        if (!window.confirm(`Delete ${opening.entity.displayName}? Projects using it must be reassigned.`)) return;
+        await native!.mutate({ operation: 'delete', entity_id: entity.id, expected_version: opening.entity_version }); await finishNative();
+      } else {
+        if (!window.confirm(`Delete ${entity.displayName}? Projects using it must be reassigned.`)) return;
+        await deleteBillingEntity(entity.id);
+      }
       toast({ title: 'Billing entity deleted' });
     } catch (error) {
       toast({
@@ -153,12 +257,16 @@ export default function BillingEntitiesTab() {
         description: error instanceof Error ? error.message : 'Please try again.',
         variant: 'destructive',
       });
-    }
+    } finally { setNativePending(native?.pending() ?? false); setSaving(false); }
   };
 
   const handleSetDefault = async (entity: BillingEntity) => {
+    if (saving || nativeEnabled && (!native || native.pending() || !catalogVersion || !catalogPermissions.set_default)) return;
+    setSaving(true);
     try {
-      await setDefaultBillingEntity(entity.id);
+      if (nativeEnabled) {
+        await native!.mutate({ operation: 'set_default', entity_id: entity.id, expected_catalog_version: catalogVersion }); await finishNative();
+      } else await setDefaultBillingEntity(entity.id);
       toast({ title: `${entity.displayName} is now the default billing entity` });
     } catch (error) {
       toast({
@@ -166,11 +274,12 @@ export default function BillingEntitiesTab() {
         description: error instanceof Error ? error.message : 'Please try again.',
         variant: 'destructive',
       });
-    }
+    } finally { setNativePending(native?.pending() ?? false); setSaving(false); }
   };
 
   return (
     <div className="space-y-5">
+      {!open && recoveryControls}
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div>
@@ -179,7 +288,7 @@ export default function BillingEntitiesTab() {
               One source of truth for legal details, logos, quotations and purchase orders. Datasensor is the default unless you choose another entity.
             </CardDescription>
           </div>
-          <Button onClick={startAdd}><Plus className="mr-2 h-4 w-4" />Add entity</Button>
+          <Button onClick={startAdd} disabled={saving || nativeEnabled && (nativeLoading || nativePending || !catalogPermissions.create)}><Plus className="mr-2 h-4 w-4" />Add entity</Button>
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 md:grid-cols-2">
@@ -199,9 +308,9 @@ export default function BillingEntitiesTab() {
                   {entity.id === defaultEntity?.id && <Badge><Star className="mr-1 h-3 w-3" />Default</Badge>}
                 </div>
                 <div className="mt-4 flex justify-end gap-2">
-                  {entity.id !== defaultEntity?.id && <Button size="sm" variant="ghost" onClick={() => handleSetDefault(entity)}><Star className="mr-2 h-3.5 w-3.5" />Set default</Button>}
-                  <Button size="sm" variant="outline" onClick={() => startEdit(entity)}><Edit className="mr-2 h-3.5 w-3.5" />Edit</Button>
-                  {entity.id !== 'company' && <Button size="sm" variant="ghost" className="text-red-600" onClick={() => handleDelete(entity)}><Trash2 className="h-3.5 w-3.5" /></Button>}
+                  {entity.id !== defaultEntity?.id && <Button size="sm" variant="ghost" disabled={saving || nativeEnabled && (nativePending || !catalogPermissions.set_default)} onClick={() => handleSetDefault(entity)}><Star className="mr-2 h-3.5 w-3.5" />Set default</Button>}
+                  <Button size="sm" variant="outline" disabled={saving || nativeEnabled && nativePending} onClick={() => startEdit(entity)}><Edit className="mr-2 h-3.5 w-3.5" />Edit</Button>
+                  {entity.id !== 'company' && <Button size="sm" variant="ghost" aria-label={`Delete ${entity.displayName}`} disabled={saving || nativeEnabled && (nativePending || !catalogPermissions.create)} className="text-red-600" onClick={() => handleDelete(entity)}><Trash2 className="h-3.5 w-3.5" /></Button>}
                 </div>
               </div>
             ))}
@@ -215,7 +324,9 @@ export default function BillingEntitiesTab() {
             <DialogTitle>{editingId ? 'Edit billing entity' : 'Add billing entity'}</DialogTitle>
             <DialogDescription>These details and logo are used on documents issued by this legal entity.</DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-2">
+          {recoveryControls}
+          {nativeEnabled && !nativeEditable && <p>Billing changes are paused or unavailable with your current access.</p>}
+          <fieldset disabled={saving || nativeEnabled && (nativePending || !nativeEditable)} className="grid gap-4 py-2">
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Legal name *" value={form.legalName} onChange={(value) => setField('legalName', value)} />
               <Field label="Display name" value={form.displayName} onChange={(value) => setField('displayName', value)} />
@@ -291,10 +402,10 @@ export default function BillingEntitiesTab() {
                 <Input type="file" accept="image/*" onChange={(event) => setLogoFile(event.target.files?.[0] || null)} />
               </div>
             </div>
-          </div>
+          </fieldset>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving}>{saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Save entity</Button>
+            <Button onClick={handleSave} disabled={saving || nativeEnabled && (nativePending || !nativeEditable)}>{saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Save entity</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -253,6 +253,12 @@ function estimateDocumentBytes(data, path) {
     if (value?.constructor?.name === 'DocumentReference' && typeof value.path === 'string' && typeof value.isEqual === 'function') return value.path.split('/').reduce((sum, part) => sum + stringSize(part), 16);
     if (value?.constructor?.name === 'GeoPoint' && Number.isFinite(value.latitude) && Number.isFinite(value.longitude)) return 16;
     if (Buffer.isBuffer(value) || value instanceof Uint8Array) return value.byteLength;
+    // Conservative overhead plus twice the stored double width per dimension.
+    // Recognise the actual SDK class so user objects cannot spoof a cheap size.
+    if (value && typeof value.toArray === 'function' && !plain(value)) {
+      const { VectorValue } = require('@google-cloud/firestore');
+      if (value instanceof VectorValue) return 32 + 16 * value.toArray().length;
+    }
     if (Array.isArray(value)) return value.reduce((sum, row) => sum + valueSize(row, depth + 1), 0);
     if (plain(value)) return Object.entries(value).reduce((sum, [key, row]) => sum + stringSize(key) + valueSize(row, depth + 1), 0);
     // The only new sentinel is a server timestamp; reserve more than its final 8 bytes.
