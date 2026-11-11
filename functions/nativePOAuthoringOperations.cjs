@@ -63,11 +63,17 @@ function access(project, actor) {
   return { create: actor.customClaims.role === 'admin' || actor.email.trim().toLowerCase().endsWith('@qualitastech.com'), admin: actor.customClaims.role === 'admin' };
 }
 function writableControl(snapshot, replay = false) {
-  if (!snapshot.exists) return;
+  if (!snapshot.exists) {
+    if (replay) return;
+    throw fault('po_authoring_cutover_required',503);
+  }
   const mode = snapshot.data()?.mode;
   if (mode === 'read_only' && replay) return;
   if (mode === 'read_only') throw fault('po_authoring_read_only',503);
   if (!['coexist','pulse_only'].includes(mode)) throw fault('po_authoring_control_unavailable',503);
+  // PO rows and legal-entity counters are independent legacy SDK writers.
+  // A native transaction cannot protect either from a later unversioned save.
+  if (!replay && (snapshot.data().poClientWritesFenced !== true || snapshot.data().poCounterClientWritesFenced !== true)) throw fault('po_authoring_cutover_required',503);
 }
 const authoringEnabled = env => ['BOM_MATERIAL_MUTATIONS_ENABLED','BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED','BOM_NATIVE_PO_AUTHORING_ENABLED'].every(key => env[key] === 'true');
 function createNativePOAuthoringOperations({ db, auth, enabled = false, getServerTimestamp, now = () => new Date() }) {
