@@ -36,6 +36,12 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.get('poCounterClientWritesFenced', false) == true;
     }
 
+    // Activate only after the versioned original Settings workflow is accepted.
+    function billingEntityClientWritesFenced() {
+      return exists(/databases/$(database)/documents/pulseRuntimeControl/cutover)
+        && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.get('billingEntityClientWritesFenced', false) == true;
+    }
+
     function poCounterFieldsArePreserved() {
       let fields = ['nextPoNumber', 'poNumberPrefix', 'poNumberFormat'];
       return resource == null
@@ -306,6 +312,7 @@ service cloud.firestore {
       allow write: if request.auth != null
         && request.auth.token.status == 'approved'
         && request.auth.token.role == 'admin'
+        && !billingEntityClientWritesFenced()
         && (!poCounterClientWritesFenced() || poCounterFieldsArePreserved());
       // Preserve the previous recursive grant without overlapping root entities.
       match /{nestedCollection}/{document=**} {
@@ -322,6 +329,7 @@ service cloud.firestore {
     match /settings/{settingId} {
       allow read: if request.auth != null;
       allow write: if request.auth != null
+        && (settingId != 'company' || !billingEntityClientWritesFenced())
         && (settingId != 'company' || !poCounterClientWritesFenced() || poCounterFieldsArePreserved());
       match /{nestedCollection}/{document=**} {
         allow read, write: if request.auth != null;

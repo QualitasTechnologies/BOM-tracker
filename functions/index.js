@@ -7656,6 +7656,17 @@ exports.nativePOAuthoringOperations = onCall(
   })
 );
 
+// Native Billing Settings: original forms, versioned metadata and retained recovery; default off.
+const { createNativeBillingEntityOperations } = require('./nativeBillingEntityOperations.cjs');
+exports.nativeBillingEntityOperations = onCall(
+  { region: 'us-central1', timeoutSeconds: 30, maxInstances: 5 },
+  createNativeBillingEntityOperations({
+    db: admin.firestore(), auth: admin.auth(), bucketName: admin.storage().bucket().name,
+    enabled: () => process.env.BOM_NATIVE_BILLING_ENTITY_MUTATIONS_ENABLED === 'true',
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  })
+);
+
 // Durable PO approval notifications: private outbox and per-batch delivery jobs, default off.
 const {createPOApprovalDispatcher} = require('./poApprovalDispatcher.cjs');
 const {createPOApprovalSender} = require('./poApprovalProvider.cjs');
