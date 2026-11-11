@@ -89,3 +89,9 @@ jobs:
         run: npx --yes firebase-tools@14.9.0 emulators:exec --project demo-bom-native-security --config firebase.legacy-po-security-test.json --only firestore "node --test tests/security/purchaseOrderSentStatus.rules.test.mjs"
         env:
           FIRESTORE_RULES_PATH: firestore.legacy-po.rules
+      - name: Verify additive content-free notice release
+        run: npx --yes firebase-tools@14.9.0 emulators:exec --project demo-bom-native-security --config firebase.read-signals-security-test.json --only firestore "npm --prefix tests/security run test:read-signals-release"
+        env:
+          FIRESTORE_RULES_PATH: firestore.read-signals.rules
+      - name: Verify member PO creation transactions
+        run: npx --yes firebase-tools@14.9.0 emulators:exec --project demo-po-create-repair --config firebase.po-emulator.json --only firestore "node --test functions/legacyPOCreation.emulator.test.cjs"
