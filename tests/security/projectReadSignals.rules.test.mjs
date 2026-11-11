@@ -14,7 +14,9 @@ let env;
 const claims = { email: 'user@partner.example', email_verified: true, status: 'approved', role: 'viewer' };
 const as = (uid, extra = {}) => env.authenticatedContext(uid, { ...claims, ...extra }).firestore();
 const admin = () => as('admin-1', { role: 'admin' });
-const rulesText = await readFile(new URL('../../firestore.rules', import.meta.url), 'utf8');
+const rulesFile = process.env.FIRESTORE_RULES_PATH || 'firestore.rules';
+assert.ok(['firestore.rules', 'firestore.read-signals.rules'].includes(rulesFile));
+const rulesText = await readFile(new URL(`../../${rulesFile}`, import.meta.url), 'utf8');
 
 before(async () => {
   env = await initializeTestEnvironment({
@@ -156,7 +158,9 @@ test('existing project reads and writes are unchanged by the notice rules', asyn
   await assertSucceeds(getDoc(doc(as('alice'), 'projects/MEMBER')));
   await assertFails(getDoc(doc(as('bob'), 'projects/MEMBER')));
   await assertSucceeds(updateDoc(doc(as('alice'), 'projects/MEMBER'), { projectName: 'Renamed' }));
-  await assertFails(updateDoc(doc(as('alice'), 'projects/MEMBER'), { memberIds: ['alice', 'bob'] }));
+  // The additive release preserves the deployed legacy grant; the full-source
+  // candidate separately protects membership after its paired writer is ready.
+  await (rulesFile === 'firestore.rules' ? assertFails : assertSucceeds)(updateDoc(doc(as('alice'), 'projects/MEMBER'), { memberIds: ['alice', 'bob'] }));
   await assertSucceeds(getDoc(doc(as('alice'), 'projects/MEMBER/bom/data')));
 });
 
@@ -172,7 +176,11 @@ test('the rules define each notice path exactly once and add no overlapping or r
   assert.ok(!matches.some(pattern => /^\/pulse(ReadSignals|UserReadSignals|ReadCatalog)\/.*=\*\*\}/.test(pattern)));
   // Every other top-level collection matched by name is a distinct collection.
   assert.equal(new Set(matches.map(pattern => pattern.split('/')[1])).size, matches.length, 'one match per top-level collection');
-  const block = rulesText.slice(rulesText.indexOf('match /pulseReadSignals/'), rulesText.indexOf('match /clients/'));
+  const start = rulesText.indexOf('match /pulseReadSignals/');
+  const stagedEnd = rulesText.indexOf('// END approved content-free notices', start);
+  const end = stagedEnd >= 0 ? stagedEnd : rulesText.indexOf('match /clients/', start);
+  assert.ok(end > start, 'notice-only block boundary');
+  const block = rulesText.slice(start, end);
   assert.equal(block.match(/allow\s+[^:]*\bwrite\b[^:]*:\s*if\s+false/g)?.length, 3, 'explicit write denial on every notice path');
   assert.ok(!/allow\s+(read|get|list)[^:]*:\s*if\s+true/.test(block));
 });

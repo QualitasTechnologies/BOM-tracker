@@ -7,6 +7,7 @@
     "test:billing-entities": "node --test nativeBillingEntity.transaction.test.mjs",
     "test:confirmed-links": "node --test confirmedProjectLinks.transaction.test.mjs",
     "test:read-signals": "node --test projectReadSignals.rules.test.mjs",
+    "test:read-signals-release": "node --test --test-concurrency=1 projectReadSignals.rules.test.mjs readSignalRulesPreservation.rules.test.mjs",
     "test:support-profile": "node --test nativeSupportProfile.transaction.test.mjs",
     "test:support-resolution-fence": "node --test nativeSupportResolutionFence.rules.test.mjs",
     "test:permission-fences": "node --test nativePermissionFences.rules.test.mjs"
