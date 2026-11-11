@@ -24,6 +24,27 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.get('projectStatusClientWritesFenced', false) == true;
     }
 
+    // Shared PO rows and numbering are separate cutover boundaries. Neither
+    // fence exists by default; only exact booleans disable legacy SDK writes.
+    function poClientWritesFenced() {
+      return exists(/databases/$(database)/documents/pulseRuntimeControl/cutover)
+        && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.get('poClientWritesFenced', false) == true;
+    }
+
+    function poCounterClientWritesFenced() {
+      return exists(/databases/$(database)/documents/pulseRuntimeControl/cutover)
+        && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.get('poCounterClientWritesFenced', false) == true;
+    }
+
+    function poCounterFieldsArePreserved() {
+      let fields = ['nextPoNumber', 'poNumberPrefix', 'poNumberFormat'];
+      return resource == null
+        ? !request.resource.data.keys().hasAny(fields)
+        : request.resource == null
+          ? !resource.data.keys().hasAny(fields)
+          : !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
     // Pulse creates no cutover record by default. Only the exact versioned
     // per-project contract fences browser writes to the legacy BOM data doc.
     function legacyMaterialDataWriteFenceEnabled(projectId) {
@@ -185,10 +206,13 @@ service cloud.firestore {
       match /purchaseOrders/{poId} {
         allow read: if projectSubcollectionAccess(projectId);
         allow create: if projectSubcollectionAccess(projectId)
+          && !poClientWritesFenced()
           && purchaseOrderCreateIsNotSent();
         allow update: if projectSubcollectionAccess(projectId)
+          && !poClientWritesFenced()
           && purchaseOrderUpdateDoesNotChangeSentState();
         allow delete: if projectSubcollectionAccess(projectId)
+          && !poClientWritesFenced()
           && !purchaseOrderHasBeenSent()
           && !purchaseOrderHasActiveSendAttempt();
       }
@@ -276,20 +300,32 @@ service cloud.firestore {
         && request.auth.token.role == 'admin';
     }
 
-    match /billingEntities/{document=**} {
+    match /billingEntities/{entityId} {
       allow read: if request.auth != null
         && request.auth.token.status == 'approved';
       allow write: if request.auth != null
         && request.auth.token.status == 'approved'
-        && request.auth.token.role == 'admin';
+        && request.auth.token.role == 'admin'
+        && (!poCounterClientWritesFenced() || poCounterFieldsArePreserved());
+      // Preserve the previous recursive grant without overlapping root entities.
+      match /{nestedCollection}/{document=**} {
+        allow read: if request.auth != null && request.auth.token.status == 'approved';
+        allow write: if request.auth != null && request.auth.token.status == 'approved'
+          && request.auth.token.role == 'admin';
+      }
     }
 
     match /vendors/{document=**} {
       allow read, write: if request.auth != null;
     }
 
-    match /settings/{document=**} {
-      allow read, write: if request.auth != null;
+    match /settings/{settingId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && (settingId != 'company' || !poCounterClientWritesFenced() || poCounterFieldsArePreserved());
+      match /{nestedCollection}/{document=**} {
+        allow read, write: if request.auth != null;
+      }
     }
 
     match /engineerRates/{doc} {

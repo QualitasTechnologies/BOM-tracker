@@ -21,12 +21,15 @@ test('actual legacy send locks block both browser updates and native approval/de
   try {
     for (const legacySendAttemptId of ['legacy-send', '', 0, {}]) {
       const f = fixture({ uid: 'admin' });
+      // Isolate the legacy Rules lock before testing the accepted native cutover.
+      f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist' });
       Object.assign(f.docs.get('projects/P/purchaseOrders/existing'), { status: 'pending-approval', legacySendAttemptId, legacySendPhase: 'uncertain' });
       const batch = db.batch(); for (const [path, value] of f.docs) batch.set(db.doc(path), value); await batch.commit();
       const ref = db.doc('projects/P/purchaseOrders/existing'), before = await ref.get();
       const actor = f.users.get('admin');
       const context = member('admin', { ...actor.customClaims, email: actor.email, email_verified: true });
       await assertFails(updateDoc(doc(context.firestore(), ref.path), { status: 'draft' }));
+      await db.doc('pulseRuntimeControl/cutover').set({ mode: 'coexist', poClientWritesFenced: true, poCounterClientWritesFenced: true });
       const handler = createNativePOAuthoringOperations({ db, auth: f.auth, enabled: true, getServerTimestamp: () => FieldValue.serverTimestamp() });
       const call = data => handler({ auth: { uid: 'admin' }, rawRequest: { get: () => 'Bearer synthetic' }, data: { project_id: 'P', po_id: 'existing', expected_actor_uid: 'admin', ...data } });
       const opening = await call({ operation: 'open' }); assert.equal(opening.ok, true);
@@ -52,6 +55,8 @@ test('native PO access matches actual legacy Rules for explicit-null, missing an
     for (const uid of ['alice', 'partner', 'admin']) {
       for (const membership of [null, undefined, {}, [], ['alice', 'partner'], ['other']]) {
         const f = fixture({ uid });
+        // This case characterizes the unfenced legacy membership policy.
+        f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist' });
         const project = f.docs.get('projects/P');
         if (membership === undefined) delete project.memberIds;
         else project.memberIds = membership;

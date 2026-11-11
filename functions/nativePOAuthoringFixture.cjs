@@ -5,6 +5,7 @@ function fixture(options = {}) {
   const users = new Map(['admin', 'alice', 'partner', 'outsider'].map(id => [id, { uid: id, email: `${id}@${['partner','outsider'].includes(id) ? 'external.example' : 'qualitastech.com'}`, emailVerified: true, customClaims: { status: 'approved', role: id === 'admin' ? 'admin' : 'viewer' } }]));
   const billing = { legalName: 'Company', companyAddress: 'Address', gstin: 'GST', stateCode: '29', stateName: 'Karnataka', poNumberPrefix: 'PO', poNumberFormat: 'simple', nextPoNumber: 7, isActive: true, legacy: 'keep' };
   const docs = new Map([
+    ['pulseRuntimeControl/cutover', { mode: 'coexist', poClientWritesFenced: true, poCounterClientWritesFenced: true }],
     ['projects/P', { projectId: 'P', memberIds: ['alice','admin','partner'], projectName: 'Project' }],
     ['projects/P/bom/data', { categories: [{ name: 'Parts', items: [{ id: 'bolt', quantity: 2, name: 'Bolt', finalizedVendor:{name:'Vendor'} }] }] }],
     ['billingEntities/B', billing], ['settings/company', { ...billing, companyName: 'Company' }],

@@ -2,6 +2,52 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { fixture } = require('./nativePOAuthoringFixture.cjs');
 
+test('native authoring refuses new writes and permissions until both legacy writer fences are explicit booleans', async () => {
+  const accepted = { mode: 'coexist', poClientWritesFenced: true, poCounterClientWritesFenced: true };
+  const controls = [undefined, {}, { mode: 'coexist' }];
+  for (const key of ['poClientWritesFenced', 'poCounterClientWritesFenced']) for (const value of [undefined, false, 'true', 1]) {
+    const control = { ...accepted }; if (value === undefined) delete control[key]; else control[key] = value;
+    controls.push(control);
+  }
+  for (const control of controls) {
+    const f = fixture({ uid: 'admin' });
+    if (control === undefined) f.docs.delete('pulseRuntimeControl/cutover'); else f.docs.set('pulseRuntimeControl/cutover', control);
+    const before = structuredClone([...f.docs]);
+    const opening = await f.call({ operation: 'open', po_id: 'existing' }); assert.equal(opening.ok, true);
+    for (const action of ['create', 'edit', 'submit', 'request_changes', 'delete']) assert.equal(opening.permissions[action], false);
+    for (const issue of [() => f.create(), () => f.command(), () => f.command({ kind: 'edit', patch: { paymentTerms: 'Changed' } }), () => f.command({ kind: 'delete' })]) {
+      assert.equal((await issue()).error, control && !control.mode ? 'po_authoring_control_unavailable' : 'po_authoring_cutover_required');
+    }
+    assert.deepEqual([...f.docs], before);
+  }
+});
+
+test('removing either fence preserves committed receipt replay and cancellation without allowing a new PO mutation', async () => {
+  for (const key of ['poClientWritesFenced', 'poCounterClientWritesFenced']) {
+    const f = fixture();
+    f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', poClientWritesFenced: true, poCounterClientWritesFenced: true });
+    const saved = await f.create(); assert.equal(saved.ok, true);
+    f.docs.get('pulseRuntimeControl/cutover')[key] = false;
+    assert.deepEqual(await f.create(), saved);
+    assert.equal((await f.create({ resolve_only: true })).resolution, 'committed');
+    assert.equal((await f.create({ po_id: 'another', operation_id: 'another' })).error, 'po_authoring_cutover_required');
+    assert.equal((await f.command(undefined, { resolve_only: true })).resolution, 'cancelled');
+    assert.equal(f.docs.get('billingEntities/B').nextPoNumber, 8);
+    assert.equal(f.docs.get('projects/P/purchaseOrders/existing').status, 'draft');
+  }
+});
+
+test('a fence removed before native commit aborts the retry without allocating a number or PO', async () => {
+  const options = {}, f = fixture(options);
+  f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', poClientWritesFenced: true, poCounterClientWritesFenced: true });
+  f.versions.set('pulseRuntimeControl/cutover', 1);
+  options.beforeCommit = (docs, versions) => { docs.get('pulseRuntimeControl/cutover').poCounterClientWritesFenced = false; versions.set('pulseRuntimeControl/cutover', 2); };
+  assert.equal((await f.create()).error, 'po_authoring_cutover_required');
+  assert.equal(f.docs.get('billingEntities/B').nextPoNumber, 7);
+  assert.equal(f.docs.has('projects/P/purchaseOrders/created'), false);
+  assert.equal([...f.docs.keys()].some(path => path.startsWith('pulsePOAuthoringOperations/')), false);
+});
+
 test('legacy send ownership suppresses native edit, approval and deletion permissions', async () => {
   for (const lock of ['legacy-send', '', 0, {}]) for (const status of ['draft', 'pending-approval']) {
     const f = fixture({ uid: 'admin' });
