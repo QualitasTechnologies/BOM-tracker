@@ -82,6 +82,8 @@ function createNativeProcurementOperations({ db, auth, enabled = false, now = Da
         const state = await read(transaction), mode = await runtimeMode(transaction);
         const attemptId = state.po.data().nativeSendAttemptId;
         const attempt = attemptId ? await transaction.get(attempts.doc(attemptId)) : null;
+        const currentActor = await currentNativeActor(auth, request);
+        if (currentActor.customClaims.role !== 'admin') throw fault('procurement_forbidden', 403);
         return { ok: true, project_id: data.project_id, po_id: data.po_id, po_version: version(state.po), material_version: version(state.bom),
           purchase_order: { ...freeze(state.po.data()), id: data.po_id, projectId: data.project_id },
           material_items: freeze((Array.isArray(state.bom.data()?.categories) ? state.bom.data().categories : []).flatMap(category => (Array.isArray(category.items) ? category.items : []).filter(item => state.po.data().items?.some(row => row.bomItemId === item.id)).map(item => ({ id: item.id, name: item.name ?? '', status: item.status ?? '', quantity: item.quantity ?? 0, category: category.name })))),

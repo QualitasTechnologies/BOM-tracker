@@ -29,8 +29,14 @@ This stage ports existing workflows. It does not activate cutover or retire stan
 - Writer inventory still matches 90 Firestore and 11 Storage call sites; no new direct SDK writer was added.
 - No production Rules, runtime controls, provider calls, real emails, data migrations or user permissions changed during this local implementation.
 
-## Not yet established by this document
+## Deployed readiness and one real admin read
 
-PR/CI/merge, selected callable deployment and real-user native Settings validation are recorded only after they happen. Green emulator tests do not establish production acceptance. Before activation, drain/reconcile legacy PO creates/counters, accept the native Settings/PO/notification ownership, and prove the deployed Rules/control artifact. Preserve later team activity during rollback.
+BOM PR55 merged as `a67c3de7d97aa27eb305dbdc37aecc9c2e61ee9e`; Pulse PR83 merged as `79c7d640ba74653fd69cd6214fd9558487fad0a6`. Exact-head hosted checks passed: 1,082 backend, 1,317 standalone UI, 126 security plus 12 staged legacy Rules, 694 Pulse contracts, 2,318 embedded UI and 891 Pulse tests (one existing skip), plus builds.
+
+Only `nativeBillingEntityOperations` was added, revision `nativebillingentityoperations-00001-roc`. Its mutation environment gate is absent and therefore strictly off. All other 69 service revisions/environment/secret fingerprints stayed unchanged; the deployed archive matches 191 tested source/test/package files. These are files, not 191 runtime handlers. Source exports number 84, deployed services 70. Production Pulse auto-deployed normally and passed health/integrity checks; project/time/email counts and pre-existing edits/config stayed unchanged.
+
+At 05:21Z, the existing admin renewed the existing Pulse sign-in through its normal Google/SSO flow. An isolated temporary page reused the original BillingEntitiesTab, native client and normal SSO boundary. Both real entities loaded; all 29 rendered fields for each matched the original Settings forms exactly. Save/create/delete/default remained disabled. No mutation or logo/provider action was invoked. Complete Billing-document hashes remained unchanged; operation/audit/deleted-entity collections stayed empty. The temporary page was removed and the normal production HTML hash stayed unchanged. Proof and before/after metadata are retained in the protected `billing-settings-20261111` recovery directory; screenshots remain local rather than publishing account/bank fields.
+
+This proves one current admin's reads and rendered field parity. Live native writes/recovery and the other users remain unaccepted. Before activation, drain/reconcile legacy PO creates/counters, accept the native Settings/PO/notification ownership, and prove the deployed Rules/control artifact. Preserve later team activity during rollback.
 
 The wider retirement requirements remain open: complete workflow inventory acceptance, remaining writer/service homes, full history deduplication and file/money reconciliation, actual access for every current user, measured coexistence, read-only acceptance, whole-system restore and shutdown. Do not repeat the sealed email migration, purge or applied project links.
