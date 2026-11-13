@@ -4,6 +4,24 @@ const {createExpenseApprovalJob}=require('./expenseApprovalOutbox.cjs');
 const {createExpenseApprovalDispatcher}=require('./expenseApprovalAdapter.cjs');
 const {LEASE,RETRY_WINDOW}=require('./poApprovalDispatcher.cjs');
 const T0=Date.parse('2026-10-15T00:00:00Z');
+
+for(const [name,membership,allowed]of[
+ ['explicit null',null,true],['listed',['alice'],true],['missing',undefined,false],['malformed','alice',false],['removed',[],false],
+])test(`expense result recipient access matches original ${name} membership`,async()=>{
+ const f=setup({mode:'approved'}),project=f.docs.get('projects/P');
+ if(membership===undefined)delete project.memberIds;else project.memberIds=membership;
+ const prepared=await f.dispatcher.prepare(f.id);
+ assert.equal(prepared.state,allowed?'prepared':'blocked',JSON.stringify(prepared));assert.equal(f.sent.length,0);
+ if(allowed){assert.equal((await f.dispatcher.deliver(prepared.delivery_ids[0])).state,'accepted');assert.deepEqual(f.sent[0].mail.to,['alice@qualitastech.com']);}
+ else assert.equal(prepared.problem,'no_authorized_recipients');
+});
+
+test('expense recipient revocation after explicit-null preparation prevents any provider send',async()=>{
+ const f=setup({mode:'approved'});f.docs.get('projects/P').memberIds=null;
+ const prepared=await f.dispatcher.prepare(f.id);assert.equal(prepared.state,'prepared');
+ delete f.docs.get('projects/P').memberIds;
+ assert.equal((await f.dispatcher.deliver(prepared.delivery_ids[0])).state,'skipped');assert.equal(f.sent.length,0);
+});
 function setup({mode='submitted',send,...options}={}) {
  const f=fixture(options);let clock=T0,on=true;const sent=[];
  const visit={id:'v',date:'2024-01-02',attendees:['alice'],location:'Delhi',purpose:'Install',expenses:[],totalCost:123,createdBy:'alice',reimbursementStatus:mode==='submitted'?'pending':mode};

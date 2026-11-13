@@ -1,0 +1,9 @@
+# Original notification membership policy repair
+
+The original project-subcollection Rules allow approved non-admin users when `memberIds` is explicitly null, or when their UID appears in the array. A missing or malformed field denies them. Native PO authoring already preserves this policy.
+
+PO notification status and change-request recipient selection previously required an array, denying legacy explicit-null projects. Expense result recipient selection used loose null equality, accepting a missing field. The repair applies the existing exact-null policy at all three checks. Current-account validation, admin-only retry/reconciliation, transaction checks, lease/idempotency ownership and activation gates remain unchanged. The dispatcher rechecks membership before its provider boundary.
+
+Nineteen isolated cases cover internal/external status access, read-only status, array/missing/malformed membership, admin-only retries, recipient eligibility and revocation after preparation. Six expected failures preceded the repair. After the repair: 56 focused checks passed; full Functions 1,115 passed with one emulator-only skip; Pulse review contracts 725 passed. Twelve security tests passed against the exact published production Rules in a local demo emulator, including the existing 18-case actor/membership matrix extended to compare notification status with actual SDK authorization.
+
+Provider calls in tests are doubles. No real mail or business data was changed. Pulse mirrors only this policy/test delta; its intentional older receipt-recovery reference and current-main PR86 changes are preserved. This source stage does not prove deployment, native-write acceptance, provider delivery, all-user access, coexistence or shutdown readiness. Exact-head hosted checks and a separate bounded readiness rollout are required before any runtime claim.

@@ -56,7 +56,7 @@ function createPOApprovalNotificationOperations({db,auth,enabled=false,reconcili
         const current=await actorOf(request);
         if(current.uid!==actor.uid)throw fault('actor_session_changed',403);
         const admin=current.customClaims.role==='admin';
-        if(!admin&&(!Array.isArray(project.data().memberIds)||!project.data().memberIds.includes(current.uid)))throw fault('notification_forbidden',403);
+        if(!admin&&project.data().memberIds!==null&&(!Array.isArray(project.data().memberIds)||!project.data().memberIds.includes(current.uid)))throw fault('notification_forbidden',403);
         if(retry&&!admin)throw fault('notification_forbidden',403);
         if(receipt?.exists){if(receipt.data().request_hash!==requestHash)throw fault('notification_request_reused',409);return receipt.data().result;}
         const dispatch=on()&&(!control.exists||['coexist','pulse_only'].includes(control.data()?.mode));
