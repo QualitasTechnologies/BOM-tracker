@@ -1008,9 +1008,9 @@ exports.notifyExpenseApproval = onCall(
     const { auth, data } = request;
     if (!auth) throw new Error('Authentication required');
     // Old expense callbacks have no visit ID: do not guess a native event from dates/amount.
-    // Legacy expense writers and their callbacks must be fenced together at cutover.
+    // Fence callbacks with the original overhead writers, including scoped coexistence.
     const {legacyApprovalSendingAllowed}=require('./poApprovalLegacyGuard.cjs');
-    if (!await legacyApprovalSendingAllowed(admin.firestore())) throw new Error('Legacy notifications disabled; reopen the project in Pulse');
+    if (!await legacyApprovalSendingAllowed(admin.firestore(),'expense')) throw new Error('Legacy notifications disabled; reopen the project in Pulse');
     const {buildExpenseApprovalEmail}=require('./expenseApprovalEmail.cjs');
     const {mode,projectId,projectName,visitDates,visitLocation,visitPurpose,visitTotal,ownerUid}=data;
     if (!['submitted','approved','rejected'].includes(mode)) throw new Error('Invalid expense notification mode');

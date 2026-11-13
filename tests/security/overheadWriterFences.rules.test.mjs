@@ -4,6 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
+import vm from 'node:vm';
 import {initializeTestEnvironment,assertFails,assertSucceeds} from '@firebase/rules-unit-testing';
 import {doc,getDoc,setDoc,updateDoc,deleteDoc} from 'firebase/firestore';
 assert.equal(process.env.FIRESTORE_EMULATOR_HOST,'127.0.0.1:18080');
@@ -72,4 +73,25 @@ test('read-only cutover retains the fence and permits committed receipt resoluti
  await db.doc('pulseRuntimeControl/cutover').set({...accepted,mode:'read_only'});
  assert.deepEqual(await call(native,payload),saved);assert.equal((await call(native,{...payload,resolve_only:true})).resolution,'committed');
  await assertFails(updateDoc(doc(client(),'projects/P/overheads/data'),{otherEntries:[]}));
+});
+
+test('actual legacy expense callback and SDK writes honor the same scoped fence in coexistence',async()=>{
+ const guard=require('./poApprovalLegacyGuard.cjs'),source=await readFile(new URL('../../functions/index.js',import.meta.url),'utf8');
+ const start=source.indexOf('exports.notifyExpenseApproval = onCall('),end=source.indexOf('// ==================== PURCHASE ORDER APPROVAL NOTIFICATIONS',start);
+ let lookups=0,keys=0,sends=0;
+ const context={exports:{},resendApiKey:'synthetic',onCall:(_config,handler)=>handler,
+  admin:{firestore:()=>db,auth:()=>{lookups++;return{listUsers:async()=>({users:[{email:'admin@example.com',customClaims:{role:'admin',status:'approved'}}]}),getUser:async uid=>({uid,email:uid+'@example.com',customClaims:{role:'admin',status:'approved'}})};}},
+  require:name=>name==='./poApprovalLegacyGuard.cjs'?guard:{buildExpenseApprovalEmail:()=>({})},
+  Resend:class{emails={send:async()=>{sends++;return{data:{id:'synthetic'}};}};},getResendApiKey:()=>{keys++;return'synthetic';},logger:{info:()=>{}}};
+ vm.runInNewContext(source.slice(start,end),context);
+ const ledger=await db.doc('projects/P/overheads/data').get(),sdkRef=doc(client(),'projects/P/overheads/data');
+ for(const mode of ['submitted','approved','rejected'])await assert.rejects(context.exports.notifyExpenseApproval({auth:{uid:'alice'},data:{mode,projectId:'P',ownerUid:'alice'}}),/disabled|Pulse/i);
+ await assertFails(setDoc(sdkRef,ledger.data()));assert.deepEqual({lookups,keys,sends},{lookups:0,keys:0,sends:0});
+ assert.equal((await db.doc('projects/P/overheads/data').get()).updateTime.isEqual(ledger.updateTime),true);
+ for(const flag of [false,'true']){
+  await db.doc('pulseRuntimeControl/cutover').set({mode:'coexist',overheadClientWritesFenced:flag});
+  assert.equal((await context.exports.notifyExpenseApproval({auth:{uid:'alice'},data:{mode:'submitted',projectId:'P'}})).sent,1);
+  await assertSucceeds(setDoc(sdkRef,ledger.data()));
+ }
+ assert.equal(sends,2);assert.equal(keys,2);
 });
