@@ -1,0 +1,11 @@
+# Overhead and expense writer fence repair
+
+An isolated audit with the published Rules and actual native handler reproduced two losses: a stale SDK snapshot overwrote an audited native cost, and a stale snapshot reverted expense submission while removing its notification pointer. These were synthetic tests, not production incidents.
+
+New native overhead mutations now require the server-only cutover field `overheadClientWritesFenced` to be exactly true, in the existing transaction and in advertised permissions. Absent, false or malformed values retain reads but disable new writes using the existing paused-mutation error. Existing actor/member/admin checks, committed receipt replay, cancellation, archive/audit and notification identity are preserved.
+
+Candidate Rules fence only the root `projects/{projectId}/overheads/data` writes. Reads, nested metadata, other overhead documents and unrelated collections retain their existing policy. A separate generated `firestore.overhead-fence.rules` artifact starts from the exact published read-notice baseline SHA256 `080137bfc0f7a277f1c046b11a8f312f43212e6c5c243e6114373365b95e0c98`. Removing its helper and restoring its one split grant reproduces that baseline exactly; historical read-notice and legacy-PO artifacts are unchanged. The generator rejects baseline drift.
+
+Local verification passed 24 focused native/artifact checks, 1,121 backend tests with one emulator-only skip, 730 Pulse contracts, 132 security checks and six staged-baseline security checks. Tests cover stale saves, financial amount and approval-pointer retention, exact boolean controls, current internal/external/admin access, before-commit revocation, read-only recovery and unchanged unrelated/nested SDK access. Provider calls are doubles; no live business records or sends were used.
+
+This source stage does not establish a live Rules fence or native expense activation. Exact-head hosted checks, a protected selective handler rollout, actual writer drain, original-screen acceptance and all-user/concurrency/recovery proof remain required. Do not publish the full candidate Rules. Live notification flags must remain false and the two new retry schedules paused. A rollback must retain an accepted fence until stale writers have been drained; it must preserve later records and receipts.

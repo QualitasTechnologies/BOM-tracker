@@ -62,6 +62,13 @@ service cloud.firestore {
         && get(cutoverPath).data.version == 1;
     }
 
+    // BEGIN overhead writer fence
+    function overheadClientWritesFenced() {
+      return exists(/databases/$(database)/documents/pulseRuntimeControl/cutover)
+        && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.get('overheadClientWritesFenced', false) == true;
+    }
+    // END overhead writer fence
+
     function purchaseOrderPostSendStatus(status) {
       return status in ['sent', 'acknowledged', 'partially-received', 'completed', 'cancelled'];
     }
@@ -202,6 +209,8 @@ service cloud.firestore {
         allow write: if projectCollection != 'purchaseOrders'
           && projectCollection != 'supportTickets'
           && projectSubcollectionAccess(projectId)
+          && (projectCollection != 'overheads' || document != /data
+            || !overheadClientWritesFenced())
           && (projectCollection != 'bom' || document != /data
             || !legacyMaterialDataWriteFenceEnabled(projectId));
       }

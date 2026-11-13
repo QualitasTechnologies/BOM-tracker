@@ -65,7 +65,9 @@ function createNativeOverheadOperations({db,auth,enabled=false,requireReceiptPro
         }
         const overheads=await tx.get(overheadsRef),control=await tx.get(db.collection('pulseRuntimeControl').doc('cutover'));
         const raw=overheads.exists?overheads.data():{},travelVisits=rowsOf(raw,'travelVisits'),otherEntries=rowsOf(raw,'otherEntries');
-        const current=await verified(),mode=control.exists?control.data()?.mode:'coexist',allowed=on()&&['coexist','pulse_only'].includes(mode);
+        // A native transaction cannot stop a later unversioned SDK save. The
+        // server-owned fence must be accepted before advertising new writes.
+        const current=await verified(),mode=control.exists?control.data()?.mode:'coexist',allowed=on()&&['coexist','pulse_only'].includes(mode)&&control.exists&&control.data()?.overheadClientWritesFenced===true;
         if(!writing)return{ok:true,project_id:data.project_id,project:{projectId:data.project_id,projectName:typeof projectData.projectName==='string'&&projectData.projectName?projectData.projectName:data.project_id},overheads:transport({travelVisits,otherEntries}),version:version(overheads),project_version:version(project),permissions:{edit:allowed,review:allowed&&current.customClaims.role==='admin'}};
         if(!allowed)throw fault(['coexist','pulse_only','read_only'].includes(mode)?'overhead_mutations_disabled':'overhead_control_unavailable',503);
         if(version(project)!==data.expected_project_version||version(overheads)!==data.expected_version)throw fault('overhead_version_conflict',409);

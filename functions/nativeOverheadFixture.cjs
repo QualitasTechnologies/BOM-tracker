@@ -5,6 +5,7 @@ function fixture(options={}){
   const users=new Map(['alice','admin','partner','outsider'].map(uid=>[uid,{uid,email:`${uid}@${['partner','outsider'].includes(uid)?'external.example':'qualitastech.com'}`,displayName:uid,emailVerified:true,customClaims:{status:'approved',role:uid==='admin'?'admin':'viewer'}}]));
   const uid=options.uid||'alice';
   const docs=new Map([
+    ['pulseRuntimeControl/cutover',{mode:'coexist',overheadClientWritesFenced:true}],
     ['projects/P',{projectId:'P',projectName:'Project',deadline:'2026-12-31',memberIds:['alice','partner','admin']}],
     ['projects/P/overheads/data',{travelVisits:[{id:'trip',date:'2026-10-01',attendees:['alice'],expenses:[{id:'expense',category:'Transport',amount:100}],totalCost:100,reimbursementStatus:'draft',createdAt:'old',createdBy:'alice',legacy:{keep:true}}],otherEntries:[{id:'entry',date:'2026-10-01',category:'Other',description:'Permit',amount:20,createdBy:'legacy',createdAt:'old'}],legacy:{keep:true}}],
   ]);
