@@ -45,11 +45,12 @@ test('actual legacy send locks block both browser updates and native approval/de
   } finally { await db.terminate(); }
 });
 
-test('native PO access matches actual legacy Rules for explicit-null, missing and malformed membership', async () => {
+test('native PO authoring and notification status match actual legacy Rules membership', async () => {
   const require = createRequire(new URL('../../functions/package.json', import.meta.url));
   const { Firestore, FieldValue } = require('@google-cloud/firestore');
   const { fixture } = require('./nativePOAuthoringFixture.cjs');
   const { createNativePOAuthoringOperations } = require('./nativePOAuthoringOperations.cjs');
+  const { createPOApprovalNotificationOperations } = require('./poApprovalNotificationOperations.cjs');
   const db = new Firestore({ projectId: 'demo-bom-native-security', host: '127.0.0.1:18080', ssl: false });
   try {
     for (const uid of ['alice', 'partner', 'admin']) {
@@ -73,6 +74,11 @@ test('native PO access matches actual legacy Rules for explicit-null, missing an
         const opened = await handler({ auth: { uid }, rawRequest: { get: () => 'Bearer synthetic' }, data: { operation: 'open', project_id: 'P', po_id: 'existing', expected_actor_uid: uid } });
         assert.equal(opened.ok, allowed, `${uid}, ${JSON.stringify(membership)}`);
         if (!allowed) assert.equal(opened.error, 'project_forbidden');
+        const notification = createPOApprovalNotificationOperations({ db, auth: f.auth, enabled: false, getServerTimestamp: () => FieldValue.serverTimestamp() });
+        const status = await notification({ auth: { uid }, rawRequest: { get: () => 'Bearer synthetic' }, data: { operation: 'status', project_id: 'P', po_id: 'existing', expected_actor_uid: uid } });
+        assert.equal(status.ok, allowed, `notification ${uid}, ${JSON.stringify(membership)}`);
+        if (allowed) assert.equal(status.state, 'none');
+        else assert.equal(status.error, 'notification_forbidden');
       }
     }
   } finally {

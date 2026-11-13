@@ -17,7 +17,7 @@ function createExpenseApprovalDispatcher(options) {
  return createPOApprovalDispatcher({...options,buildEmail:buildExpenseApprovalEmail,adapter:{
   parentCollection:'pulseExpenseApprovalNotifications',deliveryCollection:'pulseExpenseApprovalNotificationDeliveries',auditCollection:'pulseExpenseApprovalNotificationAudit',resourceField:'visit_id',keyPrefix:'expense-approval',tagName:'pulse_expense_delivery',systemActor:'expense-approval-dispatcher',
   validJob,isSubmission:job=>job.kind==='expense_submitted',
-  hasAccess:(project,user)=>user.customClaims.role==='admin'||project.memberIds==null||Array.isArray(project.memberIds)&&project.memberIds.includes(user.uid),
+  hasAccess:(project,user)=>user.customClaims.role==='admin'||project.memberIds===null||Array.isArray(project.memberIds)&&project.memberIds.includes(user.uid),
   readResource:async(tx,job)=>{
    const snapshot=await tx.get(db.collection('projects').doc(job.project_id).collection('overheads').doc('data'));
    const visits=snapshot.exists?snapshot.data().travelVisits:null;

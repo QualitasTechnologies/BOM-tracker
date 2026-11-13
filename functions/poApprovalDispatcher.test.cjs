@@ -2,6 +2,33 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const {fixture}=require('./nativePOAuthoringFixture.cjs');
 const {createPOApprovalDispatcher,RETRY_WINDOW,LEASE}=require('./poApprovalDispatcher.cjs');
 const T0=Date.parse('2026-10-14T00:00:00Z');
+
+for (const [name,membership,allowed] of [
+  ['explicit null',null,true],['listed external submitter',['partner'],true],
+  ['missing',undefined,false],['malformed','partner',false],['removed',[],false],
+]) test(`PO change-request recipient access matches original ${name} membership`,async()=>{
+  const f=fixture({uid:'admin'}),sent=[];
+  Object.assign(f.docs.get('projects/P/purchaseOrders/existing'),{status:'pending-approval',submittedBy:'partner'});
+  const result=await f.command({kind:'request_changes',note:'Correct quote'});assert.equal(result.ok,true);
+  const project=f.docs.get('projects/P');if(membership===undefined)delete project.memberIds;else project.memberIds=membership;
+  const dispatcher=createPOApprovalDispatcher({db:f.db,auth:f.auth,enabled:true,now:()=>T0,getServerTimestamp:()=>new Date(T0),sendEmail:async mail=>{sent.push(mail);return{id:'fixture-only'};}});
+  const prepared=await dispatcher.prepare(result.notification_id);
+  assert.equal(prepared.state,allowed?'prepared':'blocked',JSON.stringify(prepared));
+  assert.equal(sent.length,0,'preparation must not contact the provider');
+  if(allowed){assert.equal((await dispatcher.deliver(prepared.delivery_ids[0])).state,'accepted');assert.deepEqual(sent[0].to,['partner@external.example']);}
+  else assert.equal(prepared.problem,'no_authorized_recipients');
+});
+
+test('PO recipient access is rechecked after explicit-null membership is revoked before dispatch',async()=>{
+  const f=fixture({uid:'admin'}),sent=[];
+  Object.assign(f.docs.get('projects/P/purchaseOrders/existing'),{status:'pending-approval',submittedBy:'partner'});
+  const result=await f.command({kind:'request_changes',note:'Correct quote'});assert.equal(result.ok,true);
+  f.docs.get('projects/P').memberIds=null;
+  const dispatcher=createPOApprovalDispatcher({db:f.db,auth:f.auth,enabled:true,now:()=>T0,getServerTimestamp:()=>new Date(T0),sendEmail:async mail=>{sent.push(mail);return{id:'fixture-only'};}});
+  const prepared=await dispatcher.prepare(result.notification_id);assert.equal(prepared.state,'prepared');
+  f.docs.get('projects/P').memberIds=[];
+  assert.equal((await dispatcher.deliver(prepared.delivery_ids[0])).state,'skipped');assert.equal(sent.length,0);
+});
 async function setup(options={}) {
   const settings=options.fixture||{},f=fixture(settings);const result=await f.command();assert.equal(result.ok,true);
   let clock=T0,on=true;const sent=[];

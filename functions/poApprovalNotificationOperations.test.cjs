@@ -4,6 +4,33 @@ const {fixture} = require('./nativePOAuthoringFixture.cjs');
 const {createPOApprovalDispatcher, RETRY_WINDOW} = require('./poApprovalDispatcher.cjs');
 const {createPOApprovalNotificationOperations} = require('./poApprovalNotificationOperations.cjs');
 const T0 = Date.parse('2026-10-14T00:00:00Z');
+
+for (const [name, membership, allowed] of [
+  ['explicit null', null, true], ['current member', ['alice'], true],
+  ['empty roster', [], false], ['different member', ['partner'], false],
+  ['missing field', undefined, false], ['malformed field', 'alice', false],
+]) test(`PO notification status preserves original access for ${name}`, async () => {
+  const f = await setup(); f.off();
+  const project = f.docs.get('projects/P');
+  if (membership === undefined) delete project.memberIds; else project.memberIds = membership;
+  f.auth.verifyIdToken = async () => ({uid:'alice',email:f.users.get('alice').email});
+  const before = structuredClone([...f.docs]);
+  const call = extra => f.handler({auth:{uid:'alice'},rawRequest:{get:()=> 'Bearer test'},data:{operation:'status',project_id:'P',po_id:'existing',expected_actor_uid:'alice',...extra}});
+  const status = await call();
+  assert.equal(status.ok, allowed, JSON.stringify(status));
+  if (allowed) { assert.equal(status.state,'pending'); assert.equal(status.can_retry_prepare,false); }
+  else assert.equal(status.error,'notification_forbidden');
+  assert.deepEqual([...f.docs],before,'status must not mutate business, notification or audit records');
+  if (allowed) assert.equal((await call({operation:'retry',notification_id:f.id,expected_revision:status.revision,operation_id:'member-retry'})).error,'notification_forbidden');
+});
+
+test('explicit-null status retains original approved external-user access', async () => {
+  const f = await setup(); f.off(); f.docs.get('projects/P').memberIds = null;
+  f.auth.verifyIdToken = async () => ({uid:'partner',email:f.users.get('partner').email});
+  const result = await f.handler({auth:{uid:'partner'},rawRequest:{get:()=> 'Bearer test'},data:{operation:'status',project_id:'P',po_id:'existing',expected_actor_uid:'partner'}});
+  assert.equal(result.ok,true,JSON.stringify(result));
+  assert.equal(result.can_retry_prepare,false);
+});
 async function setup(options = {}) {
   const f = fixture(options.fixture || {});
   const committed = await f.command();

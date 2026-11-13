@@ -16,7 +16,7 @@ function createPOApprovalDispatcher({db,auth,enabled=false,now=Date.now,getServe
   const resourceField=adapter.resourceField||'po_id',parentCollection=adapter.parentCollection||'pulsePOApprovalNotifications',deliveryCollection=adapter.deliveryCollection||'pulsePOApprovalNotificationDeliveries';
   const keyPrefix=adapter.keyPrefix||'po-approval',tagName=adapter.tagName||'pulse_po_delivery';
   const isSubmission=adapter.isSubmission||(job=>job.kind==='submit');
-  const hasAccess=adapter.hasAccess||((project,user)=>user.customClaims.role==='admin'||Array.isArray(project.memberIds)&&project.memberIds.includes(user.uid));
+  const hasAccess=adapter.hasAccess||((project,user)=>user.customClaims.role==='admin'||project.memberIds===null||Array.isArray(project.memberIds)&&project.memberIds.includes(user.uid));
   const validJob=adapter.validJob||(job=>['submit','request_changes'].includes(job.kind));
   const readResource=adapter.readResource||((tx,job)=>tx.get(db.collection('projects').doc(job.project_id).collection('purchaseOrders').doc(job.po_id)));
   const isCurrent=adapter.isCurrent||((resource,id,job)=>resource.exists&&resource.data().nativeApprovalNotificationId===id&&resource.data().status===(job.kind==='submit'?'pending-approval':'draft')&&approvalFingerprint(resource.data())===job.event_fingerprint);
