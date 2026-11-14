@@ -69,6 +69,18 @@ service cloud.firestore {
     }
     // END overhead writer fence
 
+    // BEGIN schedule writer fence
+    function scheduleClientWritesFenced() {
+      return exists(/databases/$(database)/documents/pulseRuntimeControl/cutover)
+        && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.get('scheduleClientWritesFenced', false) == true;
+    }
+    function projectScheduleFieldsUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        'deadline', 'originalDeadline', 'isBaselined', 'baselinedAt', 'baselinedBy'
+      ]);
+    }
+    // END schedule writer fence
+
     function purchaseOrderPostSendStatus(status) {
       return status in ['sent', 'acknowledged', 'partially-received', 'completed', 'cancelled'];
     }
@@ -190,6 +202,7 @@ service cloud.firestore {
 
       allow update: if request.auth != null
         && request.auth.token.status == 'approved'
+        && (!scheduleClientWritesFenced() || projectScheduleFieldsUnchanged())
         && (!projectStatusClientWritesFenced()
           || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'archivedAt']))
         && (request.auth.token.role == 'admin'
@@ -197,7 +210,8 @@ service cloud.firestore {
               && projectMembershipFieldsUnchanged()));
 
       allow delete: if request.auth != null
-        && request.auth.token.role == 'admin';
+        && request.auth.token.role == 'admin'
+        && !scheduleClientWritesFenced();
 
       // Keep one recursive grant, excluding both protected collections.
       // Firestore ORs overlapping grants; a second broad wildcard would bypass
@@ -211,6 +225,7 @@ service cloud.firestore {
           && projectSubcollectionAccess(projectId)
           && (projectCollection != 'overheads' || document != /data
             || !overheadClientWritesFenced())
+          && (!(projectCollection in ['milestones', 'delayLogs']) || !scheduleClientWritesFenced())
           && (projectCollection != 'bom' || document != /data
             || !legacyMaterialDataWriteFenceEnabled(projectId));
       }

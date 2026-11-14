@@ -4,6 +4,7 @@ function fixture(options={}){
   const users=new Map(['alice','admin','partner','outsider'].map(uid=>[uid,{uid,email:`${uid}@${['partner','outsider'].includes(uid)?'external.example':'qualitastech.com'}`,displayName:uid,emailVerified:true,customClaims:{status:'approved',role:uid==='admin'?'admin':'viewer'}}]));
   const uid=options.uid||'alice';
   const docs=new Map([
+    ['pulseRuntimeControl/cutover',{mode:'coexist',scheduleClientWritesFenced:true}],
     ['projects/P',{projectId:'P',projectName:'Project',deadline:'2026-12-31',memberIds:['alice','partner','admin']}],
     ['projects/P/milestones/one',{name:'Planning',currentPlannedEndDate:'2026-11-01',order:1,status:'not-started',createdAt:'2026-10-01',createdBy:'legacy',updatedAt:'old',legacy:{keep:true}}],
     ['projects/P/milestones/two',{name:'Delivery',currentPlannedEndDate:'2026-12-31',order:2,status:'in-progress',createdAt:'2026-10-01',createdBy:'legacy',updatedAt:'old'}],

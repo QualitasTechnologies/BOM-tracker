@@ -178,6 +178,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
             if (key === 'status' && (field === 'Archived' || project.status === 'Archived' && field !== project.status)) throw fault('project_status_transition_invalid', 409);
             if (key === 'pulseProjectId' && field !== null && (!Number.isSafeInteger(field) || field <= 0)) throw fault('invalid_project_command');
           }
+          if(Object.hasOwn(value,'deadline')&&value.deadline!==project.deadline&&controlData.scheduleClientWritesFenced!==true)throw fault('project_mutations_disabled',503);
           patch = { ...value };
           if(project.isBaselined&&Object.hasOwn(value,'deadline')&&value.deadline!==project.deadline){
             if(!command.delay)throw fault('delay_required');

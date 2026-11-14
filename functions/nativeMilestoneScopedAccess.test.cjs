@@ -22,15 +22,17 @@ test('scoped schedule access preserves explicit-null legacy access and approved 
   assert.equal((await f.call()).ok,true);assert.equal((await f.issue({kind:'baseline_lock'})).ok,true);
 });
 
-test('markerless coexistence retains the original missing-membership behavior',async()=>{
-  const f=fixture({uid:'outsider'});delete f.docs.get('projects/P').memberIds;
-  assert.equal((await f.call()).ok,true);assert.equal((await f.issue({kind:'baseline_lock'})).ok,true);
+test('both read modes match original Rules when membership is absent',async()=>{
+  const f=fixture({uid:'outsider'});f.docs.get('projects/P').memberIds=['outsider'];const opening=await f.call();delete f.docs.get('projects/P').memberIds;
+  assert.equal((await f.call()).error,'milestone_forbidden');assert.equal((await f.call(frozen(opening))).error,'milestone_forbidden');
 });
 
 test('a scoped read switch cannot enable writes and is read dynamically',async()=>{
   const f=fixture({uid:'outsider',enabled:false});delete f.docs.get('projects/P').memberIds;
+  assert.equal((await f.call()).error,'milestone_forbidden');f.docs.get('projects/P').memberIds=null;
   const opening=await f.call();assert.equal(opening.ok,true);assert.equal(opening.permissions.edit,false);
   f.options.scopedReadsEnabled=true;
+  assert.equal((await f.call()).permissions.edit,false);delete f.docs.get('projects/P').memberIds;
   assert.equal((await f.call()).error,'milestone_forbidden');
   assert.equal((await f.call(frozen(opening))).error,'milestone_forbidden');
   const member=fixture({enabled:false,scopedReadsEnabled:true});assert.equal((await member.call()).permissions.edit,false);

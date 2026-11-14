@@ -5,6 +5,7 @@ function fixture({ uid = 'admin', enabled = true, supportProfileEnabled = false,
   const users = new Map(['admin', 'alice', 'partner', 'bob'].map(id => [id, { uid: id, email: `${id}@${['partner', 'bob'].includes(id) ? 'external.example' : 'qualitastech.com'}`, displayName: id, emailVerified: true,
     customClaims: { role: id === 'admin' ? 'admin' : id === 'alice' ? 'viewer' : 'user', status: 'approved' } }]));
   const docs = new Map([
+    ['pulseRuntimeControl/cutover', {mode:'coexist',scheduleClientWritesFenced:true}],
     ['projects/P', { projectId: 'P', projectName: 'Project', status: 'Planning', deadline: '2026-11-01', pulseProjectId: 7, memberIds: ['admin', 'alice', 'partner'],
       members: ['admin', 'alice', 'partner'].map(userId => ({ userId, email: users.get(userId).email, displayName: userId, notificationsEnabled: false, addedBy: 'old', legacy: { retained: true } })), externalRecipients: [{ email: 'old@example.com', name: 'Old', notificationsEnabled: false, legacy: 'keep' }], supportProfile: { serial: 'unchanged' } }],
     ['projects/P/bom/data', { categories: [{ name: 'Mech', items: [{ id: 'bolt', quantity: 1, legacy: 'keep' }] }] }],
