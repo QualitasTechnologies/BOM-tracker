@@ -19,6 +19,7 @@ beforeEach(async()=>{
   await env.clearFirestore();actor={uid:'alice',email:'alice@qualitastech.com',emailVerified:true,customClaims:{role:'viewer',status:'approved'}};
   bytes=Buffer.from([255,216,255,1,255,217]);staging=bytes;canonical=undefined;metadata=undefined;publications=0;enabled=true;beforePublish=null;beforeCreate=null;preconditionFailures=0;
   await db.doc('projects/P').set({projectId:'P',memberIds:['alice']});
+  await db.doc('pulseMaterialCutovers/P').set({fence:'legacy_bom_data_writes',version:1});
   await db.doc('projects/P/bom/data').set({categories:[{name:'Parts',items:[{id:'bolt',quantity:2,itemType:'component',status:'ordered',unknown:'preserve'}]}]});
   await db.doc('projectDocuments/invoice').set({projectId:'P',type:'vendor-invoice'});
   class UserRecord{constructor(value){Object.assign(this,value);}}

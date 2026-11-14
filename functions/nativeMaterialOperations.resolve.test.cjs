@@ -6,6 +6,7 @@ function fixture({ enabled = true, mode, flipOnSecondLookup = false } = {}) {
   const actor = { uid: 'native-uid', email: 'partner@qualitastech.com', emailVerified: true, disabled: false, customClaims: { role: 'user', status: 'approved' } };
   const token = { uid: actor.uid, email: actor.email, auth_time: 1800000000 };
   const docs = new Map([['projects/A', { memberIds: [actor.uid] }], ['projects/A/bom/data', { categories: [{ name: 'Mech', items: [{ id: 'motor', name: 'Original', quantity: 1 }] }] }]]);
+  docs.set('pulseMaterialCutovers/A',{fence:'legacy_bom_data_writes',version:1});
   if (mode) docs.set('pulseRuntimeControl/cutover', { mode });
   const stats = { reads: 0, verifies: 0 };
   const ref = path => ({ path, collection: name => ref(`${path}/${name}`), doc: name => ref(`${path}/${name}`) });

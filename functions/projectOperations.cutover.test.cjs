@@ -7,6 +7,7 @@ const { createProjectOperationsHandler } = require('./projectOperations.cjs');
 function fixture({ actor: actorOverrides, native = false, enabled = true, modes, recheck, beforeCommit } = {}) {
   const actor = { uid: 'alice', email: 'alice@qualitastech.com', emailVerified: true, customClaims: { role: 'user', status: 'approved' }, ...actorOverrides };
   const docs = new Map(Object.entries({
+    ...(native?{'pulseMaterialCutovers/A':{fence:'legacy_bom_data_writes',version:1}}:{}),
     'projects/A': { memberIds: ['alice'], members: [{ userId: 'alice', categoryScope: ['Mech'] }] },
     'projects/A/bom/data': { categories: [
       { name: 'Mech', items: [{ id: 'motor', name: 'Motor', quantity: 2, itemType: 'component' }, { id: 'svc', name: 'Svc', quantity: 3, itemType: 'service' }] },
@@ -36,7 +37,7 @@ function fixture({ actor: actorOverrides, native = false, enabled = true, modes,
     throw Error('transaction contention');
   } };
   const handler = createProjectOperationsHandler({ db, auth: {}, getServiceKey: () => 'k', resolveActor: async () => actor, mutationsEnabled: () => enabled,
-    getServerTimestamp: () => 'server-time', ...(native ? { allowResolve: true, writeModes: modes || ['coexist', 'pulse_only'], ...(recheck ? { recheckActor: recheck } : {}) } : modes ? { writeModes: modes } : {}) });
+    getServerTimestamp: () => 'server-time', ...(native ? { materialChannel:'native', allowResolve: true, writeModes: modes || ['coexist', 'pulse_only'], ...(recheck ? { recheckActor: recheck } : {}) } : modes ? { writeModes: modes } : {}) });
   const call = async (method, query, body) => {
     let status = 200, result; const res = { set() {}, status(code) { status = code; return this; }, json(value) { result = value; return this; } };
     await handler({ method, query: { project_id: 'A', ...query }, body }, res); return { status, body: result };

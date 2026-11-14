@@ -16,6 +16,7 @@ function fixture() {
   const actor = { uid: 'paired-admin', email: 'paired@qualitastech.com', emailVerified: true,
     customClaims: { role: 'admin', status: 'approved' } };
   const documents = new Map<string, Value>([
+    ['pulseMaterialCutovers/P', {fence:'legacy_bom_data_writes',version:1}],
     ['projects/P', { memberIds: [actor.uid] }],
     ['projects/P/bom/data', { categories: [{ name: 'Mech', items: [
       { id: 'motor', name: 'Original', itemType: 'service', quantity: 2, unit: 'hours' },
