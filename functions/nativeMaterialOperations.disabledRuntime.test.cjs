@@ -29,6 +29,7 @@ function fixture({ mutationsEnabled, role = 'admin', authFails = false } = {}) {
   const actor = { uid: 'admin-uid', email: 'admin@example.com', emailVerified: true, disabled: false, customClaims: { role, status: 'approved' } };
   const token = { uid: actor.uid, email: actor.email, auth_time: 1800000000 };
   const docs = new Map([
+    ['pulseMaterialCutovers/A', {fence:'legacy_bom_data_writes',version:1}],
     ['projects/A', { memberIds: [actor.uid], members: [{ userId: actor.uid, categoryScope: ['Mech'] }] }],
     ['projects/A/bom/data', { categories: [{ name: 'Mech', items: [{ id: 'motor', name: 'Original', quantity: 1 }] }] }],
   ]);

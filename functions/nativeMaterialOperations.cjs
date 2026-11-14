@@ -45,7 +45,7 @@ function createNativeMaterialOperations({ db, auth, mutationsEnabled = false, ge
       const { operation, project_id: projectId, expected_actor_uid: _expectedActorUid, ...body } = data;
       // Server-selected channel: native may write in pulse_only, may settle receipts, and re-verifies the live actor in each transaction.
       const handler = createProjectOperationsHandler({ db, auth, mutationsEnabled, getServerTimestamp, resolveActor: async () => actor,
-        writeModes: ['coexist', 'pulse_only'], allowResolve: true, recheckActor: () => currentNativeActor(auth, request) });
+        writeModes: ['coexist', 'pulse_only'], materialChannel:'native', allowResolve: true, recheckActor: () => currentNativeActor(auth, request) });
       let result;
       const res = { set() {}, status() { return this; }, json(value) { result = value; return this; } };
       await handler({ method: operation === 'get' ? 'GET' : ['fulfill', 'command', 'create_project'].includes(operation) ? 'POST' : 'PATCH', query: { project_id: projectId, ...(operation === 'create_project' ? { resource: 'project_create' } : operation === 'fulfill' ? { resource: 'fulfillment' } : operation === 'command' ? { resource: 'commands' } : {}) }, body }, res);

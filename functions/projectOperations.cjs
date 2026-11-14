@@ -1,3 +1,4 @@
+const {MATERIAL_FENCE,materialWritesAllowed}=require('./materialWriterOwnership.cjs');
 const { createHash } = require('node:crypto');
 const { createProjectActorFactory } = require('./projectReviewActor.cjs');
 const { validateCommand, canonicalCategories, referencedDocuments, applyCommand, assertDocumentBudget, MAX_INPUT_BYTES } = require('./materialCommands.cjs');
@@ -171,13 +172,20 @@ const sameActor = (recorded, actor, actorEmail, payloadHash) => plain(recorded) 
  * receipt settlement, and `recheckActor` re-verifies the live actor inside each transaction.
  */
 function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor, mutationsEnabled = false, getServerTimestamp, procurementLimits = DEFAULT_PROCUREMENT_LIMITS,
-  writeModes = ['coexist'], allowResolve = false, recheckActor }) {
+  writeModes = ['coexist'], materialChannel='legacy', allowResolve = false, recheckActor }) {
+  if(!['legacy','native'].includes(materialChannel))throw new Error('invalid material channel');
   if (!Array.isArray(writeModes) || !writeModes.length || writeModes.some(mode => !WRITE_MODES.includes(mode))) throw new Error('invalid material write modes');
   const limits = { ...DEFAULT_PROCUREMENT_LIMITS, ...procurementLimits };
   const cutoverRef = () => db.collection('pulseRuntimeControl').doc('cutover');
   const modeAllowsWrites = snapshot => writeModes.includes(modeOf(snapshot));
   // A paused or read-only runtime still replays and cancels receipts; it never commits a new business write.
-  const assertWritable = snapshot => { if (!modeAllowsWrites(snapshot)) throw fault('material_read_only', 503); };
+  const assertWritable = async (transaction,projectId,{creating=false}={}) => {
+    if(!modeAllowsWrites(await transaction.get(cutoverRef())))throw fault('material_read_only',503);
+    const ref=db.collection('pulseMaterialCutovers').doc(projectId),owner=await transaction.get(ref);
+    if(creating&&materialChannel==='native'){if(owner.exists)throw fault('project_id_conflict',409);return ref;}
+    if(!materialWritesAllowed(owner,materialChannel))throw fault('material_read_only',503);
+    return null;
+  };
   const splitResolve = (body, code) => {
     if (!plain(body) || !Object.hasOwn(body, 'resolve_only')) return { body, resolving: false };
     if (!allowResolve || body.resolve_only !== true) throw fault(code, 400);
@@ -260,16 +268,17 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
             return cancelOperation(transaction, { projectId: id, operationId: body.operation_id, operation: 'create_project', actor, actorEmail, payloadHash, receiptRef, auditRef,
               result: { ok: true, project_id: id, operation_id: body.operation_id }, receiptExtra: { operation: 'create_project' } });
           }
-          assertWritable(await transaction.get(cutoverRef()));
+          const ownerRef=await assertWritable(transaction,id,{creating:true});
           if (project.exists) throw fault('project_id_conflict', 409);
           const createdAt = getServerTimestamp();
+          const ownerRecord={...MATERIAL_FENCE,created_by:actor.uid,created_at:createdAt};
           const after = { ...data, projectId: id, memberIds: [actor.uid], members: [{ userId: actor.uid, email: actorEmail, displayName: typeof actor.displayName === 'string' && actor.displayName.trim() ? actor.displayName : actorEmail, addedAt: new Date().toISOString().slice(0, 10), addedBy: actor.uid, notificationsEnabled: true }], createdAt };
           const result = { ok: true, project_id: id, operation_id: body.operation_id };
           const audit = { actor_uid: actor.uid, actor_email: actorEmail, operation: 'create_project', project_id: id, operation_id: body.operation_id, before: null, after, created_at: createdAt };
           const recorded = { operation: 'create_project', actor_uid: actor.uid, actor_email: actorEmail, payload_hash: payloadHash, result, created_at: createdAt };
-          assertDocumentBudget([{ path: projectRef.path, data: after }, { path: auditRef.path, data: audit }, { path: receiptRef.path, data: recorded }]);
+          assertDocumentBudget([{ path: projectRef.path, data: after }, { path: auditRef.path, data: audit }, { path: receiptRef.path, data: recorded },...(ownerRef?[{path:ownerRef.path,data:ownerRecord}]:[])]);
           await recheck(actor);
-          transaction.create(projectRef, after); transaction.create(auditRef, audit); transaction.create(receiptRef, recorded);
+          transaction.create(projectRef, after); transaction.create(auditRef, audit); transaction.create(receiptRef, recorded);if(ownerRef)transaction.create(ownerRef,ownerRecord);
           return result;
         }));
       }
@@ -310,12 +319,13 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           const scope = scopeFor(project.data(), actor);
           const bom = await transaction.get(bomRef);
           const control = await transaction.get(cutoverRef());
+          const owner=await transaction.get(db.collection('pulseMaterialCutovers').doc(id)),owned=materialWritesAllowed(owner,materialChannel);
           const rawCategories = bom.exists ? bom.data()?.categories : undefined;
           if (rawCategories !== undefined && !Array.isArray(rawCategories)) throw fault('materials_data_integrity', 409);
           const scopedCategories = scope === null ? rawCategories || []
             : (rawCategories || []).filter(category => plain(category) && typeof category.name === 'string' && scope.includes(category.name));
           const categories = materialReadView(scopedCategories);
-          return { ok: true, project_id: id, categories, version: versionOf(bom), permissions: { review: true, edit: writesOn() && modeAllowsWrites(control) && (scope === null || categories.length > 0), command: writesOn() && modeAllowsWrites(control) && (scope === null || scope.length > 0),
+          return { ok: true, project_id: id, categories, version: versionOf(bom), permissions: { review: true, edit: writesOn() && modeAllowsWrites(control) && owned && (scope === null || categories.length > 0), command: writesOn() && modeAllowsWrites(control) && owned && (scope === null || scope.length > 0),
             ...(allowResolve ? { resolve: true } : {}) } };
         });
         return res.json(response);
@@ -362,7 +372,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
             return cancelOperation(transaction, { projectId: id, operationId: body.operation_id, operation: 'material_command', actor, actorEmail, payloadHash, receiptRef, auditRef,
               result: { ok: true, project_id: id, operation_id: body.operation_id, command_kind: command.kind }, receiptExtra: { affected_categories: [], document_ids: [], document_types: {} } });
           }
-          assertWritable(await transaction.get(cutoverRef()));
+          await assertWritable(transaction,id);
           const bom = await transaction.get(bomRef);
           if (versionOf(bom) !== body.expected_version) throw fault('material_version_conflict', 409);
           if (!bom.exists && command.kind !== 'add_items') throw fault('material_not_found', 404);
@@ -463,7 +473,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
           return cancelOperation(transaction, { projectId: id, operationId, operation: fulfilling ? 'fulfill_material' : 'patch_material', actor, actorEmail, payloadHash, receiptRef, auditRef,
             result: { ok: true, project_id: id, item_id: itemId, operation_id: operationId }, receiptExtra: { affected_categories: [] } });
         }
-        assertWritable(await transaction.get(cutoverRef()));
+        await assertWritable(transaction,id);
         if (matches.length > 1) throw fault('duplicate_material_id', 409);
         if (!matches.length) throw fault('material_not_found', 404);
         const match = matches[0];

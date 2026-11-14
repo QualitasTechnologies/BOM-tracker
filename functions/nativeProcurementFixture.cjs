@@ -3,6 +3,7 @@ const { createNativeProcurementOperations } = require('./nativeProcurementOperat
 function fixture(options = {}) {
   let time = options.nowMs ?? Date.parse('2026-10-14T12:00:00.000Z'), revision = 1, actorUid = 'admin';
   const docs = new Map([
+    ['pulseMaterialCutovers/P',{fence:'legacy_bom_data_writes',version:1}],
     ['projects/P', { memberIds: ['admin'] }],
     ['projects/P/purchaseOrders/PO', { projectId: 'P', poNumber: 'PO-1', status: 'pending-approval', items: [{ bomItemId: 'bolt' }], totalAmount: 5 }],
     ['projects/P/bom/data', { categories: [{ name: 'Mech', items: [{ id: 'bolt', itemType: 'component', name: 'Bolt', quantity: 1, status: 'not-ordered' }] }] }],
