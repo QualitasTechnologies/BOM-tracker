@@ -14,8 +14,7 @@ const validVersion=value=>typeof value==='string'&&/^(0|[1-9]\d*):(0|[1-9]\d*)$/
 const freeze=createFreeze((code,status)=>fault(code==='invalid_po_state'?'invalid_milestone_state':code,status));
 const access=(project,actor,scoped)=>{
   if(actor.customClaims.role==='admin')return;
-  if(scoped ? !Object.hasOwn(project,'memberIds') || project.memberIds!==null&&(!Array.isArray(project.memberIds)||!project.memberIds.includes(actor.uid))
-    : project.memberIds!=null&&(!Array.isArray(project.memberIds)||!project.memberIds.includes(actor.uid)))throw fault('milestone_forbidden',403);
+  if(!Object.hasOwn(project,'memberIds') || project.memberIds!==null&&(!Array.isArray(project.memberIds)||!project.memberIds.includes(actor.uid)))throw fault('milestone_forbidden',403);
 };
 const milestoneMutationsEnabled=env=>['BOM_MATERIAL_MUTATIONS_ENABLED','BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED','BOM_NATIVE_MILESTONE_MUTATIONS_ENABLED'].every(key=>env[key]==='true');
 const fieldsFor=command=>command.kind==='baseline_lock'?['originalPlannedEndDate','updatedAt']:command.kind==='reorder'?['order','updatedAt']:command.kind==='date'?['currentPlannedEndDate','updatedAt']:command.kind==='edit'?[...Object.keys(command.patch),'updatedAt']:command.kind==='status'?['status',...(command.status==='completed'?['actualEndDate']:[]),...(Object.hasOwn(command,'progress_note')?['lastProgressNote','lastProgressDate']:[]),'updatedAt']:[];
@@ -58,7 +57,7 @@ function createNativeMilestoneOperations({db,auth,enabled=false,scopedReadsEnabl
         if(query.docs.length>400)throw fault('milestone_schedule_too_large',409);
         const rows=query.docs.map(snapshot=>({id:snapshot.id,data:snapshot.data(),snapshot})).sort((a,b)=>a.id.localeCompare(b.id));
         const scheduleVersion=hash([version(state),rows.map(row=>[row.id,version(row.snapshot)])]);
-        const current=await verified(),mode=control.exists?control.data()?.mode:'coexist',allowed=on()&&['coexist','pulse_only'].includes(mode);
+        const current=await verified(),mode=control.exists?control.data()?.mode:'coexist',allowed=on()&&['coexist','pulse_only'].includes(mode)&&control.exists&&control.data()?.scheduleClientWritesFenced===true;
         if(!writing)return{ok:true,project_id:data.project_id,project:freeze({...Object.fromEntries(['projectName','deadline','originalDeadline','isBaselined','baselinedAt','baselinedBy','status'].filter(key=>Object.hasOwn(project.data(),key)).map(key=>[key,project.data()[key]])),projectId:data.project_id}),milestones:rows.map(row=>freeze({...row.data,id:row.id})),project_version:version(project),schedule_version:scheduleVersion,permissions:{edit:allowed}};
         if(!allowed)throw fault(['coexist','pulse_only','read_only'].includes(mode)?'milestone_mutations_disabled':'milestone_control_unavailable',503);
         if(version(project)!==data.expected_project_version||scheduleVersion!==data.expected_schedule_version)throw fault('milestone_version_conflict',409);

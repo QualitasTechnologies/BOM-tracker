@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const {fixture}=require('./nativeMilestoneFixture.cjs');
 test('original approved member roles, external members and legacy access remain editable; outsider is denied',async()=>{
   for(const uid of ['alice','admin','partner']){const f=fixture({uid});const opening=await f.call();assert.equal(opening.ok,true);assert.equal(opening.permissions.edit,true);assert.equal(opening.milestones.length,2);assert.match(opening.schedule_version,/^[a-f0-9]{64}$/);}
-  const f=fixture({uid:'outsider'});assert.equal((await f.call()).error,'milestone_forbidden');delete f.docs.get('projects/P').memberIds;assert.equal((await f.call()).ok,true);
+  const f=fixture({uid:'outsider'});assert.equal((await f.call()).error,'milestone_forbidden');delete f.docs.get('projects/P').memberIds;assert.equal((await f.call()).error,'milestone_forbidden');f.docs.get('projects/P').memberIds=null;assert.equal((await f.call()).ok,true);
 });
 test('schedule reads expose only the fields the existing milestone screens need',async()=>{
   const f=fixture();f.docs.get('projects/P').bomSnapshot=[{secretPrice:5}];const result=await f.call();assert.equal(result.project.projectName,'Project');assert.equal(result.project.bomSnapshot,undefined);assert.equal(result.project.memberIds,undefined);
