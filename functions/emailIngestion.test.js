@@ -350,11 +350,11 @@ test('getGmailMessage fetches a full-format message resource', async () => {
   assert.deepEqual(result, { id: 'msg_1' });
 });
 
-test('getGmailMessage throws on a failed fetch', async () => {
-  const fetchImpl = async () => ({ ok: false, status: 404 });
+test('getGmailMessage throws on a server fetch failure', async () => {
+  const fetchImpl = async () => ({ ok: false, status: 500 });
   await assert.rejects(
     () => getGmailMessage({ accessToken: 'token', messageId: 'msg_1', fetchImpl }),
-    /Gmail messages.get failed: 404/
+    /Gmail messages.get failed: 500/
   );
 });
 

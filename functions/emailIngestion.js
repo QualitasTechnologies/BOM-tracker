@@ -1,3 +1,4 @@
+const {fetchJsonResponse} = require('./emailNetwork.cjs');
 // functions/emailIngestion.js
 // Email capture: Gmail OAuth polling, capture-scope guard, message parsing,
 // and Gemini-based sanitization. Domain-guard constants and address parsing
@@ -158,7 +159,6 @@ function stripQuotedHistory(bodyText) {
   const cutPatterns = [
     /\r?\n\s*On .{0,120} wrote:\s*\r?\n[\s\S]*$/i,
     /\r?\n-{2,}\s*Original Message\s*-{2,}[\s\S]*$/i,
-    /\r?\n(?:>.*(?:\r?\n)?)+$/,
   ];
   for (const pattern of cutPatterns) {
     const match = result.match(pattern);
@@ -166,14 +166,24 @@ function stripQuotedHistory(bodyText) {
       result = result.slice(0, match.index);
     }
   }
-  return result.trim();
+  // A repeated `>.*` group can backtrack exponentially when fresh unquoted
+  // text follows a deeply quoted line. Scan trailing quoted lines once instead.
+  result = result.trimEnd();
+  let end = result.length;
+  while (end > 0) {
+    const start = result.lastIndexOf('\n', end - 1) + 1;
+    if (start === 0 || result[start] !== '>') break;
+    end = start - 1;
+    if (result[end - 1] === '\r') end -= 1;
+  }
+  return result.slice(0, end).trim();
 }
 
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 
 /** Exchange an OAuth authorization code for a refresh token, and fetch the connected mailbox's profile. */
 async function exchangeAuthCodeForTokens({ code, redirectUri, clientId, clientSecret, fetchImpl }) {
-  const tokenResponse = await fetchImpl(GOOGLE_TOKEN_ENDPOINT, {
+  const tokenResponse = await fetchJsonResponse(fetchImpl, GOOGLE_TOKEN_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -192,7 +202,7 @@ async function exchangeAuthCodeForTokens({ code, redirectUri, clientId, clientSe
     throw new Error('Google did not return a refresh token (re-consent with prompt=consent may be required)');
   }
 
-  const profileResponse = await fetchImpl('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+  const profileResponse = await fetchJsonResponse(fetchImpl, 'https://gmail.googleapis.com/gmail/v1/users/me/profile', {
     headers: { Authorization: `Bearer ${tokenPayload.access_token}` },
   });
   if (!profileResponse.ok) {
@@ -210,7 +220,7 @@ async function exchangeAuthCodeForTokens({ code, redirectUri, clientId, clientSe
 
 /** Exchange a stored refresh token for a fresh access token. */
 async function refreshAccessToken({ refreshToken, clientId, clientSecret, fetchImpl }) {
-  const response = await fetchImpl(GOOGLE_TOKEN_ENDPOINT, {
+  const response = await fetchJsonResponse(fetchImpl, GOOGLE_TOKEN_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -234,9 +244,10 @@ async function refreshAccessToken({ refreshToken, clientId, clientSecret, fetchI
  * paginating through nextPageToken. Returns historyExpired: true on a 404
  * (Gmail's history log only retains ~7 days) so the caller can re-anchor.
  */
-async function listNewGmailMessageIds({ accessToken, startHistoryId, fetchImpl }) {
+async function listNewGmailMessageIds({ accessToken, startHistoryId, fetchImpl, pageToken: initialPageToken, maxPages = Infinity }) {
   const messageIds = new Set();
-  let pageToken;
+  let pageToken = initialPageToken;
+  let pages = 0;
   let newHistoryId = startHistoryId;
 
   do {
@@ -245,14 +256,15 @@ async function listNewGmailMessageIds({ accessToken, startHistoryId, fetchImpl }
     url.searchParams.set('historyTypes', 'messageAdded');
     if (pageToken) url.searchParams.set('pageToken', pageToken);
 
-    const response = await fetchImpl(url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
+    const response = await fetchJsonResponse(fetchImpl, url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
     if (response.status === 404) {
       return { messageIds: [], newHistoryId: startHistoryId, historyExpired: true };
     }
     if (!response.ok) {
-      throw new Error(`Gmail history.list failed: ${response.status}`);
+      throw Object.assign(new Error(`Gmail history.list failed: ${response.status}`), {status: response.status});
     }
     const payload = await response.json();
+    pages += 1;
     for (const record of payload.history || []) {
       for (const added of record.messagesAdded || []) {
         if (added.message && added.message.id) messageIds.add(added.message.id);
@@ -260,19 +272,22 @@ async function listNewGmailMessageIds({ accessToken, startHistoryId, fetchImpl }
     }
     if (payload.historyId) newHistoryId = payload.historyId;
     pageToken = payload.nextPageToken;
-  } while (pageToken);
+  } while (pageToken && pages < maxPages);
 
-  return { messageIds: [...messageIds], newHistoryId, historyExpired: false };
+  return { messageIds: [...messageIds], newHistoryId, historyExpired: false, ...(pageToken ? { nextPageToken: pageToken } : {}) };
 }
 
 /** Fetch one message resource in full format (headers + body parts). */
 async function getGmailMessage({ accessToken, messageId, fetchImpl }) {
-  const response = await fetchImpl(
+  const response = await fetchJsonResponse(fetchImpl,
     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`,
     { headers: { Authorization: `Bearer ${accessToken}` } }
   );
+  // History can reference a message deleted before this read. Skip this entry
+  // without disconnecting the account or permanently excluding a later backfill.
+  if (response.status === 404) return null;
   if (!response.ok) {
-    throw new Error(`Gmail messages.get failed: ${response.status}`);
+    throw Object.assign(new Error(`Gmail messages.get failed: ${response.status}`), {status: response.status});
   }
   return response.json();
 }
@@ -305,7 +320,7 @@ async function sanitizeEmailBody({ apiKey, rawBody, fetchImpl = globalThis.fetch
   if (!apiKey || !hasText(rawBody)) return fallback;
 
   try {
-    const response = await fetchImpl(GEMINI_ENDPOINT, {
+    const response = await fetchJsonResponse(fetchImpl, GEMINI_ENDPOINT, {
       method: 'POST',
       headers: {
         'x-goog-api-key': apiKey,
@@ -357,9 +372,9 @@ async function searchGmailMessageIds({ accessToken, query, pageToken, fetchImpl 
   url.searchParams.set('maxResults', '50');
   if (pageToken) url.searchParams.set('pageToken', pageToken);
 
-  const response = await fetchImpl(url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
+  const response = await fetchJsonResponse(fetchImpl, url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!response.ok) {
-    throw new Error(`Gmail messages.list failed: ${response.status}`);
+    throw Object.assign(new Error(`Gmail messages.list failed: ${response.status}`), {status: response.status});
   }
   const payload = await response.json();
   return {
@@ -376,9 +391,9 @@ async function getGmailMessageHeaders({ accessToken, messageId, fetchImpl }) {
   for (const header of ['From', 'To', 'Cc']) {
     url.searchParams.append('metadataHeaders', header);
   }
-  const response = await fetchImpl(url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
+  const response = await fetchJsonResponse(fetchImpl, url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!response.ok) {
-    throw new Error(`Gmail messages.get (metadata) failed: ${response.status}`);
+    throw Object.assign(new Error(`Gmail messages.get (metadata) failed: ${response.status}`), {status: response.status});
   }
   const payload = await response.json();
   return (payload.payload && payload.payload.headers) || [];
