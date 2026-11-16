@@ -64,14 +64,14 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
           if(current.uid!==actor.uid||normalizeEmail(current.email)!==normalizeEmail(actor.email))throw fault('actor_session_changed',403);
           assertAccess(project,current);
           return {ok:true,project_id:data.project_id,actor_uid:actor.uid,version:revision(snapshot),support_profile:profile,
-            permissions:{edit:supportWritesOn()&&['coexist','pulse_only'].includes(mode),resolve:true}};
+            permissions:{edit:supportWritesOn()&&control.exists&&control.data()?.projectClientWritesFenced===true&&['coexist','pulse_only'].includes(mode),resolve:true}};
         });
       }
       if (data.operation === 'get') {
         exact(data, ['operation', 'project_id', 'expected_actor_uid']);
         return await db.runTransaction(async transaction => {
           const { snapshot, project } = await read(transaction);
-          const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),controlData=control.exists?control.data():{},mode=controlData.mode??'coexist',enabledHere=writesOn()&&['coexist','pulse_only'].includes(mode);
+          const control=await transaction.get(db.collection('pulseRuntimeControl').doc('cutover')),controlData=control.exists?control.data():{},mode=controlData.mode??'coexist',enabledHere=writesOn()&&controlData.projectClientWritesFenced===true&&['coexist','pulse_only'].includes(mode);
           const current=await verifiedActor(auth,request);
           if(current.uid!==actor.uid||normalizeEmail(current.email)!==normalizeEmail(actor.email)||current.customClaims.role!==actor.customClaims.role)throw fault('actor_session_changed',403);
           assertAccess(project,current);
@@ -142,6 +142,7 @@ function createNativeProjectOperations({ db, auth, enabled = false, supportProfi
         if(support&&!supportWritesOn())throw fault('support_profile_mutations_disabled',503);
         if(!writesOn())throw fault('project_mutations_disabled',503);
         if(!['coexist','pulse_only'].includes(mode))throw fault('project_read_only',503);
+        if(controlData.projectClientWritesFenced!==true)throw fault('project_writers_not_fenced',503);
         if(command.kind==='restore'){
           if(!control.exists||controlData.projectStatusClientWritesFenced!==true)throw fault('project_status_writers_not_fenced',503);
         }

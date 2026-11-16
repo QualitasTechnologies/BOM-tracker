@@ -37,6 +37,7 @@ test('real cancellation fences a late command and protected archive retains orig
   assert.equal((await db.doc('projects/P/milestones/one').get()).exists,false);
 });
 test('real baselined project deadline and delay history commit together with metadata cancellation',async()=>{
+  await db.doc('pulseRuntimeControl/cutover').update({projectClientWritesFenced:true});
   await db.doc('projects/P').update({isBaselined:true,originalDeadline:'2026-10-20',deadline:'2026-11-01'});
   const handler=createNativeProjectOperations({db,auth,enabled:true,getServerTimestamp:()=>FieldValue.serverTimestamp(),getDeleteField:()=>FieldValue.delete(),now:()=>new Date('2026-10-15T00:00:00Z')});
   const invoke=extra=>handler({auth:{uid:'alice'},rawRequest:{get:()=> 'Bearer demo'},data:{project_id:'P',expected_actor_uid:'alice',...extra}});

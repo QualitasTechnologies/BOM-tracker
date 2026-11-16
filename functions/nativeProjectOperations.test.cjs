@@ -159,7 +159,7 @@ test('changed master-data IDs must exist and identify the selected client/billin
 
 test('archive restore is separately gated from receipt resolution and returns the project to Planning', async () => {
   const f = fixture();
-  f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', projectStatusClientWritesFenced: true });
+  f.docs.set('pulseRuntimeControl/cutover', {projectClientWritesFenced:true, mode: 'coexist', projectStatusClientWritesFenced: true });
   const opening = await f.call({ operation: 'get' });
   assert.equal(opening.permissions.restore, true);
   assert.equal(opening.permissions.restore_resolve, true);
@@ -188,7 +188,7 @@ test('archive restore is separately gated from receipt resolution and returns th
 test('restore get permission and command agree when the cutover mode is absent', async () => {
   const f = fixture();
   f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' });
-  f.docs.set('pulseRuntimeControl/cutover', { projectStatusClientWritesFenced: true });
+  f.docs.set('pulseRuntimeControl/cutover', {projectClientWritesFenced:true, projectStatusClientWritesFenced: true });
   const opening = await f.call({ operation: 'get' });
   assert.equal(opening.permissions.restore, true);
   assert.equal((await f.call({
@@ -203,7 +203,7 @@ test('restore writes are blocked without the explicit legacy status-writer fence
     { mode: 'read_only', projectStatusClientWritesFenced: true },
     { mode: 'coexist', projectStatusClientWritesFenced: false },
   ]) {
-    const f = fixture(); f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' }); f.docs.set('pulseRuntimeControl/cutover', control);
+    const f = fixture(); f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' }); f.docs.set('pulseRuntimeControl/cutover', {projectClientWritesFenced:true,...control});
     const result = await f.command({ kind: 'restore' });
     assert.equal(result.error, control.mode === 'read_only' ? 'project_read_only' : 'project_status_writers_not_fenced');
     assert.equal(f.docs.get('projects/P').status, 'Archived');
@@ -212,7 +212,7 @@ test('restore writes are blocked without the explicit legacy status-writer fence
 });
 
 test('only an archived project at the exact version can be restored', async () => {
-  const f = fixture(); f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', projectStatusClientWritesFenced: true });
+  const f = fixture(); f.docs.set('pulseRuntimeControl/cutover', {projectClientWritesFenced:true, mode: 'coexist', projectStatusClientWritesFenced: true });
   assert.equal((await f.command({ kind: 'restore' })).error, 'project_not_archived');
   f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' });
   const stale = await f.call({ operation: 'get' }); f.change({ description: 'concurrent update' });
@@ -246,7 +246,7 @@ test('an uncertain restore can be resolved as cancelled without restoring or req
 
 test('restore audit failure leaves project, receipt and audit unchanged', async () => {
   const f = fixture({ failAudit: true }); f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' });
-  f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', projectStatusClientWritesFenced: true });
+  f.docs.set('pulseRuntimeControl/cutover', {projectClientWritesFenced:true, mode: 'coexist', projectStatusClientWritesFenced: true });
   const before = structuredClone([...f.docs]);
   assert.equal((await f.command({ kind: 'restore' })).ok, false);
   assert.deepEqual([...f.docs], before);
@@ -260,7 +260,7 @@ test('restore receipt replay requires current project access and base edit permi
     const f = fixture({ uid: revoke.uid });
     if (revoke.role) f.users.get(revoke.uid).customClaims.role = revoke.role;
     f.change({ status: 'Archived', archivedAt: '2026-10-14T00:00:00.000Z' });
-    f.docs.set('pulseRuntimeControl/cutover', { mode: 'coexist', projectStatusClientWritesFenced: true });
+    f.docs.set('pulseRuntimeControl/cutover', {projectClientWritesFenced:true, mode: 'coexist', projectStatusClientWritesFenced: true });
     const opening = await f.call({ operation: 'get' });
     const request = { operation: 'command', expected_version: opening.version, operation_id: 'restore-replay', command: { kind: 'restore' } };
     assert.equal((await f.call(request)).ok, true);

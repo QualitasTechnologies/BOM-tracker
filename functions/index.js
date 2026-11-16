@@ -54,7 +54,6 @@ const {
   mergeParticipantsIntoAccumulator,
   buildContactDirectory,
   formatGmailDate,
-  buildBackfillJobFields,
 } = require('./contactDiscovery');
 
 // Use built-in fetch in Node.js 22
@@ -4190,84 +4189,15 @@ async function processOneContactDiscoveryJob({ db, uid, jobRef, job, clientId, c
  * being opted into BOM-change emails) and queue an email backfill job for
  * whichever of them haven't already been backfilled. Project-member gated.
  */
-exports.addProjectBackfillStakeholders = onCall(async (request) => {
-  const { auth, data } = request;
-  if (!auth) {
-    throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
-  }
-  if (auth.token.status !== 'approved') {
-    throw new functions.https.HttpsError('permission-denied', 'Approved access is required');
-  }
-
-  const { projectId, contacts } = data || {};
-  if (!projectId || !Array.isArray(contacts) || contacts.length === 0) {
-    throw new functions.https.HttpsError('invalid-argument', 'projectId and a non-empty contacts array are required');
-  }
-
-  const db = admin.firestore();
-  const projectRef = db.collection('projects').doc(projectId);
-  const projectSnap = await projectRef.get();
-  if (!projectSnap.exists) {
-    throw new functions.https.HttpsError('not-found', 'Project not found');
-  }
-  const project = projectSnap.data();
-  const isAdmin = auth.token.role === 'admin';
-  const isMember = !project.memberIds || project.memberIds.includes(auth.uid);
-  if (!isAdmin && !isMember) {
-    throw new functions.https.HttpsError('permission-denied', 'You are not a member of this project');
-  }
-
-  const normalizedContacts = contacts
-    .map((c) => ({ email: String((c && c.email) || '').toLowerCase().trim(), name: String((c && c.name) || '').trim() }))
-    .filter((c) => c.email);
-  if (normalizedContacts.length === 0) {
-    throw new functions.https.HttpsError('invalid-argument', 'No valid contact emails provided');
-  }
-
-  const existingRecipients = project.externalRecipients || [];
-  const existingEmails = new Set(existingRecipients.map((r) => r.email.toLowerCase()));
-  const newRecipients = normalizedContacts
-    .filter((c) => !existingEmails.has(c.email))
-    .map((c) => ({ email: c.email, name: c.name, notificationsEnabled: false }));
-  if (newRecipients.length > 0) {
-    await projectRef.set(
-      { externalRecipients: [...existingRecipients, ...newRecipients] },
-      { merge: true }
-    );
-  }
-
-  const alreadyBackfilled = new Set(project.backfilledContactEmails || []);
-  const pendingContactEmails = normalizedContacts.map((c) => c.email).filter((email) => !alreadyBackfilled.has(email));
-  if (pendingContactEmails.length === 0) {
-    return { queuedContactCount: 0 };
-  }
-
-  const jobRef = db.collection('emailBackfillJobs').doc(projectId);
-  await db.runTransaction(async (tx) => {
-    const jobSnap = await tx.get(jobRef);
-    const existingJob = jobSnap.exists ? jobSnap.data() : null;
-
-    tx.set(jobRef, {
-      ...buildBackfillJobFields({
-        existingJob,
-        pendingContactEmails,
-        requestedByUid: auth.uid,
-        defaultSinceDate: new Date(Date.now() - BACKFILL_LOOKBACK_MS),
-      }),
-      // A Gmail pageToken is bound to the exact search query that produced
-      // it. We're always changing the contacts array here (guarded by
-      // pendingContactEmails.length > 0 above), which changes which contacts
-      // fall into the next batch processOneEmailBackfillJob searches — so any
-      // in-flight cursor for the old batch composition must be dropped rather
-      // than resumed.
-      pageToken: admin.firestore.FieldValue.delete(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-  });
-
-  logger.info('addProjectBackfillStakeholders: queued', { projectId, queuedContactCount: pendingContactEmails.length, by: auth.uid });
-  return { queuedContactCount: pendingContactEmails.length };
-});
+exports.addProjectBackfillStakeholders = onCall(require('./addProjectBackfillStakeholders.cjs').createAddProjectBackfillStakeholders({
+  db: admin.firestore(),
+  resolveActor: request => resolveSpecSearchActor({request, auth: admin.auth()}),
+  getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  getDeleteField: () => admin.firestore.FieldValue.delete(),
+  lookbackMs: BACKFILL_LOOKBACK_MS,
+  createError: (code, message) => new functions.https.HttpsError(code, message),
+  logger,
+}));
 
 /** Advance every pending/running email backfill job by a bounded number of Gmail search results. */
 exports.processEmailBackfillJobs = onSchedule(

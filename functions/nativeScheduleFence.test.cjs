@@ -16,10 +16,10 @@ test('original milestone membership requires exact-null or listed UID in both sc
  }
 });
 test('new project deadline changes require fence; unchanged deadline and unrelated metadata do not',async()=>{
- const f=projectFixture();f.docs.delete('pulseRuntimeControl/cutover');
+ const f=projectFixture();f.docs.set('pulseRuntimeControl/cutover',{projectClientWritesFenced:true});
  assert.equal((await f.command({kind:'metadata',patch:{deadline:'2026-11-04'}})).error,'project_mutations_disabled');
  assert.equal((await f.command({kind:'metadata',patch:{deadline:'2026-11-01',description:'Original metadata edit'}})).ok,true);
- f.docs.set('pulseRuntimeControl/cutover',structuredClone(accepted));assert.equal((await f.command({kind:'metadata',patch:{deadline:'2026-11-04'}},{operation_id:'accepted-deadline'})).ok,true);
+ f.docs.set('pulseRuntimeControl/cutover',{...accepted,projectClientWritesFenced:true});assert.equal((await f.command({kind:'metadata',patch:{deadline:'2026-11-04'}},{operation_id:'accepted-deadline'})).ok,true);
 });
 test('revoking a schedule fence before transaction commit prevents new milestone writes',async()=>{
  const f=fixture({beforeCommit:(docs,versions)=>{docs.set('pulseRuntimeControl/cutover',{mode:'coexist',scheduleClientWritesFenced:false});versions.set('pulseRuntimeControl/cutover',50);}});f.docs.set('pulseRuntimeControl/cutover',structuredClone(accepted));
