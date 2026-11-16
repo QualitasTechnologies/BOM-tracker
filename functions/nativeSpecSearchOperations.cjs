@@ -51,8 +51,37 @@ const operationResult = (receipt, operationId) => ({
     ["unresolved", "dispatching"].includes(receipt.status) ? {error: "spec_search_unresolved"} : {}),
 });
 
+
+const searchedSnapshot = (receipt) => {
+  const value = receipt.searched_item_snapshot;
+  return receipt.searched_item_snapshot_version === 1 && plain(value) &&
+    Object.keys(value).length === 7 && ["id", "name", "make", "sku", "itemType", "category"].every(key => typeof value[key] === "string") &&
+    value.id === receipt.item_id && value.itemType === "component" &&
+    (value.specificationUrl === null || typeof value.specificationUrl === "string") &&
+    value.specificationUrl === receipt.before_specification_url ? value : null;
+};
+const knownProviderResult = receipt =>
+  Object.hasOwn(receipt, "provider_specification_url") &&
+  ((receipt.provider_outcome === "completed" && validPublicHttps(receipt.provider_specification_url)) ||
+    (receipt.provider_outcome === "not_found" && receipt.provider_specification_url === null));
+const pendingAcceptedResult = receipt => ["dispatching", "unresolved"].includes(receipt.status) &&
+  knownProviderResult(receipt) && searchedSnapshot(receipt);
+
 function createNativeSpecSearchOperation({db, resolveActor, enabled = () => false, getServerTimestamp,
   fetch: fetchImpl = globalThis.fetch, responseTimeoutMs = 90000, webhookUrl = process.env.BOM_SPEC_SEARCH_WEBHOOK_URL || "https://n8n.qualitastech.com/webhook/spec-search"}) {
+  // The SDK retries expired transactions, but the observed closed-transaction
+  // response is not included. Restart only that exact response, with a fresh
+  // transaction/read set. Every callback here is receipt-checked DB work;
+  // provider dispatch remains outside transactions and is never repeated.
+  const transact = async callback => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await db.runTransaction(callback); }
+      catch (error) {
+        if (attempt >= 2 || error.code !== 3 ||
+          !/^(?:3 INVALID_ARGUMENT: )?Transaction is invalid or closed\.$/.test(String(error.message || "").trim())) throw error;
+      }
+    }
+  };
   return async (request) => {
     let dispatchReserved = false;
     try {
@@ -75,13 +104,15 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
           JSON.stringify([current.uid, normalizedEmail(current.email), current.customClaims.role]) !== openingIdentity) throw fault("actor_forbidden", 403);
         return current;
       };
-      let target;
-      try {
-        target = new URL(webhookUrl);
-      } catch {
-        throw fault("spec_search_unavailable", 503);
-      }
-      if (target.protocol !== "https:" || target.username || target.password || !target.hostname || isIP(target.hostname)) throw fault("spec_search_unavailable", 503);
+      const assertDispatchConfigured = () => {
+        let target;
+        try {
+          target = new URL(webhookUrl);
+        } catch {
+          throw fault("spec_search_unavailable", 503);
+        }
+        if (target.protocol !== "https:" || target.username || target.password || !target.hostname || isIP(target.hostname)) throw fault("spec_search_unavailable", 503);
+      };
 
       const {project_id: projectId, item_id: itemId} = data;
       const projectRef = db.collection("projects").doc(projectId);
@@ -100,7 +131,87 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
       const auditRef = db.collection("pulseSpecSearchAudit").doc(documentKey);
       const lockRef = db.collection("pulseSpecSearchLocks").doc(itemLockDocumentKey(projectId, itemId));
       const payloadHash = hash({actor_uid: actor.uid, project_id: projectId, item_id: itemId});
-      const initial = await db.runTransaction(async (transaction) => {
+      const resultRefs = id => {
+        const key = operationDocumentKey(id);
+        const audit = db.collection("pulseSpecSearchAudit").doc(key);
+        return {receipt: db.collection("pulseSpecSearchReceipts").doc(key), audit,
+          reconciliation: audit.collection("reconciliations").doc("accepted_result")};
+      };
+      const settleKnownResult = async (id, recovery = false) => transact(async transaction => {
+        const refs = resultRefs(id);
+        const projectSnap = await transaction.get(projectRef), receiptSnap = await transaction.get(refs.receipt);
+        const bomSnap = await transaction.get(bomRef), lockSnap = await transaction.get(lockRef);
+        const auditSnap = await transaction.get(refs.audit), reconciliation = await transaction.get(refs.reconciliation);
+        const current = await freshActor();
+        if (!projectSnap.exists || !projectAccess(projectSnap.data(), current)) throw fault("spec_search_forbidden", 403);
+        if (!receiptSnap.exists || !bomSnap.exists) throw fault("spec_search_conflict", 409);
+        const receipt = receiptSnap.data();
+        if (receipt.actor_uid !== current.uid || receipt.project_id !== projectId || receipt.item_id !== itemId ||
+          receipt.operation_id !== id || receipt.payload_hash !== payloadHash) throw fault("operation_conflict", 409);
+        const bom = bomSnap.data(), categories = Array.isArray(bom.categories) ? bom.categories : [], matches = [];
+        categories.forEach((category, categoryIndex) => (Array.isArray(category?.items) ? category.items : []).forEach((item, itemIndex) => {
+          if (item?.id === itemId) matches.push({categoryIndex, itemIndex, category, item});
+        }));
+        if (matches.length !== 1) throw fault("spec_search_conflict", 409);
+        const {categoryIndex, itemIndex, category, item} = matches[0];
+        if (current.customClaims.role !== "admin" && !internal(current)) {
+          const member = (Array.isArray(projectSnap.data().members) ? projectSnap.data().members : []).find(entry => entry?.userId === current.uid);
+          if (!Array.isArray(member?.categoryScope) || !member.categoryScope.includes(category.name)) throw fault("spec_search_forbidden", 403);
+        }
+        if (!["dispatching", "unresolved"].includes(receipt.status)) return operationResult(receipt, id);
+        const before = searchedSnapshot(receipt);
+        if (!before || !knownProviderResult(receipt) || !lockSnap.exists || lockSnap.data().operation_id !== id ||
+          lockSnap.data().actor_uid !== current.uid || lockSnap.data().project_id !== projectId || lockSnap.data().item_id !== itemId) throw fault("spec_search_unresolved", 503);
+        await writable(transaction);
+        const specificationUrl = receipt.provider_specification_url;
+        if (category.name !== before.category || item.id !== before.id || item.name !== before.name ||
+          (item.make || "") !== before.make || (item.sku || "") !== before.sku ||
+          (item.itemType || "component") !== before.itemType ||
+          ((item.specificationUrl ?? null) !== before.specificationUrl && (item.specificationUrl ?? null) !== specificationUrl)) throw fault("spec_search_conflict", 409);
+        await freshActor();
+        if (specificationUrl) transaction.update(bomRef, {categories: categories.map((row, index) => index !== categoryIndex ? row : ({...row,
+          items: row.items.map((entry, index2) => index2 !== itemIndex ? entry : ({...entry, specificationUrl}))}))});
+        const state = specificationUrl ? "completed" : "not_found";
+        const saved = {...receipt, status: state, state, outcome: state, error_code: null,
+          after_specification_url: specificationUrl, specification_url: specificationUrl, updated_at: getServerTimestamp()};
+        transaction.set(refs.receipt, saved);transaction.delete(lockRef);
+        const audit = {actor_uid: current.uid, project_id: projectId, item_id: itemId, operation_id: id,
+          before_specification_url: before.specificationUrl, after_specification_url: specificationUrl, outcome: state, created_at: getServerTimestamp()};
+        if (!auditSnap.exists) transaction.create(refs.audit, audit);
+        // Preserve the original failure/unknown audit instead of overwriting it.
+        if ((recovery || auditSnap.exists) && !reconciliation.exists) transaction.create(refs.reconciliation,
+          {...audit, previous_status: receipt.status, previous_state: receipt.state ?? null, reason: "known_provider_result_recovered"});
+        return operationResult(saved, id);
+      });
+      const recordAcceptedFailure = async (id, providerOutcome, error, recovery = false) => {
+        const conflict = error.code === "spec_search_conflict", refs = resultRefs(id);
+        try {
+          const saved = await transact(async transaction => {
+            const receiptSnap = await transaction.get(refs.receipt), lockSnap = await transaction.get(lockRef);
+            const auditSnap = await transaction.get(refs.audit), reconciliation = await transaction.get(refs.reconciliation);
+            const receipt = receiptSnap.exists ? receiptSnap.data() : null;
+            if (!receipt || receipt.actor_uid !== actor.uid || receipt.project_id !== projectId || receipt.item_id !== itemId ||
+              receipt.operation_id !== id || receipt.payload_hash !== payloadHash) return null;
+            if (!["dispatching", "unresolved"].includes(receipt.status)) return operationResult(receipt, id);
+            const state = conflict ? "conflict" : "outcome_unknown";
+            const terminal = {...receipt, ...providerOutcome, status: conflict ? "conflict" : "unresolved", state, outcome: state,
+              error_code: conflict ? "spec_search_conflict" : "spec_search_unresolved", updated_at: getServerTimestamp()};
+            transaction.set(refs.receipt, terminal);
+            if (conflict && lockSnap.exists && lockSnap.data().operation_id === id) transaction.delete(lockRef);
+            const audit = {actor_uid: receipt.actor_uid, project_id: projectId, item_id: itemId, operation_id: id,
+              before_specification_url: receipt.before_specification_url, after_specification_url: null, outcome: state, created_at: getServerTimestamp()};
+            if (!auditSnap.exists) transaction.create(refs.audit, audit);
+            if (recovery && !reconciliation.exists) transaction.create(refs.reconciliation,
+              {...audit, previous_status: receipt.status, previous_state: receipt.state ?? null, reason: "known_provider_result_conflict"});
+            return operationResult(terminal, id);
+          });
+          if (saved) return saved;
+        } catch {
+          // Durable reservations/results remain unresolved if finalization also fails.
+        }
+        return {ok: false, state: "outcome_unknown", operation_id: id, error: "spec_search_unresolved"};
+      };
+      const initial = await transact(async (transaction) => {
         const projectSnap = await transaction.get(projectRef);
         if (!projectSnap.exists) throw fault("project_not_found", 404);
         await freshActor();
@@ -146,9 +257,11 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
         }
         await writable(transaction);
         await freshActor();
+        assertDispatchConfigured();
         const itemSnapshot = {id: item.id, name: item.name, make: item.make || "", sku: item.sku || "", itemType: item.itemType || "component", category: category.name, specificationUrl: item.specificationUrl ?? null};
         const receipt = {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
           payload_hash: payloadHash, status: "dispatching", before_specification_url: itemSnapshot.specificationUrl,
+          searched_item_snapshot_version: 1, searched_item_snapshot: itemSnapshot,
           after_specification_url: null, created_at: getServerTimestamp(), updated_at: getServerTimestamp()};
         transaction.create(receiptRef, receipt);
         transaction.set(lockRef, {actor_uid: actor.uid, operation_id: operationId, project_id: projectId, item_id: itemId,
@@ -157,6 +270,15 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
       });
       if (initial.blocked) return {ok: false, state: "outcome_unknown", operation_id: operationId, error: "spec_search_unresolved"};
       if (initial.replay) {
+        // A new browser first adopts the original ID through the existing unknown
+        // response. Only a request naming that original ID may settle its result.
+        if (!initial.reusedOperation && pendingAcceptedResult(initial.receipt)) {
+          try { return await settleKnownResult(operationId, true); }
+          catch (error) {
+            if (error.code === "spec_search_conflict") return recordAcceptedFailure(operationId, {}, error, true);
+            throw error;
+          }
+        }
         const replay = operationResult(initial.receipt, initial.operationId || operationId);
         return initial.reusedOperation ? {...replay, reused_operation: true} : replay;
       }
@@ -176,7 +298,7 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
       } catch (error) {
         const status = error.code === "invalid_specification_url" ? "failed" : "unresolved";
         const outcome = status === "failed" ? "failed" : "unresolved";
-        const finalizedReceipt = await db.runTransaction(async (transaction) => {
+        const finalizedReceipt = await transact(async (transaction) => {
           const current = await transaction.get(receiptRef);
           const lock = await transaction.get(lockRef);
           if (!current.exists) throw fault("spec_search_unavailable", 503);
@@ -199,79 +321,19 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
       try {
         // This journal records the accepted provider result independently of the
         // user's current right to modify business data. Never resend it on retry.
-        await db.runTransaction(async transaction => {
+        await transact(async transaction => {
           const snap = await transaction.get(receiptRef);
           if (!snap.exists) throw fault("spec_search_unavailable", 503);
-          if (snap.data().status === "dispatching") transaction.set(receiptRef, {...snap.data(), ...providerOutcome, updated_at: getServerTimestamp()});
+          const receipt = snap.data();
+          if (receipt.actor_uid !== actor.uid || receipt.project_id !== projectId || receipt.item_id !== itemId ||
+            receipt.operation_id !== operationId || receipt.payload_hash !== payloadHash) throw fault("operation_conflict", 409);
+          if (receipt.status === "dispatching") transaction.set(receiptRef, {...snap.data(), ...providerOutcome, updated_at: getServerTimestamp()});
         });
-        return await db.runTransaction(async (transaction) => {
-          const projectSnap = await transaction.get(projectRef);
-          const currentReceiptSnap = await transaction.get(receiptRef);
-          const bomSnap = await transaction.get(bomRef);
-          const lockSnap = await transaction.get(lockRef);
-          if (!projectSnap.exists || !projectAccess(projectSnap.data(), actor)) throw fault("spec_search_forbidden", 403);
-          if (!currentReceiptSnap.exists || !bomSnap.exists) throw fault("spec_search_conflict", 409);
-          const currentReceipt = currentReceiptSnap.data();
-          if (currentReceipt.status !== "dispatching") return operationResult(currentReceipt, operationId);
-          await freshActor();
-          await writable(transaction);
-          const bom = bomSnap.data();
-          const categories = Array.isArray(bom.categories) ? bom.categories : [];
-          const matches = [];
-          categories.forEach((category, categoryIndex) => (Array.isArray(category?.items) ? category.items : []).forEach((item, itemIndex) => {
-            if (item?.id === itemId) matches.push({categoryIndex, itemIndex, category, item});
-          }));
-          if (matches.length !== 1) throw fault("spec_search_conflict", 409);
-          const {categoryIndex, itemIndex, category, item} = matches[0];
-          const currentProject = projectSnap.data();
-          if (actor.customClaims.role !== "admin" && !internal(actor)) {
-            const member = (Array.isArray(currentProject.members) ? currentProject.members : []).find((entry) => entry?.userId === actor.uid);
-            if (!Array.isArray(member?.categoryScope) || !member.categoryScope.includes(category.name)) throw fault("spec_search_forbidden", 403);
-          }
-          const before = initial.itemSnapshot;
-          if (category.name !== before.category || item.id !== before.id || item.name !== before.name ||
-            (item.make || "") !== before.make || (item.sku || "") !== before.sku ||
-            (item.itemType || "component") !== before.itemType ||
-            ((item.specificationUrl ?? null) !== before.specificationUrl && (item.specificationUrl ?? null) !== specificationUrl)) throw fault("spec_search_conflict", 409);
-          if (specificationUrl) {
-            const nextCategories = categories.map((row, index) => index !== categoryIndex ? row : ({...row,
-              items: row.items.map((entry, index2) => index2 !== itemIndex ? entry : ({...entry, specificationUrl}))}));
-            transaction.update(bomRef, {categories: nextCategories});
-          }
-          const state = specificationUrl ? "completed" : "not_found";
-          const receipt = {...currentReceipt, status: state, state, outcome: state, after_specification_url: specificationUrl, specification_url: specificationUrl, updated_at: getServerTimestamp()};
-          transaction.set(receiptRef, receipt);
-          if (lockSnap.exists && lockSnap.data().operation_id === operationId) transaction.delete(lockRef);
-          transaction.create(auditRef, {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
-            before_specification_url: before.specificationUrl, after_specification_url: specificationUrl, outcome: state, created_at: getServerTimestamp()});
-          return operationResult(receipt, operationId);
-        });
+        return await settleKnownResult(operationId);
       } catch (error) {
-        const isTargetConflict = error.code === "spec_search_conflict";
-        const accessRevoked = error.code === "spec_search_forbidden";
-        const status = isTargetConflict ? "conflict" : accessRevoked ? "failed" : "unresolved";
-        const state = isTargetConflict ? "conflict" : accessRevoked ? "failed" : "outcome_unknown";
-        const outcome = state;
-        const errorCode = isTargetConflict ? "spec_search_conflict" : accessRevoked ? "spec_search_forbidden" : "spec_search_unresolved";
-        try {
-          const persistedResult = await db.runTransaction(async (transaction) => {
-            const receiptSnap = await transaction.get(receiptRef);
-            const lockSnap = await transaction.get(lockRef);
-            const current = receiptSnap.exists ? receiptSnap.data() : null;
-            if (!current || current.status !== "dispatching") return current ? operationResult(current, operationId) : null;
-            const terminal = {...current, ...providerOutcome, status, state, outcome, error_code: errorCode, updated_at: getServerTimestamp()};
-            transaction.set(receiptRef, terminal);
-            if (state !== "outcome_unknown" && lockSnap.exists && lockSnap.data().operation_id === operationId) transaction.delete(lockRef);
-            transaction.create(auditRef, {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
-              before_specification_url: current.before_specification_url, after_specification_url: null, outcome, created_at: getServerTimestamp()});
-            return operationResult(terminal, operationId);
-          });
-          if (persistedResult) return persistedResult;
-        } catch {
-          // The receipt remains dispatching if persistence also fails. Replays treat
-          // that state as outcome_unknown and therefore never dispatch n8n again.
-        }
-        return {ok: false, state: "outcome_unknown", operation_id: operationId, error: "spec_search_unresolved"};
+        // A confirmed provider result survives revoked access or paused writes.
+        // Keep its lock and unknown state so another operation cannot redispatch.
+        return recordAcceptedFailure(operationId, providerOutcome, error);
       }
     } catch (error) {
       const operationId = canonicalUuid(request?.data?.operation_id);

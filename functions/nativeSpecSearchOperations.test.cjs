@@ -7,7 +7,7 @@ const {isNativeSpecSearchEnabled} = require("./specSearchLegacyGuard.cjs");
 const clone = (value) => value === undefined ? undefined : structuredClone(value);
 const receiptKey = () => createHash("sha256").update("550e8400-e29b-41d4-a716-446655440000").digest("hex");
 const itemLockKey = (projectId = "P", itemId = "i1") => createHash("sha256").update(JSON.stringify([projectId, itemId])).digest("hex");
-function fixture({actor = {}, project = {}, categories = [], enabled = "true", response, fetchResponse, jsonError, beforeFetch, beforeReceiptRead, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P", failTransactionNumbers = [], timestamp = () => "server-time", receiptReadError = false, materializedReservationCreatedAt, responseTimeoutMs} = {}) {
+function fixture({actor = {}, project = {}, categories = [], enabled = "true", response, fetchResponse, jsonError, beforeFetch, beforeReceiptRead, fetchError, docs: sharedDocs, calls: sharedCalls, projectId = "P", failTransactionNumbers = [], loseReplyTransactionNumbers = [], transactionError = () => Object.assign(new Error("temporary Firestore failure"), {code:14}), lostReplyError = () => Object.assign(new Error("commit reply lost"), {code:14}), timestamp = () => "server-time", receiptReadError = false, materializedReservationCreatedAt, responseTimeoutMs, webhookUrl = "https://n8n.example.test/webhook/spec-search"} = {}) {
   if (!Object.hasOwn(project, "members") && !actor.email?.toLowerCase().endsWith("@qualitastech.com") && actor.customClaims?.role !== "admin") {
     project = {...project, members: [{userId: actor.uid || "alice", categoryScope: ["Parts"]}]};
   }
@@ -30,7 +30,7 @@ function fixture({actor = {}, project = {}, categories = [], enabled = "true", r
     },
     runTransaction: async (callback) => {
       transactionNumber += 1;
-      if (failTransactionNumbers.includes(transactionNumber)) throw Object.assign(new Error("temporary Firestore failure"), {code: 14});
+      if (failTransactionNumbers.includes(transactionNumber)) throw transactionError();
       const writes = [];
       const transaction = {
         async get(reference) {
@@ -62,6 +62,7 @@ function fixture({actor = {}, project = {}, categories = [], enabled = "true", r
         if (mode === "delete") docs.delete(path);
         else docs.set(path, mode === "update" ? {...docs.get(path), ...data} : data);
       }
+      if (loseReplyTransactionNumbers.includes(transactionNumber)) throw lostReplyError();
       return result;
     },
   };
@@ -94,10 +95,10 @@ function fixture({actor = {}, project = {}, categories = [], enabled = "true", r
       if (fetchResponse) return {...fetchResponse, json: jsonError ? async () => { throw jsonError; } : fetchResponse.json};
       return {ok: true, json: async () => clone(response || {success: true, specificationUrl: null})};
     },
-    webhookUrl: "https://n8n.example.test/webhook/spec-search",
+    webhookUrl,
   });
   const call = (data = {}) => handler({auth: {uid: currentActor.uid || "alice"}, data: {project_id: projectId, item_id: "i1", operation_id: "550e8400-e29b-41d4-a716-446655440000", expected_actor_uid: currentActor.uid || "alice", ...data}});
-  return {call, docs, calls, updates, setActor(nextActor) { currentActor = nextActor; }, setActorError(error) { actorError = error; }, clearActorError() { actorError = null; }, setEnabled(value) { currentEnabled = value; }};
+  return {call, docs, calls, updates, transactionCount: () => transactionNumber, setActor(nextActor) { currentActor = nextActor; }, setActorError(error) { actorError = error; }, clearActorError() { actorError = null; }, setEnabled(value) { currentEnabled = value; }};
 }
 const user = (uid = "alice", role = "viewer", email = "alice@partner.example") => ({uid, email, disabled: false, customClaims: {role, status: "approved"}});
 const component = {id: "i1", name: "Valve", make: "Acme", sku: "V-1", itemType: "component", specificationUrl: null};
@@ -405,7 +406,9 @@ test("transient finalization failure is stored as outcome_unknown and replay doe
   assert.equal(f.docs.get(`pulseSpecSearchAudit/${receiptKey()}`).outcome, "outcome_unknown");
   assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
   const replay = await f.call();
-  assert.deepEqual(replay, first);
+  assert.equal(replay.state, "completed");
+  assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, "https://docs.example.com/spec.pdf");
+  assert.equal(f.docs.get(`pulseSpecSearchAudit/${receiptKey()}`).outcome, "outcome_unknown");
   assert.equal(f.calls.length, 1);
 });
 
@@ -422,7 +425,9 @@ test("failed persistence of a known conflict returns unknown and replays without
   assert.equal(receipt.outcome, undefined);
   assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
   const replay = await f.call();
-  assert.equal(replay.state, "outcome_unknown");
+  assert.equal(replay.state, "conflict");
+  assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].make, "Changed during search");
+  assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
   assert.equal(replay.operation_id, first.operation_id);
   assert.equal(f.calls.length, 1);
 });
@@ -480,15 +485,16 @@ test("membership or category-scope revocation during n8n dispatch blocks the fin
       revoke(docs.get("projects/P"));
     }});
     const result = await f.call();
-    assert.equal(result.state, "failed");
-    assert.equal(result.error, "spec_search_forbidden");
+    assert.equal(result.state, "outcome_unknown");
+    assert.equal(result.error, "spec_search_unresolved");
     assert.equal(f.calls.length, 1);
+    assert.equal(f.docs.has(`pulseSpecSearchLocks/${itemLockKey()}`), true);
     assert.deepEqual(f.updates, []);
     assert.equal(f.docs.get("projects/P/bom/data").categories[0].items[0].specificationUrl, null);
     const key = receiptKey();
-    assert.equal(f.docs.get(`pulseSpecSearchReceipts/${key}`).state, "failed");
+    assert.equal(f.docs.get(`pulseSpecSearchReceipts/${key}`).state, "outcome_unknown");
     assert.equal(f.docs.get(`pulseSpecSearchReceipts/${key}`).specification_url, undefined);
-    assert.equal(f.docs.get(`pulseSpecSearchAudit/${key}`).outcome, "failed");
+    assert.equal(f.docs.get(`pulseSpecSearchAudit/${key}`).outcome, "outcome_unknown");
     assert.equal(f.docs.get(`pulseSpecSearchAudit/${key}`).after_specification_url, null);
   }
 });
@@ -558,4 +564,93 @@ test('an identical URL linked concurrently settles the accepted result without e
 test('account revocation while reservation data is being read prevents any external dispatch',async()=>{
  let f;f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],beforeReceiptRead:async()=>f.setActor({...user(),disabled:true})});
  const result=await f.call();assert.equal(result.error,'actor_forbidden');assert.equal(f.calls.length,0);assert.equal(f.docs.has('pulseSpecSearchReceipts/'+receiptKey()),false);
+});
+
+
+test('known accepted result settles after a pause with no second provider request and preserves the original audit',async()=>{
+ let f;f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},beforeFetch:async()=>f.setEnabled('false')});
+ assert.equal((await f.call()).state,'outcome_unknown');const audit=clone(f.docs.get('pulseSpecSearchAudit/'+receiptKey()));
+ f.setEnabled('true');const result=await f.call();assert.equal(result.state,'completed');assert.equal(f.calls.length,1);assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].specificationUrl,'https://docs.example.com/spec.pdf');assert.deepEqual(f.docs.get('pulseSpecSearchAudit/'+receiptKey()),audit);
+ assert.equal(f.docs.get('pulseSpecSearchAudit/'+receiptKey()+'/reconciliations/accepted_result').outcome,'completed');assert.equal(f.docs.has('pulseSpecSearchLocks/'+itemLockKey()),false);
+ assert.deepEqual(await f.call(),result);assert.equal(f.calls.length,1);
+});
+
+test('membership or category revocation retains accepted-result ownership so restoration and a new browser cannot redispatch',async()=>{
+ for(const revoke of [project=>{project.memberIds=[];},project=>{project.members[0].categoryScope=[];}]){
+  let once=true;const f=fixture({actor:user(),project:{memberIds:['alice'],members:[{userId:'alice',categoryScope:['Parts']}]},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},beforeFetch:async({docs})=>{if(once){once=false;revoke(docs.get('projects/P'));}}});
+  const first=await f.call();assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].specificationUrl,null);assert.equal(f.calls.length,1);
+  Object.assign(f.docs.get('projects/P'),{memberIds:['alice'],members:[{userId:'alice',categoryScope:['Parts']}]});
+  const adopted=await f.call({operation_id:'78d77e2d-24f8-4d16-918a-397eb24e5a85'});assert.equal(f.calls.length,1);assert.equal(first.state,'outcome_unknown');assert.equal(adopted.reused_operation,true);assert.equal(adopted.state,'outcome_unknown');assert.equal(adopted.operation_id,'550e8400-e29b-41d4-a716-446655440000');
+  assert.equal((await f.call()).state,'completed');assert.equal(f.calls.length,1);
+ }
+});
+
+
+test('searched provenance is durable before dispatch and cannot be inferred for old or incomplete accepted receipts',async()=>{
+ for(const remove of [receipt=>{delete receipt.searched_item_snapshot;},receipt=>{receipt.searched_item_snapshot_version=0;},receipt=>{delete receipt.provider_outcome;},receipt=>{receipt.provider_specification_url='http://localhost/private';}]){
+  let f;f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},beforeFetch:async()=>{
+   const reserved=f.docs.get('pulseSpecSearchReceipts/'+receiptKey());assert.equal(reserved.searched_item_snapshot_version,1);assert.equal(reserved.searched_item_snapshot.id,'i1');assert.equal(reserved.searched_item_snapshot.name,component.name);f.setEnabled('false');
+  }});assert.equal((await f.call()).state,'outcome_unknown');f.setEnabled('true');remove(f.docs.get('pulseSpecSearchReceipts/'+receiptKey()));const before=clone([...f.docs]);
+  assert.equal((await f.call()).state,'outcome_unknown');assert.equal(f.calls.length,1);assert.deepEqual([...f.docs],before);
+ }
+});
+
+test('known results remain paused until the current owner, global mode and write gates are restored',async()=>{
+ for(const change of [f=>f.setEnabled('false'),f=>f.docs.delete('pulseMaterialCutovers/P'),f=>f.docs.set('pulseRuntimeControl/cutover',{mode:'read_only'})]){
+  let f;f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},beforeFetch:async()=>change(f)});assert.equal((await f.call()).state,'outcome_unknown');const before=clone([...f.docs]);assert.equal((await f.call()).state,'outcome_unknown');assert.deepEqual([...f.docs],before);
+  f.setEnabled('true');f.docs.set('pulseMaterialCutovers/P',{fence:'legacy_bom_data_writes',version:1});f.docs.set('pulseRuntimeControl/cutover',{mode:'pulse_only'});assert.equal((await f.call()).state,'completed');assert.equal(f.calls.length,1);
+ }
+});
+
+test('a known no-result outcome settles without clearing a previously linked specification',async()=>{
+ let f;f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[{...component,specificationUrl:'https://docs.example.com/previous.pdf'}]}],response:{success:true,specificationUrl:null},beforeFetch:async()=>f.setEnabled('false')});assert.equal((await f.call()).state,'outcome_unknown');f.setEnabled('true');const result=await f.call();assert.equal(result.state,'not_found');assert.equal(result.ok,true);assert.equal(f.calls.length,1);assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].specificationUrl,'https://docs.example.com/previous.pdf');
+});
+
+test('recovery preserves later unrelated edits and refuses to overwrite changed search identity or a different URL',async()=>{
+ for(const change of [item=>{item.quantity=9;item.notes={kept:true};},item=>{item.name='Changed';},item=>{item.make='Changed';},item=>{item.sku='Changed';},item=>{item.specificationUrl='https://other.example.com/spec.pdf';}]){
+  let f;f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},beforeFetch:async()=>f.setEnabled('false')});await f.call();f.setEnabled('true');const item=f.docs.get('projects/P/bom/data').categories[0].items[0];change(item);const before=clone(item);const result=await f.call();assert.equal(f.calls.length,1);
+  if(before.quantity===9){assert.equal(result.state,'completed');assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].quantity,9);assert.deepEqual(f.docs.get('projects/P/bom/data').categories[0].items[0].notes,{kept:true});}
+  else {assert.equal(result.state,'conflict');assert.deepEqual(f.docs.get('projects/P/bom/data').categories[0].items[0],before);assert.equal(f.docs.get('pulseSpecSearchAudit/'+receiptKey()).outcome,'outcome_unknown');assert.equal(f.docs.get('pulseSpecSearchAudit/'+receiptKey()+'/reconciliations/accepted_result').outcome,'conflict');}
+ }
+});
+
+test('current actor revocation during recovery reservation reads prevents settlement and preserves the accepted result',async()=>{
+ let f,armed=false,reads=0;f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},beforeFetch:async()=>f.setEnabled('false'),beforeReceiptRead:async()=>{if(armed&&++reads===2)f.setActor({...user(),disabled:true});}});await f.call();f.setEnabled('true');armed=true;const before=clone([...f.docs]);assert.equal((await f.call()).state,'outcome_unknown');assert.deepEqual([...f.docs],before);assert.equal(f.calls.length,1);
+});
+
+test('a lost recovery commit reply resolves the same durable result with one reconciliation and no second dispatch',async()=>{
+ let f;f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},beforeFetch:async()=>f.setEnabled('false'),loseReplyTransactionNumbers:[6]});await f.call();f.setEnabled('true');assert.equal((await f.call()).state,'outcome_unknown');assert.equal(f.docs.get('pulseSpecSearchReceipts/'+receiptKey()).state,'completed');assert.equal((await f.call()).state,'completed');assert.equal(f.calls.length,1);assert.equal([...f.docs.keys()].filter(key=>key.includes('/reconciliations/')).length,1);
+});
+
+
+test('a changed receipt identity cannot receive the original provider result or finalization metadata',async()=>{
+ const f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},beforeFetch:async({docs})=>{docs.get('pulseSpecSearchReceipts/'+receiptKey()).actor_uid='different-actor';}});
+ assert.equal((await f.call()).state,'outcome_unknown');const receipt=f.docs.get('pulseSpecSearchReceipts/'+receiptKey());assert.equal(receipt.actor_uid,'different-actor');assert.equal(receipt.provider_outcome,undefined);assert.equal(receipt.state,undefined);assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].specificationUrl,null);assert.equal(f.calls.length,1);
+});
+
+
+test('receipt recovery does not depend on current provider endpoint configuration while new dispatch still validates it',async()=>{
+ for(const paused of [false,true]){
+  let f;f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},beforeFetch:async()=>{if(paused)f.setEnabled('false');}});await f.call();
+  const reloaded=fixture({actor:user(),docs:f.docs,calls:f.calls,webhookUrl:'invalid endpoint',enabled:paused?'true':'false'});assert.equal((await reloaded.call()).state,'completed');assert.equal(f.calls.length,1);
+ }
+ const fresh=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],webhookUrl:'invalid endpoint'});assert.equal((await fresh.call()).error,'spec_search_unavailable');assert.equal(fresh.calls.length,0);assert.equal(fresh.docs.has('pulseSpecSearchReceipts/'+receiptKey()),false);
+});
+
+
+const closedTransaction = () => Object.assign(new Error('3 INVALID_ARGUMENT: Transaction is invalid or closed.'),{code:3});
+test('an explicitly closed transaction restarts from fresh reads without repeating provider dispatch or a committed write',async()=>{
+ for(const phase of [1,2,3]){
+  const f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},failTransactionNumbers:[phase],transactionError:closedTransaction});assert.equal((await f.call()).state,'completed');assert.equal(f.calls.length,1);assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].specificationUrl,'https://docs.example.com/spec.pdf');
+ }
+ const committed=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},loseReplyTransactionNumbers:[3],lostReplyError:closedTransaction});assert.equal((await committed.call()).state,'completed');assert.equal(committed.calls.length,1);assert.equal(committed.updates.filter(update=>update.path==='projects/P/bom/data').length,1);
+});
+
+test('closed-transaction retries are bounded and never retry a different invalid-argument error',async()=>{
+ const closed=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],failTransactionNumbers:[1,2,3,4,5],transactionError:closedTransaction});assert.equal((await closed.call()).state,'failed');assert.equal(closed.transactionCount(),3);assert.equal(closed.calls.length,0);
+ const invalid=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],failTransactionNumbers:[1],transactionError:()=>Object.assign(new Error('3 INVALID_ARGUMENT: Invalid field name'),{code:3})});assert.equal((await invalid.call()).state,'failed');assert.equal(invalid.transactionCount(),1);assert.equal(invalid.calls.length,0);
+});
+
+test('a closed reply after reservation commit stays unknown rather than dispatching a potentially duplicated operation',async()=>{
+ const f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],loseReplyTransactionNumbers:[1],lostReplyError:closedTransaction});assert.equal((await f.call()).state,'outcome_unknown');assert.equal(f.calls.length,0);assert.equal((await f.call()).state,'outcome_unknown');assert.equal(f.calls.length,0);assert.equal(f.docs.has('pulseSpecSearchLocks/'+itemLockKey()),true);
 });
