@@ -4258,7 +4258,7 @@ exports.processEmailBackfillJobs = onSchedule(
   {
     schedule: 'every 10 minutes',
     secrets: [googleOAuthClientId, googleOAuthClientSecret, geminiApiKeySecret],
-    timeoutSeconds: 300,
+    timeoutSeconds: 180,
     memory: '512MiB',
     maxInstances: 1,
     concurrency: 1,
@@ -4370,7 +4370,7 @@ exports.syncGmailAccounts = onSchedule(
   {
     schedule: 'every 10 minutes',
     secrets: [googleOAuthClientId, googleOAuthClientSecret, geminiApiKeySecret],
-    timeoutSeconds: 300,
+    timeoutSeconds: 180,
     memory: '512MiB',
     maxInstances: 1,
     concurrency: 1,
