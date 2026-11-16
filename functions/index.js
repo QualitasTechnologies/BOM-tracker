@@ -2483,6 +2483,22 @@ exports.triggerSpecSearch = onRequest(require('./legacySpecSearch.cjs').createLe
   logger,
 }));
 
+// Native specification search callable uses the existing real Firebase session.
+const {createNativeSpecSearchOperation} = require('./nativeSpecSearchOperations.cjs');
+const {resolveSpecSearchActor} = require('./specSearchActor.cjs');
+const {nativeSpecSearchEnabled} = require('./specSearchLegacyGuard.cjs');
+exports.nativeSpecSearchOperation = onCall(
+  {region: 'us-central1', timeoutSeconds: 120, maxInstances: 5, memory: '256MiB', cpu: 'gcf_gen1', concurrency: 1},
+  createNativeSpecSearchOperation({
+    db: admin.firestore(),
+    resolveActor: request => resolveSpecSearchActor({request, auth: admin.auth()}),
+    enabled: () => nativeSpecSearchEnabled(process.env),
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    fetch: (...args) => globalThis.fetch(...args),
+  }),
+);
+// end nativeSpecSearchOperation
+
 // ==================== BOM STATUS DIGEST FUNCTIONS ====================
 
 /**

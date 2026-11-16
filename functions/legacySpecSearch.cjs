@@ -42,6 +42,7 @@ function createLegacySpecSearch({db, fetch: fetchImpl = globalThis.fetch, getSer
         body: JSON.stringify({searchId, bomItemId, projectId, itemName, make: make || '', sku: sku || '', userId: userId || 'system', timestamp: now().toISOString()})});
       if (!result.ok) throw fault('spec_search_dispatch_failed', 502);
       const found = await result.json();
+      if (!found || found.success !== true) throw fault('spec_search_dispatch_failed', 502);
       if (found.success && found.specificationUrl) {
         await db.runTransaction(async transaction => {
           const current = await writableTarget(transaction);

@@ -2,14 +2,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {fixture} = require('./nativeMilestoneFixture.cjs');
 const {createLegacySpecSearch} = require('./legacySpecSearch.cjs');
-function setup(duringFetch = () => {}) {
+function setup(duringFetch = () => {}, result = {success: true, specificationUrl: "https://example.com/motor.pdf"}) {
   const f = fixture();
   f.docs.delete('pulseRuntimeControl/cutover');
   f.docs.set('projects/P/bom/data', {categories: [{name: 'Parts', items: [{id: 'motor', name: 'Motor', quantity: 1}]}]});
   const calls = [];
   const handler = createLegacySpecSearch({db: f.db, getServerTimestamp: () => 'server-time', fetch: async (...args) => {
     calls.push(args); await duringFetch(f);
-    return {ok: true, json: async () => ({success: true, specificationUrl: 'https://example.com/motor.pdf'})};
+    return {ok: true, json: async () => result};
   }});
   const call = async (body = {projectId: 'P', bomItemId: 'motor', itemName: 'Motor'}) => {
     const result = {}; await handler({method: 'POST', body}, {set() {}, status(code) {result.status = code; return this;}, json(body) {result.body = body;}, send() {}}); return result;
@@ -47,4 +47,9 @@ test('missing BOM or item and malformed IDs fail before provider dispatch', asyn
     const f = setup(); change(f); assert.equal((await f.call()).status, 404); assert.equal(f.calls.length, 0);
   }
   const f = setup(); assert.equal((await f.call({projectId: 'P/other', bomItemId: 'motor', itemName: 'Motor'})).status, 400); assert.equal(f.calls.length, 0);
+});
+
+test('an unsuccessful provider response cannot claim that an unpersisted specification was saved',async()=>{
+ const f=setup(()=>{}, {success:false,specificationUrl:'https://example.com/unaccepted.pdf'});const result=await f.call();
+ assert.equal(result.body.success,false);assert.equal(result.body.specificationUrl,undefined);assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].specificationUrl,undefined);
 });
