@@ -25,8 +25,9 @@ async function withLease(options,{ref,prefix,key,active,deadline},action){
   const commit=async(fields,extra)=>db.runTransaction(async tx=>{
     const snap=await tx.get(ref);
     if(!snap.exists||!active(snap.data())||snap.data()[ownerField]!==owner||key(snap.data())!==expected)throw fault('gmail_work_superseded');
-    if(extra){const target=await tx.get(extra.ref);if(!target.exists)throw fault('gmail_project_not_found');}
-    tx.update(ref,fields);if(extra)tx.update(extra.ref,extra.fields);
+    let extraFields;
+    if(extra){const target=await tx.get(extra.ref);if(!target.exists)throw fault('gmail_project_not_found');extraFields=typeof extra.fields==='function'?extra.fields(target.data()):extra.fields;}
+    tx.update(ref,fields);if(extra)tx.update(extra.ref,extraFields);
   });
   const stage=(name,fields={})=>logger.info('Gmail scheduled work stage',{recordId:ref.id,worker:prefix,stage:name,...fields});
   try{return await action({initial,commit,stage,hasTime:()=>now()+35000<deadline});}
@@ -47,7 +48,12 @@ function createBackfillWorker(input){
   const options=dependencies(input),{db,now,getServerTimestamp:stamp,getDeleteField:remove,logger}=options;
   return async({projectId,jobRef,clientId,clientSecret,geminiApiKey,deadline=now()+90000})=>withLease(options,{ref:jobRef,prefix:'backfill',key:backfillKey,active:job=>['pending','running'].includes(job.status),deadline},async({initial:job,commit,stage,hasTime})=>{
     const completed=new Set(job.completedContacts||[]),contacts=job.contacts||[],batch=contacts.filter(email=>!completed.has(email)).slice(0,25),projectRef=db.collection('projects').doc(projectId);
-    if(!batch.length){await commit({status:'completed',updatedAt:stamp()},{ref:projectRef,fields:{backfilledContactEmails:contacts}});return{state:'completed'};}
+    const completedProject={ref:projectRef,fields:project=>{
+      const previous=project.backfilledContactEmails??[];
+      if(!Array.isArray(previous)||previous.some(email=>typeof email!=='string'))throw fault('invalid_backfilled_contacts');
+      return{backfilledContactEmails:[...new Set([...previous,...contacts])]};
+    }};
+    if(!batch.length){await commit({status:'completed',updatedAt:stamp()},completedProject);return{state:'completed'};}
     stage('checking_stakeholders');
     const snapshots=await Promise.all(batch.map(email=>db.collection('stakeholderIndex').doc(email).get()));
     const index=Object.fromEntries(batch.map((email,i)=>[email.toLowerCase().trim(),snapshots[i].exists?snapshots[i].data().projectIds||[]:[]]));
@@ -76,7 +82,7 @@ function createBackfillWorker(input){
     if(next)await commit({...fields,status:'running',pageToken:next});
     else{
       const finished=[...new Set([...completed,...batch])],allDone=contacts.every(email=>finished.includes(email));state=allDone?'completed':'running';
-      await commit({...fields,status:state,completedContacts:finished,pageToken:remove(),backfillQueryHash:remove()},allDone?{ref:projectRef,fields:{backfilledContactEmails:contacts}}:undefined);
+      await commit({...fields,status:state,completedContacts:finished,pageToken:remove(),backfillQueryHash:remove()},allDone?completedProject:undefined);
     }
     logger.info('Email backfill page checkpointed',{projectId,state,processedCount:processed,matchedCount:matched});return{state};
   });

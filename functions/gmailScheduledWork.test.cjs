@@ -50,4 +50,8 @@ test('incremental sync retains original history across partial pages and commits
 test('mailbox reconnect or disconnect supersedes a running incremental checkpoint',async()=>{
  const f=fixture({process:({rows})=>{rows.get('gmailConnections/user').status='disconnected';}});assert.equal((await f.sync()).state,'superseded');assert.equal(f.rows.get('gmailConnections/user').lastHistoryId,'10');
 });
+test('completion retains contacts already backfilled by another historical job',async()=>{
+ const f=fixture();f.rows.get('projects/P').backfilledContactEmails=['older@example.test'];assert.equal((await f.backfill()).state,'completed');
+ assert.deepEqual(f.rows.get('projects/P').backfilledContactEmails,['older@example.test','client@example.test']);
+});
 module.exports={fixture};
