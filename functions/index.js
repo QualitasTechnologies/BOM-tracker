@@ -2488,7 +2488,7 @@ const {createNativeSpecSearchOperation} = require('./nativeSpecSearchOperations.
 const {resolveSpecSearchActor} = require('./specSearchActor.cjs');
 const {nativeSpecSearchEnabled} = require('./specSearchLegacyGuard.cjs');
 exports.nativeSpecSearchOperation = onCall(
-  {region: 'us-central1', timeoutSeconds: 120, maxInstances: 5, memory: '256MiB', concurrency: 1},
+  {region: 'us-central1', timeoutSeconds: 120, maxInstances: 5, memory: '256MiB', cpu: 'gcf_gen1', concurrency: 1},
   createNativeSpecSearchOperation({
     db: admin.firestore(),
     resolveActor: request => resolveSpecSearchActor({request, auth: admin.auth()}),

@@ -11,7 +11,7 @@ test('actual callable export uses current Firebase identity, bounded runtime and
  const source=fs.readFileSync(require.resolve('./index.js'),'utf8'),start=source.indexOf('// Native specification search callable'),end=source.indexOf('// end nativeSpecSearchOperation',start);
  assert.ok(start>=0&&end>start,'existing client callable must actually be exported');
  let deps,options;const auth={synthetic:true},db={synthetic:true},context={exports:{},process:{env:{}},admin:{firestore:()=>db,auth:()=>auth},onCall:(opts,handler)=>{options=opts;return handler;},require:name=>name==='./nativeSpecSearchOperations.cjs'?{createNativeSpecSearchOperation:d=>{deps=d;return ()=>{};}}:name==='./specSearchActor.cjs'?{resolveSpecSearchActor:async input=>input}:require(name),fetch:async()=>{throw Error('no live provider');}};
- vm.runInNewContext(source.slice(start,end),context);assert.equal(typeof context.exports.nativeSpecSearchOperation,'function');assert.equal(deps.db,db);assert.equal(deps.enabled(),false);assert.equal(options.timeoutSeconds,120);assert.equal(options.concurrency,1);
+ vm.runInNewContext(source.slice(start,end),context);assert.equal(typeof context.exports.nativeSpecSearchOperation,'function');assert.equal(deps.db,db);assert.equal(deps.enabled(),false);assert.equal(options.timeoutSeconds,120);assert.equal(options.concurrency,1);assert.equal(options.cpu,'gcf_gen1');
  Object.assign(context.process.env,{BOM_MATERIAL_MUTATIONS_ENABLED:'true',BOM_NATIVE_MATERIAL_MUTATIONS_ENABLED:'true',BOM_NATIVE_SPEC_SEARCH_ENABLED:'true'});assert.equal(deps.enabled(),true);
  return deps.resolveActor({auth:{uid:'synthetic'}}).then(input=>assert.equal(input.auth,auth));
 });
