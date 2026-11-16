@@ -47,6 +47,7 @@ test('stale SDK project cannot remove baseline metadata or original milestone da
  const ref=doc(client(),'projects/P'),stale=(await getDoc(ref)).data();await issue({kind:'baseline_lock'});await assertFails(setDoc(ref,stale));assert.equal((await db.doc('projects/P').get()).data().isBaselined,true);assert.equal((await db.doc('projects/P/milestones/one').get()).data().originalPlannedEndDate,'2026-11-01');
 });
 test('native deadline plus history cannot be rolled back by a stale original SDK project save',async()=>{
+ await db.doc('pulseRuntimeControl/cutover').update({projectClientWritesFenced:true});
  await db.doc('projects/P').update({isBaselined:true,originalDeadline:'2026-12-20'});const ref=doc(client(),'projects/P'),stale=(await getDoc(ref)).data(),opening=await projectCall();
  const saved=await projectCall({operation:'command',expected_version:opening.version,operation_id:'deadline',command:{kind:'metadata',patch:{deadline:'2027-01-03'},delay:{reason:'Customer approved the later delivery date',attribution:'external-client'}}});assert.equal(saved.ok,true);await assertFails(setDoc(ref,stale));
  assert.equal((await db.doc('projects/P').get()).data().deadline,'2027-01-03');const logs=await db.collection('projects/P/delayLogs').get();assert.equal(logs.docs[0].data().newDate,'2027-01-03');

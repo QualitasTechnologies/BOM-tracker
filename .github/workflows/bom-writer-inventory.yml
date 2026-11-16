@@ -106,5 +106,9 @@ jobs:
         run: npx --yes firebase-tools@14.9.0 emulators:exec --project demo-bom-native-security --config firebase.material-security-test.json --only firestore "npm --prefix tests/security run test:material-fences"
         env:
           FIRESTORE_RULES_PATH: firestore.material-fence.rules
+      - name: Verify staged project writer fence
+        run: npx --yes firebase-tools@14.9.0 emulators:exec --project demo-bom-native-security --config firebase.project-security-test.json --only firestore "npm --prefix tests/security run test:project-fences"
+        env:
+          PROJECT_RULES_PATH: firestore.project-fence.rules
       - name: Verify member PO creation transactions
         run: npx --yes firebase-tools@14.9.0 emulators:exec --project demo-po-create-repair --config firebase.po-emulator.json --only firestore "node --test functions/legacyPOCreation.emulator.test.cjs"

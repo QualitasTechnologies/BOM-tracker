@@ -282,3 +282,11 @@ test('a legacy receipt with no recorded categories fails closed for scoped actor
   const f = fixture({ native: true }); const w = f.writes.command(); await w.call(w.body); dropReceiptField(f, 'op-command', 'affected_categories');
   assert.equal((await w.call({ ...w.body, resolve_only: true })).body.error, 'material_forbidden');
 });
+
+test('the root project fence blocks privileged legacy creation while native creation and replay still work',async()=>{
+ for(const native of [false,true]){
+  const f=fixture({native});f.docs.set('pulseRuntimeControl/cutover',{data:{mode:'coexist',projectClientWritesFenced:true},tick:2});
+  const create=f.writes.create();const result=await create.call(create.body);assert.equal(result.body.ok,native);
+  if(!native){assert.equal(result.body.error,'project_read_only');assert.equal(f.docs.has('projects/NEW'),false);}else{assert.equal(f.docs.has('pulseMaterialCutovers/NEW'),true);f.setMode('read_only');assert.deepEqual((await create.call(create.body)).body,result.body);}
+ }
+});

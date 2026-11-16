@@ -81,6 +81,13 @@ service cloud.firestore {
     }
     // END schedule writer fence
 
+    // BEGIN project writer fence
+    function projectClientWritesFenced() {
+      return exists(/databases/$(database)/documents/pulseRuntimeControl/cutover)
+        && get(/databases/$(database)/documents/pulseRuntimeControl/cutover).data.get('projectClientWritesFenced', false) == true;
+    }
+    // END project writer fence
+
     function purchaseOrderPostSendStatus(status) {
       return status in ['sent', 'acknowledged', 'partially-received', 'completed', 'cancelled'];
     }
@@ -196,11 +203,13 @@ service cloud.firestore {
             || request.auth.uid in resource.data.memberIds);
 
       allow create: if request.auth != null
+        && !projectClientWritesFenced()
         && request.auth.token.status == 'approved'
         && (request.auth.token.role == 'admin'
             || request.auth.uid in request.resource.data.memberIds);
 
       allow update: if request.auth != null
+        && !projectClientWritesFenced()
         && request.auth.token.status == 'approved'
         && (!scheduleClientWritesFenced() || projectScheduleFieldsUnchanged())
         && (!projectStatusClientWritesFenced()
@@ -210,6 +219,7 @@ service cloud.firestore {
               && projectMembershipFieldsUnchanged()));
 
       allow delete: if request.auth != null
+        && !projectClientWritesFenced()
         && request.auth.token.role == 'admin'
         && !scheduleClientWritesFenced();
 

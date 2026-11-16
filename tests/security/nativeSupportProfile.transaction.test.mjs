@@ -27,6 +27,7 @@ before(async () => {
 });
 beforeEach(async () => {
   await env.clearFirestore();
+  await db.doc('pulseRuntimeControl/cutover').set({projectClientWritesFenced:true});
   // Firestore stores timestamps at microsecond precision. Verify the persisted
   // opening first so storage normalization cannot be mistaken for a merge loss.
   const raw = { at: new Timestamp(12, 34000), ref: db.doc('legacy/kept'), point: new GeoPoint(12, 34), bytes: Buffer.from([1, 2]) };

@@ -180,7 +180,9 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
   const modeAllowsWrites = snapshot => writeModes.includes(modeOf(snapshot));
   // A paused or read-only runtime still replays and cancels receipts; it never commits a new business write.
   const assertWritable = async (transaction,projectId,{creating=false}={}) => {
-    if(!modeAllowsWrites(await transaction.get(cutoverRef())))throw fault('material_read_only',503);
+    const control=await transaction.get(cutoverRef());
+    if(!modeAllowsWrites(control))throw fault('material_read_only',503);
+    if(creating&&materialChannel==='legacy'&&control.exists&&control.data()?.projectClientWritesFenced===true)throw fault('project_read_only',503);
     const ref=db.collection('pulseMaterialCutovers').doc(projectId),owner=await transaction.get(ref);
     if(creating&&materialChannel==='native'){if(owner.exists)throw fault('project_id_conflict',409);return ref;}
     if(!materialWritesAllowed(owner,materialChannel))throw fault('material_read_only',503);
