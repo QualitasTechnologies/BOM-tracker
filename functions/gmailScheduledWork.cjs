@@ -8,6 +8,13 @@ const millis=value=>value?.toDate?value.toDate().getTime():new Date(value).getTi
 const backfillKey=job=>digest([job.contacts,job.requestedByUid,millis(job.sinceDate)]);
 const syncKey=connection=>digest([connection.status,connection.refreshToken,connection.email,connection.lastHistoryId,connection.connectedAt]);
 const transient=error=>[4,8,10,13,14,429,500,502,503,504,'ABORTED','UNAVAILABLE','DEADLINE_EXCEEDED','email_request_timeout'].includes(error.code)||[429,500,502,503,504].includes(error.status);
+function oldestWorkFirst(docs,prefix){
+  return docs.map((doc,index)=>{
+    const row=doc.data(),recorded=row[prefix+'LastStartedMs'];
+    const fallback=millis(row.updatedAt??row.lastSyncedAt??row.connectedAt??0);
+    return{doc,index,time:Number.isFinite(recorded)?recorded:Number.isFinite(fallback)?fallback:0};
+  }).sort((a,b)=>a.time-b.time||a.index-b.index).map(row=>row.doc);
+}
 
 // One current owner may checkpoint a record. Input changes invalidate the old
 // owner so an operator extending a job or reconnecting Gmail cannot receive a
@@ -18,7 +25,7 @@ async function withLease(options,{ref,prefix,key,active,deadline},action){
   const initial=await db.runTransaction(async tx=>{
     const snap=await tx.get(ref);if(!snap.exists||!active(snap.data()))return null;
     const row=snap.data();if(row[ownerField]&&row[untilField]>now())return null;
-    tx.update(ref,{[ownerField]:owner,[untilField]:deadline+30000});return row;
+    tx.update(ref,{[ownerField]:owner,[untilField]:deadline+30000,[prefix+'LastStartedMs']:now()});return row;
   });
   if(!initial)return{state:'busy'};
   const expected=key(initial);
@@ -119,4 +126,4 @@ function createSyncWorker(input){
     logger.info('Gmail incremental page checkpointed',{uid:connectionRef.id,state:next?'running':'completed'});return{state:next?'running':'completed'};
   });
 }
-module.exports={createBackfillWorker,createSyncWorker,isTransientGmailWorkError:transient};
+module.exports={createBackfillWorker,createSyncWorker,isTransientGmailWorkError:transient,oldestWorkFirst};

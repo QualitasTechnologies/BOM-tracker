@@ -48,7 +48,7 @@ const {
   searchGmailMessageIds,
   getGmailMessageHeaders,
 } = require('./emailIngestion');
-const {createBackfillWorker,createSyncWorker,isTransientGmailWorkError} = require('./gmailScheduledWork.cjs');
+const {createBackfillWorker,createSyncWorker,isTransientGmailWorkError,oldestWorkFirst} = require('./gmailScheduledWork.cjs');
 const {
   extractExternalParticipantsFromHeaders,
   mergeParticipantsIntoAccumulator,
@@ -4273,7 +4273,7 @@ exports.processEmailBackfillJobs = onSchedule(
     const clientSecret = googleOAuthClientSecret.value();
     const geminiApiKey = geminiApiKeySecret.value();
 
-    for (const jobDoc of jobsSnap.docs) {
+    for (const jobDoc of oldestWorkFirst(jobsSnap.docs, 'backfill')) {
       if (Date.now() + 35000 >= deadline) break;
       const projectId = jobDoc.id;
       try {
@@ -4385,7 +4385,7 @@ exports.syncGmailAccounts = onSchedule(
     const clientSecret = googleOAuthClientSecret.value();
     const geminiApiKey = geminiApiKeySecret.value();
 
-    for (const connectionDoc of connectionsSnap.docs) {
+    for (const connectionDoc of oldestWorkFirst(connectionsSnap.docs, 'sync')) {
       if (Date.now() + 35000 >= deadline) break;
       const uid = connectionDoc.id;
       try {
