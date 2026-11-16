@@ -62,7 +62,7 @@ function createBackfillWorker(input){
     if(!connection.exists||connection.data().status!=='connected'){await commit({status:'failed',error:'Gmail account is no longer connected',updatedAt:stamp()});return{state:'failed'};}
     stage('refreshing_token');const {accessToken}=await options.refreshAccessToken({refreshToken:connection.data().refreshToken,clientId,clientSecret,fetchImpl:options.fetchImpl});
     const since=new Date(millis(job.sinceDate));if(!Number.isFinite(since.getTime()))throw fault('invalid_email_backfill_date');
-    const query=options.buildBackfillSearchQuery(batch,since),queryHash=digest(query),sameQuery=job.backfillQueryHash===queryHash;
+    const query=options.buildBackfillSearchQuery(batch,since),queryHash=digest([query,job.requestedByUid,connection.data().email]),sameQuery=job.backfillQueryHash===queryHash;
     let pending=Array.isArray(job.backfillPendingIds)&&sameQuery?[...job.backfillPendingIds]:null,next=job.backfillNextPageToken||null;
     let processed=job.processedCount||0,matched=job.matchedCount||0;
     if(pending===null){
@@ -92,21 +92,22 @@ function createSyncWorker(input){
   const options=dependencies(input),{db,now,getServerTimestamp:stamp,getDeleteField:remove,logger}=options;
   return async({connectionRef,clientId,clientSecret,geminiApiKey,deadline=now()+90000})=>withLease(options,{ref:connectionRef,prefix:'sync',key:syncKey,active:row=>row.status==='connected',deadline},async({initial:connection,commit,stage,hasTime})=>{
     stage('refreshing_token');const {accessToken}=await options.refreshAccessToken({refreshToken:connection.refreshToken,clientId,clientSecret,fetchImpl:options.fetchImpl});
-    let pending=Array.isArray(connection.syncPendingIds)?[...connection.syncPendingIds]:null,next=connection.syncNextPageToken||null,history=connection.syncPendingHistoryId||connection.lastHistoryId;
+    const queueKey=digest([connection.email,connection.connectedAt,connection.lastHistoryId]),sameQueue=connection.syncQueueKey===queueKey;
+    let pending=Array.isArray(connection.syncPendingIds)&&sameQueue?[...connection.syncPendingIds]:null,next=sameQueue?connection.syncNextPageToken||null:null,history=sameQueue?connection.syncPendingHistoryId||connection.lastHistoryId:connection.lastHistoryId;
     if(pending===null){
       if(!hasTime())return{state:'pending'};stage('listing_history');
-      const page=await options.listNewGmailMessageIds({accessToken,startHistoryId:connection.lastHistoryId,pageToken:connection.syncPageToken||undefined,maxPages:1,fetchImpl:options.fetchImpl});
+      const page=await options.listNewGmailMessageIds({accessToken,startHistoryId:connection.lastHistoryId,pageToken:sameQueue?connection.syncPageToken||undefined:undefined,maxPages:1,fetchImpl:options.fetchImpl});
       if(page.historyExpired){
         // Preserve the existing expired-history policy; never invent a cursor on
         // a failed profile fetch. The separate historical backfill remains queued.
         const response=await fetchJsonResponse(options.fetchImpl,'https://gmail.googleapis.com/gmail/v1/users/me/profile',{headers:{Authorization:`Bearer ${accessToken}`}});
         if(!response.ok)throw Object.assign(Error('Gmail profile re-anchor failed'),{status:response.status});
         const profile=await response.json();if(!/^\d+$/.test(String(profile.historyId||'')))throw fault('gmail_history_cursor_invalid');
-        await commit({lastHistoryId:String(profile.historyId),lastSyncedAt:stamp(),syncPageToken:remove(),syncPendingIds:remove(),syncNextPageToken:remove(),syncPendingHistoryId:remove()});
+        await commit({lastHistoryId:String(profile.historyId),lastSyncedAt:stamp(),syncPageToken:remove(),syncPendingIds:remove(),syncNextPageToken:remove(),syncPendingHistoryId:remove(),syncQueueKey:remove()});
         logger.warn('syncGmailAccounts: history expired, re-anchored',{uid:connectionRef.id});return{state:'reanchored'};
       }
       pending=[...page.messageIds];next=page.nextPageToken||null;history=page.newHistoryId||connection.lastHistoryId;
-      await commit({syncPendingIds:pending,syncNextPageToken:next,syncPendingHistoryId:history});
+      await commit({syncPendingIds:pending,syncNextPageToken:next,syncPendingHistoryId:history,syncQueueKey:queueKey});
     }
     while(pending.length){
       if(!hasTime())return{state:'pending'};stage('processing_message',{messageId:pending[0],remaining:pending.length});
@@ -114,7 +115,7 @@ function createSyncWorker(input){
       const rest=pending.slice(1);await commit({syncPendingIds:rest,lastWorkerError:remove()});pending=rest;
     }
     const fields={syncPendingIds:remove(),syncNextPageToken:remove(),syncPendingHistoryId:remove(),lastWorkerError:remove()};
-    await commit(next?{...fields,syncPageToken:next}:{...fields,syncPageToken:remove(),lastHistoryId:history,lastSyncedAt:stamp()});
+    await commit(next?{...fields,syncPageToken:next}:{...fields,syncPageToken:remove(),syncQueueKey:remove(),lastHistoryId:history,lastSyncedAt:stamp()});
     logger.info('Gmail incremental page checkpointed',{uid:connectionRef.id,state:next?'running':'completed'});return{state:next?'running':'completed'};
   });
 }

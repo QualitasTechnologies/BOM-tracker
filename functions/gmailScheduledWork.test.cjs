@@ -54,4 +54,10 @@ test('completion retains contacts already backfilled by another historical job',
  const f=fixture();f.rows.get('projects/P').backfilledContactEmails=['older@example.test'];assert.equal((await f.backfill()).state,'completed');
  assert.deepEqual(f.rows.get('projects/P').backfilledContactEmails,['older@example.test','client@example.test']);
 });
+test('reconnecting between ticks cannot replay old pending IDs or roll back the new history anchor',async()=>{
+ let slow=true;const f=fixture({process:({advance})=>{if(slow){advance(80000);slow=false;}}});
+ assert.equal((await f.sync()).state,'pending');const connection=f.rows.get('gmailConnections/user');connection.email='other@example.test';connection.connectedAt=new Date(1);connection.lastHistoryId='50';
+ f.options.history=()=>({messageIds:['fresh'],newHistoryId:'60',nextPageToken:null});
+ assert.equal((await f.sync()).state,'completed');assert.deepEqual(f.calls.map(c=>c.messageId),['a','fresh']);assert.equal(f.rows.get('gmailConnections/user').lastHistoryId,'60');
+});
 module.exports={fixture};
