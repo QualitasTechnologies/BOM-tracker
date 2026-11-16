@@ -1,5 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict');
-const {createBackfillWorker,createSyncWorker}=require('./gmailScheduledWork.cjs');
+const {createBackfillWorker,createSyncWorker,oldestWorkFirst}=require('./gmailScheduledWork.cjs');
 function fixture(options={}){
  let clock=0,failReply=false;const rows=new Map([
   ['emailBackfillJobs/P',{status:'pending',contacts:['client@example.test'],completedContacts:[],sinceDate:new Date('2025-01-01'),requestedByUid:'user',processedCount:0,matchedCount:0}],
@@ -61,3 +61,16 @@ test('reconnecting between ticks cannot replay old pending IDs or roll back the 
  assert.equal((await f.sync()).state,'completed');assert.deepEqual(f.calls.map(c=>c.messageId),['a','fresh']);assert.equal(f.rows.get('gmailConnections/user').lastHistoryId,'60');
 });
 module.exports={fixture};
+test('bounded passes give the oldest unattempted job a turn instead of restarting the largest job first',()=>{
+ const docs=[['large',{updatedAt:new Date(80000)}],['partial',{updatedAt:new Date(40000)}],['waiting',{updatedAt:new Date(1)}]].map(([id,row])=>({id,data:()=>row}));
+ assert.deepEqual(oldestWorkFirst(docs,'backfill').map(d=>d.id),['waiting','partial','large']);assert.deepEqual(docs.map(d=>d.id),['large','partial','waiting']);
+ const attempted=[{id:'old',data:()=>({syncLastStartedMs:10,updatedAt:new Date(1000)})},{id:'new',data:()=>({syncLastStartedMs:20,updatedAt:new Date(0)})}];
+ assert.deepEqual(oldestWorkFirst(attempted,'sync').map(d=>d.id),['old','new']);
+});
+test('the actual backfill scheduled callback chooses the oldest waiting job before its shared budget is spent',async()=>{
+ const fs=require('node:fs'),vm=require('node:vm'),source=fs.readFileSync(require.resolve('./index.js'),'utf8');
+ const start=source.indexOf('exports.processEmailBackfillJobs = onSchedule('),end=source.indexOf('async function processOneEmailBackfillJob(',start),seen=[];let clock=0;
+ const docs=[['large',80000],['partial',40000],['waiting',1]].map(([id,age])=>({id,ref:{},data:()=>({updatedAt:new Date(age)})}));
+ const db={collection:()=>({where:()=>({get:async()=>({empty:false,docs})})})},secret={value:()=> 'synthetic'},context={exports:{},onSchedule:(_options,handler)=>handler,admin:{firestore:()=>db},Date:{now:()=>clock},oldestWorkFirst,googleOAuthClientId:secret,googleOAuthClientSecret:secret,geminiApiKeySecret:secret,logger:{warn(){},error(){}},isTransientGmailWorkError:()=>false,processOneEmailBackfillJob:async({projectId})=>{seen.push(projectId);clock=80000;}};
+ vm.runInNewContext(source.slice(start,end),context);await context.exports.processEmailBackfillJobs();assert.deepEqual(seen,['waiting']);
+});
