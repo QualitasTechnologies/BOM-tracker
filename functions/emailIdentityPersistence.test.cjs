@@ -6,6 +6,7 @@ const path = require('node:path');
 const ingestion = require('./emailIngestion');
 const matching = require('./fathomMeeting');
 const discovery = require('./contactDiscovery');
+const scheduled = require('./gmailScheduledWork.cjs');
 
 // Run the production ingestion functions with in-memory storage and HTTP.
 // Loading index.js directly would initialize deployed Firebase handlers.
@@ -23,10 +24,12 @@ const code = sections.map(([start, end]) => {
   return normalized.slice(0, endOffset);
 }).join('\n');
 
-function fixture({ projectIds = ['project-1'], header = '<Raw.Case@provider.example>', mailbox = ' Connected@QualitasTech.com ' } = {}) {
+function fixture({ projectIds = ['project-1'], header = '<Raw.Case@provider.example>', mailbox = ' Connected@QualitasTech.com ', missingFirst = false } = {}) {
   const rows = new Map([
     ['stakeholderIndex/client@outside.example', { projectIds }],
     ['gmailConnections/user-1', { status: 'connected', email: mailbox, refreshToken: 'refresh-test' }],
+    ['projects/project-1', { projectId: 'project-1' }],
+    ['emailBackfillJobs/job-1', { status: 'pending', requestedByUid: 'user-1', contacts: ['client@outside.example'], sinceDate: new Date('2025-01-01') }],
   ]);
   const ref = (key) => ({
     id: key.split('/').at(-1),
@@ -34,7 +37,10 @@ function fixture({ projectIds = ['project-1'], header = '<Raw.Case@provider.exam
     get: async () => ({ exists: rows.has(key), data: () => rows.get(key) }),
     set: async (data, options) => rows.set(key, options?.merge ? { ...rows.get(key), ...data } : data),
   });
-  const db = { collection: (name) => ({ doc: (id) => ref(`${name}/${id}`) }) };
+  const db = { collection: (name) => ({ doc: (id) => ref(`${name}/${id}`) }), runTransaction: async fn => {
+    const writes = []; const result = await fn({get: r => r.get(), update: (r, fields) => writes.push(() => r.set(fields, {merge: true}))});
+    for (const write of writes) await write(); return result;
+  } };
   const resource = {
     id: 'gmail-1', threadId: 'thread-1', internalDate: '1735732800000',
     payload: {
@@ -52,13 +58,14 @@ function fixture({ projectIds = ['project-1'], header = '<Raw.Case@provider.exam
       return { ok: true, json: async () => ({ access_token: 'access-test' }) };
     }
     assert.equal(options.headers.Authorization, 'Bearer access-test');
+    if (String(url).includes('/messages/deleted?')) return { ok: false, status: 404 };
     if (String(url).includes('/messages/gmail-1?')) return { ok: true, json: async () => resource };
-    if (String(url).includes('/history?')) return { ok: true, json: async () => ({ historyId: '11', history: [{ messagesAdded: [{ message: { id: 'gmail-1' } }] }] }) };
+    if (String(url).includes('/history?')) return { ok: true, json: async () => ({ historyId: '11', history: [{ messagesAdded: [...(missingFirst ? [{ message: { id: 'deleted' } }] : []), { message: { id: 'gmail-1' } }] }] }) };
     if (String(url).includes('/messages?')) return { ok: true, json: async () => ({ messages: [{ id: 'gmail-1' }] }) };
     throw new Error(`Unexpected HTTP call: ${url}`);
   };
   const context = vm.createContext({
-    ...ingestion, ...matching, ...discovery, fetch,
+    ...ingestion, ...matching, ...discovery, ...scheduled, fetch,
     admin: { firestore: { FieldValue: { serverTimestamp: () => 'timestamp', delete: () => null } } },
     logger: { info() {}, warn() {} }, BACKFILL_CONTACTS_PER_BATCH: 25,
   });
@@ -67,6 +74,14 @@ function fixture({ projectIds = ['project-1'], header = '<Raw.Case@provider.exam
   const backfill = () => context.processOneEmailBackfillJob({ db, projectId: 'project-1', jobRef: ref('emailBackfillJobs/job-1'), job: { requestedByUid: 'user-1', contacts: ['client@outside.example'], sinceDate: { toDate: () => new Date('2025-01-01') } }, clientId: 'test', clientSecret: 'test' });
   return { rows, sync, backfill };
 }
+
+test('a missing history message does not pin the account cursor or permanently exclude later backfill', async () => {
+  const { rows, sync } = fixture({ missingFirst: true });
+  await sync();
+  assert.equal(rows.get('gmailConnections/user-1').lastHistoryId, '11');
+  assert.equal(rows.get('projects/project-1/emails/gmail-1').gmailMessageId, 'gmail-1');
+  assert.equal(rows.has('gmailIngestedMessages/deleted'), false);
+});
 
 for (const projectIds of [['project-1'], []]) {
   test(`live ingestion preserves raw RFC id and connected mailbox on ${projectIds.length ? 'project' : 'triage'} email`, async () => {

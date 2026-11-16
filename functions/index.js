@@ -39,7 +39,6 @@ const {
 const {
   exchangeAuthCodeForTokens,
   refreshAccessToken,
-  listNewGmailMessageIds,
   getGmailMessage,
   parseGmailMessage,
   hasExternalParticipant,
@@ -49,13 +48,12 @@ const {
   searchGmailMessageIds,
   getGmailMessageHeaders,
 } = require('./emailIngestion');
+const {createBackfillWorker,createSyncWorker,isTransientGmailWorkError} = require('./gmailScheduledWork.cjs');
 const {
   extractExternalParticipantsFromHeaders,
   mergeParticipantsIntoAccumulator,
   buildContactDirectory,
-  buildBackfillSearchQuery,
   formatGmailDate,
-  findUnresolvedContacts,
   buildBackfillJobFields,
 } = require('./contactDiscovery');
 
@@ -4255,17 +4253,18 @@ exports.addProjectBackfillStakeholders = onCall(async (request) => {
   return { queuedContactCount: pendingContactEmails.length };
 });
 
-const BACKFILL_CONTACTS_PER_BATCH = 25;
-
 /** Advance every pending/running email backfill job by a bounded number of Gmail search results. */
 exports.processEmailBackfillJobs = onSchedule(
   {
     schedule: 'every 10 minutes',
     secrets: [googleOAuthClientId, googleOAuthClientSecret, geminiApiKeySecret],
-    timeoutSeconds: 300,
+    timeoutSeconds: 180,
     memory: '512MiB',
+    maxInstances: 1,
+    concurrency: 1,
   },
   async () => {
+    const deadline = Date.now() + 90000;
     const db = admin.firestore();
     const jobsSnap = await db.collection('emailBackfillJobs').where('status', 'in', ['pending', 'running']).get();
     if (jobsSnap.empty) return;
@@ -4275,10 +4274,15 @@ exports.processEmailBackfillJobs = onSchedule(
     const geminiApiKey = geminiApiKeySecret.value();
 
     for (const jobDoc of jobsSnap.docs) {
+      if (Date.now() + 35000 >= deadline) break;
       const projectId = jobDoc.id;
       try {
-        await processOneEmailBackfillJob({ db, projectId, jobRef: jobDoc.ref, job: jobDoc.data(), clientId, clientSecret, geminiApiKey });
+        await processOneEmailBackfillJob({ db, projectId, jobRef: jobDoc.ref, clientId, clientSecret, geminiApiKey, deadline });
       } catch (error) {
+        if (isTransientGmailWorkError(error)) {
+          logger.warn('Email backfill will retry after a temporary service error', { projectId });
+          continue;
+        }
         logger.error('processEmailBackfillJobs: job failed', { projectId, error: error.message });
         await jobDoc.ref.set({ status: 'failed', error: error.message }, { merge: true });
       }
@@ -4286,89 +4290,12 @@ exports.processEmailBackfillJobs = onSchedule(
   }
 );
 
-async function processOneEmailBackfillJob({ db, projectId, jobRef, job, clientId, clientSecret, geminiApiKey }) {
-  const completed = new Set(job.completedContacts || []);
-  const allContacts = job.contacts || [];
-  const remaining = allContacts.filter((email) => !completed.has(email));
-
-  if (remaining.length === 0) {
-    await jobRef.set({ status: 'completed', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
-    await db.collection('projects').doc(projectId).set({ backfilledContactEmails: allContacts }, { merge: true });
-    return;
-  }
-
-  const batch = remaining.slice(0, BACKFILL_CONTACTS_PER_BATCH);
-
-  // Safety net before spending any Gmail API calls this tick: confirm every
-  // contact in this tick's batch actually resolves to this project via
-  // stakeholderIndex. addProjectBackfillStakeholders writes these contacts
-  // into project.externalRecipients synchronously, but stakeholderIndex is
-  // populated by an async Firestore trigger that isn't guaranteed to have
-  // caught up yet — see findUnresolvedContacts in contactDiscovery.js for why
-  // that matters (misrouted messages can never be recaptured). If any
-  // contact isn't resolved yet, defer this tick without touching pageToken/
-  // completedContacts/processedCount so it's retried once the index catches up.
-  const indexSnaps = await Promise.all(batch.map((email) => db.collection('stakeholderIndex').doc(email).get()));
-  const emailToProjectIds = Object.fromEntries(
-    batch.map((email, i) => [email.toLowerCase().trim(), indexSnaps[i].exists ? (indexSnaps[i].data().projectIds || []) : []])
-  );
-  const unresolved = findUnresolvedContacts(batch, projectId, emailToProjectIds);
-  if (unresolved.length > 0) {
-    logger.warn('processEmailBackfillJobs: stakeholderIndex not yet caught up, deferring tick', { projectId, unresolved });
-    await jobRef.set({ status: 'pending', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
-    return;
-  }
-
-  const connectionSnap = await db.collection('gmailConnections').doc(job.requestedByUid).get();
-  if (!connectionSnap.exists || connectionSnap.data().status !== 'connected') {
-    await jobRef.set({ status: 'failed', error: 'Gmail account is no longer connected' }, { merge: true });
-    return;
-  }
-  const { accessToken } = await refreshAccessToken({
-    refreshToken: connectionSnap.data().refreshToken, clientId, clientSecret, fetchImpl: fetch,
-  });
-
-  const query = buildBackfillSearchQuery(batch, job.sinceDate.toDate());
-  let pageToken = job.pageToken || undefined;
-  let processedCount = job.processedCount || 0;
-  let matchedCount = job.matchedCount || 0;
-
-  // One page (up to 50 messages, each involving a full Gemini sanitize call)
-  // per tick — the job resumes from pageToken on the next scheduled run.
-  const { messageIds, nextPageToken } = await searchGmailMessageIds({ accessToken, query, pageToken, fetchImpl: fetch });
-  for (const messageId of messageIds) {
-    const matched = await processGmailMessage({ db, accessToken, messageId, geminiApiKey, mailboxEmail: connectionSnap.data().email });
-    processedCount += 1;
-    if (matched) matchedCount += 1;
-  }
-  pageToken = nextPageToken;
-
-  if (pageToken) {
-    await jobRef.set(
-      { status: 'running', pageToken, processedCount, matchedCount, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
-      { merge: true }
-    );
-    return;
-  }
-
-  // This batch of contacts is fully searched — mark them done and clear the
-  // page cursor so the next tick starts the next batch from scratch.
-  const newCompleted = [...completed, ...batch];
-  const allDone = newCompleted.length >= allContacts.length;
-  await jobRef.set(
-    {
-      status: allDone ? 'completed' : 'running',
-      completedContacts: newCompleted,
-      pageToken: admin.firestore.FieldValue.delete(),
-      processedCount,
-      matchedCount,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
-  if (allDone) {
-    await db.collection('projects').doc(projectId).set({ backfilledContactEmails: allContacts }, { merge: true });
-  }
+async function processOneEmailBackfillJob({ db, projectId, jobRef, clientId, clientSecret, geminiApiKey, deadline }) {
+  return createBackfillWorker({
+    db, processGmailMessage, fetchImpl: fetch, logger,
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    getDeleteField: () => admin.firestore.FieldValue.delete(),
+  })({ projectId, jobRef, clientId, clientSecret, geminiApiKey, deadline });
 }
 
 /**
@@ -4443,10 +4370,13 @@ exports.syncGmailAccounts = onSchedule(
   {
     schedule: 'every 10 minutes',
     secrets: [googleOAuthClientId, googleOAuthClientSecret, geminiApiKeySecret],
-    timeoutSeconds: 300,
+    timeoutSeconds: 180,
     memory: '512MiB',
+    maxInstances: 1,
+    concurrency: 1,
   },
   async () => {
+    const deadline = Date.now() + 90000;
     const db = admin.firestore();
     const connectionsSnap = await db.collection('gmailConnections').where('status', '==', 'connected').get();
     if (connectionsSnap.empty) return;
@@ -4456,15 +4386,16 @@ exports.syncGmailAccounts = onSchedule(
     const geminiApiKey = geminiApiKeySecret.value();
 
     for (const connectionDoc of connectionsSnap.docs) {
+      if (Date.now() + 35000 >= deadline) break;
       const uid = connectionDoc.id;
       try {
         await syncOneGmailAccount({
           db,
           connectionRef: connectionDoc.ref,
-          connection: connectionDoc.data(),
           clientId,
           clientSecret,
           geminiApiKey,
+          deadline,
         });
       } catch (error) {
         logger.error('syncGmailAccounts: account sync failed', { uid, error: error.message });
@@ -4476,54 +4407,12 @@ exports.syncGmailAccounts = onSchedule(
   }
 );
 
-async function syncOneGmailAccount({ db, connectionRef, connection, clientId, clientSecret, geminiApiKey }) {
-  const { accessToken } = await refreshAccessToken({
-    refreshToken: connection.refreshToken,
-    clientId,
-    clientSecret,
-    fetchImpl: fetch,
-  });
-
-  const { messageIds, newHistoryId, historyExpired } = await listNewGmailMessageIds({
-    accessToken,
-    startHistoryId: connection.lastHistoryId,
-    fetchImpl: fetch,
-  });
-
-  if (historyExpired) {
-    // Gmail's history log only retains ~7 days. Recovering the gap would mean
-    // backfilling, which is explicitly out of scope (spec Non-goals) — just
-    // re-anchor to "now" and resume incremental sync from there.
-    const profileResponse = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!profileResponse.ok) {
-      // Don't touch lastHistoryId on a failed re-anchor fetch — writing a bad
-      // value here (e.g. "undefined") would permanently break this account's
-      // sync. Leave the cursor as-is and retry the whole sync next cycle.
-      logger.warn('syncGmailAccounts: profile re-anchor fetch failed, will retry next cycle', {
-        uid: connectionRef.id,
-        status: profileResponse.status,
-      });
-      return;
-    }
-    const profile = await profileResponse.json();
-    await connectionRef.set(
-      { lastHistoryId: String(profile.historyId), lastSyncedAt: admin.firestore.FieldValue.serverTimestamp() },
-      { merge: true }
-    );
-    logger.warn('syncGmailAccounts: history expired, re-anchored', { uid: connectionRef.id });
-    return;
-  }
-
-  for (const messageId of messageIds) {
-    await processGmailMessage({ db, accessToken, messageId, geminiApiKey, mailboxEmail: connection.email });
-  }
-
-  await connectionRef.set(
-    { lastHistoryId: newHistoryId, lastSyncedAt: admin.firestore.FieldValue.serverTimestamp() },
-    { merge: true }
-  );
+async function syncOneGmailAccount({ db, connectionRef, clientId, clientSecret, geminiApiKey, deadline }) {
+  return createSyncWorker({
+    db, processGmailMessage, fetchImpl: fetch, logger,
+    getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    getDeleteField: () => admin.firestore.FieldValue.delete(),
+  })({ connectionRef, clientId, clientSecret, geminiApiKey, deadline });
 }
 
 async function processGmailMessage({ db, accessToken, messageId, geminiApiKey, mailboxEmail }) {
@@ -4532,6 +4421,10 @@ async function processGmailMessage({ db, accessToken, messageId, geminiApiKey, m
   if (dedupSnap.exists) return false;
 
   const resource = await getGmailMessage({ accessToken, messageId, fetchImpl: fetch });
+  if (resource === null) {
+    logger.warn('Gmail message unavailable; continuing without a permanent exclusion', { messageId });
+    return false;
+  }
 
   const labels = new Set(resource.labelIds || []);
   if (labels.has('DRAFT') || labels.has('SPAM') || labels.has('TRASH') || labels.has('CHAT')) {
