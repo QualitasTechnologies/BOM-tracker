@@ -19,6 +19,14 @@ const project = (snap, id) => {
 // All metadata, audit and recovery writes share one transaction. This factory is
 // callable and its original Settings client both remain independently default-off.
 function createNativeBillingEntityOperations({ db, auth, enabled = false, bucketName, getServerTimestamp }) {
+  // Receipts and original versions make a fresh closed-handle transaction safe;
+  // this metadata controller performs no provider or Storage writes.
+  const transact = async (work, options) => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await db.runTransaction(work, options); }
+      catch (error) { if (attempt >= 2 || error.code !== 3 || !/^(?:3 INVALID_ARGUMENT: )?Transaction is invalid or closed\.$/.test(String(error.message || '').trim())) throw error; }
+    }
+  };
   const ref = id => db.collection(id === 'company' ? 'settings' : 'billingEntities').doc(id);
   const gate = control => {
     if (!['coexist', 'pulse_only', 'read_only'].includes(control.mode)) return 'billing_entity_read_only';
@@ -43,7 +51,7 @@ function createNativeBillingEntityOperations({ db, auth, enabled = false, bucket
       const recheck = async () => {
         if (identity(await currentNativeActor(auth, request)) !== initialIdentity) throw fault('actor_session_changed');
       };
-      return await db.runTransaction(async tx => {
+      return await transact(async tx => {
         const control = (await tx.get(db.collection('pulseRuntimeControl').doc('cutover'))).data() || {};
         const fresh = await currentNativeActor(auth, request);
         if (identity(fresh) !== initialIdentity) throw fault('actor_session_changed');
