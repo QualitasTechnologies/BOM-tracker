@@ -40,6 +40,7 @@ const {
   exchangeAuthCodeForTokens,
   refreshAccessToken,
   getGmailMessage,
+  getGlobalMessageDedupRefs,
   parseGmailMessage,
   hasExternalParticipant,
   getExternalParticipantEmails,
@@ -4392,12 +4393,11 @@ async function processGmailMessage({ db, accessToken, messageId, geminiApiKey, m
   // connected mailbox on the same thread. Dedup on the globally-unique
   // RFC-822 Message-ID (falling back to this mailbox's own Gmail id if that
   // header is somehow absent) so the same email isn't filed twice.
-  const globalMessageKey = String(parsed.messageIdHeader || parsed.gmailMessageId)
-    .trim()
-    .replace(/^<|>$/g, '');
-  const globalDedupRef = db.collection('gmailIngestedMessageIds').doc(globalMessageKey);
-  const globalDedupSnap = await globalDedupRef.get();
-  if (globalDedupSnap.exists) {
+  const globalMessageKey = String(parsed.messageIdHeader || '').trim().replace(/^<|>$/g, '') || parsed.gmailMessageId;
+  const globalDedupRefs = getGlobalMessageDedupRefs(db, globalMessageKey);
+  const globalDedupRef = globalDedupRefs[0];
+  const globalDedupSnapshots = await Promise.all(globalDedupRefs.map(ref => ref.get()));
+  if (globalDedupSnapshots.some(snap => snap.exists)) {
     await dedupRef.set({ ingestedAt: admin.firestore.FieldValue.serverTimestamp(), captured: false });
     return false;
   }
