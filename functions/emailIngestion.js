@@ -1,3 +1,4 @@
+const {createHash} = require('node:crypto');
 const {fetchJsonResponse} = require('./emailNetwork.cjs');
 // functions/emailIngestion.js
 // Email capture: Gmail OAuth polling, capture-scope guard, message parsing,
@@ -399,7 +400,22 @@ async function getGmailMessageHeaders({ accessToken, messageId, fetchImpl }) {
   return (payload.payload && payload.payload.headers) || [];
 }
 
+// Preserve existing root marker IDs. Unsafe RFC Message-IDs use an isolated
+// subcollection so encoded IDs cannot collide with a literal legacy marker.
+function getGlobalMessageDedupRefs(db, key) {
+  const validId = id => id && id !== '.' && id !== '..' && !/^__.*__$/.test(id) && Buffer.byteLength(id, 'utf8') <= 1500;
+  const collection = db.collection('gmailIngestedMessageIds');
+  if (!key.includes('/') && validId(key)) return [collection.doc(key)];
+  const refs = [collection.doc('encoded-message-ids').collection('entries').doc(createHash('sha256').update(key).digest('hex'))];
+  // An odd number of components was accepted by the old SDK as a nested path.
+  // Read those old markers too, without creating any more of them.
+  const parts = key.split('/');
+  if (parts.length > 1 && parts.length % 2 === 1 && parts.every(validId)) refs.push(collection.doc(key));
+  return refs;
+}
+
 module.exports = {
+  getGlobalMessageDedupRefs,
   INTERNAL_MAIL_DOMAINS,
   PERSONAL_MAIL_DOMAINS,
   getEmailDomain,
