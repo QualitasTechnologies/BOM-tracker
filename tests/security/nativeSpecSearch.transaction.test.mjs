@@ -86,3 +86,26 @@ test('real recovery rereads the current runtime after opening and cannot commit 
  const guarded=handler(async()=>{throw Error('provider must not be called during recovery');},racing);assert.equal((await invoke(guarded)).state,'outcome_unknown');assert.equal(armed,false);assert.equal(calls,1);assert.equal((await db.doc('projects/P/bom/data').get()).data().categories[0].items[0].specificationUrl,null);assert.equal((await db.collection('pulseSpecSearchAudit/'+receiptKey+'/reconciliations').get()).size,0);
  await db.doc('pulseRuntimeControl/cutover').set({mode:'coexist'});assert.equal((await invoke(fn)).state,'completed');assert.equal(calls,1);
 });
+
+test('real fresh provider result cannot overwrite a manual specification selected during dispatch',async()=>{
+ let calls=0;const bomRef=db.doc('projects/P/bom/data');
+ const fn=handler(async()=>{calls++;const latest=(await bomRef.get()).data();latest.categories[0].items[0].linkedSpecDocumentId='manual-sheet';latest.categories[0].items[0].quantity=9;await bomRef.update({categories:latest.categories});return response();});
+ const result=await invoke(fn);assert.equal(result.state,'conflict');assert.equal(calls,1);
+ const item=(await bomRef.get()).data().categories[0].items[0];assert.equal(item.linkedSpecDocumentId,'manual-sheet');assert.equal(item.quantity,9);assert.equal(item.specificationUrl,null);
+ const receipt=(await db.doc('pulseSpecSearchReceipts/'+receiptKey).get()).data();assert.equal(receipt.searched_item_snapshot_version,2);assert.equal(receipt.searched_item_snapshot.linkedSpecDocumentId,null);assert.equal(receipt.provider_specification_url,url);
+ assert.deepEqual(await invoke(fn),result);assert.equal(calls,1);
+});
+
+test('real concurrent accepted-result recovery preserves a later manual specification and original audit',async()=>{
+ let calls=0;const fn=handler(async()=>{calls++;await db.doc('pulseRuntimeControl/cutover').set({mode:'read_only'});return response();});assert.equal((await invoke(fn)).state,'outcome_unknown');
+ const original=(await db.doc('pulseSpecSearchAudit/'+receiptKey).get()).data(),ref=db.doc('projects/P/bom/data'),latest=(await ref.get()).data();latest.categories[0].items[0].linkedSpecDocumentId='manual-sheet';await ref.update({categories:latest.categories});await db.doc('pulseRuntimeControl/cutover').set({mode:'coexist'});
+ const results=await Promise.all([invoke(fn),invoke(fn)]);assert.ok(results.every(r=>r.state==='conflict'),JSON.stringify(results));assert.equal(calls,1);
+ const item=(await ref.get()).data().categories[0].items[0];assert.equal(item.linkedSpecDocumentId,'manual-sheet');assert.equal(item.specificationUrl,null);assert.deepEqual((await db.doc('pulseSpecSearchAudit/'+receiptKey).get()).data(),original);
+ assert.equal((await db.collection('pulseSpecSearchLocks').get()).size,0);assert.equal((await db.collection('pulseSpecSearchAudit/'+receiptKey+'/reconciliations').get()).size,1);
+});
+
+test('real old version1 accepted receipt remains unresolved without historical manual document provenance',async()=>{
+ let calls=0;const fn=handler(async()=>{calls++;await db.doc('pulseRuntimeControl/cutover').set({mode:'read_only'});return response();});assert.equal((await invoke(fn)).state,'outcome_unknown');
+ const receiptRef=db.doc('pulseSpecSearchReceipts/'+receiptKey),receipt=(await receiptRef.get()).data();delete receipt.searched_item_snapshot.linkedSpecDocumentId;await receiptRef.update({searched_item_snapshot_version:1,searched_item_snapshot:receipt.searched_item_snapshot});await db.doc('pulseRuntimeControl/cutover').set({mode:'coexist'});
+ const saved=(await receiptRef.get()).data();assert.equal((await invoke(fn)).state,'outcome_unknown');assert.equal(calls,1);assert.deepEqual((await receiptRef.get()).data(),saved);assert.equal((await db.collection('pulseSpecSearchLocks').get()).size,1);assert.equal((await db.doc('projects/P/bom/data').get()).data().categories[0].items[0].specificationUrl,null);
+});

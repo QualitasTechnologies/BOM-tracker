@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Search, Loader2, FileCheck, ExternalLink } from 'lucide-react';
 import { triggerSpecSearch } from '@/utils/complianceService';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/useAuth';
+import { auth } from '@/firebase';
+import { getProjectDocumentsByType } from '@/utils/projectDocumentFirestore';
 
 interface SpecSearchButtonProps {
   itemId: string;
@@ -30,6 +32,60 @@ export function SpecSearchButton({
   const [isSearching, setIsSearching] = useState(false);
   const { toast } = useToast();
   const { user } = useAuth();
+  const [openingScope, setOpeningScope] = useState<object | null>(null);
+  const scopeKey = JSON.stringify([projectId, itemId, linkedSpecDocumentId ?? null, user?.uid ?? null]);
+  const newScope = () => ({ key: scopeKey, alive: false, pending: false, tab: null as Window | null });
+  const live = useRef(newScope());
+  if (live.current.key !== scopeKey) live.current = newScope();
+  useEffect(() => {
+    const scope = live.current;
+    scope.alive = true;
+    return () => { scope.alive = false; scope.tab?.close(); scope.tab = null; };
+  }, [scopeKey]);
+
+  const handleOpen = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!linkedSpecDocumentId) {
+      if (specificationUrl) window.open(specificationUrl, '_blank');
+      return;
+    }
+    const scope = live.current, uid = user?.uid, account = auth.currentUser;
+    if (!uid || account?.uid !== uid || !projectId || !itemId) {
+      toast({ variant: 'destructive', title: 'Specification Unavailable', description: 'Sign in again and reopen the project to view this document.' });
+      return;
+    }
+    if (scope.pending || !scope.alive) return;
+    const isCurrent = () => scope.alive && live.current === scope && auth.currentUser === account && auth.currentUser?.uid === uid;
+    scope.pending = true;
+    setOpeningScope(scope);
+    try {
+      // Open within the click gesture; async document reads must not lose the popup permission.
+      scope.tab = window.open('about:blank', '_blank');
+      if (!scope.tab) throw new Error('Allow pop-ups for this site, then try again.');
+      scope.tab.opener = null;
+      const documents = await getProjectDocumentsByType(projectId, 'spec-sheet', { isCurrent });
+      if (!isCurrent()) { scope.tab?.close(); scope.tab = null; return; }
+      const matches = documents.filter(document => document.id === linkedSpecDocumentId);
+      const document = matches[0];
+      if (matches.length !== 1 || document.projectId !== projectId || document.type !== 'spec-sheet' || !document.url) {
+        throw new Error('This specification document is no longer available to you.');
+      }
+      const url = new URL(document.url);
+      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('This specification document has an unavailable link.');
+      if (scope.tab && !scope.tab.closed) scope.tab.location.replace(document.url);
+      // A successfully opened sheet belongs to the user, not to this component's lifecycle.
+      scope.tab = null;
+    } catch (error) {
+      scope.tab?.close(); scope.tab = null;
+      if (isCurrent()) toast({ variant: 'destructive', title: 'Specification Unavailable', description: error instanceof Error ? error.message : 'The specification document could not be opened.' });
+    } finally {
+      scope.pending = false;
+      if (scope.alive && live.current === scope) setOpeningScope(null);
+    }
+  };
+
+
+
 
   const handleSearch = async (e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent row click
@@ -103,12 +159,8 @@ export function SpecSearchButton({
             variant="ghost"
             size={size}
             className="h-7 w-7 text-green-600 hover:text-green-700 hover:bg-green-50"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (specificationUrl) {
-                window.open(specificationUrl, '_blank');
-              }
-            }}
+            onClick={handleOpen}
+            disabled={openingScope === live.current}
           >
             <FileCheck className="h-4 w-4" />
           </Button>

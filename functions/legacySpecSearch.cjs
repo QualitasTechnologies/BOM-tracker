@@ -9,7 +9,7 @@ function targetOf(bom, itemId) {
   if (matches.length !== 1) throw fault(matches.length ? 'spec_search_conflict' : 'bom_item_not_found', matches.length ? 409 : 404);
   return matches[0];
 }
-const identityOf = ({category, item}) => JSON.stringify([category.name, item.id, item.name, item.make || '', item.sku || '', item.itemType || 'component', item.specificationUrl ?? null]);
+const identityOf = ({category, item}) => JSON.stringify([category.name, item.id, item.name, item.make || '', item.sku || '', item.itemType || 'component', item.specificationUrl ?? null, item.linkedSpecDocumentId ?? null]);
 
 // Retain the original legacy request/response shape. Ownership is checked before
 // dispatch and again in the result transaction so an in-flight callback cannot

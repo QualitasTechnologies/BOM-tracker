@@ -589,8 +589,8 @@ test('membership or category revocation retains accepted-result ownership so res
 test('searched provenance is durable before dispatch and cannot be inferred for old or incomplete accepted receipts',async()=>{
  for(const remove of [receipt=>{delete receipt.searched_item_snapshot;},receipt=>{receipt.searched_item_snapshot_version=0;},receipt=>{delete receipt.provider_outcome;},receipt=>{receipt.provider_specification_url='http://localhost/private';}]){
   let f;f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],response:{success:true,specificationUrl:'https://docs.example.com/spec.pdf'},beforeFetch:async()=>{
-   const reserved=f.docs.get('pulseSpecSearchReceipts/'+receiptKey());assert.equal(reserved.searched_item_snapshot_version,1);assert.equal(reserved.searched_item_snapshot.id,'i1');assert.equal(reserved.searched_item_snapshot.name,component.name);f.setEnabled('false');
-  }});assert.equal((await f.call()).state,'outcome_unknown');f.setEnabled('true');remove(f.docs.get('pulseSpecSearchReceipts/'+receiptKey()));const before=clone([...f.docs]);
+   const reserved=f.docs.get('pulseSpecSearchReceipts/'+receiptKey());assert.equal(reserved.searched_item_snapshot_version,2);assert.equal(reserved.searched_item_snapshot.id,'i1');assert.equal(reserved.searched_item_snapshot.name,component.name);f.setEnabled('false');
+  }});assert.equal((await f.call()).state,'outcome_unknown');f.setEnabled('true');assert.equal(f.docs.get('pulseSpecSearchReceipts/'+receiptKey()).provider_outcome,'completed');remove(f.docs.get('pulseSpecSearchReceipts/'+receiptKey()));const before=clone([...f.docs]);
   assert.equal((await f.call()).state,'outcome_unknown');assert.equal(f.calls.length,1);assert.deepEqual([...f.docs],before);
  }
 });
@@ -653,4 +653,47 @@ test('closed-transaction retries are bounded and never retry a different invalid
 
 test('a closed reply after reservation commit stays unknown rather than dispatching a potentially duplicated operation',async()=>{
  const f=fixture({actor:user(),project:{memberIds:['alice']},categories:[{name:'Parts',items:[component]}],loseReplyTransactionNumbers:[1],lostReplyError:closedTransaction});assert.equal((await f.call()).state,'outcome_unknown');assert.equal(f.calls.length,0);assert.equal((await f.call()).state,'outcome_unknown');assert.equal(f.calls.length,0);assert.equal(f.docs.has('pulseSpecSearchLocks/'+itemLockKey()),true);
+});
+
+for (const [beforeDocument, afterDocument] of [[null, 'manual-new'], ['manual-old', 'manual-new'], ['manual-old', null]]) {
+  test(`a provider result cannot supersede a manual document change ${beforeDocument} to ${afterDocument}`, async () => {
+    const f = fixture({ actor: user(), project: { memberIds: ['alice'] }, categories: [{ name: 'Parts', items: [{ ...component, linkedSpecDocumentId: beforeDocument }] }],
+      response: { success: true, specificationUrl: 'https://docs.example.com/provider.pdf' }, beforeFetch: async ({ docs }) => {
+        const item = docs.get('projects/P/bom/data').categories[0].items[0]; item.linkedSpecDocumentId = afterDocument; item.quantity = 9;
+      } });
+    const result = await f.call(); assert.equal(result.state, 'conflict'); assert.equal(f.calls.length, 1);
+    const item = f.docs.get('projects/P/bom/data').categories[0].items[0]; assert.equal(item.linkedSpecDocumentId, afterDocument); assert.equal(item.specificationUrl, null); assert.equal(item.quantity, 9);
+    assert.deepEqual(await f.call(), result); assert.equal(f.calls.length, 1);
+  });
+}
+
+test('a saved accepted result conflicts with a later manual document selection without redispatch', async () => {
+  let f; f = fixture({ actor: user(), project: { memberIds: ['alice'] }, categories: [{ name: 'Parts', items: [component] }],
+    response: { success: true, specificationUrl: 'https://docs.example.com/provider.pdf' }, beforeFetch: async () => f.setEnabled('false') });
+  assert.equal((await f.call()).state, 'outcome_unknown'); const audit = clone(f.docs.get('pulseSpecSearchAudit/' + receiptKey()));
+  f.docs.get('projects/P/bom/data').categories[0].items[0].linkedSpecDocumentId = 'manual-new'; f.setEnabled('true');
+  assert.equal((await f.call()).state, 'conflict'); assert.equal(f.calls.length, 1); assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].specificationUrl, null);
+  assert.deepEqual(f.docs.get('pulseSpecSearchAudit/' + receiptKey()), audit);
+});
+
+test('version2 searched provenance saves the manual document identity before dispatch', async () => {
+  let f, observed; f = fixture({ actor: user(), project: { memberIds: ['alice'] }, categories: [{ name: 'Parts', items: [{ ...component, linkedSpecDocumentId: 'manual-existing' }] }], response: { success: true, specificationUrl: 'https://docs.example.com/provider.pdf' }, beforeFetch: async () => {
+    observed = clone(f.docs.get('pulseSpecSearchReceipts/' + receiptKey()));
+  } });
+  const result = await f.call(); assert.equal(observed.searched_item_snapshot_version, 2); assert.equal(observed.searched_item_snapshot.linkedSpecDocumentId, 'manual-existing'); assert.equal(Object.keys(observed.searched_item_snapshot).length, 8);
+  assert.equal(result.state, 'completed'); assert.equal(f.calls.length, 1); assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].linkedSpecDocumentId, 'manual-existing');
+});
+
+test('old version1 unresolved provenance never guesses the historical manual selection', async () => {
+  let f; f = fixture({ actor: user(), project: { memberIds: ['alice'] }, categories: [{ name: 'Parts', items: [component] }], response: { success: true, specificationUrl: 'https://docs.example.com/provider.pdf' }, beforeFetch: async () => f.setEnabled('false') });
+  assert.equal((await f.call()).state, 'outcome_unknown'); const receipt = f.docs.get('pulseSpecSearchReceipts/' + receiptKey());
+  receipt.searched_item_snapshot_version = 1; delete receipt.searched_item_snapshot.linkedSpecDocumentId; f.setEnabled('true'); const before = clone([...f.docs]);
+  assert.equal((await f.call()).state, 'outcome_unknown'); assert.equal(f.calls.length, 1); assert.deepEqual([...f.docs], before); assert.equal(f.docs.has('pulseSpecSearchLocks/' + itemLockKey()), true);
+});
+
+test('completed version1 receipts still replay with writes paused and no provider configuration', async () => {
+  const f = fixture({ actor: user(), project: { memberIds: ['alice'] }, categories: [{ name: 'Parts', items: [component] }], response: { success: true, specificationUrl: 'https://docs.example.com/provider.pdf' } });
+  const saved = await f.call(), receipt = f.docs.get('pulseSpecSearchReceipts/' + receiptKey()); receipt.searched_item_snapshot_version = 1; delete receipt.searched_item_snapshot.linkedSpecDocumentId;
+  const replay = fixture({ actor: user(), docs: f.docs, calls: f.calls, enabled: 'false', webhookUrl: 'unconfigured' });
+  assert.deepEqual(await replay.call(), saved); assert.equal(f.calls.length, 1);
 });
