@@ -74,3 +74,41 @@ test('acceptance clears stale problems and cannot be rewritten with another nonc
   const time=after.accepted_at;assert.equal((await f.call({operation_id:'another'})).ok,false);assert.equal(f.calls(),1);
   assert.deepEqual(f.docs.get(`pulsePOApprovalNotificationDeliveries/${f.payload.delivery_id}`).accepted_at,time);
 });
+
+
+const closedTransaction=()=>Object.assign(new Error('3 INVALID_ARGUMENT: Transaction is invalid or closed.'),{code:3});
+function transactionFault(f,{before=[],after=[],error=closedTransaction,onBefore}={}){
+ const original=f.db.runTransaction,seen=[];let count=0;
+ f.db.runTransaction=async(work,options)=>{count++;seen.push(options);if(before.includes(count)){onBefore?.(f);throw error();}const result=await original(work,options);if(after.includes(count))throw error();return result;};
+ return{count:()=>count,seen};
+}
+
+test('closed opening and finalization restart from fresh reads, preserve readonly options and never repeat the provider lookup',async()=>{
+ for(const phase of [1,2]){
+  const f=await setup(),jobBefore=structuredClone(f.job),fault=transactionFault(f,{before:[phase]});const result=await f.call();assert.equal(result.ok,true,JSON.stringify(result));assert.equal(f.calls(),1);
+  assert.deepEqual(fault.seen[0],{readOnly:true});if(phase===1)assert.deepEqual(fault.seen[1],{readOnly:true});
+  const saved=f.docs.get('pulsePOApprovalNotificationDeliveries/'+f.payload.delivery_id);for(const key of ['mail','mail_hash','idempotency_key','recipients','first_dispatched_ms'])assert.deepEqual(saved[key],jobBefore[key]);
+  assert.equal([...f.docs.keys()].filter(path=>path.startsWith('pulsePOApprovalNotificationReconciliations/')).length,1);assert.equal([...f.docs.values()].filter(value=>value.phase==='provider_evidence_verified').length,1);
+ }
+});
+
+test('a closed commit acknowledgement replays acceptance or cancellation without another lookup or audit',async()=>{
+ for(const cancel of [false,true]){
+  const f=await setup();transactionFault(f,{after:[2]});const result=await f.call(cancel?{resolve_only:true}:{});assert.equal(cancel?result.request_finalized:result.ok,true,JSON.stringify(result));assert.equal(f.calls(),cancel?0:1);f.off();assert.deepEqual(await f.call(),result);assert.equal(f.calls(),cancel?0:1);
+  assert.equal([...f.docs.keys()].filter(path=>path.startsWith('pulsePOApprovalNotificationReconciliations/')).length,1);assert.equal([...f.docs.values()].filter(value=>value.phase===(cancel?'reconciliation_cancelled':'provider_evidence_verified')).length,1);
+ }
+});
+
+test('closed cancellation restarts without provider lookup and keeps the frozen delivery untouched',async()=>{
+ const f=await setup(),before=structuredClone(f.job);transactionFault(f,{before:[2]});const result=await f.call({resolve_only:true});assert.equal(result.request_finalized,true);assert.equal(f.calls(),0);assert.deepEqual(f.docs.get('pulsePOApprovalNotificationDeliveries/'+f.payload.delivery_id),before);
+});
+
+test('closed transaction exhaustion is bounded and other invalid-argument errors are not retried',async()=>{
+ const f=await setup(),fault=transactionFault(f,{before:[1,2,3,4,5]});assert.equal((await f.call()).error,'notification_evidence_unconfirmed');assert.equal(fault.count(),3);assert.equal(f.calls(),0);
+ const g=await setup(),invalid=transactionFault(g,{before:[1],error:()=>Object.assign(new Error('3 INVALID_ARGUMENT: Invalid field name'),{code:3})});assert.equal((await g.call()).error,'notification_evidence_unconfirmed');assert.equal(invalid.count(),1);assert.equal(g.calls(),0);
+});
+
+test('a fresh transaction after closure rechecks revoked admin access and a changed job instead of accepting stale evidence',async()=>{
+ const f=await setup();transactionFault(f,{before:[1],onBefore:state=>{state.users.get('admin').disabled=true;}});assert.equal((await f.call()).error,'actor_forbidden');assert.equal(f.calls(),0);
+ const g=await setup({lookup:async state=>{[...state.docs].find(([path])=>path.startsWith('pulsePOApprovalNotificationDeliveries/'))[1].state='needs_reconciliation';}});transactionFault(g,{before:[2]});assert.equal((await g.call()).error,'notification_changed');assert.equal(g.calls(),1);assert.equal(g.docs.get('pulsePOApprovalNotificationDeliveries/'+g.payload.delivery_id).state,'needs_reconciliation');
+});

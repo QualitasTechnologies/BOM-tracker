@@ -292,3 +292,78 @@ test('restore rechecks project membership after verifying the original storage o
  const restore={operation:'restore',archive_id:archive.archive_id,operation_id:'restore-1',expected_project_version:archive.opening.project_version,expected_bom_version:archive.opening.bom_version,expected_archive_version:archive.opening.archive_version};
  assert.equal((await f.call(restore)).error,'project_document_forbidden');assert.equal(f.docs.has('projectDocuments/document-1'),false);assert.equal(f.docs.has(`pulseDeletedProjectDocuments/P/documents/${archive.archive_id}`),true);
 });
+
+const closedTransaction = () => Object.assign(Error('3 INVALID_ARGUMENT: Transaction is invalid or closed.'), { code: 3 });
+function closeOnce(f, matches, { afterCommit = false, onClose = () => {} } = {}) {
+  const run = f.db.runTransaction; let injected = false, calls = 0;
+  f.db.runTransaction = async (work, options) => {
+    calls++;
+    const check = result => { if (!injected && matches(result)) { injected = true; onClose(); throw closedTransaction(); } return result; };
+    return afterCommit ? check(await run(work, options)) : run(async tx => check(await work(tx)), options);
+  };
+  return () => ({ injected, calls });
+}
+
+for (const afterCommit of [false, true]) {
+  test(`closed document reservation ${afterCommit ? 'acknowledgement' : 'before commit'} returns one saved upload intent`, async () => {
+    const f = fixture(), observed = closeOnce(f, r => !!r?.result?.path, { afterCommit });
+    const result = await f.reserve(); assert.equal(result.ok, true); assert.equal(observed().injected, true);
+    assert.equal([...f.docs.keys()].filter(p => p.startsWith('pulseProjectDocumentUploadIntents/')).length, 1);
+    assert.equal([...f.docs.keys()].filter(p => p.startsWith('pulseProjectDocumentUploads/P/audit/')).length, 1);
+    assert.deepEqual(await f.reserve(), result); assert.equal(f.publications(), 0);
+  });
+  test(`closed document finalization ${afterCommit ? 'acknowledgement' : 'before commit'} never republishes bytes`, async () => {
+    const f = fixture(), reservation = await f.reserve(); f.upload(reservation.path);
+    const observed = closeOnce(f, r => !!r?.document?.id, { afterCommit });
+    const result = await f.finalize(); assert.equal(result.ok, true); assert.equal(observed().injected, true);
+    assert.equal(f.publications(), 1); assert.equal([...f.docs.keys()].filter(p => p.startsWith('projectDocuments/')).length, 1);
+    assert.equal([...f.docs.keys()].filter(p => p.startsWith('pulseProjectDocumentUploads/P/audit/')).length, 2);
+    assert.deepEqual(await f.finalize(), result);
+  });
+}
+
+test('closed delete acknowledgement replays the receipt and preserves one complete archive', async () => {
+  const f = fixture(); await uploaded(f); const [row] = (await f.get()).documents;
+  const original = f.docs.get('projectDocuments/document-1');
+  closeOnce(f, r => r?.resolution === 'committed', { afterCommit: true });
+  const request = { operation: 'delete', operation_id: 'delete-closed', ...opening(row) };
+  const result = await f.call(request); assert.equal(result.resolution, 'committed'); assert.deepEqual(await f.call(request), result);
+  assert.deepEqual(f.docs.get('pulseDeletedProjectDocuments/P/documents/document-1').document, original);
+  assert.equal([...f.docs.keys()].filter(p => p.startsWith('pulseProjectDocumentMutations/P/audit/')).length, 1);
+  assert.equal(f.publications(), 1); assert.equal(f.objects.size, 2);
+});
+
+test('closed cancellation acknowledgement is recovered while writes are paused', async () => {
+  const f = fixture(); await f.reserve(); f.off(); f.docs.set('pulseRuntimeControl/cutover', { mode: 'read_only' });
+  closeOnce(f, r => r?.result?.resolution === 'cancelled', { afterCommit: true });
+  assert.equal((await f.call({ operation: 'cancel' })).resolution, 'cancelled');
+  assert.equal([...f.docs.keys()].filter(p => p.startsWith('pulseProjectDocumentUploads/P/audit/')).length, 2);
+  assert.equal(f.publications(), 0); assert.equal(f.docs.has('projectDocuments/document-1'), false);
+});
+
+test('a fresh finalization retry rechecks revoked access and leaves published bytes recoverable', async () => {
+  const f = fixture(), reservation = await f.reserve(); f.upload(reservation.path);
+  closeOnce(f, r => !!r?.document?.id, { onClose: () => { f.actor.disabled = true; } });
+  assert.equal((await f.finalize()).error, 'actor_forbidden');
+  assert.equal(f.docs.has('projectDocuments/document-1'), false); assert.equal(f.publications(), 1);
+  assert.equal(f.docs.get('pulseProjectDocumentUploads/P/receipts/upload-1').finalized, undefined);
+  f.actor.disabled = false; assert.equal((await f.finalize()).ok, true); assert.equal(f.publications(), 1);
+});
+
+test('closed transactions are bounded and other invalid arguments are not retried', async () => {
+  for (const [message, expected] of [['3 INVALID_ARGUMENT: Transaction is invalid or closed.', 3], ['invalid request', 1]]) {
+    const f = fixture(); let calls = 0;
+    f.db.runTransaction = async () => { calls++; throw Object.assign(Error(message), { code: 3 }); };
+    assert.equal((await f.reserve()).error, 'project_document_service_unavailable'); assert.equal(calls, expected);
+    assert.equal(f.publications(), 0); assert.equal([...f.docs.keys()].some(p => p.startsWith('pulseProjectDocumentUploads/')), false);
+  }
+});
+
+test('a closed error from Storage publication is never retried as a DB transaction', async () => {
+  const f = fixture(), reservation = await f.reserve(); f.upload(reservation.path);
+  const file = f.bucket.file; let saves = 0;
+  f.bucket.file = (...args) => { const object = file(...args); return { ...object, save: async (...input) => { saves++; await object.save(...input); throw closedTransaction(); } }; };
+  assert.equal((await f.finalize()).error, 'project_document_service_unavailable');
+  assert.equal(saves, 1); assert.equal(f.publications(), 1); assert.equal(f.docs.has('projectDocuments/document-1'), false);
+  assert.equal((await f.finalize()).ok, true); assert.equal(saves, 1); assert.equal(f.publications(), 1);
+});

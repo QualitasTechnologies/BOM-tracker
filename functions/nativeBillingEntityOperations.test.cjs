@@ -174,3 +174,67 @@ test('mutation enablement accepts only explicit true and re-evaluates a server g
   assert.equal((await edit(f)).error, 'billing_entity_mutations_disabled'); enabled = true;
   assert.equal((await edit(f)).ok, true);
 });
+
+const closedBillingTransaction = () => Object.assign(Error('3 INVALID_ARGUMENT: Transaction is invalid or closed.'), { code: 3 });
+function closeBillingOnce(f, matches, { afterCommit = false, onClose = () => {} } = {}) {
+  const run = f.db.runTransaction; let injected = false;
+  f.db.runTransaction = async (work, options) => {
+    const check = result => { if (!injected && matches(result)) { injected = true; onClose(); throw closedBillingTransaction(); } return result; };
+    return afterCommit ? check(await run(work, options)) : run(async tx => check(await work(tx)), options);
+  };
+  return () => injected;
+}
+
+for (const afterCommit of [false, true]) {
+  test(`closed billing edit ${afterCommit ? 'acknowledgement' : 'before commit'} preserves one audit and independent counters`, async () => {
+    const f = fixture(), original = copy(f.docs.get('billingEntities/B')), opening = await open(f);
+    const observed = closeBillingOnce(f, r => r?.kind === 'update', { afterCommit });
+    const request = { operation: 'update', entity_id: 'B', expected_version: opening.entity_version, operation_id: 'closed-edit', patch: { phone: '123' } };
+    const result = await f.call(request); assert.equal(result.ok, true); assert.equal(observed(), true); assert.deepEqual(await f.call(request), result);
+    assert.equal(f.docs.get('billingEntities/B').phone, '123'); assert.equal(f.docs.get('billingEntities/B').nextPoNumber, original.nextPoNumber);
+    assert.deepEqual(f.docs.get('billingEntities/B').legacy, original.legacy);
+    assert.equal([...f.docs.keys()].filter(p => p.startsWith('pulseBillingEntityAudit/')).length, 1);
+  });
+}
+
+test('closed billing deletion acknowledgement retains one complete archive and resolves while paused', async () => {
+  const f = fixture(), opening = await open(f), original = copy(f.docs.get('billingEntities/B'));
+  closeBillingOnce(f, r => r?.kind === 'delete', { afterCommit: true, onClose: () => { f.docs.get('pulseRuntimeControl/cutover').mode = 'read_only'; } });
+  const request = { operation: 'delete', entity_id: 'B', expected_version: opening.entity_version, operation_id: 'closed-delete' };
+  const result = await f.call(request); assert.equal(result.ok, true); assert.deepEqual(await f.call(request), result);
+  assert.deepEqual(f.docs.get('pulseDeletedBillingEntities/B').entity, original); assert.equal(f.docs.has('billingEntities/B'), false);
+  assert.equal([...f.docs.keys()].filter(p => p.startsWith('pulseBillingEntityAudit/')).length, 1);
+});
+
+test('closed billing cancellation acknowledgement fences the nonce without changing business data', async () => {
+  const f = fixture(), opening = await open(f), original = copy(f.docs.get('billingEntities/B'));
+  f.docs.get('pulseRuntimeControl/cutover').mode = 'read_only';
+  closeBillingOnce(f, r => r?.resolution === 'cancelled', { afterCommit: true });
+  const request = { operation: 'update', entity_id: 'B', expected_version: opening.entity_version, operation_id: 'closed-cancel', patch: { phone: 'late' } };
+  assert.equal((await f.call({ ...request, resolve_only: true })).resolution, 'cancelled');
+  assert.equal((await f.call(request)).error, 'billing_entity_request_cancelled'); assert.deepEqual(f.docs.get('billingEntities/B'), original);
+  assert.equal([...f.docs.keys()].filter(p => p.startsWith('pulseBillingEntityAudit/')).length, 0);
+});
+
+test('fresh billing retries reject revoked access or a newly allocated PO counter', async () => {
+  for (const revoked of [false, true]) {
+    const f = fixture(), opening = await open(f);
+    closeBillingOnce(f, r => r?.kind === 'update', { onClose: () => {
+      if (revoked) f.users.get('admin').disabled = true;
+      else { f.docs.get('billingEntities/B').nextPoNumber++; f.versions.set('billingEntities/B', 2); }
+    } });
+    const result = await f.call({ operation: 'update', entity_id: 'B', expected_version: opening.entity_version, operation_id: 'closed-stale', patch: { nextPoNumber: 10 } });
+    assert.equal(result.error, revoked ? 'actor_forbidden' : 'billing_entity_version_conflict');
+    assert.equal(f.docs.get('billingEntities/B').nextPoNumber, revoked ? 10 : 11);
+    assert.equal([...f.docs.keys()].filter(p => p.startsWith('pulseBillingEntityAudit/')).length, 0);
+  }
+});
+
+test('billing closed-handle retries are bounded and other invalid arguments are returned once', async () => {
+  for (const [message, expected] of [['3 INVALID_ARGUMENT: Transaction is invalid or closed.', 3], ['unrelated invalid argument', 1]]) {
+    const f = fixture(); let calls = 0;
+    f.db.runTransaction = async () => { calls++; throw Object.assign(Error(message), { code: 3 }); };
+    assert.equal((await open(f)).error, 'billing_entity_operations_unavailable'); assert.equal(calls, expected);
+    assert.equal([...f.docs.keys()].some(p => p.startsWith('pulseBillingEntityAudit/')), false);
+  }
+});
