@@ -12,6 +12,14 @@ const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}
 const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function createPOApprovalReconciliation({db,auth,lookup,enabled=false,now=Date.now,getServerTimestamp}){
   const on=()=> (typeof enabled==='function'?enabled():enabled)===true;
+  // A fresh transaction is safe here: provider lookup is outside callbacks,
+  // and every write is guarded by the original receipt and current revision.
+  const transact=async(work,options)=>{
+    for(let attempt=0;;attempt++){
+      try{return await db.runTransaction(work,options);}
+      catch(error){if(attempt>=2||error.code!==3||!/^(?:3 INVALID_ARGUMENT: )?Transaction is invalid or closed\.$/.test(String(error.message||'').trim()))throw error;}
+    }
+  };
   async function actorOf(request){
     try{const actor=await currentNativeActor(auth,request);if(actor.customClaims.role!=='admin')throw fail('notification_forbidden',403);return actor;}
     catch(error){const codes={actor_authentication_required:401,actor_forbidden:403,identity_provider_unavailable:503};if(Object.hasOwn(codes,error?.code)&&codes[error.code]===error.status)throw fail(error.code,error.status);throw error;}
@@ -50,9 +58,9 @@ function createPOApprovalReconciliation({db,auth,lookup,enabled=false,now=Date.n
         if(snapshot.revision!==data.expected_revision)throw fail('notification_changed');
         if(!['pending','sending','uncertain','needs_reconciliation'].includes(job.state)||job.lease_until>now()||!Number.isFinite(job.first_dispatched_ms)||job.first_dispatched_ms<0||job.first_dispatched_ms>now()||job.mail_hash!==approvalMailHash(job.mail)||job.idempotency_key!==`po-approval/${data.delivery_id}`)throw fail('notification_reconciliation_forbidden');
       }
-      const opening=await db.runTransaction(read,{readOnly:true});if(opening.finished)return opening.finished;
+      const opening=await transact(read,{readOnly:true});if(opening.finished)return opening.finished;
       if(data.resolve_only){
-        return await db.runTransaction(async tx=>{
+        return await transact(async tx=>{
           const snapshot=await read(tx);if(snapshot.finished)return snapshot.finished;
           const result={ok:false,error:'notification_reconciliation_cancelled',status:409,request_finalized:true,project_id:data.project_id,po_id:data.po_id,notification_id:data.notification_id,delivery_id:data.delivery_id,operation_id:data.operation_id};
           const auditRef=db.collection('pulsePOApprovalNotificationAudit').doc(data.notification_id).collection('events').doc(digest([actor.uid,data.operation_id,'reconciliation_cancelled']));
@@ -63,7 +71,7 @@ function createPOApprovalReconciliation({db,auth,lookup,enabled=false,now=Date.n
       if(!on())throw fail('notification_reconciliation_disabled');eligible(opening);
       const evidence=await lookup(data.provider_id);
       verifyPOApprovalEvidence({deliveryId:data.delivery_id,providerId:data.provider_id,job:opening.job,evidence,nowMs:now()});
-      return await db.runTransaction(async tx=>{
+      return await transact(async tx=>{
         const snapshot=await read(tx);if(snapshot.finished)return snapshot.finished;eligible(snapshot);
         const proof=verifyPOApprovalEvidence({deliveryId:data.delivery_id,providerId:data.provider_id,job:snapshot.job,evidence,nowMs:now()});
         const patch={state:'accepted',problem:null,provider_id:proof.provider_id,provider_event:proof.provider_event,provider_created_ms:proof.provider_created_ms,evidence_hash:proof.evidence_hash,accepted_at:getServerTimestamp(),reconciled_at:getServerTimestamp(),lease_until:0,next_attempt_ms:NEVER};
