@@ -26,6 +26,14 @@ async function verifyFirebaseStorageObject(bucket,value,expected){
 }
 function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,getServerTimestamp,now=()=>new Date()}){
  const on=()=>(typeof enabled==='function'?enabled():enabled)===true;
+ // Retry only a closed DB handle. File publication remains outside callbacks;
+ // receipts and current permissions are re-read before any metadata write.
+ const transact=async(work,options)=>{
+  for(let attempt=0;;attempt++){
+   try{return await db.runTransaction(work,options);}
+   catch(error){if(attempt>=2||error.code!==3||!/^(?:3 INVALID_ARGUMENT: )?Transaction is invalid or closed\.$/.test(String(error.message||'').trim()))throw error;}
+  }
+ };
  const control=(snapshot,replay=false)=>{
   const mode=snapshot.exists?snapshot.data()?.mode:'coexist';
   if(!['coexist','pulse_only','read_only'].includes(mode))throw fault('project_document_control_unavailable',503);
@@ -69,7 +77,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
     projectAccess(project,current,data.project_id);return current;
    };
    const readProject=async tx=>{const snapshot=await tx.get(projectRef);if(!snapshot.exists)throw fault('project_document_project_not_found',404);const current=await actorNow(snapshot.data());return{snapshot,actor:current};};
-   if(data.operation==='get')return await db.runTransaction(async tx=>{
+   if(data.operation==='get')return await transact(async tx=>{
     const project=await readProject(tx),bom=await tx.get(bomRef),mode=control(await tx.get(controlRef),true);
     let query=db.collection('projectDocuments').where('projectId','==',data.project_id).orderBy('__name__');if(data.cursor)query=query.startAfter(data.cursor);
     const rows=await tx.get(query.limit(101)),current=await actorNow(project.snapshot.data()),page=rows.docs.slice(0,100);
@@ -83,7 +91,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
     await actorNow(project.snapshot.data());
     return{ok:true,project_id:data.project_id,documents,next_cursor:rows.docs.length>100?page.at(-1).id:null,permissions:{write:on()&&mode!=='read_only'}};
    });
-   if(data.operation==='list_deleted')return await db.runTransaction(async tx=>{
+   if(data.operation==='list_deleted')return await transact(async tx=>{
     const project=await readProject(tx),bom=await tx.get(bomRef),mode=control(await tx.get(controlRef),true);
     let query=archiveCollection.orderBy('__name__');if(data.cursor)query=query.startAfter(data.cursor);
     const rows=await tx.get(query.limit(101)),current=await actorNow(project.snapshot.data()),page=rows.docs.slice(0,100),deleted_documents=[];
@@ -113,7 +121,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
      const raw=archive.data();if(!plain(raw)||raw.project_id!==data.project_id||!validId(raw.document_id)||!plain(raw.document)||raw.document.projectId!==data.project_id||raw.document.type!==raw.document_type||!TYPES.includes(raw.document.type))throw fault('invalid_project_document_state',409);
      return{archive,raw};
     };
-    const initial=await db.runTransaction(async tx=>{
+    const initial=await transact(async tx=>{
      const project=await readProject(tx),bom=await tx.get(bomRef),archiveResult=await checkArchive(tx),receipt=await tx.get(receiptRef),restored=await tx.get(restoreMarkerRef),mode=await tx.get(controlRef),old=receipt.exists?receipt.data():null;
      if(old){if(old.actor_uid!==actor.uid||old.actor_email!==actor.email.trim().toLowerCase()||old.payload_hash!==payloadHash||old.archive_id!==data.archive_id)throw fault('project_document_operation_conflict',409);control(mode,true);typeAccess(old.document_type,await actorNow(project.snapshot.data()));return{result:receiptResult(old,archiveResult.raw.document_id)};}
      if(restored.exists)throw fault('project_document_archive_already_restored',409);
@@ -137,7 +145,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
      if(!initial.raw.storage_proof)throw fault('project_document_integrity_unverified',409);
      await verifyFirebaseStorageObject(bucket,initial.raw.document.url,initial.raw.storage_proof);
     }
-    return await db.runTransaction(async tx=>{
+    return await transact(async tx=>{
      const project=await readProject(tx),bom=await tx.get(bomRef),archiveResult=await checkArchive(tx),receipt=await tx.get(receiptRef),restored=await tx.get(restoreMarkerRef),mode=await tx.get(controlRef),old=receipt.exists?receipt.data():null;
      if(old){if(old.actor_uid!==actor.uid||old.actor_email!==actor.email.trim().toLowerCase()||old.payload_hash!==payloadHash||old.archive_id!==data.archive_id)throw fault('project_document_operation_conflict',409);control(mode,true);typeAccess(old.document_type,await actorNow(project.snapshot.data()));return receiptResult(old,archiveResult.raw.document_id);}
      if(restored.exists)throw fault('project_document_archive_already_restored',409);
@@ -154,7 +162,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
    }
    let storageProof=null;
    if(data.operation==='delete'){
-    const candidate=await db.runTransaction(async tx=>{
+    const candidate=await transact(async tx=>{
      const project=await readProject(tx),bom=await tx.get(bomRef),journal=db.collection('pulseProjectDocumentMutations').doc(data.project_id),receipt=await tx.get(journal.collection('receipts').doc(data.operation_id));
      if(receipt.exists)return{replay:true};
      const document=await tx.get(documentRef),mode=await tx.get(controlRef);control(mode);
@@ -168,7 +176,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
     });
     if(!candidate.replay&&!candidate.native)storageProof=await verifyFirebaseStorageObject(bucket,candidate.raw.url);
    }
-   if(['delete','resolve_delete'].includes(data.operation))return await db.runTransaction(async tx=>{
+   if(['delete','resolve_delete'].includes(data.operation))return await transact(async tx=>{
     const project=await readProject(tx),bom=await tx.get(bomRef),document=await tx.get(documentRef);
     const journal=db.collection('pulseProjectDocumentMutations').doc(data.project_id),receiptRef=journal.collection('receipts').doc(data.operation_id),receipt=await tx.get(receiptRef),mode=await tx.get(controlRef);
     const payloadHash=hash(JSON.stringify([data.project_id,data.document_id,...versions.map(key=>data[key])])),old=receipt.exists?receipt.data():null;
@@ -198,7 +206,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
    const journal=db.collection('pulseProjectDocumentUploads').doc(data.project_id),receiptRef=journal.collection('receipts').doc(data.operation_id);
    const same=old=>{if(old.actor_uid!==actor.uid||old.actor_email!==actor.email.trim().toLowerCase()||old.project_id!==data.project_id||old.document_id!==data.document_id)throw fault('project_document_operation_conflict',409);};
    const payloadHash=data.operation==='reserve'?hash(JSON.stringify([data.project_id,data.document_id,data.name,data.document_type,data.content_type,data.byte_size,data.sha256])):null;
-   const opening=await db.runTransaction(async tx=>{
+   const opening=await transact(async tx=>{
     const project=await readProject(tx),receipt=await tx.get(receiptRef),mode=await tx.get(controlRef),old=receipt.exists?receipt.data():null;
     if(old){same(old);typeAccess(old.document_type,project.actor);if(payloadHash&&old.payload_hash!==payloadHash)throw fault('project_document_operation_conflict',409);}
     if(data.operation==='cancel'){
@@ -223,7 +231,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
     tx.create(db.collection('pulseProjectDocumentUploadIntents').doc(fileName),intent);tx.create(receiptRef,stored);tx.create(journal.collection('audit').doc(data.operation_id+'_reserve'),audit);return{result:reserved};
    });
    if(opening.result)return opening.result;const old=opening.receipt;
-   const recheck=()=>db.runTransaction(async tx=>{const project=await readProject(tx);control(await tx.get(controlRef));typeAccess(old.document_type,await actorNow(project.snapshot.data()));});
+   const recheck=()=>transact(async tx=>{const project=await readProject(tx);control(await tx.get(controlRef));typeAccess(old.document_type,await actorNow(project.snapshot.data()));});
    const finalPath=`projects/${data.project_id}/documents/native/finalized/${old.file_name}`;if(old.final_path!==finalPath)throw fault('project_document_operation_conflict',409);
    const verify=async(path,canonical=false)=>{
     let metadata;try{[metadata]=await bucket.file(path).getMetadata();}catch(error){if(Number(error.code)===404)return null;throw error;}
@@ -235,7 +243,7 @@ function createNativeProjectDocumentOperations({db,auth,bucket,enabled=false,get
    let published=await verify(finalPath,true);
    if(!published){const staged=await verify(old.path);if(!staged)throw fault('project_document_upload_not_found',404);await recheck();try{await bucket.file(finalPath).save(staged.bytes,{resumable:false,validation:'crc32c',preconditionOpts:{ifGenerationMatch:0},metadata:{contentType:old.content_type,metadata:{firebaseStorageDownloadTokens:old.download_token}}});}catch(error){if(Number(error.code)!==412)throw error;}published=await verify(finalPath,true);if(!published)throw fault('project_document_integrity_failed',409);}
    const generation=published.generation,url=`https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}/o/${encodeURIComponent(finalPath)}?alt=media&token=${encodeURIComponent(old.download_token)}&generation=${generation}`;
-   return await db.runTransaction(async tx=>{
+   return await transact(async tx=>{
     const project=await readProject(tx),receipt=await tx.get(receiptRef),mode=await tx.get(controlRef);if(!receipt.exists)throw fault('project_document_upload_not_found',404);
     const current=receipt.data();same(current);if(current.cancelled)throw fault('project_document_upload_cancelled',409);
     if(current.finalized){control(mode,true);typeAccess(current.document_type,await actorNow(project.snapshot.data()));if(current.finalized.generation!==generation)throw fault('project_document_generation_conflict',409);return current.finalized;}
