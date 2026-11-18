@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Search, Loader2, FileCheck, ExternalLink } from 'lucide-react';
@@ -34,14 +34,14 @@ export function SpecSearchButton({
   const { user } = useAuth();
   const [openingScope, setOpeningScope] = useState<object | null>(null);
   const scopeKey = JSON.stringify([projectId, itemId, linkedSpecDocumentId ?? null, user?.uid ?? null]);
-  const newScope = () => ({ key: scopeKey, alive: false, pending: false, tab: null as Window | null });
-  const live = useRef(newScope());
-  if (live.current.key !== scopeKey) live.current = newScope();
-  useEffect(() => {
-    const scope = live.current;
+  const scope = useMemo(() => ({ alive: false, pending: false, tab: null as Window | null }), [scopeKey]);
+  const live = useRef(scope);
+  useLayoutEffect(() => {
+    // Only a committed screen owns a tab; interrupted renders cannot replace it.
+    live.current = scope;
     scope.alive = true;
     return () => { scope.alive = false; scope.tab?.close(); scope.tab = null; };
-  }, [scopeKey]);
+  }, [scope]);
 
   const handleOpen = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -49,7 +49,7 @@ export function SpecSearchButton({
       if (specificationUrl) window.open(specificationUrl, '_blank');
       return;
     }
-    const scope = live.current, uid = user?.uid, account = auth.currentUser;
+    const uid = user?.uid, account = auth.currentUser;
     if (!uid || account?.uid !== uid || !projectId || !itemId) {
       toast({ variant: 'destructive', title: 'Specification Unavailable', description: 'Sign in again and reopen the project to view this document.' });
       return;
@@ -160,7 +160,7 @@ export function SpecSearchButton({
             size={size}
             className="h-7 w-7 text-green-600 hover:text-green-700 hover:bg-green-50"
             onClick={handleOpen}
-            disabled={openingScope === live.current}
+            disabled={openingScope === scope}
           >
             <FileCheck className="h-4 w-4" />
           </Button>

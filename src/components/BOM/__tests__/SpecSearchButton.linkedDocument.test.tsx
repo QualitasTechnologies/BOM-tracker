@@ -67,3 +67,13 @@ it('does not reopen a pending popup that the user closed',async()=>{
 it('keeps direct URL opening synchronous when there is no manually linked document',()=>{
  render(view({linkedSpecDocumentId:undefined,specificationUrl:'https://provider.example.test/spec.pdf'}));click();expect(open).toHaveBeenCalledWith('https://provider.example.test/spec.pdf','_blank');expect(h.documents).not.toHaveBeenCalled();expect(h.legacy).not.toHaveBeenCalled();
 });
+
+it('keeps the committed project opener live after an interrupted suspended project switch',async()=>{
+ let change!:(project:string)=>void;const pending=new Promise(()=>{});
+ function Suspend({blocked}:{blocked:boolean}){if(blocked)throw pending;return null;}
+ function Harness(){const [project,setProject]=React.useState('P');change=setProject;return <React.Suspense fallback={<p>Loading</p>}>{view({projectId:project})}<Suspend blocked={project==='Q'}/></React.Suspense>;}
+ render(<Harness/>);
+ await act(async()=>{React.startTransition(()=>change('Q'));await Promise.resolve();});
+ await act(async()=>{change('P');await Promise.resolve();});
+ click();expect(h.documents).toHaveBeenCalledOnce();await waitFor(()=>expect(tab.location.replace).toHaveBeenCalledWith(document.url));
+});
