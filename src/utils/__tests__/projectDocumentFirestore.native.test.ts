@@ -205,3 +205,9 @@ describe('pending operations and recovery',()=>{
   await expect(svc.acknowledgeProjectDocumentDeletion('P','OTHER','alice')).rejects.toThrow();
  });
 });
+
+it('legacy document projection keeps the canonical Firestore ID instead of a stored ID',async()=>{
+ h.getDocs.mockResolvedValue({docs:[{id:'actual-document',data:()=>({id:'different-document',projectId:'P',type:'spec-sheet',url:'https://storage.example.test/spec.pdf'})}]});
+ expect((await svc.getProjectDocumentsByType('P','spec-sheet'))[0].id).toBe('actual-document');
+ expect((await svc.getProjectDocuments('P'))[0].id).toBe('actual-document');
+});

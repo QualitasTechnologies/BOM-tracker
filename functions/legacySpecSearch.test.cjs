@@ -53,3 +53,12 @@ test('an unsuccessful provider response cannot claim that an unpersisted specifi
  const f=setup(()=>{}, {success:false,specificationUrl:'https://example.com/unaccepted.pdf'});const result=await f.call();
  assert.equal(result.body.success,false);assert.equal(result.body.specificationUrl,undefined);assert.equal(f.docs.get('projects/P/bom/data').categories[0].items[0].specificationUrl,undefined);
 });
+
+for (const [beforeDocument, afterDocument] of [[null, 'manual-new'], ['manual-old', 'manual-new'], ['manual-old', null]]) {
+  test(`legacy provider callback preserves manual selection ${beforeDocument} to ${afterDocument}`, async () => {
+    const f = setup(f => { const item = f.docs.get('projects/P/bom/data').categories[0].items[0]; item.linkedSpecDocumentId = afterDocument; item.quantity = 9; });
+    f.docs.get('projects/P/bom/data').categories[0].items[0].linkedSpecDocumentId = beforeDocument;
+    const result = await f.call(); assert.equal(result.status, 409); assert.equal(f.calls.length, 1);
+    const item = f.docs.get('projects/P/bom/data').categories[0].items[0]; assert.equal(item.specificationUrl, undefined); assert.equal(item.linkedSpecDocumentId, afterDocument); assert.equal(item.quantity, 9);
+  });
+}

@@ -78,8 +78,8 @@ async function readNative(projectId: string, uid: string, isCurrent: () => boole
 }
 
 const toLegacyDocuments = (snapshot: { docs: any[] }) => snapshot.docs.map(doc => ({
-  id: doc.id,
   ...doc.data(),
+  id: doc.id,
   uploadedAt: doc.data().uploadedAt?.toDate() || new Date()
 })) as ProjectDocument[];
 

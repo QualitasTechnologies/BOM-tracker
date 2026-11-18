@@ -54,10 +54,11 @@ const operationResult = (receipt, operationId) => ({
 
 const searchedSnapshot = (receipt) => {
   const value = receipt.searched_item_snapshot;
-  return receipt.searched_item_snapshot_version === 1 && plain(value) &&
-    Object.keys(value).length === 7 && ["id", "name", "make", "sku", "itemType", "category"].every(key => typeof value[key] === "string") &&
+  return receipt.searched_item_snapshot_version === 2 && plain(value) &&
+    Object.keys(value).length === 8 && ["id", "name", "make", "sku", "itemType", "category"].every(key => typeof value[key] === "string") &&
     value.id === receipt.item_id && value.itemType === "component" &&
     (value.specificationUrl === null || typeof value.specificationUrl === "string") &&
+    (value.linkedSpecDocumentId === null || typeof value.linkedSpecDocumentId === "string") &&
     value.specificationUrl === receipt.before_specification_url ? value : null;
 };
 const knownProviderResult = receipt =>
@@ -167,6 +168,7 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
         if (category.name !== before.category || item.id !== before.id || item.name !== before.name ||
           (item.make || "") !== before.make || (item.sku || "") !== before.sku ||
           (item.itemType || "component") !== before.itemType ||
+          (item.linkedSpecDocumentId ?? null) !== before.linkedSpecDocumentId ||
           ((item.specificationUrl ?? null) !== before.specificationUrl && (item.specificationUrl ?? null) !== specificationUrl)) throw fault("spec_search_conflict", 409);
         await freshActor();
         if (specificationUrl) transaction.update(bomRef, {categories: categories.map((row, index) => index !== categoryIndex ? row : ({...row,
@@ -258,10 +260,10 @@ function createNativeSpecSearchOperation({db, resolveActor, enabled = () => fals
         await writable(transaction);
         await freshActor();
         assertDispatchConfigured();
-        const itemSnapshot = {id: item.id, name: item.name, make: item.make || "", sku: item.sku || "", itemType: item.itemType || "component", category: category.name, specificationUrl: item.specificationUrl ?? null};
+        const itemSnapshot = {id: item.id, name: item.name, make: item.make || "", sku: item.sku || "", itemType: item.itemType || "component", category: category.name, specificationUrl: item.specificationUrl ?? null, linkedSpecDocumentId: item.linkedSpecDocumentId ?? null};
         const receipt = {actor_uid: actor.uid, project_id: projectId, item_id: itemId, operation_id: operationId,
           payload_hash: payloadHash, status: "dispatching", before_specification_url: itemSnapshot.specificationUrl,
-          searched_item_snapshot_version: 1, searched_item_snapshot: itemSnapshot,
+          searched_item_snapshot_version: 2, searched_item_snapshot: itemSnapshot,
           after_specification_url: null, created_at: getServerTimestamp(), updated_at: getServerTimestamp()};
         transaction.create(receiptRef, receipt);
         transaction.set(lockRef, {actor_uid: actor.uid, operation_id: operationId, project_id: projectId, item_id: itemId,
