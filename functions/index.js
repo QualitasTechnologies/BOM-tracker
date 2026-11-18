@@ -890,108 +890,58 @@ const stripHtml = (html) => {
 };
 
 // Send Purchase Request via Resend
+const {
+  createPurchaseRequestOperations,
+} = require('./purchaseRequestOperations.cjs');
+const {
+  createPOApprovalSender: createPurchaseRequestSender,
+  createPOApprovalLookup: createPurchaseRequestLookup,
+} = require('./poApprovalProvider.cjs');
+const purchaseRequestOperations = createPurchaseRequestOperations({
+  db: admin.firestore(),
+  auth: admin.auth(),
+  bucket: admin.storage().bucket(),
+  getServerTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  providerFingerprint:()=>require('node:crypto').createHash('sha256').update(getResendApiKey()).digest('hex'),
+  buildMail: (data) => {
+    const html = generatePREmailHTML({
+      ...data,
+      groupedItems: groupItemsByVendor(data.categories, data.vendors),
+    });
+    return {
+      from: data.fromEmail,
+      to: data.recipients,
+      subject: `Purchase Request - ${data.subjectProjectName} - ${new Date().toLocaleDateString('en-IN')}`,
+      html,
+      text: stripHtml(html).replace(/&(amp|lt|gt|quot|#39);/g, value => ({'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'\"','&#39;':"'"}[value])),
+    };
+  },
+  sendEmail: createPurchaseRequestSender({
+    Resend,
+    getApiKey: getResendApiKey,
+  }),
+  lookup: createPurchaseRequestLookup({ Resend, getApiKey: getResendApiKey }),
+});
 exports.sendPurchaseRequest = onCall(
-  { secrets: [resendApiKey] },
+  { secrets: [resendApiKey], timeoutSeconds: 120, maxInstances: 5 },
   async (request) => {
-    const { auth, data } = request;
-
-    if (!auth) {
-      throw new Error('Authentication required');
+    const result = await purchaseRequestOperations(request);
+    if (!result.ok) {
+      const code =
+        result.status === 401
+          ? 'unauthenticated'
+          : result.status === 403
+            ? 'permission-denied'
+            : result.status === 404
+              ? 'not-found'
+              : result.status === 400
+                ? 'invalid-argument'
+                : result.status === 409
+                  ? 'failed-precondition'
+                  : 'unavailable';
+      throw new functions.https.HttpsError(code, result.error);
     }
-
-    try {
-      const {
-        projectDetails,
-        categories,
-        vendors,
-        recipients,
-        companyName,
-        fromEmail
-      } = data;
-
-      // Validate required data
-      if (!projectDetails || !categories || !recipients || recipients.length === 0) {
-        throw new Error('Missing required data for purchase request');
-      }
-
-      // Get user info
-      const userRecord = await admin.auth().getUser(auth.uid);
-      const requestedBy = userRecord.email || 'Unknown User';
-
-      // Group items by vendor
-      const groupedItems = groupItemsByVendor(categories, vendors || []);
-
-      // Generate HTML email
-      const htmlContent = generatePREmailHTML({
-        projectDetails,
-        groupedItems,
-        companyName: companyName || 'Qualitas Technologies Pvt Ltd',
-        requestedBy
-      });
-
-      // Initialize Resend
-      const resend = new Resend(getResendApiKey());
-
-      // Prepare email message
-      const emailData = {
-        from: fromEmail || 'info@qualitastech.com', // Must be verified in Resend
-        to: recipients,
-        subject: `Purchase Request - ${projectDetails.projectName} - ${new Date().toLocaleDateString('en-IN')}`,
-        html: htmlContent,
-        text: stripHtml(htmlContent)
-      };
-
-      // Send email
-      const response = await resend.emails.send(emailData);
-
-      logger.info('Purchase request sent successfully', {
-        projectId: projectDetails.projectId,
-        projectName: projectDetails.projectName,
-        recipients: recipients,
-        itemCount: groupedItems.reduce((sum, vendor) => sum + vendor.items.length, 0),
-        vendorCount: groupedItems.length,
-        sentBy: auth.uid,
-        emailId: response.id
-      });
-
-      return {
-        success: true,
-        message: 'Purchase request sent successfully',
-        emailId: response.id,
-        recipients: recipients
-      };
-
-    } catch (error) {
-      // Log full error for debugging
-      logger.error('Error sending purchase request:', {
-        message: error.message,
-        code: error.code,
-        stack: error.stack
-      });
-
-      // Provide user-friendly error messages based on error type
-      let userMessage = 'Failed to send purchase request';
-      let troubleshooting = '';
-
-      if (error.message?.includes('Unauthorized') || error.message?.includes('Invalid API key')) {
-        userMessage = 'Email service authentication failed';
-        troubleshooting = 'The Resend API key is invalid or expired. Please contact your administrator to update the API key in Firebase secrets.';
-      } else if (error.message?.includes('Forbidden') || error.message?.includes('Domain not verified')) {
-        userMessage = 'Email service access denied';
-        troubleshooting = 'The sender email address may not be verified in Resend, or the API key lacks required permissions.';
-      } else if (error.message?.includes('Invalid') || error.code === 400) {
-        userMessage = 'Invalid email request';
-        troubleshooting = 'Check that all recipient email addresses are valid and the email content is properly formatted.';
-      } else if (error.message?.includes('ENOTFOUND') || error.message?.includes('ETIMEDOUT')) {
-        userMessage = 'Email service unreachable';
-        troubleshooting = 'Network connectivity issue. Please try again in a few moments.';
-      } else {
-        userMessage = 'Email service error';
-        troubleshooting = error.message;
-      }
-
-      throw new Error(`${userMessage}. ${troubleshooting || error.message}`);
-    }
+    return result;
   }
 );
 
