@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import { Loader2, Send, Mail, X, AlertCircle, User, Search, Check, FileText, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,7 +12,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { BOMCategory, BOMItem } from '@/types/bom';
 import { Vendor, getPRSettings } from '@/utils/settingsFirestore';
 import { ProjectDocument } from '@/types/projectDocument';
-import { getFunctions, httpsCallable } from 'firebase/functions';
+import {beginPurchaseRequest,readPurchaseRequest,clearPurchaseRequest,callPurchaseRequest,recoverPurchaseRequest,type PurchaseRequestPending,type PurchaseRequestResult} from '@/utils/purchaseRequestRecovery';
 import { toast } from '@/components/ui/use-toast';
 import { auth } from '@/firebase';
 import { cn } from '@/lib/utils';
@@ -191,6 +191,120 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
   const [loading, setLoading] = useState(false);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const uid = auth.currentUser?.uid || '';
+  const [savedRequest, setSavedRequest] =
+    useState<PurchaseRequestPending | null>(null);
+  const [recovery, setRecovery] = useState<PurchaseRequestResult | null>(null);
+  const [recoveryReady, setRecoveryReady] = useState(false);
+  type Context = { uid: string; projectId: string; open: boolean };
+  const context = useRef<Context | null>(null),
+    inFlight = useRef<Context | null>(null);
+  useLayoutEffect(() => {
+    const value = { uid, projectId, open };
+    context.current = value;
+    return () => {
+      if (context.current === value) context.current = null;
+    };
+  }, [uid, projectId, open]);
+  const current = (value: Context | null) =>
+    !!value &&
+    context.current === value &&
+    value.open &&
+    auth.currentUser?.uid === value.uid;
+  async function runSaved(
+    pending: PurchaseRequestPending,
+    resolveOnly: boolean,
+    value: Context
+  ) {
+    if (!current(value) || inFlight.current === value) return;
+    inFlight.current = value;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await callPurchaseRequest(pending, resolveOnly);
+      if (!current(value)) return;
+      if (result.status === 'sent' || result.status === 'cancelled') {
+        await clearPurchaseRequest(
+          value.uid,
+          value.projectId,
+          pending.body.operation_id
+        );
+        if (!current(value)) return;
+        setSavedRequest(null);
+        setRecovery(null);
+        if (result.status === 'sent') {
+          toast({
+            title: 'Success',
+            description: `Purchase request confirmed for ${result.recipients!.length} recipients`,
+          });
+          onOpenChange(false);
+        } else {
+          const active = await recoverPurchaseRequest(
+            value.uid,
+            value.projectId
+          );
+          if (!current(value)) return;
+          if (active) {
+            setSavedRequest(active);
+            setError(
+              'An earlier request still needs confirmation. Check the saved request before starting another.'
+            );
+          } else
+            setError(
+              'The previous request was not sent. Review the items before sending a new request.'
+            );
+        }
+      } else {
+        setSavedRequest(pending);
+        setRecovery(result);
+        setError(
+          result.status === 'needs_reconciliation'
+            ? 'The previous send needs administrator confirmation. Check the saved request; do not start another.'
+            : result.can_retry
+              ? 'The previous send is unconfirmed. Retry the same saved request to check its outcome.'
+              : 'The previous send is still being checked. Check the saved request again shortly.'
+        );
+      }
+    } catch (err: any) {
+      if (current(value))
+        setError(
+          err.message ||
+            'Purchase request outcome is unconfirmed. Keep the saved request.'
+        );
+    } finally {
+      if (inFlight.current === value) inFlight.current = null;
+      if (current(value)) setLoading(false);
+    }
+  }
+  useEffect(() => {
+    if (!open) return;
+    const value = context.current;
+    setSavedRequest(null);
+    setRecovery(null);
+    setRecoveryReady(false);
+    setLoading(false);
+    setError(null);
+    if (!value?.uid) {
+      setError('Sign in again to create a purchase request.');
+      return;
+    }
+    void (async () => {
+      try {
+        const pending =
+          readPurchaseRequest(uid, projectId) ||
+          (await recoverPurchaseRequest(uid, projectId));
+        if (!current(value)) return;
+        if (pending) {
+          setSavedRequest(pending);
+          await runSaved(pending, true, value);
+        }
+        if (current(value)) setRecoveryReady(true);
+      } catch (err: any) {
+        if (current(value))
+          setError(err.message || 'The saved request cannot be read.');
+      }
+    })();
+  }, [open, uid, projectId]);
 
   // Item selection and vendor assignment state
   const [selectableItems, setSelectableItems] = useState<SelectableItem[]>([]);
@@ -214,10 +328,11 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
   useEffect(() => {
     const loadSettings = async () => {
       if (!open) return;
-
+      const value=context.current;
       setLoadingSettings(true);
       try {
         const settings = await getPRSettings();
+        if(!current(value))return;
         if (settings) {
           setRecipients(settings.recipients || []);
           setCompanyName(settings.companyName || 'Qualitas Technologies Pvt Ltd');
@@ -225,14 +340,14 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
         }
       } catch (err) {
         console.error('Error loading PR settings:', err);
-        setError('Failed to load settings');
+        if(current(value))setError('Failed to load settings');
       } finally {
-        setLoadingSettings(false);
+        if(current(value))setLoadingSettings(false);
       }
     };
 
     loadSettings();
-  }, [open]);
+  }, [open,uid,projectId]);
 
   // Initialize selectable items when dialog opens
   useEffect(() => {
@@ -388,6 +503,9 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
   };
 
   const handleSend = async () => {
+    const value=context.current;
+    if(!value||!current(value)||!recoveryReady||loading||inFlight.current===value)return;
+    if(savedRequest){await runSaved(savedRequest,recovery?.can_retry!==true,value);return;}
     if (recipients.length === 0) {
       setError('Please add at least one recipient email');
       return;
@@ -415,8 +533,7 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
     setError(null);
 
     try {
-      const functions = getFunctions();
-      const sendPR = httpsCallable(functions, 'sendPurchaseRequest');
+
 
       // Build categories with only selected items and include vendor ID and quote info
       const filteredCategories = categories.map(cat => ({
@@ -455,32 +572,23 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
         ? [...recipients, loggedInUserEmail.toLowerCase()]
         : recipients;
 
-      const result = await sendPR({
+      const {pending,created}=await beginPurchaseRequest(value.uid,value.projectId,{
         projectDetails,
-        categories: filteredCategories,
+        categories:filteredCategories,
         vendors,
-        recipients: allRecipients,
+        recipients:allRecipients,
         companyName,
         fromEmail,
-        ccUser: loggedInUserEmail
+        ccUser:loggedInUserEmail,
       });
-
-      toast({
-        title: "Success",
-        description: `Purchase request sent to ${allRecipients.length} recipient${allRecipients.length > 1 ? 's' : ''}`,
-      });
-
-      onOpenChange(false);
+      if(!current(value))return;
+      setSavedRequest(pending);
+      await runSaved(pending,!created,value);
     } catch (err: any) {
       console.error('Error sending purchase request:', err);
-      setError(err.message || 'Failed to send purchase request');
-      toast({
-        title: "Error",
-        description: "Failed to send purchase request. Please try again.",
-        variant: "destructive",
-      });
+      if(current(value))setError(err.message || 'Purchase request outcome is unconfirmed. Keep the saved request.');
     } finally {
-      setLoading(false);
+      if(current(value))setLoading(false);
     }
   };
 
@@ -491,7 +599,7 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
   const itemsMissingQuote = selectableItems.filter(item => item.isSelected && !item.linkedQuoteId);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={next=>{if(!loading)onOpenChange(next);}}>
       <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
         <DialogHeader className="flex-shrink-0">
           <DialogTitle>Create Purchase Request</DialogTitle>
@@ -506,6 +614,7 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto space-y-4">
+            <fieldset className="contents" disabled={loading||!!savedRequest||!recoveryReady}>
             {/* Item Selection */}
             <Card>
               <CardHeader className="py-3">
@@ -784,6 +893,7 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
                 )}
               </CardContent>
             </Card>
+            </fieldset>
           </div>
         )}
 
@@ -794,7 +904,7 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
           </Button>
           <Button
             onClick={handleSend}
-            disabled={loading || recipients.length === 0 || selectedCount === 0 || itemsWithVendor !== selectedCount || itemsWithQuote !== selectedCount}
+            disabled={loading||loadingSettings||!recoveryReady||(!savedRequest&&(recipients.length===0||selectedCount===0||itemsWithVendor!==selectedCount||itemsWithQuote!==selectedCount))}
           >
             {loading ? (
               <>
@@ -804,7 +914,7 @@ const PurchaseRequestDialog: React.FC<PurchaseRequestDialogProps> = ({
             ) : (
               <>
                 <Send className="mr-2 h-4 w-4" />
-                Send PR ({itemsWithVendor} items)
+                {savedRequest?(recovery?.can_retry?'Retry saved request':'Check saved request'):`Send PR (${itemsWithVendor} items)`}
               </>
             )}
           </Button>

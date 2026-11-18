@@ -1,0 +1,22 @@
+# Purchase request access and send recovery repair
+
+Goal: retain original Purchase Request selection, vendor quotes, custom recipients, email layout and category grants while enforcing them on the server and preventing duplicate sends after uncertain outcomes. No new feature activation, UI redesign, provider probe or user impersonation.
+
+Contract: current revoked-token-aware approved identity; current project membership (explicit null legacy fallback; missing/malformed denied) and category scope. Rebuild project/company/sender/vendor/quote data from current records, reject changed selected BOM fields and unauthorized quote access. Append the actual actor's email as the original UI does. Escape dynamic email text/links.
+
+One saved actor/project operation identity precedes any send. Server transaction freezes exact mail and unique operation tag, saves dispatch reservation and actor audit. Provider call stays outside transactions and uses one stable key, with a strict23-hour retry window, fixed first-dispatch time, bounded SDK timeout and lease. Interpret Resend data.id/error correctly. Same-ID retries preserve exact payload; active concurrent leases do not send. Accepted results persist even if identity is subsequently revoked. Resolve-only never dispatches; a missing operation is atomically cancelled so delayed requests cannot send. Existing closed results replay while read-only; new/retry sends obey global read-only. Expired uncertain sends require read-only provider reconciliation, never automatic resend. Admin reconciliation verifies unique operation tag, complete frozen mail and acceptance time from the provider before an audited outcome; no client-asserted acceptance.
+
+Client: original dialog and controls, account/project-bound saved journal before transport, stable payload/identity across retries, committed-context checks, no success toast without a confirmed result. Reopening resolves the saved request before permitting a fresh one. Corrupt/unavailable storage and old clients fail closed; no fallback to the unsafe endpoint.
+
+- [x] Reproduce actual old callable allowing a non-approved user/provider error as success.
+- [x] Write backend authorization/selection/durability/concurrency/expiry/reconciliation tests, implement factory and preserve email renderer.
+- [x] Prove atomicity with isolated Firestore; no provider network.
+- [x] Add journal/transport and dialog lifecycle tests in original UI, mirror into reused Pulse app.
+- [ ] Run focused/full checks/builds, solo review, exact hosted checks.
+- [ ] Merge backend and release only the affected function with protected baseline/source/config/data verification; merge matching Pulse UI only after backend readiness, preserve existing server edits.
+
+Resend primary docs: https://resend.com/docs/dashboard/emails/idempotency-keys (24hours), https://resend.com/docs/api-reference/emails/retrieve-email (body/tags/timestamps). Current SDK4.x uses send({mail},{idempotencyKey,signal}) and lower-level GET for abortable lookup. Fake providers only during tests. No actual vendor email or historical business data repair is part of this work.
+
+Review additions: the server also retains one active request per actor/project so a different browser nonce cannot bypass an uncertain send; authenticated recovery restores its normalized request input. Provider-key fingerprints pause uncertain retries after credential rotation. Zero-quantity component rows remain accepted as in the original dialog. New private collections pulsePurchaseRequestOperations and pulsePurchaseRequestActors are denied to anonymous, approved user and approved admin client reads under the actual source Rules; only server operations may expose an authorized projection. No Rules grant is added.
+
+Rollout includes the original standalone Hosting bundle as well as the reused Pulse module, so coexistence retains this repaired workflow. Existing cached callers without saved identities fail before provider access and must refresh. Protected previous Hosting version69ed499776b105b4 has15files backed up with exact upload SHA256 and decoded checksums. Hosting API hashes gzip bytes; identity responses were reconstructed only when gzip9 bytes match the exact stored hash. Configuration/source and both frontend bundles must be verified; do not claim complete retirement. Timeout120seconds/max5instances are the only reviewed service-setting changes for the affected endpoint; preserve its other settings.
