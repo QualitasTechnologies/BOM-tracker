@@ -5,10 +5,10 @@ const rendererSource=indexSource.slice(indexSource.indexOf('async function gener
 const entrySource=indexSource.slice(indexSource.indexOf('exports.generatePOPDF = onCall('),indexSource.indexOf('\nfunction buildPOEmailData',indexSource.indexOf('exports.generatePOPDF = onCall(')));
 const issuedPath='purchase-orders/fixture-project/QA-ONLY-001.pdf';
 const stored={bytes:Buffer.from('%PDF historical issued fixture - never rewrite'),metadata:{contentType:'application/pdf',metadata:{firebaseStorageDownloadTokens:'historical-token',retained:'keep'}}};
-function fixture({failSave=false}={}){
+function fixture({failSave=false,poOverrides={}}={}){
  const objects=new Map([[issuedPath,structuredClone(stored)]]),events=[];
  const bucket={name:'fixture.invalid',file:filename=>({save:async(bytes,options)=>{events.push({kind:'save',filename,options});if(failSave)throw Error('upload failed');if(options.preconditionOpts?.ifGenerationMatch===0&&objects.has(filename))throw Object.assign(Error('exists'),{code:412});objects.set(filename,{bytes:Buffer.from(bytes),metadata:structuredClone(options.metadata)});},setMetadata:async metadata=>{events.push({kind:'setMetadata',filename});const old=objects.get(filename);old.metadata={...old.metadata,...metadata,metadata:{...old.metadata.metadata,...metadata.metadata}};}})};
- const po={id:'fixture-po',projectId:'fixture-project',poNumber:'QA-ONLY-001',poDate:new Date('2026-11-18'),projectReference:'SYNTHETIC TEST ONLY',vendorName:'Synthetic vendor',vendorAddress:'Test address',vendorGstin:'TEST-ONLY',vendorStateCode:'29',invoiceToCompany:'Synthetic fixture',invoiceToAddress:'Test address',invoiceToGstin:'TEST-ONLY',shipToAddress:'Test address',items:[{slNo:1,description:'Synthetic item',quantity:1,rate:10,amount:10,uom:'nos'}],subtotal:10,taxType:'igst',taxPercentage:18,igstAmount:1.8,totalAmount:11.8,amountInWords:'Synthetic fixture amount',paymentTerms:'Test only',deliveryTerms:'Test only'};
+ const po={id:'fixture-po',projectId:'fixture-project',poNumber:'QA-ONLY-001',poDate:new Date('2026-11-18'),projectReference:'SYNTHETIC TEST ONLY',vendorName:'Synthetic vendor',vendorAddress:'Test address',vendorGstin:'TEST-ONLY',vendorStateCode:'29',invoiceToCompany:'Synthetic fixture',invoiceToAddress:'Test address',invoiceToGstin:'TEST-ONLY',shipToAddress:'Test address',items:[{slNo:1,description:'Synthetic item',quantity:1,rate:10,amount:10,uom:'nos'}],subtotal:10,taxType:'igst',taxPercentage:18,igstAmount:1.8,totalAmount:11.8,amountInWords:'Synthetic fixture amount',paymentTerms:'Test only',deliveryTerms:'Test only',...poOverrides};
  const company={companyName:'SYNTHETIC TEST ONLY',companyAddress:'Fixture address',gstin:'TEST-ONLY',pan:'TEST-ONLY'};
  const cachedNative={path:'native-purchase-orders/cached.pdf',generation:'1',sha256:'a'.repeat(64),url:'https://fixture.invalid/cached'};
  const context=vm.createContext({Buffer,PDFDocument,__dirname,require:name=>{if(['http','https','node:http','node:https'].includes(name))throw Error('network forbidden');if(name==='fs')return{...fs,existsSync:()=>false};return require(name);},admin:{storage:()=>({bucket:()=>bucket})},logger:{info(){},warn(){},error(){}},functions:{https:{HttpsError:class extends Error{constructor(code,message){super(message);this.code=code;}}}},formatDateSafe:()=> '18 Nov 2026',formatIndianCurrency:value=>'Rs. '+Number(value||0).toFixed(2),legacyPoAccess:{preparePreview:async()=>({po,companySettings:company})},onCall:fn=>fn,exports:{},readNativePoArtifact:async()=>cachedNative,writeNativePoArtifact:async()=>{throw Error('cached native artifact must not rewrite');},writePoPreview:options=>require('./poPdfPreview.cjs').writePoPreview(options)});
@@ -46,4 +46,39 @@ test('preview publisher rejects malformed server-owned project or PO identity be
 test('preview publication collision fails create-only and leaves every existing token intact',async()=>{
  assert.equal(typeof writePoPreview,'function');const f=fixture(),previewPath=`purchase-orders/fixture-project/previews/${uuid}.pdf`;f.objects.set(previewPath,structuredClone(stored));const before=fingerprint(f.objects.get(previewPath));
  await assert.rejects(()=>writePoPreview({bucket:f.bucket,purchaseOrder:f.po,pdfBuffer:Buffer.from('%PDF-1.3 fixture'),randomUUID:()=>uuid}),e=>e.code===412);assert.equal(fingerprint(f.objects.get(previewPath)),before);assert.equal(f.events.filter(e=>e.kind==='setMetadata').length,0);
+});
+
+async function parsedPreview(poOverrides) {
+ const f=fixture({poOverrides}),result=await f.preview();
+ const {PDFParse}=require('pdf-parse');
+ const parser=new PDFParse({data:new Uint8Array(f.objects.get(result.storagePath).bytes)});
+ try{return {fixture:f,result,text:await parser.getText()};}finally{await parser.destroy();}
+}
+test('authorized PDF preview includes the selected stored annexure after the original PO page',async()=>{
+ const terms='QA ANNEXURE START\n1. Preserve this exact stored obligation.\n2. QA ANNEXURE END';
+ const before=fingerprint(stored);
+ const withTerms=await parsedPreview({includeAnnexure:true,termsAndConditions:terms});
+ const withoutTerms=await parsedPreview({includeAnnexure:false,termsAndConditions:terms});
+ assert.ok(withTerms.text.total>=2,'selected terms must produce an annexure page');
+ assert.equal(withTerms.text.pages[0].text,withoutTerms.text.pages[0].text,'existing PO layout/content changed');
+ assert.match(withTerms.text.pages[1].text,/QA-ONLY-001/,'annexure must identify its PO');
+ assert.match(withTerms.text.text,/QA ANNEXURE START/);assert.match(withTerms.text.text,/QA ANNEXURE END/);
+ assert.match(withTerms.text.text,/Preserve this exact stored obligation/);
+ assert.equal(fingerprint(withTerms.fixture.objects.get(issuedPath)),before,'annexure preview altered issued artifact');
+});
+test('unselected, missing or empty annexure adds no terms or pages',async()=>{
+ for(const fields of [{includeAnnexure:false,termsAndConditions:'HIDDEN ANNEXURE'},{termsAndConditions:'HIDDEN ANNEXURE'},{includeAnnexure:'true',termsAndConditions:'HIDDEN ANNEXURE'},{includeAnnexure:true,termsAndConditions:'  \n  '},{includeAnnexure:true}]){
+  const p=await parsedPreview(fields);assert.equal(p.text.total,1);assert.doesNotMatch(p.text.text,/HIDDEN ANNEXURE/);
+ }
+});
+test('selected long annexure flows completely across additional pages',async()=>{
+ const clauses=Array.from({length:70},(_,i)=>`CLAUSE-${String(i+1).padStart(3,'0')}: This synthetic stored obligation must remain complete and readable, with no omitted terms.`);
+ const p=await parsedPreview({includeAnnexure:true,termsAndConditions:clauses.join('\n\n')});
+ assert.ok(p.text.total>=4,'long terms must flow beyond a single annexure page');
+ for(const clause of clauses)assert.ok(p.text.text.replace(/\s+/g,' ').includes(clause),clause);
+ assert.match(p.text.pages.at(-1).text,/CLAUSE-070/);
+});
+test('cached native send artifact is returned without applying new annexure rendering',async()=>{
+ const f=fixture({poOverrides:{includeAnnexure:true,termsAndConditions:'DO NOT REWRITE ACCEPTED ARTIFACT'}});
+ assert.deepEqual(await f.native(),f.cachedNative);assert.equal(f.events.length,0);
 });
