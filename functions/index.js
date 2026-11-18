@@ -4522,7 +4522,8 @@ exports.discardUnassignedEmail = onCall(async (request) => {
  * Creates a professional PO document and stores it in Firebase Storage
  */
 const { readNativePoArtifact, writeNativePoArtifact } = require('./nativePoArtifact.cjs');
-async function generatePOPDFHandler(request, immutableTarget) {
+const { writePoPreview } = require('./poPdfPreview.cjs');
+async function generatePOPDFHandler(request, immutableTarget, { preview = false } = {}) {
   const { purchaseOrder, companySettings, companyLogo, companyLogoUrl, companyLogoPath } = request.data;
 
   if (!purchaseOrder || !companySettings) {
@@ -5066,6 +5067,7 @@ async function generatePOPDFHandler(request, immutableTarget) {
     // Upload to Firebase Storage
     const bucket = admin.storage().bucket();
     if (immutableTarget) return writeNativePoArtifact(bucket, immutableTarget, pdfBuffer);
+    if (preview === true) return writePoPreview({ bucket, purchaseOrder, pdfBuffer });
     const poNumberSafe = (purchaseOrder.poNumber || 'DRAFT').replace(/[^a-zA-Z0-9-]/g, '_');
     const filename = `purchase-orders/${purchaseOrder.projectId || 'unknown'}/${poNumberSafe}.pdf`;
     const file = bucket.file(filename);
@@ -5124,7 +5126,7 @@ async function generatePOPDFHandler(request, immutableTarget) {
 const legacyPoAccess = createLegacyPoAccess({ admin, functions });
 exports.generatePOPDF = onCall(async (request) => {
   const authorized = await legacyPoAccess.preparePreview(request);
-  return generatePOPDFHandler({ data: { ...authorized, purchaseOrder: authorized.po } });
+  return generatePOPDFHandler({ data: { ...authorized, purchaseOrder: authorized.po } }, undefined, { preview: true });
 });
 
 function buildPOEmailData(purchaseOrder, companySettings, recipientEmail, ccEmails, pdfBuffer) {
