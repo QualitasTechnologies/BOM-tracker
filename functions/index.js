@@ -5055,6 +5055,25 @@ async function generatePOPDFHandler(request, immutableTarget, { preview = false 
        .fillColor('#4b5563')
        .text('Authorized Signatory', startX + pageWidth - 180, y, { width: 180, align: 'right' });
 
+    // Honor the stored annexure selection without reflowing the original PO.
+    // PDFKit continues long terms onto further pages within the page margins.
+    if (purchaseOrder.includeAnnexure === true
+        && typeof purchaseOrder.termsAndConditions === 'string'
+        && purchaseOrder.termsAndConditions.trim()) {
+      doc.addPage();
+      doc.font('Helvetica-Bold')
+         .fontSize(11)
+         .fillColor('#1f2937')
+         .text('Terms & Conditions Annexure', startX, 40, { width: pageWidth });
+      doc.font('Helvetica')
+         .fontSize(9)
+         .text(`Purchase Order: ${purchaseOrder.poNumber || 'DRAFT'}`, startX, 60, { width: pageWidth });
+      doc.text(purchaseOrder.termsAndConditions, startX, Math.max(85, doc.y + 15), {
+        width: pageWidth,
+        lineGap: 3
+      });
+    }
+
     // Finalize PDF
     doc.end();
 
