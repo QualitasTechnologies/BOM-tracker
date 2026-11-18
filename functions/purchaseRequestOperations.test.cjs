@@ -195,6 +195,8 @@ function fixture(options = {}) {
   });
   const data = {
     operation_id: 'attempt-1',
+    expected_project_version: '10:1',
+    expected_material_version: '10:1',
     expected_actor_uid: 'U',
     projectDetails: {
       projectId: 'P',
@@ -535,6 +537,62 @@ test('provider credential rotation stops uncertain automatic retry and retains t
   assert.equal(
     (await f.call({ resolve_only: true })).status,
     'needs_reconciliation'
+  );
+  assert.equal(f.sends.length, 1);
+});
+
+test('an earlier-backup restore cannot turn an old request into a new send after provider deduplication expires', async () => {
+  const f = fixture();
+  assert.equal((await f.call()).status, 'sent');
+  for (const path of [...f.docs.keys()])
+    if (
+      path.startsWith('pulsePurchaseRequestOperations/') ||
+      path.startsWith('pulsePurchaseRequestActors/')
+    ) {
+      f.docs.delete(path);
+      f.versions.delete(path);
+    }
+  f.versions.set('projects/P', 90);
+  f.versions.set('projects/P/bom/data', 91);
+  f.accepted.clear();
+  f.advance(25 * 3600000);
+  const old = await f.call();
+  assert.equal(
+    f.sends.length,
+    1,
+    'old saved request dispatched again after restored receipt loss'
+  );
+  assert.equal(old.ok, false);
+});
+
+test('retained confirmed receipt resolves after restoration changes server versions', async () => {
+  const f = fixture();
+  await f.call();
+  f.versions.set('projects/P', 90);
+  f.versions.set('projects/P/bom/data', 91);
+  f.advance(25 * 3600000);
+  assert.equal((await f.call({ resolve_only: true })).status, 'sent');
+  assert.equal(f.sends.length, 1);
+});
+test('fresh open exposes current versions and stale unknown requests can be cancelled after restore', async () => {
+  const f = fixture();
+  f.versions.set('projects/P', 90);
+  f.versions.set('projects/P/bom/data', 91);
+  const opened = await f.call({ operation: 'recover', project_id: 'P' });
+  assert.equal(opened.project_version, '10:90');
+  assert.equal(opened.material_version, '10:91');
+  assert.equal((await f.call({ resolve_only: true })).status, 'cancelled');
+  assert.equal((await f.call()).status, 'cancelled');
+  assert.equal(f.sends.length, 0);
+  assert.equal(
+    (
+      await f.call({
+        operation_id: 'new-intent',
+        expected_project_version: opened.project_version,
+        expected_material_version: opened.material_version,
+      })
+    ).status,
+    'sent'
   );
   assert.equal(f.sends.length, 1);
 });

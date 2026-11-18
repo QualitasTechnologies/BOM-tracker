@@ -31,6 +31,14 @@ beforeEach(() => {
   localStorage.clear();
   h.uid = 'U';
   h.call.mockReset();
+  h.call.mockResolvedValue({
+    data: {
+      ok: true,
+      pending: null,
+      project_version: '10:1',
+      material_version: '10:1',
+    },
+  });
 });
 it('saves a unique actor/project identity before transport and retains it on another attempt', async () => {
   const a = await beginPurchaseRequest('U', 'P', body, { locks });
@@ -43,7 +51,11 @@ it('saves a unique actor/project identity before transport and retains it on ano
   expect(a.created).toBe(true);
   expect(b.created).toBe(false);
   expect(b.pending).toEqual(a.pending);
-  expect(h.call).not.toHaveBeenCalled();
+  expect(h.call).toHaveBeenCalledWith({
+    operation: 'recover',
+    project_id: 'P',
+    expected_actor_uid: 'U',
+  });
   expect(readPurchaseRequest('U', 'other')).toBe(null);
 });
 it('storage or cross-tab lock failures prevent transport', async () => {
@@ -75,6 +87,7 @@ it('corrupt or mismatched saved data is not overwritten', async () => {
 });
 it('retries use the exact saved body and validate the server operation identity', async () => {
   const { pending } = await beginPurchaseRequest('U', 'P', body, { locks });
+  h.call.mockClear();
   h.call.mockResolvedValue({
     data: {
       ok: true,
@@ -122,6 +135,7 @@ it('legacy success response, provider error and malformed confirmed result never
 });
 it('an account switch before or after transport keeps recovery evidence and refuses completion', async () => {
   const { pending } = await beginPurchaseRequest('U', 'P', body, { locks });
+  h.call.mockClear();
   h.uid = 'other';
   await expect(callPurchaseRequest(pending)).rejects.toThrow();
   expect(h.call).not.toHaveBeenCalled();
@@ -156,7 +170,13 @@ it('rebuilds lost browser evidence only from the authenticated server pending re
   h.call.mockResolvedValue({
     data: {
       ok: true,
-      pending: { ...body, operation_id: 'server-1', expected_actor_uid: 'U' },
+      pending: {
+        ...body,
+        operation_id: 'server-1',
+        expected_project_version: '10:1',
+        expected_material_version: '10:1',
+        expected_actor_uid: 'U',
+      },
     },
   });
   const p = await recoverPurchaseRequest('U', 'P', { locks });
@@ -175,17 +195,33 @@ it('server recovery refuses another owner/project or overwriting a different loc
       pending: {
         ...body,
         operation_id: 'server-1',
+        expected_project_version: '10:1',
+        expected_material_version: '10:1',
         expected_actor_uid: 'OTHER',
       },
     },
   });
   await expect(recoverPurchaseRequest('U', 'P', { locks })).rejects.toThrow();
   expect(readPurchaseRequest('U', 'P')).toBe(null);
+  h.call.mockResolvedValue({
+    data: {
+      ok: true,
+      pending: null,
+      project_version: '10:1',
+      material_version: '10:1',
+    },
+  });
   const { pending } = await beginPurchaseRequest('U', 'P', body, { locks });
   h.call.mockResolvedValue({
     data: {
       ok: true,
-      pending: { ...body, operation_id: 'server-1', expected_actor_uid: 'U' },
+      pending: {
+        ...body,
+        operation_id: 'server-1',
+        expected_project_version: '10:1',
+        expected_material_version: '10:1',
+        expected_actor_uid: 'U',
+      },
     },
   });
   await expect(recoverPurchaseRequest('U', 'P', { locks })).rejects.toThrow();
@@ -201,4 +237,28 @@ it('explains a current permission refusal without exposing an internal error cod
   await expect(callPurchaseRequest(pending)).rejects.toThrow(
     'Your current account cannot send purchase requests for this project.'
   );
+});
+
+it('new saved requests capture fresh server project/BOM versions before any send', async () => {
+  h.call.mockResolvedValue({
+    data: {
+      ok: true,
+      pending: null,
+      project_version: '20:2',
+      material_version: '30:3',
+    },
+  });
+  const { pending } = await beginPurchaseRequest('U', 'P', body, { locks });
+  expect(pending.body.expected_project_version).toBe('20:2');
+  expect(pending.body.expected_material_version).toBe('30:3');
+  expect(h.call.mock.calls.every((c) => c[0].operation === 'recover')).toBe(
+    true
+  );
+});
+it('missing server versions prevent creating a new request identity', async () => {
+  h.call.mockResolvedValue({ data: { ok: true, pending: null } });
+  await expect(
+    beginPurchaseRequest('U', 'P', body, { locks })
+  ).rejects.toThrow();
+  expect(readPurchaseRequest('U', 'P')).toBe(null);
 });
