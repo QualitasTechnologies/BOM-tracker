@@ -31,6 +31,12 @@ const fail = () =>
   new Error(
     'Saved purchase request cannot be verified. Keep it for recovery and contact your administrator.'
   );
+const validVersion = (v: unknown) =>
+  v === 'missing' ||
+  (typeof v === 'string' &&
+    /^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$/.test(v) &&
+    Number.isSafeInteger(Number(v.split(':')[0])) &&
+    Number(v.split(':')[1]) < 1e9);
 export function readPurchaseRequest(
   uid: string,
   projectId: string,
@@ -49,6 +55,9 @@ export function readPurchaseRequest(
       p.body?.projectDetails?.projectId !== projectId ||
       typeof p.body?.operation_id !== 'string' ||
       !/^[-\w]{1,128}$/.test(p.body.operation_id) ||
+      !validVersion(p.body.expected_project_version) ||
+      p.body.expected_project_version === 'missing' ||
+      !validVersion(p.body.expected_material_version) ||
       !Array.isArray(p.body.categories) ||
       !Array.isArray(p.body.recipients)
     )
@@ -73,6 +82,49 @@ async function locked<T>(
     work(options.storage || localStorage)
   );
 }
+async function inspectServer(uid: string, projectId: string) {
+  if (auth.currentUser?.uid !== uid)
+    throw new Error('Account changed. Reopen the purchase request.');
+  const { data } = await invoke({
+    operation: 'recover',
+    project_id: projectId,
+    expected_actor_uid: uid,
+  });
+  if (auth.currentUser?.uid !== uid)
+    throw new Error('Account changed. Keep the saved request for recovery.');
+  const r = data as any;
+  if (r?.ok !== true || r.pending === undefined) throw fail();
+  if (r.pending === null) {
+    if (
+      !validVersion(r.project_version) ||
+      r.project_version === 'missing' ||
+      !validVersion(r.material_version)
+    )
+      throw fail();
+    return {
+      pending: null as PurchaseRequestPending | null,
+      projectVersion: r.project_version as string,
+      materialVersion: r.material_version as string,
+    };
+  }
+  const raw = JSON.stringify({ version: 1, uid, projectId, body: r.pending });
+  const pending = readPurchaseRequest(uid, projectId, {
+    getItem: () => raw,
+    setItem: () => {},
+    removeItem: () => {},
+  });
+  if (!pending) throw fail();
+  return { pending, projectVersion: '', materialVersion: '' };
+}
+function storePending(storage: Store, pending: PurchaseRequestPending) {
+  const raw = JSON.stringify(pending);
+  if (raw.length > 300000)
+    throw new Error('Purchase request is too large. Select fewer items.');
+  storage.setItem(key(pending.uid, pending.projectId), raw);
+  if (storage.getItem(key(pending.uid, pending.projectId)) !== raw)
+    throw fail();
+  return pending;
+}
 export async function beginPurchaseRequest(
   uid: string,
   projectId: string,
@@ -86,9 +138,15 @@ export async function beginPurchaseRequest(
     auth.currentUser?.uid !== uid
   )
     throw new Error('Account or project changed. Reopen the purchase request.');
-  return locked(uid, projectId, options, (storage) => {
+  return locked(uid, projectId, options, async (storage) => {
     const existing = readPurchaseRequest(uid, projectId, storage);
     if (existing) return { pending: existing, created: false };
+    const current = await inspectServer(uid, projectId);
+    if (current.pending)
+      return {
+        pending: storePending(storage, current.pending),
+        created: false,
+      };
     const pending: PurchaseRequestPending = {
       version: 1,
       uid,
@@ -98,15 +156,12 @@ export async function beginPurchaseRequest(
           ...body,
           operation_id: crypto.randomUUID(),
           expected_actor_uid: uid,
+          expected_project_version: current.projectVersion,
+          expected_material_version: current.materialVersion,
         })
       ),
     };
-    const raw = JSON.stringify(pending);
-    if (raw.length > 300000)
-      throw new Error('Purchase request is too large. Select fewer items.');
-    storage.setItem(key(uid, projectId), raw);
-    if (storage.getItem(key(uid, projectId)) !== raw) throw fail();
-    return { pending, created: true };
+    return { pending: storePending(storage, pending), created: true };
   });
 }
 export async function clearPurchaseRequest(
@@ -200,37 +255,12 @@ export async function recoverPurchaseRequest(
   projectId: string,
   options: Options = {}
 ): Promise<PurchaseRequestPending | null> {
-  if (auth.currentUser?.uid !== uid)
-    throw new Error('Account changed. Reopen the purchase request.');
-  const { data } = await invoke({
-    operation: 'recover',
-    project_id: projectId,
-    expected_actor_uid: uid,
-  });
-  if (auth.currentUser?.uid !== uid)
-    throw new Error('Account changed. Keep the saved request for recovery.');
-  const r = data as { ok?: boolean; pending?: Record<string, any> | null };
-  if (r?.ok !== true || r.pending === undefined) throw fail();
-  if (r.pending === null) return null;
-  const pending: PurchaseRequestPending = {
-    version: 1,
-    uid,
-    projectId,
-    body: r.pending,
-  };
-  const raw = JSON.stringify(pending);
-  const checked = readPurchaseRequest(uid, projectId, {
-    getItem: () => raw,
-    setItem: () => {},
-    removeItem: () => {},
-  });
-  if (!checked) throw fail();
+  const { pending } = await inspectServer(uid, projectId);
+  if (!pending) return null;
   return locked(uid, projectId, options, (storage) => {
     const prior = readPurchaseRequest(uid, projectId, storage);
     if (prior && prior.body.operation_id !== pending.body.operation_id)
       throw fail();
-    storage.setItem(key(uid, projectId), raw);
-    if (storage.getItem(key(uid, projectId)) !== raw) throw fail();
-    return pending;
+    return storePending(storage, pending);
   });
 }

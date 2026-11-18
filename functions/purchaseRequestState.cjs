@@ -25,6 +25,25 @@ const email = (v) =>
   typeof v === 'string' &&
   v.length <= 254 &&
   /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(v);
+const validVersion = (value) =>
+  value === 'missing' ||
+  (typeof value === 'string' &&
+    /^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$/.test(value) &&
+    Number.isSafeInteger(Number(value.split(':')[0])) &&
+    Number(value.split(':')[1]) < 1e9);
+function version(snapshot) {
+  if (!snapshot.exists) return 'missing';
+  const time = snapshot.updateTime;
+  if (
+    !Number.isSafeInteger(time?.seconds) ||
+    time.seconds < 0 ||
+    !Number.isInteger(time.nanoseconds) ||
+    time.nanoseconds < 0 ||
+    time.nanoseconds >= 1e9
+  )
+    throw fault('purchase_request_changed', 409);
+  return `${time.seconds}:${time.nanoseconds}`;
+}
 function itemView(item) {
   const out = {};
   for (const key of ['name', 'make', 'sku', 'description']) {
@@ -53,6 +72,9 @@ function normalize(data, actor) {
     !/^[-\w]{1,128}$/.test(data.operation_id || '') ||
     data.expected_actor_uid !== actor.uid ||
     !id(data.projectDetails?.projectId) ||
+    !validVersion(data.expected_project_version) ||
+    data.expected_project_version === 'missing' ||
+    !validVersion(data.expected_material_version) ||
     (data.resolve_only !== undefined && data.resolve_only !== true)
   )
     throw fault('invalid_purchase_request');
@@ -109,6 +131,8 @@ function normalize(data, actor) {
     throw fault('invalid_purchase_request');
   return {
     project_id: data.projectDetails.projectId,
+    expected_project_version: data.expected_project_version,
+    expected_material_version: data.expected_material_version,
     operation_id: data.operation_id,
     selections,
     recipients,
@@ -158,6 +182,8 @@ async function prepare({ tx, db, bucket, input, actor, project, scope }) {
       .collection('bom')
       .doc('data')
   );
+  if (version(bom) !== input.expected_material_version)
+    throw fault('purchase_request_changed', 409);
   const settings = await tx.get(
     db.collection('settings').doc('purchaseRequest')
   );
@@ -295,6 +321,7 @@ async function prepare({ tx, db, bucket, input, actor, project, scope }) {
   };
 }
 module.exports = {
+  version,
   PUBLIC,
   fault,
   plain,

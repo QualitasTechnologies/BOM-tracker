@@ -2,6 +2,7 @@ const { randomUUID } = require('node:crypto');
 const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
 const { assertDocumentBudget } = require('./materialCommands.cjs');
 const {
+  version,
   PUBLIC,
   fault,
   plain,
@@ -80,7 +81,7 @@ function createPurchaseRequestOperations({
     )
       throw fault('actor_session_changed', 403);
     const scope = scopeFor(project.data(), current, categories);
-    return { project: project.data(), scope };
+    return { project: project.data(), scope, projectVersion: version(project) };
   }
   async function finish(
     ref,
@@ -217,8 +218,22 @@ function createPurchaseRequestOperations({
         return await transact(async (tx) => {
           const pointer = await tx.get(activeRef(actor.uid, d.project_id));
           if (!pointer.exists || pointer.data().status === 'sent') {
-            await currentAccess(tx, request, actor, d.project_id, []);
-            return { ok: true, pending: null };
+            const access = await currentAccess(
+              tx,
+              request,
+              actor,
+              d.project_id,
+              []
+            );
+            const bom = await tx.get(
+              projectRef(d.project_id).collection('bom').doc('data')
+            );
+            return {
+              ok: true,
+              pending: null,
+              project_version: access.projectVersion,
+              material_version: version(bom),
+            };
           }
           const snap = await tx.get(
               db
@@ -242,6 +257,8 @@ function createPurchaseRequestOperations({
             ok: true,
             pending: {
               operation_id: r.operation_id,
+              expected_project_version: r.input.expected_project_version,
+              expected_material_version: r.input.expected_material_version,
               expected_actor_uid: actor.uid,
               projectDetails: { projectId: r.project_id },
               recipients: r.input.recipients,
@@ -340,6 +357,8 @@ function createPurchaseRequestOperations({
         )
           throw fault('purchase_request_pending', 409);
         writable(await tx.get(controlRef));
+        if (access.projectVersion !== input.expected_project_version)
+          throw fault('purchase_request_changed', 409);
         const prepared = await prepare({
           tx,
           db,
