@@ -997,7 +997,7 @@ exports.notifyPOApproval = onCall(
     const managed = await require('./poApprovalLegacyGuard.cjs').managedApprovalNotification({db:admin.firestore(),auth:admin.auth(),request,data});
     if (managed) return managed;
     if (!await require('./poApprovalLegacyGuard.cjs').legacyApprovalSendingAllowed(admin.firestore())) throw new Error('Legacy notifications disabled; reopen in Pulse');
-    const {mode, projectId, projectName, poId, poNumber, vendorName, totalAmount, submitterUid, note} = data;
+    const {mode, projectId, projectName, poId, poNumber, vendorName, totalAmount, currency, submitterUid, note} = data;
     const {buildPOApprovalEmail} = require('./poApprovalEmail.cjs');
     const resend = new Resend(getResendApiKey());
     if (mode === 'submitted') {
@@ -1005,7 +1005,7 @@ exports.notifyPOApproval = onCall(
       const adminEmails = allUsers.users.filter(user => user.customClaims?.role === 'admin' && user.customClaims?.status === 'approved' && user.email).map(user => user.email);
       if (!adminEmails.length) return {success:false,reason:'no-admins'};
       const submitter = await admin.auth().getUser(auth.uid);
-      const mail = buildPOApprovalEmail({mode,projectId,projectName,poId,poNumber,vendorName,totalAmount,actorName:submitter.displayName || submitter.email || 'A team member',to:adminEmails,legacyCompatibility:true});
+      const mail = buildPOApprovalEmail({mode,projectId,projectName,poId,poNumber,vendorName,totalAmount,currency,actorName:submitter.displayName || submitter.email || 'A team member',to:adminEmails,legacyCompatibility:true});
       const response = await resend.emails.send(mail);
       if (response?.error) throw new Error('PO notification outcome unconfirmed');
       logger.info('[notifyPOApproval] Submitted',{projectId,poId,recipientCount:adminEmails.length});
@@ -1017,7 +1017,7 @@ exports.notifyPOApproval = onCall(
       if (!submitterUid) throw new Error('submitterUid required');
       const submitter = await admin.auth().getUser(submitterUid);
       if (!submitter.email) return {success:false,reason:'no-submitter-email'};
-      const mail = buildPOApprovalEmail({mode,projectId,projectName,poId,poNumber,vendorName,totalAmount,note,actorName:approver.displayName || approver.email || 'An admin',to:submitter.email,legacyCompatibility:true});
+      const mail = buildPOApprovalEmail({mode,projectId,projectName,poId,poNumber,vendorName,totalAmount,currency,note,actorName:approver.displayName || approver.email || 'An admin',to:submitter.email,legacyCompatibility:true});
       const response = await resend.emails.send(mail);
       if (response?.error) throw new Error('PO notification outcome unconfirmed');
       logger.info('[notifyPOApproval] Changes requested',{projectId,poId});
@@ -3578,15 +3578,17 @@ function formatDateSafe(dateValue) {
 /**
  * Format currency in Indian format (₹1,23,456.00)
  */
-function formatIndianCurrency(amount) {
-  // Use "Rs." instead of "₹" because PDFKit's Helvetica font doesn't support the Rupee symbol
-  if (amount === undefined || amount === null || isNaN(amount)) return 'Rs. 0.00';
+function formatIndianCurrency(amount, currency) {
+  // Use "Rs." instead of "₹" because PDFKit's Helvetica font doesn't support the Rupee symbol.
+  // Non-INR POs use the ISO code prefix (e.g. "USD 1,234.00").
+  const prefix = currency && currency !== 'INR' ? currency : 'Rs.';
+  if (amount === undefined || amount === null || isNaN(amount)) return `${prefix} 0.00`;
   const num = parseFloat(amount);
-  const formatted = num.toLocaleString('en-IN', {
+  const formatted = num.toLocaleString(prefix === 'Rs.' ? 'en-IN' : 'en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   });
-  return `Rs. ${formatted}`;
+  return `${prefix} ${formatted}`;
 }
 
 /**
@@ -4796,8 +4798,8 @@ async function generatePOPDFHandler(request, immutableTarget, { preview = false 
         item.hsn || '-',
         item.uom || '-',
         (item.quantity ?? 0).toString(),
-        formatIndianCurrency(item.rate).replace('Rs. ', ''),
-        formatIndianCurrency(item.amount)
+        formatIndianCurrency(item.rate, purchaseOrder.currency).replace(/^\S+ /, ''),
+        formatIndianCurrency(item.amount, purchaseOrder.currency)
       ];
 
       rowData.forEach((data, i) => {
@@ -4831,11 +4833,13 @@ async function generatePOPDFHandler(request, immutableTarget, { preview = false 
        .text('Subtotal:', totalsX + 5, y + 4, { width: 90 });
     doc.font('Helvetica-Bold')
        .fillColor('#1f2937')
-       .text(formatIndianCurrency(purchaseOrder.subtotal), totalsX + 95, y + 4, { width: 100, align: 'right' });
+       .text(formatIndianCurrency(purchaseOrder.subtotal, purchaseOrder.currency), totalsX + 95, y + 4, { width: 100, align: 'right' });
     y += 18;
 
     // Tax
-    if (purchaseOrder.taxType === 'igst') {
+    if (purchaseOrder.taxType === 'none') {
+      // Foreign-currency PO: no tax lines
+    } else if (purchaseOrder.taxType === 'igst') {
       doc.rect(totalsX, y, totalsWidth, 18)
          .stroke(borderColor);
       doc.font('Helvetica')
@@ -4844,7 +4848,7 @@ async function generatePOPDFHandler(request, immutableTarget, { preview = false 
          .text(`IGST (${purchaseOrder.taxPercentage}%):`, totalsX + 5, y + 4, { width: 90 });
       doc.font('Helvetica')
          .fillColor('#1f2937')
-         .text(formatIndianCurrency(purchaseOrder.igstAmount), totalsX + 95, y + 4, { width: 100, align: 'right' });
+         .text(formatIndianCurrency(purchaseOrder.igstAmount, purchaseOrder.currency), totalsX + 95, y + 4, { width: 100, align: 'right' });
       y += 18;
     } else {
       // CGST
@@ -4856,7 +4860,7 @@ async function generatePOPDFHandler(request, immutableTarget, { preview = false 
          .text(`CGST (${purchaseOrder.taxPercentage / 2}%):`, totalsX + 5, y + 4, { width: 90 });
       doc.font('Helvetica')
          .fillColor('#1f2937')
-         .text(formatIndianCurrency(purchaseOrder.cgstAmount), totalsX + 95, y + 4, { width: 100, align: 'right' });
+         .text(formatIndianCurrency(purchaseOrder.cgstAmount, purchaseOrder.currency), totalsX + 95, y + 4, { width: 100, align: 'right' });
       y += 18;
 
       // SGST
@@ -4868,7 +4872,7 @@ async function generatePOPDFHandler(request, immutableTarget, { preview = false 
          .text(`SGST (${purchaseOrder.taxPercentage / 2}%):`, totalsX + 5, y + 4, { width: 90 });
       doc.font('Helvetica')
          .fillColor('#1f2937')
-         .text(formatIndianCurrency(purchaseOrder.sgstAmount), totalsX + 95, y + 4, { width: 100, align: 'right' });
+         .text(formatIndianCurrency(purchaseOrder.sgstAmount, purchaseOrder.currency), totalsX + 95, y + 4, { width: 100, align: 'right' });
       y += 18;
     }
 
@@ -4879,7 +4883,7 @@ async function generatePOPDFHandler(request, immutableTarget, { preview = false 
        .fontSize(10)
        .fillColor('white')
        .text('TOTAL:', totalsX + 5, y + 5, { width: 90 });
-    doc.text(formatIndianCurrency(purchaseOrder.totalAmount), totalsX + 95, y + 5, { width: 100, align: 'right' });
+    doc.text(formatIndianCurrency(purchaseOrder.totalAmount, purchaseOrder.currency), totalsX + 95, y + 5, { width: 100, align: 'right' });
     y += 30;
 
     // Amount in words
@@ -5122,7 +5126,7 @@ function buildPOEmailData(purchaseOrder, companySettings, recipientEmail, ccEmai
           </tr>
           <tr>
             <td style="padding: 8px; border: 1px solid #ddd;"><strong>Total Amount:</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${formatIndianCurrency(purchaseOrder.totalAmount)}</td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${formatIndianCurrency(purchaseOrder.totalAmount, purchaseOrder.currency)}</td>
           </tr>
           <tr>
             <td style="padding: 8px; border: 1px solid #ddd;"><strong>Items:</strong></td>

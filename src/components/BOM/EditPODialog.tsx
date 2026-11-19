@@ -21,7 +21,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Separator } from '@/components/ui/separator';
-import { PurchaseOrder, POItem, calculatePOTotals } from '@/types/purchaseOrder';
+import { PurchaseOrder, POItem, calculatePOTotals, formatMoney } from '@/types/purchaseOrder';
 import { updatePurchaseOrder } from '@/utils/poFirestore';
 import { toast } from '@/components/ui/use-toast';
 
@@ -77,11 +77,7 @@ const EditPODialog: React.FC<EditPODialogProps> = ({
   }, [purchaseOrder]);
 
   const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('en-IN', {
-      style: 'currency',
-      currency: 'INR',
-      maximumFractionDigits: 2,
-    }).format(amount);
+    return formatMoney(amount, purchaseOrder.currency);
   };
 
   const handleItemChange = (index: number, field: 'quantity' | 'rate', value: string) => {
@@ -101,7 +97,7 @@ const EditPODialog: React.FC<EditPODialogProps> = ({
 
   const calculateTotals = () => {
     if (!purchaseOrder) return { subtotal: 0, totalAmount: 0 };
-    return calculatePOTotals(items, purchaseOrder.taxType, purchaseOrder.taxPercentage);
+    return calculatePOTotals(items, purchaseOrder.taxType, purchaseOrder.taxPercentage, purchaseOrder.currency);
   };
 
   const handleSave = async () => {
@@ -269,7 +265,7 @@ const EditPODialog: React.FC<EditPODialogProps> = ({
                 <span>Subtotal:</span>
                 <span>{formatCurrency(totals.subtotal)}</span>
               </div>
-              {purchaseOrder.taxType === 'igst' ? (
+              {purchaseOrder.taxType === 'none' ? null : purchaseOrder.taxType === 'igst' ? (
                 <div className="flex justify-between">
                   <span>IGST ({purchaseOrder.taxPercentage}%):</span>
                   <span>{formatCurrency(totals.igstAmount || 0)}</span>

@@ -186,6 +186,7 @@ export interface Vendor {
   stateCode?: string;                 // State code for GST (e.g., "29" for Karnataka)
   stateName?: string;                 // State name (e.g., "Karnataka")
   paymentTerms: string;
+  currency?: string;                  // PO currency for this vendor (INR default; USD, EUR, ...)
   leadTime: string;
   rating: number;
   status: 'active' | 'inactive';

@@ -34,7 +34,12 @@ const esc = (s) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
-const formatINR = (n) => `₹${Math.round(n).toLocaleString('en-IN')}`;
+const formatINR = (n, currency) => {
+  if (typeof currency === 'string' && /^[A-Z]{3}$/.test(currency) && currency !== 'INR') {
+    try { return new Intl.NumberFormat('en-US', { style: 'currency', currency, maximumFractionDigits: 2 }).format(n); } catch { /* fall through to INR */ }
+  }
+  return `₹${Math.round(n).toLocaleString('en-IN')}`;
+};
 
 function requireString(input, key, max, { optional = false, multiline = false } = {}) {
   // Only the unchanged legacy callable opts into its former permissive field rendering.
@@ -117,7 +122,7 @@ function buildPOApprovalEmail(input) {
   const baseUrl = resolveBaseUrl(input.workspaceUrl);
   const to = normalizeRecipients(input.to,input.legacyCompatibility===true);
 
-  const amount = formatINR(totalAmount);
+  const amount = formatINR(totalAmount, input.currency);
   const brand = esc(workspaceName);
 
   const poRows = [

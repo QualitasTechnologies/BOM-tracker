@@ -100,7 +100,7 @@ import {
 } from '@/utils/engineerRatesFirestore';
 import type { EngineerRate } from '@/types/engineerRate';
 import { verifyGSTIN, isValidGSTINFormat } from '@/utils/gstVerification';
-import { INDIAN_STATE_CODES } from '@/types/purchaseOrder';
+import { INDIAN_STATE_CODES, SUPPORTED_CURRENCIES, CURRENCY_LABELS } from '@/types/purchaseOrder';
 import { subscribeToBrands } from '@/utils/brandFirestore';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '@/firebase';
@@ -689,6 +689,7 @@ const Settings = () => {
         stateCode: vendorForm.stateCode || '',
         stateName: vendorForm.stateName || '',
         paymentTerms: vendorForm.paymentTerms || 'Net 30',
+        currency: vendorForm.currency || 'INR',
         leadTime: vendorForm.leadTime || '2 weeks',
         rating: vendorForm.rating || 0,
         status: 'active',
@@ -2046,6 +2047,23 @@ const Settings = () => {
                           </Select>
                         </div>
                         <div className="space-y-2">
+                          <Label htmlFor="vendorCurrency">PO Currency</Label>
+                          <Select
+                            value={vendorForm.currency || 'INR'}
+                            onValueChange={(value) => setVendorForm({...vendorForm, currency: value})}
+                          >
+                            <SelectTrigger id="vendorCurrency">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {SUPPORTED_CURRENCIES.map((c) => (
+                                <SelectItem key={c} value={c}>{CURRENCY_LABELS[c]}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">All POs for this vendor are issued in this currency. Non-INR POs carry no GST.</p>
+                        </div>
+                        <div className="space-y-2">
                           <Label htmlFor="leadTime">Lead Time</Label>
                           <Input
                             id="leadTime"
@@ -2369,7 +2387,7 @@ const Settings = () => {
                           </TableCell>
                           <TableCell>
                             <div className="space-y-1 text-sm">
-                              <div>{vendor.paymentTerms}</div>
+                              <div>{vendor.paymentTerms}{vendor.currency && vendor.currency !== 'INR' ? ` · ${vendor.currency}` : ''}</div>
                               <div className="text-muted-foreground">{vendor.leadTime}</div>
                             </div>
                           </TableCell>

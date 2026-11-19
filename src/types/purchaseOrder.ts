@@ -13,7 +13,50 @@ export type POStatus =
   | 'completed'          // All items received
   | 'cancelled';         // PO cancelled
 
-export type TaxType = 'igst' | 'cgst_sgst';
+export type TaxType = 'igst' | 'cgst_sgst' | 'none';
+
+// ============================================
+// Currency
+// ============================================
+
+export const SUPPORTED_CURRENCIES = ['INR', 'USD', 'EUR', 'GBP', 'AED', 'SGD', 'JPY', 'CNY', 'CHF', 'AUD', 'CAD'] as const;
+export type CurrencyCode = (typeof SUPPORTED_CURRENCIES)[number];
+
+export const CURRENCY_LABELS: Record<CurrencyCode, string> = {
+  INR: 'INR (₹)',
+  USD: 'USD ($)',
+  EUR: 'EUR (€)',
+  GBP: 'GBP (£)',
+  AED: 'AED (د.إ)',
+  SGD: 'SGD (S$)',
+  JPY: 'JPY (¥)',
+  CNY: 'CNY (¥)',
+  CHF: 'CHF',
+  AUD: 'AUD (A$)',
+  CAD: 'CAD (C$)',
+};
+
+// Vendors/POs created before multi-currency support have no currency => INR.
+export const resolveCurrency = (currency?: string | null): CurrencyCode =>
+  (SUPPORTED_CURRENCIES as readonly string[]).includes(currency || '')
+    ? (currency as CurrencyCode)
+    : 'INR';
+
+export const isForeignCurrency = (currency?: string | null): boolean =>
+  resolveCurrency(currency) !== 'INR';
+
+export const formatMoney = (
+  amount: number,
+  currency?: string | null,
+  opts: { maximumFractionDigits?: number } = {}
+): string => {
+  const code = resolveCurrency(currency);
+  return new Intl.NumberFormat(code === 'INR' ? 'en-IN' : 'en-US', {
+    style: 'currency',
+    currency: code,
+    maximumFractionDigits: opts.maximumFractionDigits ?? 2,
+  }).format(amount || 0);
+};
 
 // ============================================
 // PO Item Interface
@@ -93,7 +136,7 @@ export interface PurchaseOrder {
   sgstAmount?: number;           // For SGST (9%)
   totalAmount: number;
   amountInWords: string;
-  currency: 'INR';
+  currency: CurrencyCode;        // Taken from the vendor record; INR if unset
 
   // Terms (entered during PO creation)
   paymentTerms: string;          // "100% payment within 30 days..."
@@ -279,8 +322,43 @@ export const PO_STATUS_COLORS: Record<POStatus, string> = {
   cancelled: 'bg-red-100 text-red-800',
 };
 
-// Convert number to words (Indian format)
-export const numberToWords = (num: number): string => {
+// Convert amount to words using international (million/billion) grouping,
+// for non-INR purchase orders.
+const internationalAmountInWords = (amount: number, currency: CurrencyCode): string => {
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+    'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  const scales = ['', ' Thousand', ' Million', ' Billion', ' Trillion'];
+  const below1000 = (n: number): string => {
+    const parts: string[] = [];
+    if (n >= 100) { parts.push(ones[Math.floor(n / 100)] + ' Hundred'); n %= 100; }
+    if (n >= 20) { parts.push(tens[Math.floor(n / 10)] + (n % 10 ? ' ' + ones[n % 10] : '')); }
+    else if (n > 0) parts.push(ones[n]);
+    return parts.join(' ');
+  };
+  const toWords = (n: number): string => {
+    if (n === 0) return 'Zero';
+    const chunks: string[] = [];
+    let i = 0;
+    while (n > 0) {
+      const chunk = n % 1000;
+      if (chunk) chunks.unshift(below1000(chunk) + scales[i]);
+      n = Math.floor(n / 1000);
+      i++;
+    }
+    return chunks.join(' ');
+  };
+  const rounded = Math.round((amount || 0) * 100);
+  const whole = Math.floor(rounded / 100);
+  const minor = rounded % 100;
+  let result = `${currency} ${toWords(whole)}`;
+  if (minor > 0) result += ` and ${toWords(minor)} Cents`;
+  return result + ' Only';
+};
+
+// Convert number to words (Indian format for INR, international otherwise)
+export const numberToWords = (num: number, currency: string = 'INR'): string => {
+  if (resolveCurrency(currency) !== 'INR') return internationalAmountInWords(num, resolveCurrency(currency));
   if (num === 0) return 'Zero';
 
   const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
@@ -313,7 +391,8 @@ export const numberToWords = (num: number): string => {
 export const calculatePOTotals = (
   items: POItem[],
   taxType: TaxType,
-  taxPercentage: number = 18
+  taxPercentage: number = 18,
+  currency: string = 'INR'
 ): {
   subtotal: number;
   igstAmount?: number;
@@ -329,7 +408,10 @@ export const calculatePOTotals = (
   let sgstAmount: number | undefined;
   let totalAmount: number;
 
-  if (taxType === 'igst') {
+  if (taxType === 'none') {
+    // Import / foreign-currency PO: no GST line (duties handled outside the PO).
+    totalAmount = subtotal;
+  } else if (taxType === 'igst') {
     igstAmount = Math.round(subtotal * (taxPercentage / 100) * 100) / 100;
     totalAmount = subtotal + igstAmount;
   } else {
@@ -345,7 +427,10 @@ export const calculatePOTotals = (
     cgstAmount,
     sgstAmount,
     totalAmount: Math.round(totalAmount * 100) / 100,
-    amountInWords: numberToWords(Math.round(totalAmount)),
+    amountInWords: numberToWords(
+      resolveCurrency(currency) === 'INR' ? Math.round(totalAmount) : totalAmount,
+      currency
+    ),
   };
 };
 

@@ -488,7 +488,7 @@ export const recalculatePOTotals = async (
     throw new Error("Purchase Order not found");
   }
 
-  const totals = calculatePOTotals(po.items, po.taxType, po.taxPercentage);
+  const totals = calculatePOTotals(po.items, po.taxType, po.taxPercentage, po.currency);
 
   const docRef = doc(db, "projects", projectId, "purchaseOrders", poId);
   await updateDoc(docRef, {
@@ -638,6 +638,7 @@ export interface NotifyPOApprovalInput {
   poNumber: string;
   vendorName: string;
   totalAmount: number;
+  currency?: string;
   // Required for mode: 'changes-requested'
   submitterUid?: string;
   note?: string;

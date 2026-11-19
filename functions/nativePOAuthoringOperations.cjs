@@ -2,7 +2,7 @@ const { createHash } = require('node:crypto');
 const { createFreeze } = require('./nativePoSerialization.cjs');
 const { currentNativeActor } = require('./nativeMaterialOperations.cjs');
 const { assertDocumentBudget, MAX_INPUT_BYTES } = require('./materialCommands.cjs');
-const { calculatePOTotals, generatePONumber, determineTaxType, getStateName } = require('./poDomain.generated.cjs');
+const { calculatePOTotals, generatePONumber, determineTaxType, getStateName, resolveCurrency, isForeignCurrency } = require('./poDomain.generated.cjs');
 const { createApprovalJob } = require('./poApprovalOutbox.cjs');
 const PO_FAULT = Symbol('po-authoring-fault');
 const fault = (code, status = 400) => Object.assign(new Error(code), { code, status, [PO_FAULT]:true });
@@ -211,12 +211,12 @@ function createNativePOAuthoringOperations({ db, auth, enabled = false, getServe
             if (!Number.isFinite(amount) || amount > Number.MAX_SAFE_INTEGER / 100) throw fault('invalid_po_create');
             return { ...item,slNo:index+1,amount,...(item.dueDate !== undefined ? {dueDate:date(item.dueDate)} : {}) };
           });
-          const taxType = determineTaxType(billing.stateCode,input.vendorStateCode), totals = calculatePOTotals(items,taxType,18);
+          const currency = resolveCurrency(vendor.data().currency), taxType = isForeignCurrency(currency) ? 'none' : determineTaxType(billing.stateCode,input.vendorStateCode), taxPercentage = taxType === 'none' ? 0 : 18, totals = calculatePOTotals(items,taxType,taxPercentage,currency);
           if (!Number.isFinite(totals.totalAmount) || totals.totalAmount > Number.MAX_SAFE_INTEGER / 100) throw fault('invalid_po_create');
           const created = now();
           const calendar = new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit'}).formatToParts(created);
           const billingClock = { getFullYear:() => Number(calendar.find(part => part.type === 'year').value), getMonth:() => Number(calendar.find(part => part.type === 'month').value)-1 };
-          after = { ...input,projectId:data.project_id,poNumber:generatePONumber(entity.poNumberPrefix || 'PO',entity.poNumberFormat || 'simple',number,billingClock),items,...totals,taxType,taxPercentage:18,currency:'INR',
+          after = { ...input,projectId:data.project_id,poNumber:generatePONumber(entity.poNumberPrefix || 'PO',entity.poNumberFormat || 'simple',number,billingClock),items,...totals,taxType,taxPercentage,currency,
             invoiceToCompany:billing.companyName,invoiceToAddress:billing.companyAddress,invoiceToGstin:billing.gstin,invoiceToStateCode:billing.stateCode,invoiceToStateName:billing.stateName,
             shipToAddress:input.shipToAddress || billing.companyAddress,shipToGstin:input.shipToGstin || billing.gstin,shipToStateCode:input.shipToStateCode || billing.stateCode,shipToStateName:input.shipToStateName || billing.stateName,
             poDate:created,expectedDeliveryDate:input.expectedDeliveryDate === undefined ? null : date(input.expectedDeliveryDate),status:'draft',warnings:[],createdBy:actor.uid,createdAt:at,updatedAt:at };

@@ -57,6 +57,9 @@ import {
   POItem,
   calculatePOTotals,
   determineTaxType,
+  formatMoney,
+  isForeignCurrency,
+  resolveCurrency,
   DEFAULT_TERMS_AND_CONDITIONS,
   getStateName,
   TaxType,
@@ -115,7 +118,7 @@ const VendorCombobox: React.FC<{
 
   // Check for vendors with missing GSTIN or stateCode
   const vendorsWithIssues = useMemo(() => {
-    return vendors.filter((v) => !v.gstNo || !v.stateCode);
+    return vendors.filter((v) => !isForeignCurrency(v.currency) && (!v.gstNo || !v.stateCode));
   }, [vendors]);
 
   return (
@@ -169,7 +172,7 @@ const VendorCombobox: React.FC<{
                   return a.company.localeCompare(b.company);
                 })
                 .map((vendor) => {
-                  const hasIssues = !vendor.gstNo || !vendor.stateCode;
+                  const hasIssues = !isForeignCurrency(vendor.currency) && (!vendor.gstNo || !vendor.stateCode);
                   return (
                     <CommandItem
                       key={vendor.id}
@@ -367,13 +370,13 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
       hsn: item.hsn,
     }));
 
-    const taxType = determineTaxType(
-      companySettings.stateCode,
-      selectedVendor.stateCode || ''
-    );
+    const currency = resolveCurrency(selectedVendor.currency);
+    const taxType: TaxType = isForeignCurrency(currency)
+      ? 'none'
+      : determineTaxType(companySettings.stateCode, selectedVendor.stateCode || '');
 
     return {
-      ...calculatePOTotals(poItems, taxType, 18),
+      ...calculatePOTotals(poItems, taxType, taxType === 'none' ? 0 : 18, currency),
       taxType,
       items: poItems,
     };
@@ -522,11 +525,7 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
 
   // Format currency
   const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('en-IN', {
-      style: 'currency',
-      currency: 'INR',
-      maximumFractionDigits: 2,
-    }).format(amount);
+    return formatMoney(amount, selectedVendor?.currency);
   };
 
   return (
@@ -722,7 +721,7 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
                         <div className="col-span-1"></div>
                         <div className="col-span-4">Item</div>
                         <div className="col-span-2 text-center">Qty</div>
-                        <div className="col-span-2 text-right">Rate (₹)</div>
+                        <div className="col-span-2 text-right">Rate ({resolveCurrency(selectedVendor?.currency)})</div>
                         <div className="col-span-3 text-right">Amount</div>
                       </div>
 
@@ -935,7 +934,7 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
                       </span>
                     </div>
 
-                    {calculatedTotals.taxType === 'igst' ? (
+                    {calculatedTotals.taxType === 'none' ? null : calculatedTotals.taxType === 'igst' ? (
                       <div className="flex justify-between text-muted-foreground">
                         <span>IGST @ 18%</span>
                         <span>{formatCurrency(calculatedTotals.igstAmount || 0)}</span>
