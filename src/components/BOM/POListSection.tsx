@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { formatMoney } from '@/types/purchaseOrder';
 import { useSearchParams } from 'react-router-dom';
 import {
   FileText,
@@ -184,6 +185,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
         poNumber: po.poNumber,
         vendorName: po.vendorName,
         totalAmount: po.totalAmount,
+        currency: po.currency,
       }).catch((err) => console.warn('[POListSection] Admin notification failed:', err));
     } catch (error) {
       console.error('Error submitting PO for approval:', error);
@@ -227,6 +229,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
           poNumber: poForChanges.poNumber,
           vendorName: poForChanges.vendorName,
           totalAmount: poForChanges.totalAmount,
+          currency: poForChanges.currency,
           submitterUid: poForChanges.submittedBy,
           note: changesNote.trim() || undefined,
         }).catch((err) => console.warn('[POListSection] Submitter notification failed:', err));
@@ -258,12 +261,8 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
     return () => unsubscribe();
   }, [projectId]);
 
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('en-IN', {
-      style: 'currency',
-      currency: 'INR',
-      maximumFractionDigits: 0
-    }).format(amount);
+  const formatCurrency = (amount: number, currency?: string) => {
+    return formatMoney(amount, currency, { maximumFractionDigits: 2 });
   };
 
   const formatDate = (date: Date) => {
@@ -599,7 +598,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                 <div className="text-sm text-gray-600 mt-1">
                   <span className="font-medium">{po.vendorName}</span>
                   <span className="mx-2">•</span>
-                  <span className="text-green-700 font-medium">{formatCurrency(po.totalAmount)}</span>
+                  <span className="text-green-700 font-medium">{formatCurrency(po.totalAmount, po.currency)}</span>
                   <span className="mx-2">•</span>
                   <span className="text-gray-500">{formatDate(po.poDate)}</span>
                   <span className="mx-2">•</span>
@@ -794,8 +793,8 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                             )}
                           </td>
                           <td className="text-right p-2">{item.quantity} {item.uom}</td>
-                          <td className="text-right p-2">{formatCurrency(item.rate)}</td>
-                          <td className="text-right p-2">{formatCurrency(item.amount)}</td>
+                          <td className="text-right p-2">{formatCurrency(item.rate, selectedPO.currency)}</td>
+                          <td className="text-right p-2">{formatCurrency(item.amount, selectedPO.currency)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -808,28 +807,28 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
                 <div className="space-y-1 text-sm">
                   <div className="flex justify-between">
                     <span>Subtotal:</span>
-                    <span>{formatCurrency(selectedPO.subtotal)}</span>
+                    <span>{formatCurrency(selectedPO.subtotal, selectedPO.currency)}</span>
                   </div>
-                  {selectedPO.taxType === 'igst' ? (
+                  {selectedPO.taxType === 'none' ? null : selectedPO.taxType === 'igst' ? (
                     <div className="flex justify-between">
                       <span>IGST ({selectedPO.taxPercentage}%):</span>
-                      <span>{formatCurrency(selectedPO.igstAmount || 0)}</span>
+                      <span>{formatCurrency(selectedPO.igstAmount || 0, selectedPO.currency)}</span>
                     </div>
                   ) : (
                     <>
                       <div className="flex justify-between">
                         <span>CGST ({selectedPO.taxPercentage / 2}%):</span>
-                        <span>{formatCurrency(selectedPO.cgstAmount || 0)}</span>
+                        <span>{formatCurrency(selectedPO.cgstAmount || 0, selectedPO.currency)}</span>
                       </div>
                       <div className="flex justify-between">
                         <span>SGST ({selectedPO.taxPercentage / 2}%):</span>
-                        <span>{formatCurrency(selectedPO.sgstAmount || 0)}</span>
+                        <span>{formatCurrency(selectedPO.sgstAmount || 0, selectedPO.currency)}</span>
                       </div>
                     </>
                   )}
                   <div className="flex justify-between font-bold text-base pt-2 border-t">
                     <span>Total:</span>
-                    <span className="text-green-700">{formatCurrency(selectedPO.totalAmount)}</span>
+                    <span className="text-green-700">{formatCurrency(selectedPO.totalAmount, selectedPO.currency)}</span>
                   </div>
                 </div>
               </div>
@@ -878,7 +877,7 @@ const POListSection = ({ projectId, onPOSent }: POListSectionProps) => {
             <AlertDialogTitle>Submit PO for Approval?</AlertDialogTitle>
             <AlertDialogDescription>
               This emails all admins asking them to review PO <strong>{poToSubmit?.poNumber}</strong>{' '}
-              ({poToSubmit ? formatCurrency(poToSubmit.totalAmount) : ''}) for <strong>{poToSubmit?.vendorName}</strong>.
+              ({poToSubmit ? formatCurrency(poToSubmit.totalAmount, poToSubmit.currency) : ''}) for <strong>{poToSubmit?.vendorName}</strong>.
               You won't be able to edit it while it's pending approval.
             </AlertDialogDescription>
           </AlertDialogHeader>

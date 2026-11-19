@@ -1139,11 +1139,13 @@ exports.notifyPOApproval = onCall(
     const { auth, data } = request;
     if (!auth) throw new Error('Authentication required');
 
-    const { mode, projectId, projectName, poId, poNumber, vendorName, totalAmount, submitterUid, note } = data;
+    const { mode, projectId, projectName, poId, poNumber, vendorName, totalAmount, currency, submitterUid, note } = data;
     const resend = new Resend(getResendApiKey());
     const FROM = 'BOM Tracker <info@qualitastech.com>';
 
-    const formatINR = (n) => `₹${Math.round(n || 0).toLocaleString('en-IN')}`;
+    const formatINR = (n) => (currency && currency !== 'INR')
+      ? new Intl.NumberFormat('en-US', { style: 'currency', currency, maximumFractionDigits: 2 }).format(n || 0)
+      : `₹${Math.round(n || 0).toLocaleString('en-IN')}`;
     const esc = (s) => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
     const poRows = [
@@ -3932,15 +3934,17 @@ function formatDateSafe(dateValue) {
 /**
  * Format currency in Indian format (₹1,23,456.00)
  */
-function formatIndianCurrency(amount) {
-  // Use "Rs." instead of "₹" because PDFKit's Helvetica font doesn't support the Rupee symbol
-  if (amount === undefined || amount === null || isNaN(amount)) return 'Rs. 0.00';
+function formatIndianCurrency(amount, currency) {
+  // Use "Rs." instead of "₹" because PDFKit's Helvetica font doesn't support the Rupee symbol.
+  // Non-INR POs use the ISO code prefix (e.g. "USD 1,234.00").
+  const prefix = currency && currency !== 'INR' ? currency : 'Rs.';
+  if (amount === undefined || amount === null || isNaN(amount)) return `${prefix} 0.00`;
   const num = parseFloat(amount);
-  const formatted = num.toLocaleString('en-IN', {
+  const formatted = num.toLocaleString(prefix === 'Rs.' ? 'en-IN' : 'en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   });
-  return `Rs. ${formatted}`;
+  return `${prefix} ${formatted}`;
 }
 
 /**
@@ -5313,8 +5317,8 @@ exports.generatePOPDF = onCall(async (request) => {
         item.hsn || '-',
         item.uom || '-',
         (item.quantity ?? 0).toString(),
-        formatIndianCurrency(item.rate).replace('Rs. ', ''),
-        formatIndianCurrency(item.amount)
+        formatIndianCurrency(item.rate, purchaseOrder.currency).replace(/^\S+ /, ''),
+        formatIndianCurrency(item.amount, purchaseOrder.currency)
       ];
 
       rowData.forEach((data, i) => {
@@ -5348,11 +5352,13 @@ exports.generatePOPDF = onCall(async (request) => {
        .text('Subtotal:', totalsX + 5, y + 4, { width: 90 });
     doc.font('Helvetica-Bold')
        .fillColor('#1f2937')
-       .text(formatIndianCurrency(purchaseOrder.subtotal), totalsX + 95, y + 4, { width: 100, align: 'right' });
+       .text(formatIndianCurrency(purchaseOrder.subtotal, purchaseOrder.currency), totalsX + 95, y + 4, { width: 100, align: 'right' });
     y += 18;
 
     // Tax
-    if (purchaseOrder.taxType === 'igst') {
+    if (purchaseOrder.taxType === 'none') {
+      // Foreign-currency PO: no tax lines
+    } else if (purchaseOrder.taxType === 'igst') {
       doc.rect(totalsX, y, totalsWidth, 18)
          .stroke(borderColor);
       doc.font('Helvetica')
@@ -5361,7 +5367,7 @@ exports.generatePOPDF = onCall(async (request) => {
          .text(`IGST (${purchaseOrder.taxPercentage}%):`, totalsX + 5, y + 4, { width: 90 });
       doc.font('Helvetica')
          .fillColor('#1f2937')
-         .text(formatIndianCurrency(purchaseOrder.igstAmount), totalsX + 95, y + 4, { width: 100, align: 'right' });
+         .text(formatIndianCurrency(purchaseOrder.igstAmount, purchaseOrder.currency), totalsX + 95, y + 4, { width: 100, align: 'right' });
       y += 18;
     } else {
       // CGST
@@ -5373,7 +5379,7 @@ exports.generatePOPDF = onCall(async (request) => {
          .text(`CGST (${purchaseOrder.taxPercentage / 2}%):`, totalsX + 5, y + 4, { width: 90 });
       doc.font('Helvetica')
          .fillColor('#1f2937')
-         .text(formatIndianCurrency(purchaseOrder.cgstAmount), totalsX + 95, y + 4, { width: 100, align: 'right' });
+         .text(formatIndianCurrency(purchaseOrder.cgstAmount, purchaseOrder.currency), totalsX + 95, y + 4, { width: 100, align: 'right' });
       y += 18;
 
       // SGST
@@ -5385,7 +5391,7 @@ exports.generatePOPDF = onCall(async (request) => {
          .text(`SGST (${purchaseOrder.taxPercentage / 2}%):`, totalsX + 5, y + 4, { width: 90 });
       doc.font('Helvetica')
          .fillColor('#1f2937')
-         .text(formatIndianCurrency(purchaseOrder.sgstAmount), totalsX + 95, y + 4, { width: 100, align: 'right' });
+         .text(formatIndianCurrency(purchaseOrder.sgstAmount, purchaseOrder.currency), totalsX + 95, y + 4, { width: 100, align: 'right' });
       y += 18;
     }
 
@@ -5396,7 +5402,7 @@ exports.generatePOPDF = onCall(async (request) => {
        .fontSize(10)
        .fillColor('white')
        .text('TOTAL:', totalsX + 5, y + 5, { width: 90 });
-    doc.text(formatIndianCurrency(purchaseOrder.totalAmount), totalsX + 95, y + 5, { width: 100, align: 'right' });
+    doc.text(formatIndianCurrency(purchaseOrder.totalAmount, purchaseOrder.currency), totalsX + 95, y + 5, { width: 100, align: 'right' });
     y += 30;
 
     // Amount in words
@@ -5648,7 +5654,7 @@ exports.sendPurchaseOrder = onCall(
               </tr>
               <tr>
                 <td style="padding: 8px; border: 1px solid #ddd;"><strong>Total Amount:</strong></td>
-                <td style="padding: 8px; border: 1px solid #ddd;">${formatIndianCurrency(purchaseOrder.totalAmount)}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${formatIndianCurrency(purchaseOrder.totalAmount, purchaseOrder.currency)}</td>
               </tr>
               <tr>
                 <td style="padding: 8px; border: 1px solid #ddd;"><strong>Items:</strong></td>

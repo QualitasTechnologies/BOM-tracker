@@ -26,6 +26,8 @@ import {
   calculatePOTotals,
   generatePONumber,
   determineTaxType,
+  resolveCurrency,
+  isForeignCurrency,
   numberToWords,
 } from "@/types/purchaseOrder";
 import {
@@ -133,6 +135,8 @@ export interface CreatePOInput {
   vendorStateName: string;
   vendorEmail?: string;
   vendorPhone?: string;
+  // Currency from the vendor record (defaults to INR)
+  currency?: string;
 
   // Ship To (optional - defaults to company address if not provided)
   shipToAddress?: string;
@@ -184,9 +188,14 @@ export const createPurchaseOrder = async (input: CreatePOInput): Promise<string>
     companySettings.nextPoNumber
   );
 
-  // Determine tax type based on states
-  const taxType = determineTaxType(companySettings.stateCode, input.vendorStateCode);
-  const taxPercentage = 18; // Standard GST rate
+  // All POs for a vendor are issued in that vendor's currency.
+  const currency = resolveCurrency(input.currency);
+
+  // Foreign-currency vendors are overseas: no GST on the PO.
+  const taxType: TaxType = isForeignCurrency(currency)
+    ? 'none'
+    : determineTaxType(companySettings.stateCode, input.vendorStateCode);
+  const taxPercentage = taxType === 'none' ? 0 : 18; // Standard GST rate
 
   // Add serial numbers to items
   const itemsWithSlNo: POItem[] = input.items.map((item, index) => ({
@@ -195,7 +204,7 @@ export const createPurchaseOrder = async (input: CreatePOInput): Promise<string>
   }));
 
   // Calculate totals
-  const totals = calculatePOTotals(itemsWithSlNo, taxType, taxPercentage);
+  const totals = calculatePOTotals(itemsWithSlNo, taxType, taxPercentage, currency);
 
   // Create PO object
   const now = new Date();
@@ -243,7 +252,7 @@ export const createPurchaseOrder = async (input: CreatePOInput): Promise<string>
     sgstAmount: totals.sgstAmount,
     totalAmount: totals.totalAmount,
     amountInWords: totals.amountInWords,
-    currency: 'INR',
+    currency,
 
     // Terms
     paymentTerms: input.paymentTerms,
@@ -582,7 +591,7 @@ export const recalculatePOTotals = async (
     throw new Error("Purchase Order not found");
   }
 
-  const totals = calculatePOTotals(po.items, po.taxType, po.taxPercentage);
+  const totals = calculatePOTotals(po.items, po.taxType, po.taxPercentage, po.currency);
 
   const docRef = doc(db, "projects", projectId, "purchaseOrders", poId);
   await updateDoc(docRef, {
@@ -725,6 +734,7 @@ export interface NotifyPOApprovalInput {
   poNumber: string;
   vendorName: string;
   totalAmount: number;
+  currency?: string;
   // Required for mode: 'changes-requested'
   submitterUid?: string;
   note?: string;
