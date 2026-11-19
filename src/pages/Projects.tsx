@@ -280,7 +280,7 @@ const ProjectsContent = () => {
       const matchesClient = clientFilter === "all" || project.clientName === clientFilter;
       const matchesStatus = statusFilter === "all" || project.status === statusFilter;
       return matchesSearch && matchesClient && matchesStatus;
-    });
+    }).sort((a, b) => Number(a.status === 'Completed') - Number(b.status === 'Completed')); // stable: completed sink to the bottom
   }, [archiveView, clientFilter, projects, searchQuery, statusFilter]);
 
   // Build a deduplicated, sanitized client list for the filter dropdown.

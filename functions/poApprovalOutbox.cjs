@@ -10,6 +10,7 @@ function createApprovalJob({projectId,poId,operationId,kind,project,po,actor,at,
     state:skipped?'skipped':'pending',...(skipped?{problem:'no_submitter'}:{}),created_at:at,created_ms:createdMs,next_attempt_ms:skipped?NEVER:createdMs,
     payload:{mode:kind==='submit'?'submitted':'changes-requested',projectId,projectName:label(project.projectName,projectId),poId,
       poNumber:label(po.poNumber,'Purchase Order'),vendorName:label(po.vendorName),totalAmount:Number.isFinite(po.totalAmount)?po.totalAmount:null,
+      ...(typeof po.currency==='string'&&/^[A-Z]{3}$/.test(po.currency)&&po.currency!=='INR'?{currency:po.currency}:{}),
       actorName:label(actor.displayName||actor.email,'A team member',300),submitterUid:kind==='submit'?actor.uid:po.submittedBy||null,
       ...(kind==='request_changes'&&po.changesRequestedNote?{note:label(po.changesRequestedNote,'',4000)}:{})}}};
 }
