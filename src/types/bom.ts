@@ -21,6 +21,12 @@ export interface BOMItem {
   // For services: rate per day (₹/day)
   price?: number;
 
+  // Currency of `price` (INR when absent) and the INR-per-unit rate fixed when the
+  // price was entered in that currency. Totals use price * fxRate; the rate never drifts.
+  currency?: string;
+  fxRate?: number;
+  fxRateDate?: string; // YYYY-MM-DD the rate was published
+
   // For components: quantity of units
   // For services: duration in days (minimum 0.5)
   quantity: number;
@@ -226,6 +232,9 @@ export function sanitizeBOMItemForFirestore(item: Partial<BOMItem>): Record<stri
   if (item.make !== undefined) sanitized.make = item.make;
   if (item.sku !== undefined) sanitized.sku = item.sku;
   if (item.price !== undefined) sanitized.price = item.price;
+  if (item.currency !== undefined) sanitized.currency = item.currency;
+  if (item.fxRate !== undefined) sanitized.fxRate = item.fxRate;
+  if (item.fxRateDate !== undefined) sanitized.fxRateDate = item.fxRateDate;
   if (item.unit !== undefined) sanitized.unit = item.unit;
   if (item.thumbnailUrl !== undefined) sanitized.thumbnailUrl = item.thumbnailUrl;
   if (item.order !== undefined) sanitized.order = item.order;

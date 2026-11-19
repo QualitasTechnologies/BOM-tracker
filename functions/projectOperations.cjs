@@ -41,6 +41,12 @@ function validateBody(body) {
         || typeof value.name !== 'string' || !value.name.trim() || value.name.length > 500
         || Object.hasOwn(value, 'price') && (typeof value.price !== 'number' || !Number.isFinite(value.price) || value.price < 0)
         || ['leadTime', 'availability'].some(field => Object.hasOwn(value, field) && (typeof value[field] !== 'string' || value[field].length > 500)))) throw fault('invalid_material_patch', 400);
+    } else if (key === 'currency') {
+      if (value !== null && (typeof value !== 'string' || !/^[A-Z]{3}$/.test(value))) throw fault('invalid_material_patch', 400);
+    } else if (key === 'fxRate') {
+      if (value !== null && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1e6)) throw fault('invalid_material_patch', 400);
+    } else if (key === 'fxRateDate') {
+      if (value !== null && (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || new Date(value).toISOString().slice(0, 10) !== value)) throw fault('invalid_material_patch', 400);
     } else if (key === 'quantity' || key === 'price') {
       if (key === 'price' && value === null) continue;
       if (typeof value !== 'number' || !Number.isFinite(value) || (key === 'quantity' ? value <= 0 : value < 0)) throw fault('invalid_material_patch', 400);
@@ -512,7 +518,7 @@ function createProjectOperationsHandler({ db, auth, getServiceKey, resolveActor,
         }
         if (versionOf(bom) !== expectedVersion) throw fault('material_version_conflict', 409);
         const updated = fulfilling ? appendFulfillment(match.item, fulfillment, operationId) : { ...match.item, ...patch };
-        for (const key of ['price', 'finalizedVendor']) if (Object.hasOwn(patch, key) && patch[key] === null) delete updated[key];
+        for (const key of ['price', 'finalizedVendor', 'currency', 'fxRate', 'fxRateDate']) if (Object.hasOwn(patch, key) && patch[key] === null) delete updated[key];
         if (Object.hasOwn(patch, 'itemType') && (typeof updated.quantity !== 'number' || !Number.isFinite(updated.quantity) || updated.quantity <= 0)) throw fault('invalid_material_state', 409);
         if (updated.itemType === 'service' && (Object.hasOwn(patch, 'quantity') || Object.hasOwn(patch, 'itemType')) && updated.quantity < 0.5) throw fault('invalid_material_patch', 400);
         if (Object.hasOwn(patch, 'quantity')) {

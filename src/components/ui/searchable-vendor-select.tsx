@@ -22,6 +22,7 @@ export interface VendorOption {
   leadTime: string;
   type: 'OEM' | 'Dealer';
   status: 'active' | 'inactive';
+  currency?: string;
 }
 
 interface SearchableVendorSelectProps {

@@ -1,5 +1,6 @@
 
 import { ChevronDown, ChevronRight, Package, Trash2 } from 'lucide-react';
+import { itemTotalINR } from '@/utils/fx';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -26,6 +27,9 @@ interface BOMItem {
   category: string;
   quantity: number;
   price?: number;
+  currency?: string;
+  fxRate?: number;
+  fxRateDate?: string;
   make?: string;
   sku?: string;
   vendors: Array<{
@@ -54,6 +58,7 @@ interface Vendor {
   leadTime: string;
   type: 'OEM' | 'Dealer';
   status: 'active' | 'inactive';
+  currency?: string;
 }
 
 interface ProjectDocument {
@@ -131,7 +136,7 @@ const BOMCategoryCard = ({ category, projectId, onToggle, onQuantityChange, onDe
 
   const categoryTotal = category.items.reduce((sum, item) => {
     if (!item.price) return sum;
-    return sum + item.price * (item.quantity || 1);
+    return sum + itemTotalINR(item);
   }, 0);
 
   return (

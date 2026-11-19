@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { itemTotalINR } from '@/utils/fx';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { Search, Plus, Download, Filter, X, Upload, Package, FileText, ChevronDown, ChevronUp, Milestone, Brain, UserCheck, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -839,7 +840,7 @@ const BOMContent = () => {
     // Calculate total cost
     const totalCost = allParts.reduce((sum, part) => {
       if (part.price && part.price > 0) {
-        return sum + (part.price * part.quantity);
+        return sum + itemTotalINR(part);
       }
       return sum;
     }, 0);
@@ -1314,7 +1315,8 @@ const BOMContent = () => {
                                       company: v.company,
                                       leadTime: v.leadTime,
                                       type: v.type,
-                                      status: v.status
+                                      status: v.status,
+                                      currency: v.currency
                                     }))}
                                     projectDocuments={projectDocuments}
                                   />

@@ -89,6 +89,7 @@ interface SelectablePOItem {
   uom: string;
   quantity: number;
   rate: number;
+  currency: string; // currency the item's price is entered in
   category: string;
   isSelected: boolean;
   hsn?: string;
@@ -339,6 +340,7 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
             uom: item.itemType === 'service' ? 'days' : 'nos',
             quantity: item.quantity,
             rate: item.price || 0,
+            currency: resolveCurrency(item.currency),
             category: category.name,
             isSelected: true,
             hsn: undefined,
@@ -435,6 +437,17 @@ const CreatePODialog: React.FC<CreatePODialogProps> = ({
     const selectedItems = selectableItems.filter((item) => item.isSelected);
     if (selectedItems.length === 0) {
       setError('Please select at least one item');
+      return;
+    }
+
+    // The PO is issued in the vendor's currency, so every item must be priced in it.
+    const poCurrency = resolveCurrency(selectedVendor.currency);
+    const mismatched = selectedItems.filter((item) => item.currency !== poCurrency);
+    if (mismatched.length > 0) {
+      setError(
+        `${mismatched.length} item(s) are priced in ${mismatched[0].currency} but this vendor is paid in ${poCurrency}. ` +
+        `Open each item in the BOM and set its currency to ${poCurrency} with the ${poCurrency} price.`
+      );
       return;
     }
 

@@ -31,6 +31,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { getInwardStatus, getTotalReceivedQty, InwardStatus } from '@/types/bom';
 import { ProjectDocument } from '@/types/projectDocument';
 import ItemAttachments from './ItemAttachments';
+import { fxFieldsFor, isForeignItem, itemUnitPriceINR, itemTotalINR } from '@/utils/fx';
+import { SUPPORTED_CURRENCIES, CURRENCY_LABELS, formatMoney } from '@/types/purchaseOrder';
 import { useToast } from '@/components/ui/use-toast';
 
 interface BOMItem {
@@ -41,6 +43,9 @@ interface BOMItem {
   category: string;
   quantity: number; // For components: units, for services: days
   price?: number; // For components: unit price, for services: rate per day
+  currency?: string;
+  fxRate?: number;
+  fxRateDate?: string;
   make?: string;
   sku?: string;
   vendors: Array<{
@@ -81,6 +86,7 @@ interface GlobalVendor {
   leadTime: string;
   type: 'OEM' | 'Dealer';
   status: 'active' | 'inactive';
+  currency?: string;
 }
 
 interface LinkedDocument {
@@ -231,6 +237,7 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
     sku: part.sku || '',
     quantity: part.quantity,
     price: part.price,
+    currency: part.currency || 'INR',
     category: part.category,
     finalizedVendor: part.finalizedVendor
   });
@@ -423,7 +430,7 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                   <TooltipTrigger asChild>
                     <input
                       type="number"
-                      placeholder={editForm.itemType === 'service' ? '₹/day' : 'Price'}
+                      placeholder={editForm.itemType === 'service' ? `${editForm.currency || 'INR'}/day` : 'Price'}
                       className="w-20 text-sm bg-white border rounded px-2 py-1"
                       value={editForm.price || ''}
                       onChange={(e) => setEditForm(prev => ({ ...prev, price: e.target.value ? Number(e.target.value) : undefined }))}
@@ -431,9 +438,22 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                     />
                   </TooltipTrigger>
                   <TooltipContent>
-                    {editForm.itemType === 'service' ? 'Rate per day in INR' : 'Unit price in INR'}
+                    {editForm.itemType === 'service' ? 'Rate per day' : 'Unit price'} in {editForm.currency || 'INR'}
+                    {editForm.currency && editForm.currency !== 'INR' ? '. The exchange rate is fixed when the currency is set.' : ''}
                   </TooltipContent>
                 </Tooltip>
+
+                <select
+                  aria-label="Price currency"
+                  className="text-sm bg-white border rounded px-1 py-1"
+                  value={editForm.currency || 'INR'}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, currency: e.target.value }))}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {SUPPORTED_CURRENCIES.map((code) => (
+                    <option key={code} value={code}>{code}</option>
+                  ))}
+                </select>
 
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -502,6 +522,7 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                         if (selected) {
                           setEditForm(prev => ({
                             ...prev,
+                            currency: (!prev.currency || prev.currency === 'INR') && selected.currency ? selected.currency : prev.currency,
                             finalizedVendor: {
                               name: selected.company,
                               price: editForm.price || 0,
@@ -592,13 +613,27 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                         {itemType === 'service' ? 'Rate:' : 'Unit:'}
                       </span>
                       <span className="font-medium">
-                        ₹{part.price.toLocaleString('en-IN')}
+                        {isForeignItem(part)
+                          ? formatMoney(part.price, part.currency)
+                          : `₹${part.price.toLocaleString('en-IN')}`}
                         {itemType === 'service' && '/day'}
                       </span>
                     </div>
                     <div className="flex items-center gap-1 whitespace-nowrap text-green-700 font-semibold">
                       <span className="text-gray-500 font-normal">Total:</span>
-                      <span>₹{(part.price * part.quantity).toLocaleString('en-IN')}</span>
+                      <span>
+                        {isForeignItem(part)
+                          ? formatMoney(part.price * part.quantity, part.currency)
+                          : `₹${(part.price * part.quantity).toLocaleString('en-IN')}`}
+                      </span>
+                      {isForeignItem(part) && (
+                        <span
+                          className="text-gray-500 font-normal"
+                          title={`Fixed rate ₹${(part.fxRate as number).toFixed(4)} per ${part.currency} (${part.fxRateDate || 'date n/a'})`}
+                        >
+                          ≈ ₹{Math.round(itemTotalINR(part)).toLocaleString('en-IN')}
+                        </span>
+                      )}
                     </div>
                   </div>
                 )}
@@ -728,7 +763,7 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                 size="sm"
                 variant="ghost"
                 className="h-6 w-6 p-0"
-                onClick={(e) => {
+                onClick={async (e) => {
                   e.stopPropagation();
                   const receivedQty = getTotalReceivedQty(part);
                   if (editForm.quantity < receivedQty) {
@@ -745,7 +780,26 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                     newCategory: editForm.category,
                     availableCategories
                   });
-                  onEdit?.(part.id, editForm);
+                  // Exchange rate: fetched on demand when the currency is first set (or changed) and
+                  // then fixed on the item. Cleared again when the item goes back to INR.
+                  const { currency: nextCurrency = 'INR', ...rest } = editForm;
+                  const prevCurrency = part.currency || 'INR';
+                  let fx: Partial<BOMItem> = {};
+                  if (nextCurrency !== 'INR' && (nextCurrency !== prevCurrency || !part.fxRate)) {
+                    try {
+                      const fields = await fxFieldsFor(nextCurrency);
+                      fx = { currency: nextCurrency, fxRate: fields.fxRate as number, fxRateDate: fields.fxRateDate as string };
+                      if ('source' in fields && fields.source === 'cached') {
+                        toast({ title: 'Using last saved exchange rate', description: `Live rates were unavailable. Using the ${fields.fxRateDate} rate.` });
+                      }
+                    } catch (err) {
+                      toast({ title: 'Exchange rate unavailable', description: err instanceof Error ? err.message : 'Try again shortly.', variant: 'destructive' });
+                      return;
+                    }
+                  } else if (nextCurrency === 'INR' && prevCurrency !== 'INR') {
+                    fx = { currency: null as unknown as undefined, fxRate: null as unknown as undefined, fxRateDate: null as unknown as undefined };
+                  }
+                  onEdit?.(part.id, { ...rest, ...fx });
                   if (editForm.category !== part.category) {
                     console.log('Category changed, calling onCategoryChange:', editForm.category);
                     onCategoryChange?.(part.id, editForm.category);
@@ -769,6 +823,7 @@ const BOMPartRow = ({ part, projectId, onClick, onQuantityChange, allVendors = [
                     sku: part.sku || '',
                     quantity: part.quantity,
                     price: part.price,
+                    currency: part.currency || 'INR',
                     category: part.category,
                     finalizedVendor: part.finalizedVendor
                   });

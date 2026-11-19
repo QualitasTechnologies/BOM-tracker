@@ -1,4 +1,5 @@
 import { db, auth } from "@/firebase";
+import { itemTotalINR } from './fx';
 import {
   collection,
   addDoc,
@@ -483,7 +484,7 @@ export const updateBOMItem = async (projectId: string, categories: BOMCategory[]
   if (isNativeMaterialCommandEnabled()) {
     const current = categories.flatMap(category => category.items).find(item => item.id === itemId);
     if (!current) throw new Error('This BOM item is no longer available. Refresh the page and try again.');
-    const supported = new Set(['itemType', 'name', 'description', 'make', 'sku', 'unit', 'category', 'quantity', 'price', 'status', 'order', 'vendors', 'finalizedVendor', 'poNumber', 'orderDate', 'expectedArrival', 'expectedDelivery', 'thumbnailUrl', 'specificationUrl', 'linkedQuoteDocumentId', 'linkedPODocumentId', 'linkedSpecDocumentId', 'linkedInvoiceDocumentId']);
+    const supported = new Set(['itemType', 'name', 'description', 'make', 'sku', 'unit', 'category', 'quantity', 'price', 'currency', 'fxRate', 'fxRateDate', 'status', 'order', 'vendors', 'finalizedVendor', 'poNumber', 'orderDate', 'expectedArrival', 'expectedDelivery', 'thumbnailUrl', 'specificationUrl', 'linkedQuoteDocumentId', 'linkedPODocumentId', 'linkedSpecDocumentId', 'linkedInvoiceDocumentId']);
     const patch: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updates)) {
       if (key === 'id' || value === undefined) continue;
@@ -577,7 +578,7 @@ export const getTotalBOMCost = (categories: BOMCategory[]): number => {
       category.items.reduce((catSum, item) => {
         // Use item.price (same as BOM page calculation)
         if (item.price && item.price > 0) {
-          return catSum + item.price * (item.quantity || 1);
+          return catSum + itemTotalINR(item);
         }
         return catSum;
       }, 0)

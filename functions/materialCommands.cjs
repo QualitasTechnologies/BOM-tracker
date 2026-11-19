@@ -12,6 +12,7 @@ const validId = value => typeof value === 'string' && !!value.trim() && value.le
 const categoryName = value => typeof value === 'string' && !!value.trim() && value.length <= 500;
 const date = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 const finite = value => typeof value === 'number' && Number.isFinite(value);
+const FX_FIELDS = ['currency', 'fxRate', 'fxRateDate'];
 const exact = (value, keys) => { if (!plain(value) || Object.keys(value).some(key => !keys.includes(key))) throw fault('invalid_material_command'); };
 const ids = (values, allowEmpty = false) => {
   if (!Array.isArray(values) || !allowEmpty && !values.length || values.some(value => !validId(value)) || new Set(values).size !== values.length) throw fault('invalid_material_command');
@@ -27,10 +28,13 @@ function patchFields(patch, adding = false) {
   if (!plain(patch) || !Object.keys(patch).length) throw fault('invalid_material_command');
   for (const [key, value] of Object.entries(patch)) {
     if (adding && key === 'id') { if (!validId(value)) throw fault('invalid_material_command'); continue; }
-    if (value === null && !adding && ['make', 'sku', 'unit', 'price', 'finalizedVendor', 'poNumber', 'order', 'orderDate', 'expectedArrival', 'expectedDelivery', 'thumbnailUrl', 'specificationUrl', 'linkedQuoteDocumentId', 'linkedPODocumentId', 'linkedSpecDocumentId', 'linkedInvoiceDocumentId'].includes(key)) continue;
+    if (value === null && !adding && ['make', 'sku', 'unit', 'price', 'currency', 'fxRate', 'fxRateDate', 'finalizedVendor', 'poNumber', 'order', 'orderDate', 'expectedArrival', 'expectedDelivery', 'thumbnailUrl', 'specificationUrl', 'linkedQuoteDocumentId', 'linkedPODocumentId', 'linkedSpecDocumentId', 'linkedInvoiceDocumentId'].includes(key)) continue;
     if (Object.hasOwn(textLimits, key)) {
       if (typeof value !== 'string' || value.length > textLimits[key] || ['name', 'category'].includes(key) && !value.trim()) throw fault('invalid_material_command');
     } else if (key === 'itemType') { if (!['component', 'service'].includes(value)) throw fault('invalid_material_command'); }
+    else if (key === 'currency') { if (typeof value !== 'string' || !/^[A-Z]{3}$/.test(value)) throw fault('invalid_material_command'); }
+    else if (key === 'fxRate') { if (!finite(value) || value <= 0 || value > 1e6) throw fault('invalid_material_command'); }
+    else if (key === 'fxRateDate') { if (!date(value)) throw fault('invalid_material_command'); }
     else if (key === 'quantity' || key === 'price') { if (!finite(value) || (key === 'quantity' ? value <= 0 : value < 0)) throw fault('invalid_material_command'); }
     else if (key === 'status') { if (!(adding ? ['not-ordered'] : ['not-ordered', 'ordered', 'received']).includes(value)) throw fault('invalid_material_command'); }
     else if (key === 'order') { if (!Number.isSafeInteger(value) || value < 0) throw fault('invalid_material_command'); }

@@ -7,7 +7,7 @@ import {
   type MaterialResolution, type MaterialWriteTicket, type PendingNativeMaterialRecovery,
 } from './nativeMaterialRecovery';
 
-export const NATIVE_MATERIAL_PATCH_FIELDS = ['name', 'description', 'make', 'sku', 'unit', 'quantity', 'price', 'itemType', 'category', 'finalizedVendor'] as const;
+export const NATIVE_MATERIAL_PATCH_FIELDS = ['name', 'description', 'make', 'sku', 'unit', 'quantity', 'price', 'currency', 'fxRate', 'fxRateDate', 'itemType', 'category', 'finalizedVendor'] as const;
 export type NativeMaterialPatchField = (typeof NATIVE_MATERIAL_PATCH_FIELDS)[number];
 export const NATIVE_MATERIAL_COMMAND_MAX_ITEMS = 200;
 
@@ -17,6 +17,7 @@ const NUMBER_FIELDS: readonly string[] = ['quantity', 'price'];
 export type NativeMaterialPatch = Partial<Record<'name' | 'description' | 'make' | 'sku' | 'unit' | 'category', string>> & {
   quantity?: number;
   price?: number | null;
+  currency?: string | null; fxRate?: number | null; fxRateDate?: string | null;
   itemType?: 'component' | 'service';
   finalizedVendor?: { name: string; price?: number; leadTime?: string; availability?: string } | null;
 };
@@ -46,7 +47,7 @@ export type NativeMaterialCommandPatch = Omit<NativeMaterialPatch, 'make' | 'sku
 };
 export type NativeMaterialNewItem = {
   id: string; itemType: 'component' | 'service'; name: string; description: string; category: string; quantity: number;
-  make?: string; sku?: string; unit?: string; price?: number; vendors?: NativeMaterialVendor[];
+  make?: string; sku?: string; unit?: string; price?: number; currency?: string; fxRate?: number; fxRateDate?: string; vendors?: NativeMaterialVendor[];
   status?: 'not-ordered'; order?: number; poNumber?: string; thumbnailUrl?: string; specificationUrl?: string;
 };
 export type NativeMaterialCommand =
@@ -154,7 +155,10 @@ const requirePatch = (value: unknown): NativeMaterialPatch => {
   for (const key of keys) {
     const field = value[key];
     const textLimits: Record<string, number> = { name: 500, description: 4000, make: 500, sku: 500, unit: 100, category: 500 };
-    if (key === 'price' && field === null || key === 'finalizedVendor' && field === null) clean[key] = null;
+    if (['price', 'currency', 'fxRate', 'fxRateDate', 'finalizedVendor'].includes(key) && field === null) clean[key] = null;
+    else if (key === 'currency' && typeof field === 'string' && /^[A-Z]{3}$/.test(field)) clean[key] = field;
+    else if (key === 'fxRate' && typeof field === 'number' && Number.isFinite(field) && field > 0 && field <= 1e6) clean[key] = field;
+    else if (key === 'fxRateDate' && typeof field === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(field) && new Date(field).toISOString().slice(0, 10) === field) clean[key] = field;
     else if (key === 'itemType' && (field === 'component' || field === 'service')) clean[key] = field;
     else if (key === 'finalizedVendor' && isRecord(field)) {
       const vendor = Object.fromEntries(Object.entries(field).filter(([, value]) => value !== undefined));
@@ -211,7 +215,7 @@ const commandVendors = (value: unknown) => {
 };
 const commandPatch = (value: unknown) => {
   if (!isRecord(value) || !Object.keys(value).length) throw commandFault();
-  const nullable = ['make', 'sku', 'unit', 'price', 'finalizedVendor', 'order', 'orderDate', 'expectedArrival', 'expectedDelivery', 'poNumber', 'thumbnailUrl', 'specificationUrl', 'linkedSpecDocumentId', 'linkedQuoteDocumentId', 'linkedPODocumentId'];
+  const nullable = ['make', 'sku', 'unit', 'price', 'currency', 'fxRate', 'fxRateDate', 'finalizedVendor', 'order', 'orderDate', 'expectedArrival', 'expectedDelivery', 'poNumber', 'thumbnailUrl', 'specificationUrl', 'linkedSpecDocumentId', 'linkedQuoteDocumentId', 'linkedPODocumentId'];
   for (const [key, field] of Object.entries(value)) {
     if (field === null && nullable.includes(key)) continue;
     if (NATIVE_MATERIAL_PATCH_FIELDS.includes(key as NativeMaterialPatchField)) { requirePatch({ [key]: field }); continue; }
@@ -241,7 +245,7 @@ const requireCommand = (value: unknown): NativeMaterialCommand => {
     const items = commandList(value.items);
     if (value.initialize !== undefined && typeof value.initialize !== 'boolean') throw commandFault();
     const ids = items.map(item => {
-      if (!isRecord(item) || Object.keys(item).some(key => !['id', 'itemType', 'name', 'description', 'category', 'quantity', 'make', 'sku', 'unit', 'price', 'vendors', 'status', 'order', 'poNumber', 'thumbnailUrl', 'specificationUrl'].includes(key))) throw commandFault();
+      if (!isRecord(item) || Object.keys(item).some(key => !['id', 'itemType', 'name', 'description', 'category', 'quantity', 'make', 'sku', 'unit', 'price', 'currency', 'fxRate', 'fxRateDate', 'vendors', 'status', 'order', 'poNumber', 'thumbnailUrl', 'specificationUrl'].includes(key))) throw commandFault();
       const id = commandId(item.id);
       if (!['component', 'service'].includes(String(item.itemType)) || typeof item.itemType !== 'string') throw commandFault();
       commandText(item.name, 500, true); commandText(item.description, 4000); commandText(item.category, 500, true);

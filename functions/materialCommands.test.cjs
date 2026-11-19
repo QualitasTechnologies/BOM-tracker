@@ -47,3 +47,16 @@ test('Firestore budget accepts preserved document references and geographical po
   assert.equal(commands.estimateDocumentBytes(data, 'c/d'), 16 + 4 + 32 + 4 + 16 + 7 + 5 + 6 + 16);
   assert.equal(data.ref, ref); assert.equal(data.point, point);
 });
+
+test('foreign-currency price fields are accepted, bounded and clearable', () => {
+  const fx = { price: 189.5, currency: 'USD', fxRate: 84.2, fxRateDate: '2026-11-19' };
+  assert.deepEqual(commands.validateCommand({ kind: 'add_items', items: [item(fx)] }).items[0].currency, 'USD');
+  const patch = { kind: 'patch_items', updates: [{ item_id: 'a', patch: fx }] };
+  assert.deepEqual(commands.validateCommand(patch), patch);
+  const clear = { kind: 'patch_items', updates: [{ item_id: 'a', patch: { currency: null, fxRate: null, fxRateDate: null } }] };
+  assert.deepEqual(commands.validateCommand(clear), clear);
+  for (const bad of [{ currency: 'usd' }, { currency: 'US' }, { fxRate: 0 }, { fxRate: -1 }, { fxRate: 1e7 }, { fxRate: '84' }, { fxRateDate: '2026-13-45' }, { fxRateDate: 'today' }]) {
+    assert.throws(() => commands.validateCommand({ kind: 'patch_items', updates: [{ item_id: 'a', patch: bad }] }), { code: 'invalid_material_command' });
+  }
+  assert.throws(() => commands.validateCommand({ kind: 'add_items', items: [item({ currency: null })] }));
+});
