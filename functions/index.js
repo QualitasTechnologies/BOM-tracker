@@ -997,7 +997,8 @@ exports.notifyPOApproval = onCall(
     const managed = await require('./poApprovalLegacyGuard.cjs').managedApprovalNotification({db:admin.firestore(),auth:admin.auth(),request,data});
     if (managed) return managed;
     if (!await require('./poApprovalLegacyGuard.cjs').legacyApprovalSendingAllowed(admin.firestore())) throw new Error('Legacy notifications disabled; reopen in Pulse');
-    const {mode, projectId, projectName, poId, poNumber, vendorName, totalAmount, currency, submitterUid, note} = data;
+    const {mode, projectId, projectName, poId, poNumber, vendorName, totalAmount, currency, submitterUid, note} =
+      await require('./poApprovalLegacyGuard.cjs').readLegacyApprovalOrder({db:admin.firestore(),auth:admin.auth(),request,data});
     const {buildPOApprovalEmail} = require('./poApprovalEmail.cjs');
     const resend = new Resend(getResendApiKey());
     if (mode === 'submitted') {

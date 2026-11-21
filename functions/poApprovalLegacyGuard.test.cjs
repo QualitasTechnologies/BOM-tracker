@@ -20,3 +20,19 @@ test('cutover controls fence the legacy provider path without changing missing/c
   for(const mode of ['read_only','pulse_only','unknown']){f.docs.set('pulseRuntimeControl/cutover',{mode});assert.equal(await legacyApprovalSendingAllowed(f.db),false);}
   f.docs.set('pulseRuntimeControl/cutover',{mode:'coexist'});assert.equal(await legacyApprovalSendingAllowed(f.db),true);
 });
+
+test('legacy approval uses the stored USD amount and enforces current project membership', async () => {
+  const {readLegacyApprovalOrder} = require('./poApprovalLegacyGuard.cjs');
+  const f = fixture();
+  Object.assign(f.docs.get('projects/P/purchaseOrders/existing'), {
+    status: 'pending-approval', submittedBy: 'alice', totalAmount: 24.5, currency: 'USD',
+  });
+  const args = {db: f.db, auth: f.auth, request, data: {
+    mode: 'submitted', projectId: 'P', poId: 'existing', totalAmount: 99, currency: 'EUR',
+  }};
+  const order = await readLegacyApprovalOrder(args);
+  assert.equal(order.totalAmount, 24.5);
+  assert.equal(order.currency, 'USD');
+  f.docs.get('projects/P').memberIds = [];
+  await assert.rejects(readLegacyApprovalOrder(args), /forbidden/i);
+});

@@ -30,7 +30,9 @@ test('PO recipient access is rechecked after explicit-null membership is revoked
   assert.equal((await dispatcher.deliver(prepared.delivery_ids[0])).state,'skipped');assert.equal(sent.length,0);
 });
 async function setup(options={}) {
-  const settings=options.fixture||{},f=fixture(settings);const result=await f.command();assert.equal(result.ok,true);
+  const settings=options.fixture||{},f=fixture(settings);
+  if (options.currency) f.docs.get('projects/P/purchaseOrders/existing').currency = options.currency;
+  const result=await f.command();assert.equal(result.ok,true);
   let clock=T0,on=true;const sent=[];
   const auth={...f.auth,listUsers:async()=>({users:[...f.users.values()]})};
   const dispatcher=createPOApprovalDispatcher({db:f.db,auth,enabled:()=>on,now:()=>clock,getServerTimestamp:()=>new Date(clock),
@@ -166,4 +168,30 @@ test('the retry window is rechecked after slow recipient lookup before another p
   await f.dispatcher.deliver(id);f.tick(RETRY_WINDOW-10);const get=f.auth.getUser;
   f.auth.getUser=async uid=>{f.tick(20);return get(uid);};
   assert.equal((await f.dispatcher.deliver(id)).state,'needs_reconciliation');assert.equal(f.sent.length,1);
+});
+
+test('dispatch carries stored USD and skips a currency changed after queueing', async () => {
+  const f = await setup({ currency: 'USD' });
+  const prepared = await f.dispatcher.prepare(f.id);
+  assert.equal(prepared.state, 'prepared');
+  assert.equal((await f.dispatcher.deliver(prepared.delivery_ids[0])).state, 'accepted');
+  assert.match(f.sent[0].mail.subject, /USD|\$/);
+  assert.doesNotMatch(f.sent[0].mail.subject, /₹/);
+
+  const changed = await setup({ currency: 'USD' });
+  changed.docs.get('projects/P/purchaseOrders/existing').currency = 'EUR';
+  assert.notEqual((await changed.dispatcher.prepare(changed.id)).state, 'prepared');
+  assert.equal(changed.sent.length, 0);
+});
+
+test('a queued USD job with its original fingerprint still prepares and sends', async () => {
+  const { approvalFingerprint } = require('./poApprovalOutbox.cjs');
+  const f = await setup({ currency: 'USD' });
+  const job = f.docs.get(`pulsePOApprovalNotifications/${f.id}`);
+  delete job.event_fingerprint_version;
+  job.event_fingerprint = approvalFingerprint(f.docs.get('projects/P/purchaseOrders/existing'));
+  const prepared = await f.dispatcher.prepare(f.id);
+  assert.equal(prepared.state, 'prepared');
+  assert.equal((await f.dispatcher.deliver(prepared.delivery_ids[0])).state, 'accepted');
+  assert.match(f.sent[0].mail.subject, /USD|\$/);
 });
