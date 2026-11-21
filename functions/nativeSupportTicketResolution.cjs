@@ -79,6 +79,11 @@ function createNativeSupportTicketResolution({ db, auth, enabled = false, getSer
     return data.command;
   }
 
+  const cutoverRef = projectId => db.collection('pulseSupportCutovers').doc(projectId);
+  const controlRef = db.collection('pulseRuntimeControl').doc('cutover');
+  const isResolutionFenced = snapshot => snapshot.data()?.fence === 'legacy_support_resolution_writes'
+    && snapshot.data()?.version === 1;
+
   return async request => {
     try {
       const actor = await actorOf(request);
@@ -98,7 +103,16 @@ function createNativeSupportTicketResolution({ db, auth, enabled = false, getSer
           if (!ticketSnapshot.exists) throw fault('support_ticket_not_found', 404);
           const ticket = ticketSnapshot.data();
           if (ticket.projectId && ticket.projectId !== projectId) throw fault('support_ticket_identity_conflict', 409);
-          return { ok: true, project_id: projectId, ticket_id: ticketId, version: revision(ticketSnapshot), resolution_record: resolutionRecord(ticket) };
+          const cutover = await transaction.get(cutoverRef(projectId));
+          const control = await transaction.get(controlRef);
+          const mode = control.exists ? control.data()?.mode : 'coexist';
+          let resolutionWritePath = 'unavailable';
+          if (!cutover.exists && mode === 'coexist') resolutionWritePath = 'legacy';
+          if (isResolutionFenced(cutover) && writesOn() && ['coexist', 'pulse_only'].includes(mode)) {
+            resolutionWritePath = 'native';
+          }
+          return { ok: true, project_id: projectId, ticket_id: ticketId, version: revision(ticketSnapshot),
+            resolution_record: resolutionRecord(ticket), resolution_write_path: resolutionWritePath };
         });
       }
 
@@ -133,12 +147,11 @@ function createNativeSupportTicketResolution({ db, auth, enabled = false, getSer
           return { ...old.result, resolution: 'replayed' };
         }
         if (!writesOn()) throw fault('support_ticket_resolution_disabled', 503);
-        const cutoverSnapshot = await transaction.get(db.collection('pulseSupportCutovers').doc(projectId));
-        const cutover = cutoverSnapshot.exists ? cutoverSnapshot.data() : null;
-        if (cutover?.fence !== 'legacy_support_resolution_writes' || cutover?.version !== 1) {
+        const cutoverSnapshot = await transaction.get(cutoverRef(projectId));
+        if (!isResolutionFenced(cutoverSnapshot)) {
           throw fault('support_ticket_resolution_cutover_not_ready', 503);
         }
-        const control = await transaction.get(db.collection('pulseRuntimeControl').doc('cutover'));
+        const control = await transaction.get(controlRef);
         const mode = control.exists ? control.data()?.mode : 'coexist';
         if (!['coexist', 'pulse_only'].includes(mode)) {
           throw fault(mode === 'read_only' ? 'support_ticket_resolution_read_only' : 'support_ticket_control_unavailable', 503);

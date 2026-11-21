@@ -31,10 +31,18 @@ test('atomically saves only the four resolution fields while preserving ticket d
 test('get returns the current version and exactly the four editable resolution fields', async () => {
   const f = fixture({ ticket: { rootCause: 'Cause', correctiveAction: 'Fix', preventiveAction: 'Prevent', resolutionSummary: 'Result', extra: 'hidden' } });
   const result = await f.call({ operation: 'get', project_id: 'P', ticket_id: 'T', expected_actor_uid: 'alice' });
-  assert.deepEqual(result, { ok: true, project_id: 'P', ticket_id: 'T', version: '100:1', resolution_record: {
+  assert.deepEqual(result, { ok: true, project_id: 'P', ticket_id: 'T', version: '100:1', resolution_write_path: 'native', resolution_record: {
     rootCause: 'Cause', correctiveAction: 'Fix', preventiveAction: 'Prevent', resolutionSummary: 'Result',
   } });
-  assert.equal((await fixture({ cutoverMarker: null }).call({ operation: 'get', project_id: 'P', ticket_id: 'T', expected_actor_uid: 'alice' })).ok, true);
+  const get = { operation: 'get', project_id: 'P', ticket_id: 'T', expected_actor_uid: 'alice' };
+  for (const [options, path] of [
+    [{ cutoverMarker: null }, 'legacy'],
+    [{ cutoverMarker: {} }, 'unavailable'],
+    [{ enabled: false }, 'unavailable'],
+    [{ runtimeMode: 'read_only', cutoverMarker: null }, 'unavailable'],
+    [{ runtimeMode: 'pulse_only', cutoverMarker: null }, 'unavailable'],
+    [{ runtimeMode: 'pulse_only' }, 'native'],
+  ]) assert.equal((await fixture(options).call(get)).resolution_write_path, path);
 });
 
 test('allows clearing all four fields with empty strings', async () => {
