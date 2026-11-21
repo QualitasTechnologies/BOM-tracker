@@ -60,7 +60,7 @@ function createPOApprovalNotificationOperations({db,auth,enabled=false,reconcili
         if(retry&&!admin)throw fault('notification_forbidden',403);
         if(receipt?.exists){if(receipt.data().request_hash!==requestHash)throw fault('notification_request_reused',409);return receipt.data().result;}
         const dispatch=on()&&(!control.exists||['coexist','pulse_only'].includes(control.data()?.mode));
-        const fingerprintMatches=parentData?.schema===1&&['submit','request_changes'].includes(parentData.kind)&&parentData.event_fingerprint===approvalFingerprint(po.data())&&po.data().status===(parentData.kind==='submit'?'pending-approval':'draft');
+        const fingerprintMatches=parentData?.schema===1&&['submit','request_changes'].includes(parentData.kind)&&parentData.event_fingerprint===approvalFingerprint(po.data(), parentData.event_fingerprint_version===2)&&po.data().status===(parentData.kind==='submit'?'pending-approval':'draft');
         const free=record=>!(Number.isFinite(record.lease_until)&&record.lease_until>now());
         const canPrepare=admin&&dispatch&&fingerprintMatches&&!deliveryIds.length&&['pending','blocked'].includes(parentData?.state)&&free(parentData);
         const canDeliver=record=>admin&&dispatch&&fingerprintMatches&&['pending','uncertain'].includes(record.state)&&free(record)

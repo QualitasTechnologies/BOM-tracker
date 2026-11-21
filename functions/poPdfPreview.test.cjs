@@ -1,6 +1,8 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),crypto=require('node:crypto');
 const PDFDocument=require('pdfkit');
 const indexSource=fs.readFileSync(path.join(__dirname,'index.js'),'utf8');
+const formatterStart=indexSource.indexOf('function formatIndianCurrency(');
+const formatterSource=indexSource.slice(formatterStart,indexSource.indexOf('\n/**',formatterStart));
 const rendererSource=indexSource.slice(indexSource.indexOf('async function generatePOPDFHandler('),indexSource.indexOf('\nconst legacyPoAccess =',indexSource.indexOf('async function generatePOPDFHandler(')));
 const entrySource=indexSource.slice(indexSource.indexOf('exports.generatePOPDF = onCall('),indexSource.indexOf('\nfunction buildPOEmailData',indexSource.indexOf('exports.generatePOPDF = onCall(')));
 const issuedPath='purchase-orders/fixture-project/QA-ONLY-001.pdf';
@@ -11,8 +13,8 @@ function fixture({failSave=false,poOverrides={}}={}){
  const po={id:'fixture-po',projectId:'fixture-project',poNumber:'QA-ONLY-001',poDate:new Date('2026-11-18'),projectReference:'SYNTHETIC TEST ONLY',vendorName:'Synthetic vendor',vendorAddress:'Test address',vendorGstin:'TEST-ONLY',vendorStateCode:'29',invoiceToCompany:'Synthetic fixture',invoiceToAddress:'Test address',invoiceToGstin:'TEST-ONLY',shipToAddress:'Test address',items:[{slNo:1,description:'Synthetic item',quantity:1,rate:10,amount:10,uom:'nos'}],subtotal:10,taxType:'igst',taxPercentage:18,igstAmount:1.8,totalAmount:11.8,amountInWords:'Synthetic fixture amount',paymentTerms:'Test only',deliveryTerms:'Test only',...poOverrides};
  const company={companyName:'SYNTHETIC TEST ONLY',companyAddress:'Fixture address',gstin:'TEST-ONLY',pan:'TEST-ONLY'};
  const cachedNative={path:'native-purchase-orders/cached.pdf',generation:'1',sha256:'a'.repeat(64),url:'https://fixture.invalid/cached'};
- const context=vm.createContext({Buffer,PDFDocument,__dirname,require:name=>{if(['http','https','node:http','node:https'].includes(name))throw Error('network forbidden');if(name==='fs')return{...fs,existsSync:()=>false};return require(name);},admin:{storage:()=>({bucket:()=>bucket})},logger:{info(){},warn(){},error(){}},functions:{https:{HttpsError:class extends Error{constructor(code,message){super(message);this.code=code;}}}},formatDateSafe:()=> '18 Nov 2026',formatIndianCurrency:value=>'Rs. '+Number(value||0).toFixed(2),legacyPoAccess:{preparePreview:async()=>({po,companySettings:company})},onCall:fn=>fn,exports:{},readNativePoArtifact:async()=>cachedNative,writeNativePoArtifact:async()=>{throw Error('cached native artifact must not rewrite');},writePoPreview:options=>require('./poPdfPreview.cjs').writePoPreview(options)});
- vm.runInContext(rendererSource,context);vm.runInContext(entrySource,context);
+ const context=vm.createContext({Buffer,PDFDocument,__dirname,require:name=>{if(['http','https','node:http','node:https'].includes(name))throw Error('network forbidden');if(name==='fs')return{...fs,existsSync:()=>false};return require(name);},admin:{storage:()=>({bucket:()=>bucket})},logger:{info(){},warn(){},error(){}},functions:{https:{HttpsError:class extends Error{constructor(code,message){super(message);this.code=code;}}}},formatDateSafe:()=> '18 Nov 2026',legacyPoAccess:{preparePreview:async()=>({po,companySettings:company})},onCall:fn=>fn,exports:{},readNativePoArtifact:async()=>cachedNative,writeNativePoArtifact:async()=>{throw Error('cached native artifact must not rewrite');},writePoPreview:options=>require('./poPdfPreview.cjs').writePoPreview(options)});
+ vm.runInContext(formatterSource,context);vm.runInContext(rendererSource,context);vm.runInContext(entrySource,context);
  return{bucket,objects,events,po,company,cachedNative,preview:input=>context.exports.generatePOPDF({data:input||{}}),legacy:()=>context.generatePOPDFHandler({data:{purchaseOrder:po,companySettings:company}}),native:()=>context.generatePOPDFHandler({data:{purchaseOrder:po,companySettings:company}},{path:'native-purchase-orders/cached.pdf'})};
 }
 const fingerprint=value=>crypto.createHash('sha256').update(value.bytes).update(JSON.stringify(value.metadata)).digest('hex');
@@ -81,4 +83,12 @@ test('selected long annexure flows completely across additional pages',async()=>
 test('cached native send artifact is returned without applying new annexure rendering',async()=>{
  const f=fixture({poOverrides:{includeAnnexure:true,termsAndConditions:'DO NOT REWRITE ACCEPTED ARTIFACT'}});
  assert.deepEqual(await f.native(),f.cachedNative);assert.equal(f.events.length,0);
+});
+
+test('USD preview uses ISO currency, omits GST and preserves the selected annexure', async () => {
+ const {text}=await parsedPreview({currency:'USD',taxType:'none',taxPercentage:0,igstAmount:0,totalAmount:10,includeAnnexure:true,termsAndConditions:'USD ANNEXURE FIXTURE'});
+ assert.match(text.text,/USD\s+10\.00/);
+ assert.doesNotMatch(text.text,/\b(?:IGST|CGST|SGST)\s*\(/);
+ assert.doesNotMatch(text.text,/Rs\.\s*10\.00/);
+ assert.match(text.text,/USD ANNEXURE FIXTURE/);
 });
